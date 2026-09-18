@@ -1,0 +1,12 @@
+# Always use lf instead of crlf for line endings
+*       text=auto eol=lf
+
+# Source code
+*.c     text diff=cpp
+*.h     text diff=cpp
+*.asm   text
+*.S     text
+*.txt   text
+*.nix   text
+*.sh    text diff=bash
+*.md    text diff=markdown
