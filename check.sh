@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 # cd to directory containing this script
-DIR=$( dirname -- "${BASH_SOURCE[0]}" )
-cd $DIR
+cd -- "$( dirname -- "${BASH_SOURCE[0]}" )"
 
 # Build with C99 compiler
-PICO_SDK_PATH="$DIR/lib/pico-sdk" CHECK_ONLY=1 ./configure.sh
+CHECK_ONLY=1 ./configure.sh
 cd build/
 make -j$(nproc)
 cd ..
