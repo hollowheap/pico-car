@@ -18,13 +18,8 @@ endif()
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Check for compliance with C99
-if (CHECK_ONLY)
-    set(CMAKE_C_STANDARD 99)
-else()
-    # Barr standard enforces C99, but pico SDK requires C11
-    set(CMAKE_C_STANDARD 11)
-endif()
+# Barr standard enforces C99
+set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
