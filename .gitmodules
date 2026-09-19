@@ -1,0 +1,6 @@
+[submodule "lib/pico-sdk"]
+	path = lib/pico-sdk
+	url = https://github.com/hollowheap/pico-sdk
+[submodule "lib/mtk3smp-rp2040"]
+	path = lib/mtk3smp-rp2040
+	url = https://github.com/hollowheap/mtk3smp-rp2040
