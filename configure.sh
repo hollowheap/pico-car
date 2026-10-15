@@ -4,6 +4,8 @@ set -euxo pipefail
 DIR=$( dirname -- "${BASH_SOURCE[0]}" )
 cd $DIR
 
+git submodule update --init --recursive
+
 export PICO_SDK_PATH="$DIR/lib/pico-sdk"
 # Extra arguments pass through to cmake
 # e.g., ./configure.sh -DCMAKE_BUILD_TYPE=Release

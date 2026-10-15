@@ -4,7 +4,7 @@ Run these commands:
 
 ```sh
 nix develop     # Enter devshell with build tools and pico SDK installed
-./configure.sh  # Configure CMake
+./configure.sh  # Init submodules + configure CMake
 ./build.sh      # Compile and link
 ```
 

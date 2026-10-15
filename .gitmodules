@@ -1,0 +1,6 @@
+[submodule "lib/pico-sdk"]
+	path = lib/pico-sdk
+	url = https://github.com/hollowheap/pico-sdk
+[submodule "lib/mtk3-bsp"]
+	path = lib/mtk3-bsp
+	url = https://github.com/tron-forum/mtk3_bsp
