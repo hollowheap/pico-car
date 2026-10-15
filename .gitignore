@@ -1,2 +1,9 @@
 build/
 /main.uf2
+
+# hollowheap's direnv things
+.direnv/
+.envrc
+
+# local architect notes, never commit
+artifacts/

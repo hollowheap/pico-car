@@ -1,1 +1,0 @@
-*(EXCLUDE_FILE(*libgcc.a: *libc.a: *lib*_a-mem*.o *libm.a:) .rodata*)
