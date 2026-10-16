@@ -1,18 +1,10 @@
 cmake_minimum_required(VERSION 3.12)
 
 # Pull in SDK (must be before project)
+set(ENV{PICO_SDK_PATH} "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk")
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
-if (DEFINED ENV{CHECK_ONLY})
-    set(CHECK_ONLY TRUE)
-else()
-    set(CHECK_ONLY FALSE)
-endif()
 
 project(pico-blink C CXX ASM)
-
-if (PICO_SDK_VERSION_STRING VERSION_LESS "2.3.0")
-    message(FATAL_ERROR "Raspberry Pi Pico SDK version 2.3.0 (or later) required. Your version is ${PICO_SDK_VERSION_STRING}")
-endif()
 
 
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
