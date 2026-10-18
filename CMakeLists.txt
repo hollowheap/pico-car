@@ -34,9 +34,13 @@ pico_sdk_init()
 add_executable(main src/main.c)
 target_sources(main PRIVATE
     src/lcg32.c
+    src/imu_lsm303.c
+    src/hump.c
+    src/b4_shared.c
+    src/b4_log.c
 )
 # Link stdlib to our exe
-target_link_libraries(main pico_stdlib)
+target_link_libraries(main pico_stdlib hardware_i2c m)
 # Enable USB console. Access with `sudo screen /dev/ttyACM0` (or ttyACM1, ttyACM2, etc.)
 pico_enable_stdio_usb(main 1)
 # Create map/bin/hex/uf2 file etc.
