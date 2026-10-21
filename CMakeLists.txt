@@ -1,28 +1,10 @@
 cmake_minimum_required(VERSION 3.12)
 
-set(REQUIRED_PICO_SDK_VERSION "2.3.1")
-
-# Prefer the vendored pico-sdk submodule; fall back to the ambient
-# PICO_SDK_PATH (e.g. a nix-provided SDK) only when it is absent.
-if (EXISTS "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk/pico_sdk_init.cmake")
-    set(ENV{PICO_SDK_PATH} "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk")
-endif()
-
 # Pull in SDK (must be before project)
+set(ENV{PICO_SDK_PATH} "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk")
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 
-if (DEFINED ENV{CHECK_ONLY})
-    set(CHECK_ONLY TRUE)
-else()
-    set(CHECK_ONLY FALSE)
-endif()
-
 project(pico-blink C CXX ASM)
-
-# pico-sdk version check
-if (NOT PICO_SDK_VERSION_STRING VERSION_EQUAL "${REQUIRED_PICO_SDK_VERSION}")
-    message(FATAL_ERROR "Raspberry Pi Pico SDK version mismatch: required ${REQUIRED_PICO_SDK_VERSION}, found ${PICO_SDK_VERSION_STRING}")
-endif()
 
 # mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
 set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")

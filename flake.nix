@@ -15,9 +15,6 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        pico-sdk = pkgs.pico-sdk.override {
-          withSubmodules = true;
-        };
       in
       {
         devShell = pkgs.mkShell {
@@ -29,10 +26,6 @@
             picotool
             python3
           ];
-
-          shellHook = ''
-            export PICO_SDK_PATH="${pico-sdk}/lib/pico-sdk"
-          '';
         };
       }
     );
