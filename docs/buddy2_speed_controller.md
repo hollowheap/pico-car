@@ -2,8 +2,9 @@
 
 `wheel_pid` provides a task-owned integer PID calculation for one wheel.
 There are no default car gains, speed limits or autonomous startup. This
-module is not yet connected to a motor-owner command task. The running motor
-batch firmware does not use it. Build the portable Pico library explicitly:
+module is now used by the optional `motion_control` / `motion_service` owner
+libraries (see `buddy2_motion_service.md`). The running motor-batch firmware
+does not use it. Build the portable Pico library explicitly:
 
 ```sh
 cmake --build <configured-build-directory> --target buddy2_motion_core
@@ -66,9 +67,10 @@ no physical closed-loop stability, tracking accuracy or speed-limit validation
 is claimed. The derivative path is unfiltered; keep D disabled until its
 noise behavior has been assessed. No hardware controller settings are supplied.
 
-Next work is a command-owning RTOS adapter with stop priority and command
-timeouts, then controlled speed tuning, distance completion, turn geometry and
-Buddy 3/obstacle integration. Do not replace the line-following IR decision
+The optional RTOS adapter now provides stop priority and command timeouts;
+it still needs physical validation and controlled speed tuning, followed by
+distance completion, turn geometry and Buddy3/obstacle integration.
+Do not replace the line-following IR decision
 with this controller: Buddy 3 proposes wheel-speed/steering requests; Buddy 2
 owns feedback, output and stop handling. The exact shared API still needs team
 agreement. Track width is unknown; no angle-turn command is enabled.

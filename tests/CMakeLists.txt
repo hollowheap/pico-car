@@ -59,3 +59,10 @@ target_include_directories(test_wheel_pid PRIVATE ../src)
 target_compile_options(test_wheel_pid PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 add_test(NAME wheel_pid COMMAND test_wheel_pid)
+
+add_executable(test_motion_control test_motion_control.c ../src/motion_control.c
+    ../src/wheel_pid.c ../src/motion_sampler.c ../src/encoder_math.c)
+target_include_directories(test_motion_control PRIVATE ../src)
+target_compile_options(test_motion_control PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME motion_control_integration COMMAND test_motion_control)
