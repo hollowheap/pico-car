@@ -204,6 +204,12 @@ target_sources(mtk3smp PRIVATE
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
 # Compile the example into an executable
+add_library(buddy2_motion_core STATIC EXCLUDE_FROM_ALL
+    src/wheel_pid.c src/motion_sampler.c src/encoder_math.c)
+target_include_directories(buddy2_motion_core PUBLIC src)
+target_compile_options(buddy2_motion_core PRIVATE
+    -ffreestanding -Wall -Wextra -Werror -Wshadow)
+
 add_executable(main
     src/main.c
     src/demo_tasks.c

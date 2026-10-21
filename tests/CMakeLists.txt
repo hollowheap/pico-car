@@ -52,3 +52,10 @@ foreach(test_target IN ITEMS test_motor_pair test_motor_batch)
 endforeach()
 add_test(NAME motor_pair_planning COMMAND test_motor_pair)
 add_test(NAME motor_batch_policy COMMAND test_motor_batch)
+
+add_executable(test_wheel_pid test_wheel_pid.c ../src/wheel_pid.c
+    ../src/motion_sampler.c ../src/encoder_math.c)
+target_include_directories(test_wheel_pid PRIVATE ../src)
+target_compile_options(test_wheel_pid PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME wheel_pid COMMAND test_wheel_pid)
