@@ -105,10 +105,14 @@ values were invented for these tests.
 The updated service links into the Pico speed-check and guidance-check targets
 with application warnings as errors. The opt-in `buddy2_guidance_check` replays
 straight/left/right, overlapping holds and fresh resume through the real service.
-See [the synthetic check instructions](buddy2_guidance_check.md). These changes
-are not flashed or physically tested.
-The robot still runs completed107f5e1 PI firmware. Main, dependency pins,
-PID gains, calibration flags and other buddies' code are unchanged.
+See [the synthetic check instructions and physical result](buddy2_guidance_check.md).
+The 2ad2993 guidance firmware was flashed and completed all seven wheels-up
+stages: 105 trace rows, no drops or reported software faults, expected
+steering/hold/resume targets and owner-confirmed final stop. The robot now
+runs that completed, terminally stopped test; a reboot permits another
+intentional GP20-triggered run. Actual IR/sonar inputs remain untested.
+Main, dependency pins, PID gains, calibration flags and other buddies' code
+are unchanged.
 
 Next: Buddy3 maps its actual sensor decisions/timestamps to this API; Buddy5
 connects obstacle holds plus stale/error supervision. Check real sensor-to-

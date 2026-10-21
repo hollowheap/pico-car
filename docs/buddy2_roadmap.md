@@ -1,6 +1,6 @@
 # Buddy 2 implementation roadmap
 
-Status after the first PI bench run,22October2026. These steps separate
+Status after the synthetic guidance bench run,22October2026. These steps separate
 working hardware evidence from code that has only been built/tested in software.
 
 | Step | Planned work | Current position |
@@ -14,13 +14,16 @@ working hardware evidence from code that has only been built/tested in software.
 | 7 | PID and motor-owner service | First wheels-up PI run completed cleanly; encoder-speed means near50mm/s target. Loaded/full tuning remains. |
 | 8 | Distance commands and automatic completion | Deferred until needed; explicit segment baseline/idle diagnostics required first. |
 | 9 | Angle-based turns | Deferred until needed; measured wheel spacing required. |
-| 10 | Line/barcode and obstacle integration | Current priority: straight/steer/hold API and normal sensor holds implemented/software-tested. Real Buddy3/Buddy5 drivers/freshness and shared IRQ integration pending. |
-| 11 | Combined timing, faults and loaded accuracy | Host policy checks exist; integrated physical tests pending. |
+| 10 | Line/barcode and obstacle integration | Straight/steer/hold API implemented; synthetic seven-stage wheels-up test passed. Real Buddy3/Buddy5 drivers/freshness and shared IRQ integration pending. |
+| 11 | Combined timing, faults and loaded accuracy | All12 host groups pass; physical PI and synthetic guidance checks recorded. Loaded real-sensor tests and timing guarantees remain pending. |
 | 12 | Handoff, pushes and lead-reviewed PR | Notes/pushes kept current; PR/review/merge later. |
 
 **Current position:** first step7 trial completed. In the last second, observed
 encoder-speed means were50.443mm/s left and49.655mm/s right for50mm/s request;
 no reported software faults or invalid deltas, and owner confirmed stopping.
+The subsequent step10 synthetic guidance run also passed: all seven
+straight/steering/overlapping-hold/resume stages matched, no reported software
+faults, and owner confirmed final stop. See `buddy2_guidance_check.md`.
 **Priority update:** user confirmed normal movement is sensor-led. Continue
 with step10's decoded straight/steering decisions and independent obstacle/
 line-lost holds; see `buddy2_sensor_motion.md`. Keep initial gains and rough

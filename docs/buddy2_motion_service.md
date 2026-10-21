@@ -136,9 +136,12 @@ No 10ms control or physical-stop guarantee is claimed. Task/CPU failure,
 carrier motor-button override, motor supply quality and physical stopping
 distance remain outside these software checks.
 
-The opt-in `buddy2_speed_check` now supplies explicit experimental settings
-and a bounded wheels-up PI trial (see `buddy2_speed_check.md`). Next: run it,
-then loaded speed/distance tests. Distance completion and angle-turn APIs are
-not provided yet; turns also require measured wheel track. Buddy3 IR/barcode,
-obstacle/navigation arbitration and final packed telemetry remain integration
-work.
+The opt-in `buddy2_speed_check` supplies explicit experimental settings and
+a bounded wheels-up PI trial (see `buddy2_speed_check.md`). That trial and
+the subsequent seven-stage synthetic steering/hold/resume trial have run;
+see `buddy2_guidance_check.md` for the latter's physical result. Next: connect
+Buddy3's real decoded guidance and the obstacle task's independent holds,
+including stale/error supervision, then test loaded line following/stopping.
+See `buddy2_sensor_motion.md` for the interface. Distance completion and
+angle-turn APIs are deferred until needed; turns also require measured wheel
+track. Final packed telemetry remains integration work.

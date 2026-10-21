@@ -39,6 +39,20 @@ signed-displacement sampling with explicit provisional calibration and validity
 flags. See [motion sampling and its limits](docs/buddy2_motion_sampling.md).
 It does not drive the motors or replace the team demo.
 
+## Buddy 2 motor control and integration
+
+The optional motor service owns encoder feedback, paired PWM and wheel-speed
+PI control. Standalone wheels-up motor, speed and synthetic steering/hold
+checks have passed. Real IR/obstacle integration and loaded driving remain.
+The team `main` is not automatically switched to these diagnostics.
+
+- [Current roadmap and remaining work](docs/buddy2_roadmap.md)
+- [Sensor-to-motion API and hold rules](docs/buddy2_sensor_motion.md)
+- [Motor-owner service and fault handling](docs/buddy2_motion_service.md)
+- [First PI speed trial and limits](docs/buddy2_speed_check.md)
+- [Steering/overlapping-hold test and physical result](docs/buddy2_guidance_check.md)
+- [Verified hardware mapping and bring-up history](docs/buddy2_bringup.md)
+
 ## Table of Abbreviations
 
 | Abbreviation | Meaning                    |
