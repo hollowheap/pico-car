@@ -88,11 +88,43 @@ detection, invalid inputs, six-step order, start gating, terminal states,
 active-gap failure, timer/counter wrap and missing/reversed/invalid feedback.
 The original and batch diagnostic targets compile against the pinned team
 kernel with application warnings treated as errors. This does not establish
-electrical PWM correctness or supply capability. The pair driver and batch
-are not yet hardware verified. The earlier separately gated single-wheel
+electrical PWM correctness or supply capability. The first batch run below
+verifies basic wheel-up actuation, not loaded control. The earlier single-wheel
 PWM observations are documented in `buddy2_motor_check.md`.
 
 The measured nominal tyre diameter remains 67 mm. Track width is still
 unknown: measure across the car between the midpoints of the two drive
 tyres' widths. Angle commands require that measurement and subsequent
 physical validation; they are not enabled by this diagnostic.
+
+## Wheel-up batch observation, 22 October 2026
+
+Source `0d8619e`, USB power, 20% duty. After one GP20 start, the owner confirmed
+the sequence completed and both wheels stopped. The complete report recorded
+state DONE, no gap fault, driver/capture error zero and no GP21 stop request.
+Counts are signed raw quadrature edges (left forward is negative):
+
+| Step | Left net edges | Right net edges | Invalid L/R | Observation interval |
+| --- | ---: | ---: | --- | ---: |
+| Left forward | -453 | 0 | 0 / 0 | 319221 us |
+| Right forward | 0 | +464 | 0 / 0 | 300029 us |
+| Both forward | -425 | +472 | 0 / 0 | 300020 us |
+| Left reverse | +414 | 0 | 0 / 0 | 300024 us |
+| Right reverse | 0 | -439 | 0 / 0 | 300025 us |
+| Both reverse | +380 | -404 | 0 / 0 | 300025 us |
+
+Every pulse returned feedback code 0. Largest observed active polling gap
+was 20012 us. Different left/right counts at equal duty demonstrate why equal
+PWM is not a guarantee of equal wheel speed; causes were not isolated. Do not
+tune a PID or rescale wheel calibration from these short startup pulses.
+There was no independent per-phase physical direction confirmation, but
+encoder signs matched the earlier independently observed motor directions.
+This run did not test GP21 during simultaneous drive, loaded travel, worst-case
+response time or physical stopping distance. The earlier single-wheel GP21
+test remains separate evidence. The terminal state latched the software
+output off; startup/restart/feedback-fault policy tests also run on the host.
+
+Raw evidence: `motor-batch-check/physical-batch-20261021T173550Z.log` and
+`latest-complete-report.txt` in the owner's Codex artifact folder. START
+acknowledgement and the entire report were captured continuously; the reader
+closed normally after the final report.
