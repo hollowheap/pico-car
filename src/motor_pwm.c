@@ -4,6 +4,7 @@
 #include "motor_pwm.h"
 #include <bsp/libbsp.h>
 #include "buddy2_pins.h"
+#include "motor_pair.h"
 
 #if TMCLK_MHz != 125
 #error "Revalidate motor PWM frequency after changing the system clock"
@@ -13,7 +14,7 @@
 #error "Revalidate reserved PWM slices after changing the motor pins"
 #endif
 
-#define MOTOR_PWM_PERIOD 12500U
+#define MOTOR_PWM_PERIOD MOTOR_PAIR_PERIOD
 #define MOTOR_PWM_MASK ((1U << 4U) | (1U << 5U))
 #define MOTOR_SLICE_BASE(slice) (PWM_BASE + ((slice) * 0x14U))
 
@@ -24,6 +25,8 @@ static const UINT motor_pins[2][2] = {
 static ID owner;
 static bool active;
 static bool stopped;
+static bool pair_active;
+static int16_t previous_duty[2];
 
 void motor_pwm_boot_brake (void)
 {
@@ -98,6 +101,9 @@ ER motor_pwm_init (void)
     owner = tk_get_tid();
     active = false;
     stopped = false;
+    pair_active = false;
+    previous_duty[0] = 0;
+    previous_duty[1] = 0;
     return E_OK;
 }
 
@@ -121,6 +127,82 @@ ER motor_pwm_brake (void)
         out_w(base + PWM_CHx_CTR, 0U);
     }
     active = false;
+    pair_active = false;
+    previous_duty[0] = 0;
+    previous_duty[1] = 0;
+    return E_OK;
+}
+
+ER motor_pwm_set_pair (int16_t left, int16_t right)
+{
+    motor_pair_plan_t plan;
+    unsigned int wheel;
+    unsigned int channel;
+    ER result = owner_context();
+
+    if (result != E_OK)
+    {
+        return result;
+    }
+    if (stopped)
+    {
+        return E_OBJ;
+    }
+    if (!motor_pair_plan(previous_duty, left, right, &plan))
+    {
+        return E_PAR;
+    }
+    if ((left == 0) && (right == 0))
+    {
+        return motor_pwm_brake();
+    }
+    if (active && !pair_active)
+    {
+        return E_BUSY;
+    }
+    if (plan.reversal)
+    {
+        (void)motor_pwm_brake();
+        return E_BUSY;
+    }
+    for (wheel = 0U; wheel < 2U; wheel++)
+    {
+        uint32_t base = MOTOR_SLICE_BASE(wheel + 4U);
+
+        if (plan.duty[wheel] == 0)
+        {
+            /* Force a zero-command wheel low before its buffered CC update. */
+            for (channel = 0U; channel < 2U; channel++)
+            {
+                (void)gpio_set_val(motor_pins[wheel][channel], 0U);
+                (void)gpio_set_pin(motor_pins[wheel][channel], GPIO_MODE_OUT);
+            }
+        }
+        if ((plan.duty[wheel] == 0) || (previous_duty[wheel] == 0))
+        {
+            /* A newly started slice is configured while disabled; a stopped
+             * wheel cannot retain a buffered compare from its last drive. */
+            out_w(base + PWM_CHx_CSR, 0U);
+            out_w(base + PWM_CHx_CTR, 0U);
+        }
+        out_w(base + PWM_CHx_CC, plan.compare[wheel]);
+    }
+    for (wheel = 0U; wheel < 2U; wheel++)
+    {
+        if (plan.duty[wheel] != 0)
+        {
+            for (channel = 0U; channel < 2U; channel++)
+            {
+                (void)pwm_set_pin(motor_pins[wheel][channel]);
+            }
+        }
+        previous_duty[wheel] = plan.duty[wheel];
+    }
+    /* RP2040 atomic SET alias: preserve other buddies' PWM slice enables. */
+    out_w(PWM_EN + 0x2000U,
+          (left != 0 ? 1U << 4U : 0U) | (right != 0 ? 1U << 5U : 0U));
+    pair_active = true;
+    active = true;
     return E_OK;
 }
 

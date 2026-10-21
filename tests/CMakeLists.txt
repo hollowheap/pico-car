@@ -41,3 +41,14 @@ target_include_directories(test_motion_sampler PRIVATE ../src)
 target_compile_options(test_motion_sampler PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME motion_sampler COMMAND test_motion_sampler)
+
+add_executable(test_motor_pair test_motor_pair.c ../src/motor_pair.c)
+add_executable(test_motor_batch test_motor_batch.c
+    ../src/motor_batch.c ../src/motor_pulse.c)
+foreach(test_target IN ITEMS test_motor_pair test_motor_batch)
+    target_include_directories(${test_target} PRIVATE ../src)
+    target_compile_options(${test_target} PRIVATE
+        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+endforeach()
+add_test(NAME motor_pair_planning COMMAND test_motor_pair)
+add_test(NAME motor_batch_policy COMMAND test_motor_batch)

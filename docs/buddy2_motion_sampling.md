@@ -16,8 +16,9 @@ The optional `buddy2_motion_check` firmware uses these provisional values:
 
 These are rounded means of hand-turn estimates: left 2542.8 and 2539.2;
 right 2539.2 and 2520.8. Nominal travel is pi times the owner's 67 mm tyre
-diameter, rounded to whole micrometres. Loaded rolling travel has not been
-measured. Both `scale_verified` flags remain false. Earlier left trials
+diameter, rounded to whole micrometres. Two preliminary loaded 500 mm manual
+rolling observations are recorded below; they do not establish accepted
+calibration. Both `scale_verified` flags remain false. Earlier left trials
 registered some right-wheel counts, whose cause is unresolved. The latest
 left report had a truncated header, although all six beginning/ending
 counters and the printed deltas matched. These measurements do not establish
