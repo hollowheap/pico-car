@@ -76,6 +76,9 @@ software: do not press them during this test.
 
 1. Support both wheels clear of the table. Align the selected wheel mark.
 2. Hold the GP20 user button for one second, release, then wait one second.
+   Confirm the host received `START accepted` before moving. That message is
+   emitted before the baseline, followed by silence while recording. A failed
+   start or continued idle messages needs investigation before rolling.
 3. Turn one wheel slowly; the task samples without serial printing. For a
    five-turn comparison, count five full returns to the mark from zero.
 4. Leave both wheels still. Hold GP21 for one second and release.

@@ -38,6 +38,12 @@ by printing, or remove other kernel/USB interrupt latency.
    The output becomes silent: firmware has saved the baseline and started
    the interval. Do not reposition the wheel after pressing GP20. Counts
    accumulated before the baseline, including mark alignment, are excluded.
+   Newer builds print `START accepted` before taking that baseline. The host
+   should see that acknowledgement and then silence before giving a turn cue.
+   `START failed` means no trial began; do not turn. Periodic idle status reports
+   the raw button values (0 pressed, 1 released), largest observed idle-loop
+   gap and USB dropped-byte count. Idle output is diagnostic, not measured
+   encoder data, and its gap is not a worst-case scheduling guarantee.
 3. Rotate only the left wheel slowly through exactly five complete turns in
    one direction, ending with the same mark at the same reference. Count
    each return to the mark; avoid back-and-forth rocking.

@@ -201,6 +201,8 @@ static void calibration_loop (void)
     encoder_capture_sample_t baseline;
     encoder_capture_sample_t ending;
     uint32_t last_report = in_w(CALIBRATION_TIMER_LOW);
+    uint32_t last_loop = last_report;
+    uint32_t max_idle_gap = 0U;
     uint32_t trial = 0U;
     bool recording = false;
     bool have_result = false;
@@ -222,6 +224,12 @@ static void calibration_loop (void)
         bool start = calibration_press(&start_button,
             gpio_get_val(CALIBRATION_START_PIN) == 0U, now);
         bool finish = calibration_press(&finish_button, finish_pressed, now);
+
+        if (!recording && ((uint32_t)(now - last_loop) > max_idle_gap))
+        {
+            max_idle_gap = now - last_loop;
+        }
+        last_loop = now;
 
         if (recording)
         {
@@ -251,6 +259,10 @@ static void calibration_loop (void)
         }
         else if (start && !finish_pressed)
         {
+            /* Acknowledge before taking the baseline: this print cannot
+             * mask encoder IRQs inside the measured interval. */
+            tm_printf((UB *)"START accepted: trial=%u; taking baseline; "
+                            "then quiet until GP21\n", trial + 1U);
             if (encoder_capture_read(&baseline) == E_OK)
             {
 #ifdef BUDDY2_MOTION_MEASUREMENT
@@ -259,6 +271,10 @@ static void calibration_loop (void)
                 recording = true;
                 have_result = false;
                 trial++;
+            }
+            else
+            {
+                tm_printf((UB *)"START failed: no baseline; keep wheels still\n");
             }
         }
         /* tm_printf masks local interrupts in the pinned kernel. Never call
@@ -290,6 +306,10 @@ static void calibration_loop (void)
             }
             tm_printf((UB *)"READY: GP20 start; GP21 finish; "
                             "silent while recording; motors COAST\n");
+            tm_printf((UB *)"IDLE t=%u max_loop_gap_us=%u gp20=%u gp21=%u "
+                            "usb_dropped=%u\n", in_w(CALIBRATION_TIMER_LOW),
+                max_idle_gap, gpio_get_val(CALIBRATION_START_PIN),
+                gpio_get_val(CALIBRATION_FINISH_PIN), tm_usb_dropped_bytes());
             last_report = in_w(CALIBRATION_TIMER_LOW);
         }
         (void)tk_dly_tsk(1);
