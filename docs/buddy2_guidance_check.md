@@ -52,3 +52,27 @@ clock wrap, deadline and no automatic restart. Existing tests separately
 exercise emergency priority, stale requests and producer-gap termination.
 Passing those tests is software evidence; hardware results must be recorded
 separately after the actual run.
+
+## First wheels-up result, 22 October 2026
+
+Firmware source `2ad2993`, UF2 SHA256
+`C1B3139EEA6547C67A8FBC2CE0D6C5741823AFC047A61502A654E34E5050FC15`.
+One GP20 start completed all seven stages. The owner confirmed both wheels
+stopped. The complete capture contained 105 rows, no dropped rows and no
+reported init/API/controller/producer-gap/brake failures; final state was
+terminal STOPPED. All recorded speeds had valid interval flags, recorded
+invalid-transition deltas were zero, and requested duties stayed within cap.
+
+Using 50 ms margins around each stage transition, all seven stages had
+matching owner-reported targets/hold masks. Both requested duties were zero
+through the established obstacle, overlapping and line-only holds. Clearing
+obstacle alone retained the brake; fresh straight guidance resumed after the
+final release. Observed mean encoder speeds during left/right stages were
+30.08/46.19 and 43.61/31.07 mm/s respectively, consistent with slowing the
+inside wheel. These short transitions are not settled-speed acceptance tests.
+
+Largest observed owner interval was 20.177 ms and request-to-observed-stop
+acknowledgement was 19.949 ms. Neither is a guaranteed deadline or physical
+stop latency. Scale verification and distance-history quality remain false;
+this result does not close the separate odometry issue. Real sensor mapping,
+sensor supervision and loaded line following remain to be integrated.
