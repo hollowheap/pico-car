@@ -16,21 +16,55 @@ this application. The kernel's existing USB and radio services still start.
 | --- | --- |
 | Left motor A / B | 8 / 9 |
 | Right motor A / B | 10 / 11 |
-| Left encoder A / B | 4 / 5 |
-| Right encoder A / B | 16 / 17 |
+| Left encoder A / B | 16 / 17 |
+| Right encoder A / B | 4 / 5 |
 
-These are the submitted Week 6 pins, confirmed by the owner as the assembled
-wiring. That confirmation does not measure signal voltage or prove encoder type.
-The owner identifies the installed motors as Yahboom six-pin encoder motors
-and confirms encoder VCC is wired to 3.3 V; the exact motor model and signal
-levels have not been measured. M1's physical test button was confirmed to
-spin the left wheel. The initial capture log still showed zero encoder counts
-during that test, so capture is not yet verified. Live-input diagnostics were
-added to distinguish the input path from interrupt servicing.
+The motor pins match the submitted Week 6 table. The encoder left/right labels
+above instead follow isolated physical-wheel tests on 21 October 2026: M1
+rotates the left wheel and produces encoder activity only on GP16/17; M2
+rotates the right wheel and produces activity only on GP4/5. The submitted
+table assigned those encoder pairs to the opposite wheels. Reconcile that
+documentation with the tested car before team integration; the harness has
+not been rearranged to match the old labels.
+
+The owner identifies the installed motors as Yahboom TT six-pin motors,
+SKU RM-YAHB-064. After initial zero-count tests, the owner found reversed
+encoder VCC/GND connections, corrected them and reported changing raw inputs.
+Encoder VCC is now reported connected to 3.3 V; voltage has not been measured.
+The capture diagnostic then counted real motor-driven rotation in both
+directions on both wheels. This establishes feedback activity and wheel-pair
+mapping, not calibrated distance, speed or loss-free capture.
 Use this target for two-channel quadrature encoders with signals suitable for
 3.3 V GPIO, not a single-channel HC020K connected as if it supplied A and B.
 Inputs use no internal pull resistors. An open-collector encoder may need
 external pull-ups to 3.3 V; establish its output type before changing pulls.
+
+### Isolated carrier-button results
+
+Each row is the counter delta between stable readings before and after a
+single button press. The owner confirmed the physical wheel and direction
+reversal. Button hold times were approximate, not measured timing evidence.
+
+| Button | Physical wheel | Encoder GPIO pair | Positive delta | Negative delta | Invalid delta |
+| --- | --- | --- | --- | --- | --- |
+| M1A | Left | 16 / 17 | 0 | 16732 | 4 |
+| M1B | Left, opposite to M1A | 16 / 17 | 9566 | 0 | 2 |
+| M2A | Right | 4 / 5 | 10416 | 0 | 3 |
+| M2B | Right, opposite to M2A | 4 / 5 | 0 | 10434 | 3 |
+
+The other wheel's positive, negative and invalid counters stayed unchanged
+in every isolated test. Logs are `encoder-isolated-baseline.log` and
+`encoder-isolated-m1a.log` through `encoder-isolated-m2b.log` in the owner's
+Codex artifact folder. Those logs were captured before the mapping correction:
+their printed `L` means GP4/5 and printed `R` means GP16/17, so interpret the
+historic labels using the physical GPIO pairs in this table.
+
+The positive/negative signs describe phase order, not established car-forward
+direction. Invalid transitions occurred in every powered test. Their cause
+and the total number of missed edges remain unknown; precise distance/speed
+and full-speed capture are not accepted on the basis of these tests. Next,
+compare slow known-turn counts and investigate ambiguous capture before using
+the counters for closed-loop motion.
 
 ## Build
 
@@ -68,12 +102,14 @@ path. It bypasses the external electrical signal and physical edge detector,
 so PASS does not validate the encoder, wiring, calibration or maximum rate.
 Host arithmetic/decoder tests and successful compilation are separate evidence.
 
-The owner requested a four-button repeat test on the real inputs before this
+Before the encoder power correction, the owner requested a four-button repeat
+test on the real inputs before this
 self-test was added. The 90-second serial recording contained 220 complete
 samples, all with live pairs 11/11, zero cumulative polled changes/decoded
 edges/invalid transitions, pending mask 0 and enable mask 3. That observation
-does not establish the cause. The reviewed wiring remains the baseline while
-the input and interrupt software path is checked independently.
+was recorded before the owner identified reversed encoder VCC/GND. It is
+historical diagnostic evidence, not the current feedback status; see the
+post-correction isolated results above.
 
 ## First board test
 

@@ -47,7 +47,9 @@ static void check_task (INT start_code, void * p_extra)
     }
     (void)tk_dly_tsk(500);
     tm_printf((UB *)"\nBuddy 2 encoder check; motor drive DISABLED\n");
-    tm_printf((UB *)"L=A4/B5 R=A16/B17; x4 quadrature, no pulls\n");
+    tm_printf((UB *)"L=A%u/B%u R=A%u/B%u; x4 quadrature, no pulls\n",
+              BUDDY2_ENCODER_LEFT_A, BUDDY2_ENCODER_LEFT_B,
+              BUDDY2_ENCODER_RIGHT_A, BUDDY2_ENCODER_RIGHT_B);
     tm_printf((UB *)"Turn ONE wheel by hand; +/- are signal directions.\n");
     tm_printf((UB *)"Counter values are not calibrated mm or speed.\n");
     tm_printf((UB *)"live/poll changes diagnose pins, not encoder distance.\n");
