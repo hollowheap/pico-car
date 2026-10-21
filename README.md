@@ -29,6 +29,11 @@ wrapping-counter difference. It does not configure hardware or replace the
 current RTOS demo. See [encoder calibration and tests](docs/encoder_math.md)
 for units, numerical limits, remaining integration work and host-test commands.
 
+The opt-in `buddy2_encoder_check` target reads quadrature encoders on GP4/5
+and GP16/17 while holding the motor inputs low. See the
+[bring-up steps and remaining motion work](docs/buddy2_bringup.md) before using
+it on hardware. It is separate from `main.uf2` and does not drive the car.
+
 ## Table of Abbreviations
 
 | Abbreviation | Meaning                    |

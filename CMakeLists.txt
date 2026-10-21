@@ -209,12 +209,22 @@ add_executable(main
     src/demo_tasks.c
     src/encoder_math.c
 )
+
+# Opt-in hardware diagnostic. This has its own usermain(), holds the motor
+# bridges low and never starts the demo or autonomous movement.
+add_executable(buddy2_encoder_check EXCLUDE_FROM_ALL
+    src/buddy2_encoder_check.c
+    src/encoder_capture.c
+    src/encoder_quad.c
+)
+
+foreach(app_target IN ITEMS main buddy2_encoder_check)
 # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
-target_link_libraries(main PRIVATE mtk3smp)
+target_link_libraries(${app_target} PRIVATE mtk3smp)
 # The kernel supplies its own startup code (vector table, boot stage 2, reset
 # handler) and linker script; the SDK C runtime must not be linked in.
-target_compile_options(main PRIVATE -ffreestanding -ffunction-sections -fdata-sections)
-target_link_options(main PRIVATE
+target_compile_options(${app_target} PRIVATE -ffreestanding -ffunction-sections -fdata-sections)
+target_link_options(${app_target} PRIVATE
     -nostartfiles
     -Wl,--gc-sections
     # The second-stage bootloader is an unreferenced data symbol in the kernel
@@ -224,9 +234,9 @@ target_link_options(main PRIVATE
     -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
 )
 # Create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(main)
+pico_add_extra_outputs(${app_target})
 # Extra compiler flags
-target_compile_options(main PRIVATE
+target_compile_options(${app_target} PRIVATE
     -Werror
     -Wall
     -Wextra
@@ -238,3 +248,4 @@ target_compile_options(main PRIVATE
     -Wshadow
     -Wvla
 )
+endforeach()
