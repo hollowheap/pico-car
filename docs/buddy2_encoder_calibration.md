@@ -20,25 +20,41 @@ does not continue the measurement task.
 
 Support both wheels clear of the table. Do not press the carrier's M1/M2
 motor-test buttons during this calibration; they bypass firmware control.
-GP20 and GP21 have no calibration action in this target.
+The GP20 user button starts a measurement and GP21 finishes it. Neither
+button commands motor movement in this target. Both require a release
+before a debounced press is accepted; held GP20 does not restart a trial.
+
+The pinned kernel's `tm_printf` masks local interrupts while formatting and
+emitting output. Earlier live-print trials recorded invalid transitions,
+so this variant prints only before or after a measurement. This isolates
+one plausible source of capture loss; it does not prove the loss was caused
+by printing, or remove other kernel/USB interrupt latency.
 
 ## Procedure
 
 1. Put a visible mark on the left tyre and choose a fixed reference on the
    chassis. Align them while leaving the right wheel still.
-2. Stop touching the wheels. Record a stable serial baseline after alignment.
-   Counts accumulated while aligning are excluded by this baseline.
+2. Stop touching the wheels. Press and release GP20, then wait one second.
+   The output becomes silent: firmware has saved the baseline and started
+   the interval. Do not reposition the wheel after pressing GP20. Counts
+   accumulated before the baseline, including mark alignment, are excluded.
 3. Rotate only the left wheel slowly through exactly five complete turns in
    one direction, ending with the same mark at the same reference. Count
    each return to the mark; avoid back-and-forth rocking.
-4. Leave the wheel still. Record stable end counters. There is no timed
-   recording window: firmware counters accumulate while USB stays powered.
-5. Compute positive, negative and invalid deltas. Check the other wheel's
-   deltas too. Repeat the trial, then do the same for the right wheel.
+4. Leave both wheels still. Press and release GP21. Firmware freezes the
+   ending snapshot before printing. There is no automatic time limit; keep
+   USB connected. If interrupted or unsure of the turns, discard the trial.
+5. Read the repeated `TRIAL ... COMPLETE`, `BEGIN`, `END`, `LEFT delta`
+   and `RIGHT delta` lines. These are frozen results, not live counters.
+   Starting another trial with GP20 replaces the previous result. Compute
+   positive, negative and invalid deltas; check the other wheel too. Repeat
+   the trial, then do the same for the right wheel.
 
 For each five-turn trial, net counted edges are the absolute difference
 between positive and negative deltas. Divide net edges by five to obtain a
-candidate x4 count per wheel revolution. Do not use the task's `poll` field.
+candidate x4 count per wheel revolution. This target does not count how many
+physical revolutions were made; the owner must count them. The separate
+live-pin diagnostic's `poll` field is not an encoder distance measurement.
 
 Any invalid/ambiguous delta means the trial does not establish an accurate
 edge count. Unexpected movement in the other channel, unstable end counts,
