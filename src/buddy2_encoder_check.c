@@ -30,6 +30,10 @@ static void check_task (INT start_code, void * p_extra)
     encoder_capture_sample_t sample;
     ER result;
     unsigned int i;
+    uint32_t last_report;
+    uint32_t pin_changes[ENCODER_WHEELS] = {0U, 0U};
+    uint8_t previous_pins;
+    uint8_t pending_seen = 0U;
 
     (void)start_code;
     (void)p_extra;
@@ -43,29 +47,53 @@ static void check_task (INT start_code, void * p_extra)
     tm_printf((UB *)"L=A4/B5 R=A16/B17; x4 quadrature, no pulls\n");
     tm_printf((UB *)"Turn ONE wheel by hand; +/- are signal directions.\n");
     tm_printf((UB *)"Counter values are not calibrated mm or speed.\n");
+    tm_printf((UB *)"live/poll changes diagnose pins, not encoder distance.\n");
     if (result != E_OK)
     {
         tm_printf((UB *)"Capture init failed: %d; motors remain braked\n",
                   result);
         (void)tk_slp_tsk(TMO_FEVR);
     }
+    (void)encoder_capture_read(&sample);
+    previous_pins = sample.pins_and_irq & 15U;
+    last_report = sample.timestamp_us;
     for (;;)
     {
         result = encoder_capture_read(&sample);
         if (result == E_OK)
         {
-            tm_printf((UB *)"t=%u L_ab=%u +=%u -=%u bad=%u "
-                            "R_ab=%u +=%u -=%u bad=%u\n",
-                sample.timestamp_us, sample.quad.states & 3U,
-                sample.quad.wheel[0].positive,
-                sample.quad.wheel[0].negative,
-                sample.quad.wheel[0].invalid,
-                (sample.quad.states >> 2U) & 3U,
-                sample.quad.wheel[1].positive,
-                sample.quad.wheel[1].negative,
-                sample.quad.wheel[1].invalid);
+            uint8_t changed = (previous_pins ^ sample.pins_and_irq) & 15U;
+            if ((changed & 3U) != 0U)
+            {
+                pin_changes[0]++;
+            }
+            if ((changed & 12U) != 0U)
+            {
+                pin_changes[1]++;
+            }
+            previous_pins = sample.pins_and_irq & 15U;
+            pending_seen |= sample.pins_and_irq & 48U;
+            if ((uint32_t)(sample.timestamp_us - last_report) >= 500000U)
+            {
+                tm_printf((UB *)"t=%u L_ab=%u live=%u poll=%u +=%u -=%u "
+                                "bad=%u R_ab=%u live=%u poll=%u +=%u -=%u "
+                                "bad=%u pend=%u en=%u\n",
+                    sample.timestamp_us, sample.captured_states & 3U,
+                    sample.pins_and_irq & 3U, pin_changes[0],
+                    sample.wheel[0].positive, sample.wheel[0].negative,
+                    sample.wheel[0].invalid,
+                    (sample.captured_states >> 2U) & 3U,
+                    (sample.pins_and_irq >> 2U) & 3U, pin_changes[1],
+                    sample.wheel[1].positive, sample.wheel[1].negative,
+                    sample.wheel[1].invalid, pending_seen >> 4U,
+                    sample.pins_and_irq >> 6U);
+                last_report = sample.timestamp_us;
+                pending_seen = 0U;
+            }
         }
-        (void)tk_dly_tsk(500);
+        /* Diagnostic polling only. Requested delay is not a proven sampling
+         * period; kernel tick resolution and scheduling still apply. */
+        (void)tk_dly_tsk(1);
     }
 }
 

@@ -21,6 +21,12 @@ this application. The kernel's existing USB and radio services still start.
 
 These are the submitted Week 6 pins, confirmed by the owner as the assembled
 wiring. That confirmation does not measure signal voltage or prove encoder type.
+The owner identifies the installed motors as Yahboom six-pin encoder motors
+and confirms encoder VCC is wired to 3.3 V; the exact motor model and signal
+levels have not been measured. M1's physical test button was confirmed to
+spin the left wheel. The initial capture log still showed zero encoder counts
+during that test, so capture is not yet verified. Live-input diagnostics were
+added to distinguish the input path from interrupt servicing.
 Use this target for two-channel quadrature encoders with signals suitable for
 3.3 V GPIO, not a single-channel HC020K connected as if it supplied A and B.
 Inputs use no internal pull resistors. An open-collector encoder may need
@@ -66,7 +72,7 @@ when using a personal build helper. Compilation is not hardware verification.
 Example log format (values are not expected calibration numbers):
 
 ```text
-t=<microseconds> L_ab=<0..3> +=<count> -=<count> bad=<count> R_ab=...
+t=<microseconds> L_ab=<0..3> live=<0..3> poll=<count> +=<count> -=<count> bad=<count> R_ab=... pend=<mask> en=<mask>
 ```
 
 `+` and `-` describe A/B phase order, not calibrated car-forward or reverse.
@@ -75,6 +81,18 @@ revolution must be measured in this same mode. `bad` counts ambiguous capture
 observations, not the exact number of missed physical edges. If a channel is
 disconnected, a one-bit signal can bounce between positive and negative steps
 without raising `bad`; zero bad counts alone cannot validate quadrature.
+
+`L_ab` / `R_ab` are the last ISR-decoded states. `live` reads the actual GPIO
+input at snapshot time. `poll` counts task-observed A/B state changes, with a
+requested 1 ms task delay; actual sampling depends on kernel timing. It can
+miss transitions and must not be used as odometry or a rate reference. `pend`
+latches pending left/right edge observations during each reporting interval;
+`en` reports GPIO edge enables AND the calling core's NVIC enable. Both masks
+use bit 0 for left and bit 1 for right. `en=3` is expected in this diagnostic,
+whose reader is pinned to core 0. Live changes without ISR counts require
+interrupt-path investigation; no live changes during confirmed rotation require
+checking signal wiring/power and GPIO configuration. Neither observation alone
+proves the encoder module is defective.
 
 ## Capture design and limits
 
@@ -101,7 +119,7 @@ noise and scheduling performance need tests on the car. Consider PIO capture
 if measured edge rates/interrupt masking make GPIO capture inadequate.
 
 No-edge observations are not proof of physical rest or a healthy encoder.
-The log runs every 500 ms; this is a diagnostic output rate, not the proposed
+The log runs approximately every 500 ms; this is a diagnostic output rate, not the proposed
 10 ms motion-control loop. The diagnostic does not implement a stall detector,
 watchdog, physical-stop acknowledgement or an autonomous safety guarantee.
 
@@ -111,6 +129,7 @@ watchdog, physical-stop acknowledgement or an autonomous safety guarantee.
 | --- | --- | --- |
 | One encoder A/B sample | 0..3 / 2 | Explicit masks and shifts |
 | Both wheel A/B samples | 0..15 / 4 | One byte, upper four bits zero |
+| Live states + pending and enable masks | 4 + 2 + 2 = 8 bits | Explicit shifts in one diagnostic byte |
 | Positive, negative and invalid counters per wheel | 0..2^32-1 / 32 | Provisional modulo diagnostic counters |
 | Snapshot timestamp in microseconds | 0..2^32-1 / 32 | Matches low hardware timer; wraps in about 71.6 min |
 | Speed/distance calculation result | 0..2^32-1 / 32 | Checked arithmetic API, not final shared message |

@@ -151,6 +151,9 @@ ER encoder_capture_init (void)
 ER encoder_capture_read (encoder_capture_sample_t * p_sample)
 {
     UINT saved;
+    unsigned int wheel;
+    uint32_t gpio;
+    uint8_t metadata;
 
     if (p_sample == NULL)
     {
@@ -162,7 +165,27 @@ ER encoder_capture_read (encoder_capture_sample_t * p_sample)
         return E_OBJ;
     }
     (void)ISpinLock(&capture_lock, &saved);
-    p_sample->quad = captured;
+    gpio = in_w(GPIO_IN);
+    metadata = (uint8_t)(pin_state(gpio, 0U) |
+                         (pin_state(gpio, 1U) << 2U));
+    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        unsigned int bank = encoder_pins[wheel][0] / 8U;
+        uint32_t mask = edge_mask(encoder_pins[wheel][0]) |
+                        edge_mask(encoder_pins[wheel][1]);
+        p_sample->wheel[wheel] = captured.wheel[wheel];
+        if ((in_w(CORE0_INTS + (bank * 4U)) & mask) != 0U)
+        {
+            metadata |= (uint8_t)(1U << (4U + wheel));
+        }
+        if (((in_w(CORE0_INTE + (bank * 4U)) & mask) == mask) &&
+            ((in_w(NVIC_ISER(ENCODER_IRQ)) & (1U << ENCODER_IRQ)) != 0U))
+        {
+            metadata |= (uint8_t)(1U << (6U + wheel));
+        }
+    }
+    p_sample->captured_states = captured.states;
+    p_sample->pins_and_irq = metadata;
     p_sample->timestamp_us = in_w(TIMER_RAW_LOW);
     (void)ISpinUnlock(&capture_lock, saved);
     return E_OK;

@@ -10,7 +10,11 @@
 typedef struct
 {
     uint32_t timestamp_us;
-    encoder_quad_t quad;
+    encoder_quad_counts_t wheel[ENCODER_WHEELS];
+    uint8_t captured_states;
+    /* Bits 0..3: live A/B states; 4/5: pending L/R edge IRQ;
+     * 6/7: L/R edge enables AND this core's NVIC enable. */
+    uint8_t pins_and_irq;
 } encoder_capture_sample_t;
 
 /* Call once from a task pinned to TP_PRC1, before enabling other GPIO IRQs.
