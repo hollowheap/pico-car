@@ -3,7 +3,8 @@
 `buddy2_speed_check` is an opt-in, single-start wheels-up experiment. It links
 the real motor-owner service into a standalone firmware target; team `main`
 is unchanged. It exercises a producer on core1 requesting speeds from the
-core0 owner. It is not yet physically validated or a tuned driving program.
+core0 owner. First wheels-up observations are recorded below; it is not a
+tuned/validated loaded-driving program.
 
 ```sh
 cmake --build <configured-build-directory> --target buddy2_speed_check
@@ -89,3 +90,49 @@ software build/policy, not physical PI tracking or cross-core runtime.
 Before loading, obtain a fresh wheels-lifted/BOOTSEL confirmation. After the
 first trace, preserve its settings and raw evidence, then decide the next
 change from the measured response. Do not repeatedly flash arbitrary gains.
+
+## First physical PI trial,22October2026
+
+Source107f5e1, USB supply, both wheels lifted. Owner pressed GP20 once and
+confirmed both wheels moved and stopped. The continuous reader captured the
+start acknowledgment and one complete96-row trace, with0 buffer drops or
+incomplete reports; it then closed normally. The run reached STOPPED with
+fault/init/API/gap/brake-error fields0 and no interruption.
+
+Last-second statistics below are means/ranges of33 observed interval-speed
+rows per wheel, not independently measured physical speed or full-path travel:
+
+| Measurement | Left | Right |
+| --- | ---: | ---: |
+| Requested speed | 50mm/s | 50mm/s |
+| Observed last-second mean | 50.443mm/s | 49.655mm/s |
+| Observed last-second range | 45.539..53.846mm/s | 45.739..54.072mm/s |
+| Mean requested duty in that window | 9.161% | 7.685% |
+| Samples at20% cap in that window | 0 | 0 |
+| First observed nonzero speed after command start | 189837us | 29838us |
+
+Every observed speed-valid flag was true and every recorded invalid delta
+was0. The gains remain unchanged: this first response supports continuing
+with the initial PI values for the next bench stage, not claiming completed
+tuning, ground-speed accuracy or loaded straightness. Sampling/trace
+decimation can omit intermediate extrema. Largest observed owner interval
+was20021us, producer gap20015us and sample age9991us. Stop request to observed
+terminal status was19970us; that is not physical-stop or GP21 latency.
+
+**Distance-quality issue remains open:** all observed rows had both odometry
+valid flags false, including the first row, while speed remained valid. The
+sampler latches distance quality bad after an invalid capture interval or an
+excessive interval and restores it only with an explicit new baseline. Since
+active feedback failure would have faulted this controller, the retained bad
+history predates the active speed trial. The exact idle/startup event was not
+logged, so its cause is not established. This is separate from provisional
+scale flags, which are also false. Do not use this trace to approve automatic
+distance travel. The next distance stage needs an explicit braked segment
+baseline and retained diagnostics for any earlier idle loss; it must never
+clear an active-motion fault or silently invent missing travel.
+
+Evidence in the owner's Codex artifact folder: `speed-check/analysis.json`,
+`trace.csv`, `latest-complete-report.txt` and
+`physical-speed-20261021T182009Z.log`. The first recorded sample was at44549686us
+after command start44539853us; final sample47529706us.96 retained rows are
+intentional observer decimation, not a record of every control iteration.

@@ -122,10 +122,13 @@ reversal dwell (including through zero), driver retry/failure, overspeed brake,
 clock rollover and preserved integral state across steering changes.
 
 The kernel adapter and dependencies compile for Pico with application warnings
-treated as errors. Its cross-core scheduling, stack usage, lock timing and
-physical closed-loop behavior have not run on the board yet. The latest
-physical evidence remains the separate six-pulse wheel-up batch; it is not a
-service/PID test. This change is not flashed and is not enabled in team main.
+treated as errors. A first3second wheels-up service/PI trial from107f5e1 now
+ran without reported software faults; observed last-second encoder-speed
+means were50.443/49.655mm/s for a50mm/s request. See `buddy2_speed_check.md` for
+the full settings, limits and open pre-run odometry-quality issue. This does
+not characterise worst-case cross-core scheduling, stack margin, lock timing,
+loaded stability or physical distance accuracy. The standalone speed-check
+was flashed; this service is still not enabled in team main.
 No 10ms control or physical-stop guarantee is claimed. Task/CPU failure,
 carrier motor-button override, motor supply quality and physical stopping
 distance remain outside these software checks.
