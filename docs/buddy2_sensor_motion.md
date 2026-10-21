@@ -95,15 +95,18 @@ are not instantaneous asynchronous hardware cutoffs.
 
 ## Checks and remaining work
 
-All11 host CTest groups pass. Tests cover equal straight targets, left/right
+All12 host CTest groups pass. Tests cover equal straight targets, left/right
 mapping, bad ranges/expiry/wrap, unchanged source leases, latest replacement,
 all combinations of hold reasons, set/clear between polls, old-frame
 rejection, brake-before-resume, long-uptime freshness barriers, emergency
 precedence and guidance through inbox/sampler/PIDs/fake PWM. No real IR sensor
 values were invented for these tests.
 
-The updated service links into the Pico speed-check target with application
-warnings as errors. These changes are not flashed or physically tested.
+The updated service links into the Pico speed-check and guidance-check targets
+with application warnings as errors. The opt-in `buddy2_guidance_check` replays
+straight/left/right, overlapping holds and fresh resume through the real service.
+See [the synthetic check instructions](buddy2_guidance_check.md). These changes
+are not flashed or physically tested.
 The robot still runs completed107f5e1 PI firmware. Main, dependency pins,
 PID gains, calibration flags and other buddies' code are unchanged.
 

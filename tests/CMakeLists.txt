@@ -82,3 +82,12 @@ target_include_directories(test_motion_guidance PRIVATE ../src)
 target_compile_options(test_motion_guidance PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 add_test(NAME motion_guidance_policy COMMAND test_motion_guidance)
+
+add_executable(test_guidance_replay test_guidance_replay.c
+    ../src/guidance_replay.c ../src/speed_probe.c ../src/motor_pulse.c
+    ../src/motion_request.c ../src/motion_inbox.c ../src/motion_control.c
+    ../src/wheel_pid.c ../src/motion_sampler.c ../src/encoder_math.c)
+target_include_directories(test_guidance_replay PRIVATE ../src)
+target_compile_options(test_guidance_replay PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME guidance_replay_integration COMMAND test_guidance_replay)
