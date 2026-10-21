@@ -33,8 +33,11 @@ stop latch.
 Read the reported encoder deltas after each pulse, and record which physical
 wheel moved and whether its rotation would propel the car forward or backward.
 M1 refers to the left motor, M2 to the right. A/B labels describe the electrical
-drive inputs; car-forward has not been calibrated. The assembled encoder
-mapping is left GP16/17, right GP4/5.
+drive inputs. Owner observations on this assembled car confirm that M1A and
+M2A propel their wheels forward; M1B and M2B reverse them. Forward encoder
+counts are negative on the left and positive on the right. The assembled
+encoder mapping is left GP16/17, right GP4/5. Recheck polarity if motor wiring
+or encoder A/B order changes.
 
 Counter deltas cover the sampled interval up to the software brake command.
 They do not establish full stopping travel or physical rest. A motor that does
@@ -66,12 +69,43 @@ timeout, stop priority, restart prevention, ignored presses during motion,
 sequence completion and unsigned timer wrap. These test the pure pulse policy,
 not electrical outputs, PWM frequency or kernel scheduling on the board.
 
-The new motor driver and firmware need a wheel-up hardware test. The current
-GPIO encoder capture showed invalid transitions during earlier manual motor
-button and hand-turn trials. A code review has not established their cause.
-Invalid counts remain visible; no debounce, guessed edges or error suppression
-has been added. Compare errors under this controlled duty before choosing a
-capture change. Distance/speed calibration and closed-loop control remain open.
+### Wheel-up observations, 21 October 2026
+
+The owner observed physical wheel direction and stopping during the following
+GP20-triggered tests of source revision `80d6c84`, at 20% duty. Deltas are
+decoded x4 encoder edges, not calibrated millimetres or speed.
+
+| Phase | Owner-observed movement | Encoder delta | Invalid delta | Software decision elapsed |
+| --- | --- | --- | --- | --- |
+| M1A | Left forward, then stopped | Left -1349 | 0 | 760002 us |
+| M1B | Left backward, then stopped | Left +1347 | 0 | 760003 us |
+| M2A | Right forward, then stopped | Right +1381 | 0 | 760000 us |
+| M2B with GP21 | Right backward, stopped on GP21 | Right -404 | 0 | 260000 us |
+
+The other wheel's positive/negative/invalid deltas were zero in every row.
+The last pulse ended before its normal timeout, and the log reported
+`STOP LATCHED: reboot required; outputs low`. Evidence is
+`motor-check/physical-test-reflash.log` in the owner's Codex artifact folder.
+An earlier unobserved full sequence also reported zero invalid deltas in all
+four pulses (`physical-test-run1.log`).
+
+The elapsed field measures time from the policy start timestamp to its brake
+decision. The 260000 us value is not GP21-to-stop response latency: button
+edge time and physical rest were not instrumented. The nominal 750000 us
+pulses reached the task's stop decision at about 760000 us, so task timing
+must be measured separately before claiming any 10 ms motion/stop deadline.
+The stopped sequence was not independently restarted during this hardware
+trial; host tests cover policy restart rejection after STOP.
+
+Controlled low-duty motion, direction and an early software stop are now
+observed. PWM waveform frequency, loaded behaviour, maximum speed, exact stop
+latency and physical stop distance remain unmeasured. The GPIO encoder capture
+showed invalid transitions during earlier full-power carrier-button and rough
+hand-turn trials. Their cause is unresolved; zero errors in these sampled
+low-duty pulse intervals does not establish accuracy across the operating
+range. Invalid counts remain visible; no guessed edges, encoder debounce or
+error suppression has been added. Distance/speed calibration and closed-loop
+control remain open.
 
 Carrier reference: Cytron ROBO-PICO Board Datasheet, sections 3 and 4
 (specifications and motor-driver truth table), available from the manufacturer's

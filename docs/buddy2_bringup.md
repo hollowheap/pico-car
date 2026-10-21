@@ -225,7 +225,7 @@ capture accuracy, calibrated speed/distance or autonomous motion readiness.
 
 | Next local commit / checkpoint | What is needed first | Evidence |
 | --- | --- | --- |
-| Motor PWM driver, one motor owner, brake/stop latch | Correct carrier, signal voltage and polarity confirmed; test area prepared | Low-duty wheel-up test, stop-output response |
+| Extend motor checks to the operating range and verify stop timing | Agreed duty/speed limits and a measured stop-input timestamp | Repeated runs, input-to-output timing and loaded stopping travel |
 | Calibrated motion sampling and shared snapshot | Measured x4 counts/revolution, wheel travel, direction signs | Repeated turns; straight measured distance; timestamped log |
 | Speed controller and straight/turn/distance execution | Loaded speed measurements, track width, chosen operating limits | PID tuning traces, 1 m and 90/180 degree trials |
 | Minimum-bit shared motion/command representation | B1/B3/B4/B5 agree range, resolution, validity and maximum age | Field-width derivation, compiled RAM/message sizes, boundary tests |
