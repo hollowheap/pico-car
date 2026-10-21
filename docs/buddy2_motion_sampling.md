@@ -147,3 +147,37 @@ to differences from the nominal 210.487 mm circumference. Loaded measured
 rolling distance remains the next validation step. Raw serial reports and
 qualified arithmetic checks are retained in the owner's Codex artifacts,
 outside the repository.
+
+## Observed manual rolling comparisons
+
+With the car's weight on its wheels, the owner marked a 500 mm flat-surface
+path and pushed forward by hand, using the same chassis reference for start
+and finish. Firmware `c0cba82` acknowledged GP20 before each movement and
+froze the result on GP21. The raw USB reader stayed open through both tests.
+Earlier attempts without complete reports were excluded, not treated as zero
+distance or used to adjust scales.
+
+| Run | Left distance (mm) | Error vs 500 mm | Right distance (mm) | Error vs 500 mm |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 500.496 | +0.0992% | 505.501 | +1.1002% |
+| 2 | 493.455 | -1.3090% | 498.929 | -0.2142% |
+
+Both intervals reported zero capture invalids and numeric failures, matching
+motion/encoder endpoint timestamps, and true speed/odometry quality flags.
+The maximum observed sample gaps were 20320 us and 20009 us. Last velocities
+were zero after stopping. Integer conversions matched the raw event deltas.
+
+The left results differ by 7.041 mm and the right by 6.572 mm across runs.
+Reference-mark placement, small hand-pushed curvature, slip and scale error
+were not independently separated. These are two preliminary observations,
+not an established error bound or an accuracy acceptance test. No calibration
+constants were changed and scale verification remains false. In particular,
+do not fit one wheel to one run or infer yaw from unequal wheel distances
+without the necessary geometry and validated scales. Motor-driven travel,
+physical speed accuracy and braking distance still require tests.
+
+The console drop counter accumulated output while the host was closed
+between runs; it stayed unchanged across each acknowledged measurement.
+Complete raw reports were retained. The earlier cable/output problem's cause
+was not established. A start acknowledgement is emitted before the baseline,
+and printing remains disabled during each measured interval.
