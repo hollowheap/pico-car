@@ -13,10 +13,8 @@
 static T_SPLOCK service_lock;
 static motion_service_config_t configuration;
 static motion_service_status_t published;
-static motion_command_t pending;
+static motion_inbox_t inbox;
 static uint32_t next_id;
-static bool has_pending;
-static bool stop_latched;
 /* Startup lifecycle only: published before any producer/reader starts. */
 static bool start_called;
 static motion_control_t controller;
@@ -108,7 +106,7 @@ static void owner_task (INT start_code, void * p_extra)
         }
     }
     (void)ISpinLock(&service_lock, &saved);
-    initial_stop = stop_latched;
+    initial_stop = inbox.stopped;
     (void)ISpinUnlock(&service_lock, saved);
     if (initial_stop || gpio_get_val(STOP_PIN) == 0U)
     {
@@ -117,10 +115,11 @@ static void owner_task (INT start_code, void * p_extra)
     (void)ISpinLock(&service_lock, &saved);
     if (controller.status.state == MOTION_STOPPED)
     {
-        stop_latched = true;
+        motion_inbox_stop(&inbox);
     }
-    published.stop_requested = stop_latched;
-    published.ready = !stop_latched && (controller.status.state != MOTION_STOPPED) &&
+    published.stop_requested = inbox.stopped;
+    published.hold_mask = inbox.hold_mask;
+    published.ready = !inbox.stopped && (controller.status.state != MOTION_STOPPED) &&
                       (controller.status.state != MOTION_FAULT);
     published.control = controller.status;
     (void)ISpinUnlock(&service_lock, saved);
@@ -133,10 +132,7 @@ static void owner_task (INT start_code, void * p_extra)
 
         (void)tk_dly_tsk((RELTIM)configuration.poll_delay_ms);
         (void)ISpinLock(&service_lock, &saved);
-        received = has_pending;
-        command = pending;
-        has_pending = false;
-        stop = stop_latched;
+        stop = inbox.stopped;
         (void)ISpinUnlock(&service_lock, saved);
         stop = stop || gpio_get_val(STOP_PIN) == 0U;
         if (stop)
@@ -149,7 +145,7 @@ static void owner_task (INT start_code, void * p_extra)
             captured = capture_input(&input);
             /* Re-read the priority stop slot after capture, before output. */
             (void)ISpinLock(&service_lock, &saved);
-            stop = stop_latched;
+            received = motion_inbox_take(&inbox, in_w(TIMER_RAW_LOW), &command, &stop);
             (void)ISpinUnlock(&service_lock, saved);
             stop = stop || gpio_get_val(STOP_PIN) == 0U;
             motion_control_tick(&controller, captured ? &input : NULL,
@@ -158,11 +154,12 @@ static void owner_task (INT start_code, void * p_extra)
         (void)ISpinLock(&service_lock, &saved);
         if (controller.status.state == MOTION_STOPPED)
         {
-            stop_latched = true;
+            motion_inbox_stop(&inbox);
         }
         published.control = controller.status;
-        published.stop_requested = stop_latched;
-        published.ready = !stop_latched && (controller.status.state != MOTION_STOPPED) &&
+        published.stop_requested = inbox.stopped;
+        published.hold_mask = inbox.hold_mask;
+        published.ready = !inbox.stopped && (controller.status.state != MOTION_STOPPED) &&
                           (controller.status.state != MOTION_FAULT);
         (void)ISpinUnlock(&service_lock, saved);
     }
@@ -192,6 +189,7 @@ ER motion_service_start (const motion_service_config_t * p_config)
         return E_PAR;
     }
     configuration = *p_config;
+    (void)motion_inbox_init(&inbox, configuration.control.max_command_ttl_us);
     (void)InitSpinLock(&service_lock);
     start_called = true;
     motor_pwm_boot_brake();
@@ -205,19 +203,17 @@ ER motion_service_start (const motion_service_config_t * p_config)
     return result;
 }
 
-ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
-                             uint32_t ttl_us)
+static ER post_command (motion_command_t command, bool stamp_now)
 {
     UINT saved;
     ER result = E_OK;
-    const int32_t targets[2] = {left_um_s, right_um_s};
     unsigned int wheel;
 
     if (!start_called)
     {
         return E_OBJ;
     }
-    if ((ttl_us == 0U) || (ttl_us > configuration.control.max_command_ttl_us))
+    if ((command.ttl_us == 0U) || (command.ttl_us > configuration.control.max_command_ttl_us))
     {
         return E_PAR;
     }
@@ -225,26 +221,101 @@ ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
     {
         int64_t limit = configuration.control.speed[wheel].max_target_um_s;
 
-        if (((int64_t)targets[wheel] > limit) || ((int64_t)targets[wheel] < -limit))
+        if (((int64_t)command.target_um_s[wheel] > limit) ||
+            ((int64_t)command.target_um_s[wheel] < -limit))
         {
             return E_PAR;
         }
     }
     (void)ISpinLock(&service_lock, &saved);
-    if (!published.ready || stop_latched)
+    if (!published.ready || inbox.stopped)
     {
         result = E_OBJ;
     }
     else
     {
-        next_id++;
-        if (next_id == 0U)
+        motion_inbox_result_t admitted;
+        uint32_t now = in_w(TIMER_RAW_LOW);
+
+        command.id = next_id + 1U;
+        if (command.id == 0U)
         {
-            next_id++;
+            command.id++;
         }
-        pending = (motion_command_t){next_id, in_w(TIMER_RAW_LOW), ttl_us,
-                                     {left_um_s, right_um_s}};
-        has_pending = true;
+        if (stamp_now)
+        {
+            command.issued_us = now;
+        }
+        admitted = motion_inbox_post(&inbox, &command, now);
+        if (admitted == MOTION_INBOX_ACCEPTED)
+        {
+            next_id = command.id;
+        }
+        else
+        {
+            result = admitted == MOTION_INBOX_HELD ? E_BUSY :
+                (admitted == MOTION_INBOX_STALE ? E_TMOUT : E_OBJ);
+        }
+    }
+    (void)ISpinUnlock(&service_lock, saved);
+    return result;
+}
+
+ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
+                             uint32_t ttl_us)
+{
+    motion_command_t command = {0U, 0U, ttl_us, {left_um_s, right_um_s}};
+
+    return post_command(command, true);
+}
+
+ER motion_service_submit_request (const motion_drive_request_t * p_request)
+{
+    motion_command_t command;
+    uint32_t limits[2];
+    uint32_t now;
+    UINT saved;
+
+    if (!start_called)
+    {
+        return E_OBJ;
+    }
+    limits[0] = configuration.control.speed[0].max_target_um_s;
+    limits[1] = configuration.control.speed[1].max_target_um_s;
+    now = in_w(TIMER_RAW_LOW);
+    if (!motion_request_plan(p_request, limits,
+            configuration.control.max_command_ttl_us, now, &command))
+    {
+        /* Invalid guidance must not leave the old movement queued. This
+         * requests a normal brake and cannot clear emergency/hold state. */
+        (void)ISpinLock(&service_lock, &saved);
+        motion_inbox_cancel(&inbox);
+        (void)ISpinUnlock(&service_lock, saved);
+        return (p_request != NULL && p_request->valid_for_us > 0U &&
+            (uint32_t)(now - p_request->sensed_us) >= p_request->valid_for_us) ?
+            E_TMOUT : E_PAR;
+    }
+    return post_command(command, false);
+}
+
+ER motion_service_set_hold (uint32_t reason, bool held)
+{
+    UINT saved;
+    ER result;
+
+    if (!start_called)
+    {
+        return E_OBJ;
+    }
+    (void)ISpinLock(&service_lock, &saved);
+    if (inbox.stopped || published.control.state == MOTION_FAULT)
+    {
+        result = E_OBJ;
+    }
+    else
+    {
+        result = motion_inbox_hold(&inbox, reason, held, in_w(TIMER_RAW_LOW)) ? E_OK : E_PAR;
+        published.hold_mask = inbox.hold_mask;
     }
     (void)ISpinUnlock(&service_lock, saved);
     return result;
@@ -259,8 +330,7 @@ ER motion_service_request_stop (void)
         return E_OBJ;
     }
     (void)ISpinLock(&service_lock, &saved);
-    stop_latched = true;
-    has_pending = false;
+    motion_inbox_stop(&inbox);
     published.ready = false;
     published.stop_requested = true;
     (void)ISpinUnlock(&service_lock, saved);

@@ -3,8 +3,9 @@
 `motion_control` connects coherent encoder input, the motion sampler, two
 wheel PIDs and one pair-output interface. `motion_service` supplies the
 micro T-Kernel task, hardware adapter and protected cross-core command/status
-copies. They are opt-in libraries. The team `main` and currently flashed
-motor-batch firmware do not start this service.
+copies. They are opt-in libraries; team `main` does not start this service.
+The earlier standalone107f5e1 speed trial ran it; the new sensor interface
+described below is built/tested in software and not yet flashed.
 
 ```sh
 cmake --build <configured-build-directory> --target buddy2_motion_service
@@ -18,6 +19,8 @@ other tasks may call these task-context APIs on either core:
 | API | Meaning |
 | --- | --- |
 | `motion_service_set_speed(left_um_s, right_um_s, ttl_us)` | Submit signed wheel speed targets; positive means car-forward. |
+| `motion_service_submit_request(&request)` | Timestamped decoded straight/left/right/hold guidance. |
+| `motion_service_set_hold(reason, held)` | Independent normal obstacle/line-lost/operator pause reasons. |
 | `motion_service_request_stop()` | Emergency stop request, latched until reboot. |
 | `motion_service_read_status(&status)` | Coherent copy of state, faults, last command ID and timestamped measurements. |
 
@@ -25,19 +28,19 @@ other tasks may call these task-context APIs on either core:
 `E_OK` from the speed API means the request was accepted into a one-entry
 latest-command slot, not that it has already reached the motors. A newer
 pending request replaces an older pending request. There is no accumulating
-motion queue. TTL is stamped when the service accepts a request; it does not
-prove the upstream IR, network or obstacle information was fresh. Producers
-must validate that information themselves. IDs are nonzero uint32 counters
+motion queue. The direct speed API stamps TTL at admission; timestamped
+guidance preserves the original sensor timestamp/lease instead. Producers
+still validate upstream sensor quality. IDs are nonzero uint32 counters
 for correlation, wrapping back to 1; they do not provide global ordering.
 
 Agree one navigation/command authority for ordinary speeds. Several buddies
 must not race independent speed decisions into this slot: latest arrival wins,
 with no navigation priority arbitration. Buddy3 can supply line-following
 wheel targets through that authority; obstacle decisions must inhibit/alter
-them there. A normal pause is a zero/zero speed request, coordinated so later
-line commands cannot immediately overwrite the pause. Emergency stop has its
-own latched slot and always wins over pending motion. Obstacle recovery and
-navigation state machines are not implemented by this service.
+them there. The normal hold API now prevents line commands from overwriting
+an obstacle/line-lost/operator pause. Emergency stop has its own terminal
+priority path. See `buddy2_sensor_motion.md` for fresh-frame resume and the
+still-required sensor freshness/supervision and navigation integration.
 
 This is a proposed source API, not the final minimum-bit shared/MQTT schema.
 Never send these compiler-padded structures directly as a wire packet.

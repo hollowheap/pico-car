@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <string.h>
 #include "motion_control.h"
+#include "motion_request.h"
+#include "motion_inbox.h"
 
 typedef struct
 {
@@ -300,5 +302,47 @@ int main (void)
         assert(!control.status.sample.wheel[0].scale_verified);
     }
     motion_control_tick(NULL, NULL, 0U, NULL, true);
+    {
+        motion_inbox_t inbox;
+        const uint32_t limits[2] = {10000U, 10000U};
+        motion_drive_request_t guidance = {MOTION_DRIVE_STRAIGHT, 1000, 400, 0U, 100000U};
+        motion_command_t plan;
+        bool stop;
+
+        initialise();
+        assert(motion_inbox_init(&inbox, 1000000U));
+        for (i = 0U; i < 3U; i++)
+        {
+            guidance.action = (motion_drive_action_t)i;
+            guidance.sensed_us = now;
+            assert(motion_request_plan(&guidance, limits, 1000000U, now, &plan));
+            assert(motion_inbox_post(&inbox, &plan, now) == MOTION_INBOX_ACCEPTED);
+            assert(motion_inbox_take(&inbox, now + 20000U, &next, &stop) && !stop);
+            tick(&next, false);
+            assert(output.duty[0] == (i == 1U ? 100 : 250));
+            assert(output.duty[1] == (i == 2U ? 100 : 250));
+        }
+        assert(motion_inbox_hold(&inbox, MOTION_HOLD_OBSTACLE, true, now));
+        assert(motion_inbox_take(&inbox, now + 20000U, &next, &stop));
+        tick(&next, false);
+        assert(control.status.state == MOTION_IDLE && !output.latched);
+        guidance.sensed_us = now;
+        assert(motion_request_plan(&guidance, limits, 1000000U, now, &plan));
+        assert(motion_inbox_post(&inbox, &plan, now) == MOTION_INBOX_HELD);
+        assert(motion_inbox_hold(&inbox, MOTION_HOLD_OBSTACLE, false, now));
+        guidance.action = MOTION_DRIVE_STRAIGHT;
+        assert(motion_request_plan(&guidance, limits, 1000000U, now, &plan));
+        assert(motion_inbox_post(&inbox, &plan, now) == MOTION_INBOX_ACCEPTED);
+        assert(motion_inbox_take(&inbox, now + 20000U, &next, &stop));
+        tick(&next, false);
+        assert(output.duty[0] == 0 && output.duty[1] == 0);
+        assert(motion_inbox_take(&inbox, now + 20000U, &next, &stop));
+        tick(&next, false);
+        assert(output.duty[0] == 250 && output.duty[1] == 250);
+        motion_inbox_stop(&inbox);
+        assert(!motion_inbox_take(&inbox, now, &next, &stop) && stop);
+        tick(NULL, stop);
+        assert(control.status.state == MOTION_STOPPED && output.latched);
+    }
     return 0;
 }
