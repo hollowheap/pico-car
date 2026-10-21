@@ -111,3 +111,36 @@ other-wheel counts and incomplete USB reports rather than hiding them. Next
 stages are a shared motion-task interface, simultaneous two-wheel actuation,
 speed control, distance commands and stop handling. Angle-based turns also
 need wheel-track geometry and loaded turn calibration.
+
+## Observed hand-turn checks, 22 October 2026
+
+Pico W / ROBO-PICO ran `buddy2_motion_check` built from `fa72711`. The owner
+turned one marked wheel revolution by hand, with wheels lifted. Each interval
+started with GP20 and ended with GP21 after the wheel stopped. The table
+records separate intervals; an accidental empty interval was excluded.
+
+| Wheel and direction | Forward-normalised net edges | Displacement (mm) | Capture invalids |
+| --- | ---: | ---: | ---: |
+| Left forward | 2517 | +208.498 | 0 |
+| Right forward | 2527 | +210.237 | 0 |
+| Left backward | -2443 | -202.369 | 0 |
+| Right backward | -2462 | -204.829 | 0 |
+
+The other wheel's counters stayed unchanged in each listed interval. The
+owner clarified that the initially requested two-wheel reverse check actually
+turned only the left wheel; right reverse was tested separately afterward.
+All four reports had zero numeric failures, matching encoder/motion endpoint
+timestamps and positive speed/odometry validity flags. Scale verification
+remained false. The largest observed sampling gap across these tests was
+20025 us; this is not a worst-case scheduling bound or proof of a 10 ms loop.
+
+Distances independently matched the configured integer conversion. Last
+sampled velocity was zero after stopping. Reported peak absolute interval
+speeds had no external physical-speed reference. Correct signs and clean
+reported invalid counters do not establish exact counts/revolution or prove
+that no full quadrature cycles were missed. The measured mark precision and
+gearbox lost motion were not independently established; no cause is assigned
+to differences from the nominal 210.487 mm circumference. Loaded measured
+rolling distance remains the next validation step. Raw serial reports and
+qualified arithmetic checks are retained in the owner's Codex artifacts,
+outside the repository.
