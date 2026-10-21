@@ -14,6 +14,7 @@
 #define BANK_INTR  (IO_BANK0_BASE + 0xF0U)
 #define CORE0_INTE (IO_BANK0_BASE + 0x100U)
 #define CORE0_INTS (IO_BANK0_BASE + 0x120U)
+#define CORE0_INTF (IO_BANK0_BASE + 0x110U)
 #define CORE1_INTE (IO_BANK0_BASE + 0x130U)
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
 #define EDGE_FLAGS 12U
@@ -55,6 +56,11 @@ static void encoder_interrupt (UINT intno)
         uint32_t mask = edge_mask(encoder_pins[wheel][0]) |
                         edge_mask(encoder_pins[wheel][1]);
         pending[wheel] = in_w(CORE0_INTS + (bank * 4U)) & mask;
+#ifdef BUDDY2_INPUT_SELFTEST
+        /* The isolated self-test forces edge flags in INTF. These must be
+         * cleared separately from the physical INTR W1C latches. */
+        clr_w(CORE0_INTF + (bank * 4U), pending[wheel]);
+#endif
         /* W1C only our observed edge flags; never clear unrelated GPIOs. */
         out_w(BANK_INTR + (bank * 4U), pending[wheel]);
     }
@@ -187,6 +193,35 @@ ER encoder_capture_read (encoder_capture_sample_t * p_sample)
     p_sample->captured_states = captured.states;
     p_sample->pins_and_irq = metadata;
     p_sample->timestamp_us = in_w(TIMER_RAW_LOW);
+    (void)ISpinUnlock(&capture_lock, saved);
+    return E_OK;
+}
+
+ER encoder_capture_reset (void)
+{
+    UINT saved;
+    uint32_t gpio;
+    unsigned int wheel;
+
+    if (tk_get_prc() != TP_PRC1)
+    {
+        return E_CTX;
+    }
+    if (!initialised)
+    {
+        return E_OBJ;
+    }
+    (void)ISpinLock(&capture_lock, &saved);
+    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        unsigned int bank = encoder_pins[wheel][0] / 8U;
+        out_w(BANK_INTR + (bank * 4U),
+              edge_mask(encoder_pins[wheel][0]) |
+              edge_mask(encoder_pins[wheel][1]));
+    }
+    gpio = in_w(GPIO_IN);
+    encoder_quad_init(&captured,
+        (uint8_t)(pin_state(gpio, 0U) | (pin_state(gpio, 1U) << 2U)));
     (void)ISpinUnlock(&capture_lock, saved);
     return E_OK;
 }

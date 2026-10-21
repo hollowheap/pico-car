@@ -45,6 +45,36 @@ The output is `buddy2_encoder_check.uf2`. `main.uf2` is the existing RTOS demo
 and does not run the encoder check. Build outputs belong outside the checkout
 when using a personal build helper. Compilation is not hardware verification.
 
+### Internal input-path self-test
+
+`buddy2_encoder_selftest` is a separate optional target. After USB startup it
+uses INOVER to supply synthetic input levels internally, and PROC0_INTF to
+force matching GPIO interrupt events. The pins remain inputs: it checks pad
+output-disable and SIO direction first, and never drives the encoder wires or
+changes motor output commands. Physical GPIO edge enables are masked during
+injection so the attached encoder cannot contaminate this test. The test-only
+ISR clears INTF as well as acknowledging physical edge latches.
+
+Each wheel receives five cycles in each direction: the expected result is 20
+positive and 20 negative transitions per wheel. A forced simultaneous two-bit
+jump on the left must increment its invalid count once, with no fabricated
+distance. Test output says PASS only if these counts and final states match.
+The GPIO controls/enables are restored and all synthetic counts are discarded
+before normal external-input logging begins. Do not move wheels or press
+motor-test buttons during the internal test.
+
+This checks the software input-read, forced-interrupt delivery and decoder
+path. It bypasses the external electrical signal and physical edge detector,
+so PASS does not validate the encoder, wiring, calibration or maximum rate.
+Host arithmetic/decoder tests and successful compilation are separate evidence.
+
+The owner requested a four-button repeat test on the real inputs before this
+self-test was added. The 90-second serial recording contained 220 complete
+samples, all with live pairs 11/11, zero cumulative polled changes/decoded
+edges/invalid transitions, pending mask 0 and enable mask 3. That observation
+does not establish the cause. The reviewed wiring remains the baseline while
+the input and interrupt software path is checked independently.
+
 ## First board test
 
 1. Confirm the board is the Pico W / RP2040 expected by this build, the carrier

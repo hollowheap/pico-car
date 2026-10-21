@@ -31,6 +31,10 @@ ER encoder_capture_init (void);
  */
 ER encoder_capture_read (encoder_capture_sample_t * p_sample);
 
+/* Diagnostic only: reseed from current inputs and zero counters. Call on
+ * core 0 with no concurrent consumers needing the old counter baseline. */
+ER encoder_capture_reset (void);
+
 #endif /* ENCODER_CAPTURE_H */
 
 /*** end of file ***/

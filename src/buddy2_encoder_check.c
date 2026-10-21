@@ -7,6 +7,9 @@
 #include "buddy2_pins.h"
 #include "encoder_capture.h"
 #include "usb_console_compat.h"
+#ifdef BUDDY2_INPUT_SELFTEST
+#include "encoder_input_selftest.h"
+#endif
 
 static void hold_motors (void)
 {
@@ -54,6 +57,12 @@ static void check_task (INT start_code, void * p_extra)
                   result);
         (void)tk_slp_tsk(TMO_FEVR);
     }
+#ifdef BUDDY2_INPUT_SELFTEST
+    if (!encoder_input_selftest())
+    {
+        tm_printf((UB *)"Internal input-path test failed; inspect logs.\n");
+    }
+#endif
     (void)encoder_capture_read(&sample);
     previous_pins = sample.pins_and_irq & 15U;
     last_report = sample.timestamp_us;
