@@ -22,6 +22,13 @@ All C and C++ code in this repository must comply with the
 
 When creating a new file, use the templates in `templates/` for consistency.
 
+## Buddy 2 encoder calculations
+
+`src/encoder_math.c` provides checked distance and speed conversions and a
+wrapping-counter difference. It does not configure hardware or replace the
+current RTOS demo. See [encoder calibration and tests](docs/encoder_math.md)
+for units, numerical limits, remaining integration work and host-test commands.
+
 ## Table of Abbreviations
 
 | Abbreviation | Meaning                    |

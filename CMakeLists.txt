@@ -207,6 +207,7 @@ target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 add_executable(main
     src/main.c
     src/demo_tasks.c
+    src/encoder_math.c
 )
 # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
 target_link_libraries(main PRIVATE mtk3smp)
