@@ -226,7 +226,16 @@ add_executable(buddy2_encoder_selftest EXCLUDE_FROM_ALL
 )
 target_compile_definitions(buddy2_encoder_selftest PRIVATE BUDDY2_INPUT_SELFTEST=1)
 
-foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest)
+# Explicitly selected wheel-up diagnostic: no pulse until the GP20 user button.
+add_executable(buddy2_motor_check EXCLUDE_FROM_ALL
+    src/buddy2_motor_check.c
+    src/motor_pwm.c
+    src/motor_pulse.c
+    src/encoder_capture.c
+    src/encoder_quad.c
+)
+
+foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest buddy2_motor_check)
 # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
 target_link_libraries(${app_target} PRIVATE mtk3smp)
 # The kernel supplies its own startup code (vector table, boot stage 2, reset

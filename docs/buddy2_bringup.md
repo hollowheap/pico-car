@@ -218,6 +218,11 @@ pass a decreasing signed position to `encoder_math_count_delta()`.
 
 ## Remaining sequence
 
+The next opt-in target is `buddy2_motor_check`, a button-triggered short-pulse
+PWM diagnostic with a single output owner and a latched software stop. See
+[its procedure and limitations](buddy2_motor_check.md). It does not establish
+capture accuracy, calibrated speed/distance or autonomous motion readiness.
+
 | Next local commit / checkpoint | What is needed first | Evidence |
 | --- | --- | --- |
 | Motor PWM driver, one motor owner, brake/stop latch | Correct carrier, signal voltage and polarity confirmed; test area prepared | Low-duty wheel-up test, stop-output response |

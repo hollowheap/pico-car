@@ -28,3 +28,9 @@ target_include_directories(test_encoder_quad PRIVATE ../src)
 target_compile_options(test_encoder_quad PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME encoder_quadrature COMMAND test_encoder_quad)
+
+add_executable(test_motor_pulse test_motor_pulse.c ../src/motor_pulse.c)
+target_include_directories(test_motor_pulse PRIVATE ../src)
+target_compile_options(test_motor_pulse PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME motor_pulse_policy COMMAND test_motor_pulse)
