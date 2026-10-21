@@ -66,3 +66,11 @@ target_include_directories(test_motion_control PRIVATE ../src)
 target_compile_options(test_motion_control PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 add_test(NAME motion_control_integration COMMAND test_motion_control)
+
+add_executable(test_speed_probe test_speed_probe.c ../src/speed_probe.c
+    ../src/motor_pulse.c ../src/motion_control.c ../src/wheel_pid.c
+    ../src/motion_sampler.c ../src/encoder_math.c)
+target_include_directories(test_speed_probe PRIVATE ../src)
+target_compile_options(test_speed_probe PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME speed_probe_policy COMMAND test_speed_probe)

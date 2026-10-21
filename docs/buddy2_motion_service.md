@@ -114,7 +114,7 @@ the state and requested duty show what the controller is doing.
 
 ## Checks and limits
 
-Nine host CTest groups pass, including an integrated fake-output test from
+Host CTest groups pass, including an integrated fake-output test from
 encoder counters through sampling and both PIDs. It exercises healthy refresh
 and movement, stop priority, command expiry, no-edge detection despite command
 refreshes, invalid/stale/unverified feedback, whole-pair fault handling,
@@ -130,7 +130,8 @@ No 10ms control or physical-stop guarantee is claimed. Task/CPU failure,
 carrier motor-button override, motor supply quality and physical stopping
 distance remain outside these software checks.
 
-Next: choose conservative bench settings and run bounded wheels-up PI tuning,
+The opt-in `buddy2_speed_check` now supplies explicit experimental settings
+and a bounded wheels-up PI trial (see `buddy2_speed_check.md`). Next: run it,
 then loaded speed/distance tests. Distance completion and angle-turn APIs are
 not provided yet; turns also require measured wheel track. Buddy3 IR/barcode,
 obstacle/navigation arbitration and final packed telemetry remain integration
