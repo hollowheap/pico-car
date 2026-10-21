@@ -218,6 +218,11 @@ pass a decreasing signed position to `encoder_math_count_delta()`.
 
 ## Remaining sequence
 
+`buddy2_encoder_calibrate` reuses the encoder reader with the motor bridges
+in coast instead of brake for marked hand-turn calibration. Follow the
+[baseline and five-turn procedure](buddy2_encoder_calibration.md); no PWM
+or automatic wheel movement is enabled in this target.
+
 The next opt-in target is `buddy2_motor_check`, a button-triggered short-pulse
 PWM diagnostic with a single output owner and a latched software stop. See
 [its procedure and limitations](buddy2_motor_check.md). It does not establish

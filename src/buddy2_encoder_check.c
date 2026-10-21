@@ -7,6 +7,9 @@
 #include "buddy2_pins.h"
 #include "encoder_capture.h"
 #include "usb_console_compat.h"
+#if defined(BUDDY2_COAST_CALIBRATION) && defined(BUDDY2_INPUT_SELFTEST)
+#error "Keep physical calibration and synthetic-input tests separate"
+#endif
 #ifdef BUDDY2_INPUT_SELFTEST
 #include "encoder_input_selftest.h"
 #endif
@@ -41,12 +44,30 @@ static void check_task (INT start_code, void * p_extra)
     (void)start_code;
     (void)p_extra;
     result = encoder_capture_init();
+#ifdef BUDDY2_COAST_CALIBRATION
+    if (result == E_OK)
+    {
+        /* All motor pins are already low SIO outputs. Set both bridge
+         * inputs HIGH together: ROBO-PICO 11 = coast, not powered motion.
+         * One SIO write avoids sequential software drive states. */
+        out_w(GPIO_OUT_SET,
+            (1U << BUDDY2_MOTOR_LEFT_A) | (1U << BUDDY2_MOTOR_LEFT_B) |
+            (1U << BUDDY2_MOTOR_RIGHT_A) | (1U << BUDDY2_MOTOR_RIGHT_B));
+    }
+#endif
     for (i = 0U; (i < 200U) && (tm_usb_state() < 2U); i++)
     {
         (void)tk_dly_tsk(100);
     }
     (void)tk_dly_tsk(500);
+#ifdef BUDDY2_COAST_CALIBRATION
+    tm_printf((UB *)"\nBuddy 2 encoder CALIBRATION; motors COAST; no PWM\n");
+    tm_printf((UB *)"Mark wheel, align reference, record baseline, then turn.\n");
+    tm_printf((UB *)"Turn ONE wheel exactly FIVE complete revolutions.\n");
+    tm_printf((UB *)"Do not press motor-test buttons; keep wheels lifted.\n");
+#else
     tm_printf((UB *)"\nBuddy 2 encoder check; motor drive DISABLED\n");
+#endif
     tm_printf((UB *)"L=A%u/B%u R=A%u/B%u; x4 quadrature, no pulls\n",
               BUDDY2_ENCODER_LEFT_A, BUDDY2_ENCODER_LEFT_B,
               BUDDY2_ENCODER_RIGHT_A, BUDDY2_ENCODER_RIGHT_B);
@@ -55,9 +76,13 @@ static void check_task (INT start_code, void * p_extra)
     tm_printf((UB *)"live/poll changes diagnose pins, not encoder distance.\n");
     if (result != E_OK)
     {
+        hold_motors();
         tm_printf((UB *)"Capture init failed: %d; motors remain braked\n",
                   result);
-        (void)tk_slp_tsk(TMO_FEVR);
+        for (;;)
+        {
+            (void)tk_slp_tsk(TMO_FEVR);
+        }
     }
 #ifdef BUDDY2_INPUT_SELFTEST
     if (!encoder_input_selftest())
