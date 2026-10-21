@@ -7,6 +7,123 @@
 #include "buddy2_pins.h"
 #include "encoder_capture.h"
 #include "usb_console_compat.h"
+#ifdef BUDDY2_MOTION_MEASUREMENT
+#include "motion_sampler.h"
+#ifndef BUDDY2_COAST_CALIBRATION
+#error "Motion measurement requires the quiet coast calibration harness"
+#endif
+
+typedef struct
+{
+    motion_sampler_t sampler;
+    motion_sample_t sample;
+    uint32_t peak_speed[ENCODER_WHEELS];
+    uint32_t max_interval_us;
+    uint32_t failures;
+    bool have_sample;
+} motion_probe_t;
+
+static motion_input_t motion_input (const encoder_capture_sample_t * p_capture)
+{
+    motion_input_t input;
+    unsigned int wheel;
+
+    input.timestamp_us = p_capture->timestamp_us;
+    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        input.wheel[wheel] = p_capture->wheel[wheel];
+    }
+    return input;
+}
+
+static void motion_probe_start (motion_probe_t * p_probe,
+                                const encoder_capture_sample_t * p_capture)
+{
+    /* Provisional hand-turn means and nominal pi * 67 mm, rounded to um.
+     * 200 ms is this probe's gap threshold, not a verified control deadline.
+     * The library accepts configuration; no such constants live in its math. */
+    const motion_config_t config = {
+        {{210487U, 2541U, -1, false}, {210487U, 2530U, 1, false}}, 200000U
+    };
+    motion_probe_t initial = {0};
+    motion_input_t input = motion_input(p_capture);
+
+    if (!motion_sampler_init(&initial.sampler, &config, &input))
+    {
+        initial.failures++;
+    }
+    *p_probe = initial;
+}
+
+static void motion_probe_update (motion_probe_t * p_probe,
+                                 const encoder_capture_sample_t * p_capture)
+{
+    motion_input_t input = motion_input(p_capture);
+    unsigned int wheel;
+
+    if (input.timestamp_us == p_probe->sampler.previous.timestamp_us)
+    {
+        return;
+    }
+    if (!motion_sampler_update(&p_probe->sampler, &input, &p_probe->sample))
+    {
+        p_probe->failures++;
+        return;
+    }
+    p_probe->have_sample = true;
+    if (p_probe->sample.elapsed_us > p_probe->max_interval_us)
+    {
+        p_probe->max_interval_us = p_probe->sample.elapsed_us;
+    }
+    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        int32_t velocity = p_probe->sample.wheel[wheel].velocity_um_s;
+        uint32_t speed = (uint32_t)(velocity < 0 ? -velocity : velocity);
+
+        if (p_probe->sample.wheel[wheel].speed_valid &&
+            (speed > p_probe->peak_speed[wheel]))
+        {
+            p_probe->peak_speed[wheel] = speed;
+        }
+    }
+}
+
+static void motion_probe_report (const motion_probe_t * p_probe)
+{
+    unsigned int wheel;
+
+    tm_printf((UB *)"MOTION provisional scale; max_dt_us=%u failures=%u\n",
+              p_probe->max_interval_us, p_probe->failures);
+    if (!p_probe->have_sample)
+    {
+        tm_printf((UB *)"MOTION no usable sample\n");
+        return;
+    }
+    tm_printf((UB *)"MOTION frozen_t=%u last_dt_us=%u\n",
+              p_probe->sample.timestamp_us, p_probe->sample.elapsed_us);
+    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        const motion_wheel_sample_t * p_result = &p_probe->sample.wheel[wheel];
+
+        /* T-Monitor has no 64-bit format. Refuse out-of-range display instead
+         * of truncating the library's 64-bit displacement. */
+        if ((p_result->displacement_um < INT32_MIN) ||
+            (p_result->displacement_um > INT32_MAX))
+        {
+            tm_printf((UB *)"MOTION displacement outside display range\n");
+            continue;
+        }
+        tm_printf((UB *)"MOTION %s displacement_um=%d velocity_um_s=%d "
+                        "peak_abs_um_s=%u speed_valid=%u odometry_valid=%u "
+                        "scale_verified=%u\n",
+            wheel == ENCODER_LEFT ? "LEFT" : "RIGHT",
+            (int32_t)p_result->displacement_um, p_result->velocity_um_s,
+            p_probe->peak_speed[wheel], p_result->speed_valid ? 1U : 0U,
+            p_result->odometry_valid ? 1U : 0U,
+            p_result->scale_verified ? 1U : 0U);
+    }
+}
+#endif
 #if defined(BUDDY2_COAST_CALIBRATION) && defined(BUDDY2_INPUT_SELFTEST)
 #error "Keep physical calibration and synthetic-input tests separate"
 #endif
@@ -88,6 +205,9 @@ static void calibration_loop (void)
     bool recording = false;
     bool have_result = false;
     unsigned int pin;
+#ifdef BUDDY2_MOTION_MEASUREMENT
+    motion_probe_t motion = {0};
+#endif
 
     for (pin = CALIBRATION_START_PIN; pin <= CALIBRATION_FINISH_PIN; pin++)
     {
@@ -105,8 +225,23 @@ static void calibration_loop (void)
 
         if (recording)
         {
+#ifdef BUDDY2_MOTION_MEASUREMENT
+            encoder_capture_sample_t current;
+
+            if (encoder_capture_read(&current) == E_OK)
+            {
+                motion_probe_update(&motion, &current);
+            }
+            else
+            {
+                motion.failures++;
+            }
+#endif
             if (finish && (encoder_capture_read(&ending) == E_OK))
             {
+#ifdef BUDDY2_MOTION_MEASUREMENT
+                motion_probe_update(&motion, &ending);
+#endif
                 recording = false;
                 have_result = true;
                 /* Publish the frozen result immediately, then repeat while
@@ -118,6 +253,9 @@ static void calibration_loop (void)
         {
             if (encoder_capture_read(&baseline) == E_OK)
             {
+#ifdef BUDDY2_MOTION_MEASUREMENT
+                motion_probe_start(&motion, &baseline);
+#endif
                 recording = true;
                 have_result = false;
                 trial++;
@@ -146,6 +284,9 @@ static void calibration_loop (void)
                         (uint32_t)(ending.wheel[wheel].invalid -
                                    baseline.wheel[wheel].invalid));
                 }
+#ifdef BUDDY2_MOTION_MEASUREMENT
+                motion_probe_report(&motion);
+#endif
             }
             tm_printf((UB *)"READY: GP20 start; GP21 finish; "
                             "silent while recording; motors COAST\n");
@@ -193,6 +334,9 @@ static void check_task (INT start_code, void * p_extra)
     tm_printf((UB *)"Turn ONE wheel exactly FIVE complete revolutions.\n");
     tm_printf((UB *)"Do not press motor-test buttons; keep wheels lifted.\n");
     tm_printf((UB *)"Stop wheel before GP21 finish. No live measurement prints.\n");
+#ifdef BUDDY2_MOTION_MEASUREMENT
+    tm_printf((UB *)"MOTION CHECK: provisional scales; no closed-loop control\n");
+#endif
 #else
     tm_printf((UB *)"\nBuddy 2 encoder check; motor drive DISABLED\n");
 #endif

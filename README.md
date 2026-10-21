@@ -34,6 +34,11 @@ and GP16/17 while holding the motor inputs low. See the
 [bring-up steps and remaining motion work](docs/buddy2_bringup.md) before using
 it on hardware. It is separate from `main.uf2` and does not drive the car.
 
+The optional `buddy2_motion_check` target adds quiet hand-turn speed and
+signed-displacement sampling with explicit provisional calibration and validity
+flags. See [motion sampling and its limits](docs/buddy2_motion_sampling.md).
+It does not drive the motors or replace the team demo.
+
 ## Table of Abbreviations
 
 | Abbreviation | Meaning                    |

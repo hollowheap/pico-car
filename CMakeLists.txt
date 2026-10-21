@@ -234,6 +234,17 @@ add_executable(buddy2_encoder_calibrate EXCLUDE_FROM_ALL
 )
 target_compile_definitions(buddy2_encoder_calibrate PRIVATE BUDDY2_COAST_CALIBRATION=1)
 
+# Quiet hand-turn speed/displacement probe. Same coast-only button workflow.
+add_executable(buddy2_motion_check EXCLUDE_FROM_ALL
+    src/buddy2_encoder_check.c
+    src/encoder_capture.c
+    src/encoder_quad.c
+    src/encoder_math.c
+    src/motion_sampler.c
+)
+target_compile_definitions(buddy2_motion_check PRIVATE
+    BUDDY2_COAST_CALIBRATION=1 BUDDY2_MOTION_MEASUREMENT=1)
+
 # Explicitly selected wheel-up diagnostic: no pulse until the GP20 user button.
 add_executable(buddy2_motor_check EXCLUDE_FROM_ALL
     src/buddy2_motor_check.c
@@ -243,7 +254,7 @@ add_executable(buddy2_motor_check EXCLUDE_FROM_ALL
     src/encoder_quad.c
 )
 
-foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest buddy2_encoder_calibrate buddy2_motor_check)
+foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest buddy2_encoder_calibrate buddy2_motion_check buddy2_motor_check)
 # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
 target_link_libraries(${app_target} PRIVATE mtk3smp)
 # The kernel supplies its own startup code (vector table, boot stage 2, reset

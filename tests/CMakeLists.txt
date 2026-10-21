@@ -34,3 +34,10 @@ target_include_directories(test_motor_pulse PRIVATE ../src)
 target_compile_options(test_motor_pulse PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME motor_pulse_policy COMMAND test_motor_pulse)
+
+add_executable(test_motion_sampler test_motion_sampler.c
+    ../src/motion_sampler.c ../src/encoder_math.c)
+target_include_directories(test_motion_sampler PRIVATE ../src)
+target_compile_options(test_motion_sampler PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME motion_sampler COMMAND test_motion_sampler)
