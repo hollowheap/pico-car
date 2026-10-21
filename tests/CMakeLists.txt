@@ -22,3 +22,9 @@ add_test(NAME encoder_math_cases COMMAND test_encoder_math)
 add_test(NAME encoder_math_reference
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_encoder_math.py
             $<TARGET_FILE:encoder_math_reference>)
+
+add_executable(test_encoder_quad test_encoder_quad.c ../src/encoder_quad.c)
+target_include_directories(test_encoder_quad PRIVATE ../src)
+target_compile_options(test_encoder_quad PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME encoder_quadrature COMMAND test_encoder_quad)
