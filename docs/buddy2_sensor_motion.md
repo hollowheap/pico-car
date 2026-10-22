@@ -95,7 +95,7 @@ are not instantaneous asynchronous hardware cutoffs.
 
 ## Checks and remaining work
 
-All12 host CTest groups pass. Tests cover equal straight targets, left/right
+All13 host CTest groups pass. Tests cover equal straight targets, left/right
 mapping, bad ranges/expiry/wrap, unchanged source leases, latest replacement,
 all combinations of hold reasons, set/clear between polls, old-frame
 rejection, brake-before-resume, long-uptime freshness barriers, emergency

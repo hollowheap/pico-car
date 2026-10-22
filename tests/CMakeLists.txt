@@ -91,3 +91,10 @@ target_include_directories(test_guidance_replay PRIVATE ../src)
 target_compile_options(test_guidance_replay PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 add_test(NAME guidance_replay_integration COMMAND test_guidance_replay)
+
+add_executable(test_route_demo test_route_demo.c ../src/route_demo.c
+    ../src/motion_sampler.c ../src/encoder_math.c)
+target_include_directories(test_route_demo PRIVATE ../src)
+target_compile_options(test_route_demo PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME route_demo_policy COMMAND test_route_demo)

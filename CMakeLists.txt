@@ -287,7 +287,12 @@ add_executable(buddy2_guidance_check EXCLUDE_FROM_ALL
 target_compile_definitions(buddy2_guidance_check PRIVATE BUDDY2_GUIDANCE_REPLAY=1)
 target_link_libraries(buddy2_guidance_check PRIVATE buddy2_motion_service)
 
-foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest buddy2_encoder_calibrate buddy2_motion_check buddy2_motor_check buddy2_motor_batch_check buddy2_speed_check buddy2_guidance_check)
+# Explicit once-only floor demonstration. Owns capture/PWM; no sensor tasks.
+add_executable(buddy2_route_check EXCLUDE_FROM_ALL
+    src/buddy2_route_check.c src/route_demo.c src/speed_probe.c src/motor_pulse.c)
+target_link_libraries(buddy2_route_check PRIVATE buddy2_motion_service)
+
+foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest buddy2_encoder_calibrate buddy2_motion_check buddy2_motor_check buddy2_motor_batch_check buddy2_speed_check buddy2_guidance_check buddy2_route_check)
 # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
 target_link_libraries(${app_target} PRIVATE mtk3smp)
 # The kernel supplies its own startup code (vector table, boot stage 2, reset

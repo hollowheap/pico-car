@@ -51,6 +51,7 @@ The team `main` is not automatically switched to these diagnostics.
 - [Motor-owner service and fault handling](docs/buddy2_motion_service.md)
 - [First PI speed trial and limits](docs/buddy2_speed_check.md)
 - [Steering/overlapping-hold test and physical result](docs/buddy2_guidance_check.md)
+- [Optional50cm / right3wheel-revolutions /10cm demo](docs/buddy2_route_check.md)
 - [Verified hardware mapping and bring-up history](docs/buddy2_bringup.md)
 
 ## Table of Abbreviations
