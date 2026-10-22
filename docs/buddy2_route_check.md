@@ -68,5 +68,35 @@ completion, no rollback restart, pause baselines, left-only three-revolution
 turn,32-bit clock wrap, quality failures during motion/pause, stale and
 duplicate samples, loop/sample gaps, timeout, stop priority, arithmetic range
 checks and no automatic restart. Pico route firmware builds with application
-warnings as errors. This is software evidence; the first physical route
-result is pending.
+warnings as errors. Software checks alone do not establish floor performance.
+
+## Wheels-up result, 22 October 2026
+
+After a fresh reflash of64d493f and a confirmed READY message, the PC-USB
+wheels-up run completed in26.840166seconds. The owner confirmed both wheels
+moved and the sequence stopped. The complete30-row trace had no drops;
+route phase5/error0, controller STOPPED/fault0, API0 and brake-failed0.
+All recorded speed/distance continuity flags were valid from the explicit
+braked run baseline, while both scale-verification flags remained false.
+Largest observed interval was20.027ms, not a guaranteed deadline.
+
+| Leg | Observed left/right edge delta | Approximate wheel travel from provisional scales |
+| --- | --- | --- |
+| First straight | 6043 /6029 | 500.580 /501.591mm |
+| Rightward turn | 7625 /0 | About3left revolutions; right count unchanged |
+| Last straight | 1211 /1210 | 100.315 /100.668mm |
+
+Trace transitions precede later braking drift. Both first-leg targets were
+50mm/s, right target/duty stayed zero during the turn, and all recorded
+requested duties were within20percent. Historical target fields can remain
+nonzero at terminal stop; terminal state and zero requested duties take
+precedence. Evidence is saved locally under `route-check/` as
+`wheels-up-analysis.json`, `wheels-up-trace.csv` and
+`physical-route-20261022T080112Z.log`.
+
+An earlier powerbank attempt produced no visible GP20-triggered movement;
+the carrier's manual motor buttons worked. A subsequent unlogged observation
+described delayed left-only movement. No serial evidence was captured for
+those events, so their cause and loaded/powerbank behaviour remain unresolved.
+Do not infer successful floor travel, heading accuracy, powerbank operation
+or a physical stop-time bound from the later wheels-up pass.

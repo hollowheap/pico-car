@@ -12,7 +12,7 @@ working hardware evidence from code that has only been built/tested in software.
 | 5 | Wheel calibration | Provisional67mm/edge scales and two500mm rolling observations; final accuracy not accepted. |
 | 6 | Paired motor output | Six-step wheels-up batch passed. |
 | 7 | PID and motor-owner service | First wheels-up PI run completed cleanly; encoder-speed means near50mm/s target. Loaded/full tuning remains. |
-| 8 | Distance commands and automatic completion | Optional50cm/right3wheel-revs/10cm demo implemented with an explicit braked baseline; physical route result pending. General navigation API and final accuracy remain deferred. |
+| 8 | Distance commands and automatic completion | Optional50cm/right3wheel-revs/10cm demo passed a recorded wheels-up run with an explicit braked baseline. Floor/powerbank behaviour remains unresolved; general navigation API and final accuracy remain deferred. |
 | 9 | Angle-based turns | Deferred until needed; measured wheel spacing required. |
 | 10 | Line/barcode and obstacle integration | Straight/steer/hold API implemented; synthetic seven-stage wheels-up test passed. Real Buddy3/Buddy5 drivers/freshness and shared IRQ integration pending. |
 | 11 | Combined timing, faults and loaded accuracy | All13 host groups pass; physical PI and synthetic guidance checks recorded. Loaded real-sensor tests and timing guarantees remain pending. |
