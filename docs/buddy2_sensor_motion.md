@@ -1,5 +1,8 @@
 # Buddy 2 interface for sensor-led driving
 
+For the exact header, startup settings and calls to use, begin with
+[Buddy3's quickstart](buddy3_motion_quickstart.md).
+
 Buddy3 owns IR/barcode decoding. Buddy2 accepts decoded motion decisions and
 owns encoder feedback/PWM/stop. This code reads no IR GPIO and assumes no
 black/white polarity or two-bit truth table. No Buddy3 IR implementation was

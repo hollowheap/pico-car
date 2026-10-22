@@ -4,8 +4,10 @@
 wheel PIDs and one pair-output interface. `motion_service` supplies the
 micro T-Kernel task, hardware adapter and protected cross-core command/status
 copies. They are opt-in libraries; team `main` does not start this service.
-The earlier standalone107f5e1 speed trial ran it; the new sensor interface
-described below is built/tested in software and not yet flashed.
+The standalone107f5e1 speed trial ran it, and the2ad2993 synthetic guidance
+trial exercised the newer steering/hold interface on hardware. Real IR/sonar
+integration remains pending. Buddy3 should begin with
+[the short integration guide](buddy3_motion_quickstart.md).
 
 ```sh
 cmake --build <configured-build-directory> --target buddy2_motion_service

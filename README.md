@@ -41,6 +41,10 @@ It does not drive the motors or replace the team demo.
 
 ## Buddy 2 motor control and integration
 
+**Buddy3 taking over: [read this quickstart first](docs/buddy3_motion_quickstart.md).**
+It lists the one public header, startup, copyable settings, calls from your IR
+task and the diagnostic files you can ignore.
+
 The optional motor service owns encoder feedback, paired PWM and wheel-speed
 PI control. Standalone wheels-up motor, speed and synthetic steering/hold
 checks have passed. Real IR/obstacle integration and loaded driving remain.
