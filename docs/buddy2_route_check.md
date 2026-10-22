@@ -16,6 +16,14 @@ or while running. Leave the carrier's full-power M1/M2 buttons released.
 This demo reads no IR/sonar and performs no obstacle avoidance. Run on a clear
 floor with enough USB cable slack for the initial50cm and the rotation.
 
+USB powerbank operation is also supported: flash from the PC first, then
+switch the USB lead to the powerbank. Wait25seconds after power-on before
+the released/pressed GP20 start, because this diagnostic initially waits up
+to about20seconds for a USB host. There is no automatic boot movement.
+Without a data connection the PC cannot capture live serial evidence; RAM
+logs are lost on power interruption, so a powerbank-only observation is not
+a captured encoder/timing validation.
+
 ## Endpoint and quality rules
 
 The provisional67mm circumference210487um and x4counts2541left/2530right
