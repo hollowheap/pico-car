@@ -20,7 +20,6 @@ int main (void)
     sample.timestamp_us = UINT32_MAX - 10000U;
     sample.elapsed_us = 20000U;
     sample.wheel[0].speed_valid = true;
-    sample.wheel[0].scale_verified = true;
     assert(wheel_pid_init(&pid, &config));
     assert(wheel_pid_update(&pid, 1000, &sample, 0U, sample.timestamp_us, &duty));
     assert(duty == 270); /* P=250, I=20. */
@@ -34,7 +33,6 @@ int main (void)
     for (tick = 0U; tick < 4U; tick++)
     {
         sample.wheel[0].speed_valid = tick != 0U;
-        sample.wheel[0].scale_verified = tick != 1U;
         assert(!wheel_pid_update(&pid, tick == 2U ? 10001 : 1000, &sample,
             0U, sample.timestamp_us + (tick == 3U ? 40001U : 0U), &duty));
         assert(duty == 0 && memcmp(&pid, &saved, sizeof(pid)) == 0);

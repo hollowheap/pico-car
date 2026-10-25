@@ -288,18 +288,15 @@ int main (void)
         assert(control.status.brake_failed);
         initialise();
         config = configuration();
-        config.sampling.wheel[0].scale_verified = false;
         assert(motion_control_init(&control, &config, &input, &callbacks));
         next = command(1000, 1000, 1000000U);
         tick(&next, false);
         assert_fault(MOTION_FAULT_FEEDBACK);
         initialise();
-        config.speed[0].allow_provisional_scale = true;
         assert(motion_control_init(&control, &config, &input, &callbacks));
         next = command(1000, 1000, 1000000U);
         tick(&next, false);
         assert(control.status.state == MOTION_RUNNING);
-        assert(!control.status.sample.wheel[0].scale_verified);
     }
     motion_control_tick(NULL, NULL, 0U, NULL, true);
     {

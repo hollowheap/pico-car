@@ -71,8 +71,6 @@ int main (void)
               output.wheel[i].speed_valid && output.wheel[i].odometry_valid,
               "both wiring signs normalise forward");
     }
-    check(!output.wheel[0].scale_verified && output.wheel[1].scale_verified,
-          "calibration quality remains independent of capture quality");
     check(motion_sample_fresh(&output, 150000U, 50000U), "fresh inclusive bound");
     check(!motion_sample_fresh(&output, 150001U, 50000U), "stale rejected");
     check(!motion_sample_fresh(NULL, 150000U, 50000U), "null freshness");

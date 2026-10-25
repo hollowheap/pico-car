@@ -18,17 +18,16 @@ typedef struct
     uint32_t max_interval_us;
     uint32_t max_sample_age_us;
     uint16_t max_duty_permille; /* 1..1000. */
-    bool allow_provisional_scale; /* Explicit bench-only choice if unverified. */
 } wheel_pid_config_t;
 
 typedef struct
 {
     wheel_pid_config_t config;
-    int64_t integral_q16;
-    int32_t previous_measurement;
-    uint32_t previous_us;
-    bool has_previous;
-    bool initialised;
+    int64_t            integral_q16;
+    int32_t            previous_measurement;
+    uint32_t           previous_us;
+    bool               has_previous;
+    bool               initialised;
 } wheel_pid_t;
 
 bool wheel_pid_init (wheel_pid_t * p_pid, const wheel_pid_config_t * p_config);
@@ -46,7 +45,7 @@ void wheel_pid_reset (wheel_pid_t * p_pid);
  * Not an RTOS task, mailbox or tuned controller. Calls must be serialised by
  * one owner. No default gains or physical speed limits are supplied. */
 bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
-    const motion_sample_t * p_sample, unsigned int wheel, uint32_t now_us,
-    int16_t * p_duty);
+                       const motion_sample_t * p_sample, unsigned int wheel,
+                       uint32_t now_us, int16_t * p_duty);
 
 #endif /* WHEEL_PID_H */

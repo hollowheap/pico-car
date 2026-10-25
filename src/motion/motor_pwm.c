@@ -3,30 +3,28 @@
  */
 #include "motor_pwm.h"
 #include <bsp/libbsp.h>
-#include "buddy2_pins.h"
+#include "motion_pins.h"
 #include "motor_pair.h"
 
 #if TMCLK_MHz != 125
 #error "Revalidate motor PWM frequency after changing the system clock"
 #endif
-#if (BUDDY2_MOTOR_LEFT_A != 8U) || (BUDDY2_MOTOR_LEFT_B != 9U) || \
-    (BUDDY2_MOTOR_RIGHT_A != 10U) || (BUDDY2_MOTOR_RIGHT_B != 11U)
+#if (MOTOR_LEFT_A != 8U) || (MOTOR_LEFT_B != 9U) || (MOTOR_RIGHT_A != 10U) ||  \
+    (MOTOR_RIGHT_B != 11U)
 #error "Revalidate reserved PWM slices after changing the motor pins"
 #endif
 
-#define MOTOR_PWM_PERIOD MOTOR_PAIR_PERIOD
-#define MOTOR_PWM_MASK ((1U << 4U) | (1U << 5U))
+#define MOTOR_PWM_PERIOD        MOTOR_PAIR_PERIOD
+#define MOTOR_PWM_MASK          ((1U << 4U) | (1U << 5U))
 #define MOTOR_SLICE_BASE(slice) (PWM_BASE + ((slice) * 0x14U))
 
-static const UINT motor_pins[2][2] = {
-    {BUDDY2_MOTOR_LEFT_A, BUDDY2_MOTOR_LEFT_B},
-    {BUDDY2_MOTOR_RIGHT_A, BUDDY2_MOTOR_RIGHT_B}
-};
-static ID owner;
-static bool active;
-static bool stopped;
-static bool pair_active;
-static int16_t previous_duty[2];
+static const UINT motor_pins[2][2] = {{MOTOR_LEFT_A, MOTOR_LEFT_B},
+                                      {MOTOR_RIGHT_A, MOTOR_RIGHT_B}};
+static ID         owner;
+static bool       active;
+static bool       stopped;
+static bool       pair_active;
+static int16_t    previous_duty[2];
 
 void motor_pwm_boot_brake (void)
 {
@@ -83,8 +81,8 @@ ER motor_pwm_init (void)
     {
         return E_TMOUT;
     }
-    if (((in_w(PWM_EN) | in_w(PWM_INTE) | in_w(PWM_INTF)) &
-         MOTOR_PWM_MASK) != 0U)
+    if (((in_w(PWM_EN) | in_w(PWM_INTE) | in_w(PWM_INTF)) & MOTOR_PWM_MASK) !=
+        0U)
     {
         return E_BUSY;
     }
@@ -98,10 +96,10 @@ ER motor_pwm_init (void)
         out_w(base + PWM_CHx_CC, 0U);
         out_w(base + PWM_CHx_TOP, MOTOR_PWM_PERIOD - 1U);
     }
-    owner = tk_get_tid();
-    active = false;
-    stopped = false;
-    pair_active = false;
+    owner            = tk_get_tid();
+    active           = false;
+    stopped          = false;
+    pair_active      = false;
     previous_duty[0] = 0;
     previous_duty[1] = 0;
     return E_OK;
@@ -110,7 +108,7 @@ ER motor_pwm_init (void)
 ER motor_pwm_brake (void)
 {
     unsigned int slice;
-    ER result = owner_context();
+    ER           result = owner_context();
 
     if (result != E_OK)
     {
@@ -126,8 +124,8 @@ ER motor_pwm_brake (void)
         out_w(base + PWM_CHx_CC, 0U);
         out_w(base + PWM_CHx_CTR, 0U);
     }
-    active = false;
-    pair_active = false;
+    active           = false;
+    pair_active      = false;
     previous_duty[0] = 0;
     previous_duty[1] = 0;
     return E_OK;
@@ -136,9 +134,9 @@ ER motor_pwm_brake (void)
 ER motor_pwm_set_pair (int16_t left, int16_t right)
 {
     motor_pair_plan_t plan;
-    unsigned int wheel;
-    unsigned int channel;
-    ER result = owner_context();
+    unsigned int      wheel;
+    unsigned int      channel;
+    ER                result = owner_context();
 
     if (result != E_OK)
     {
@@ -202,16 +200,16 @@ ER motor_pwm_set_pair (int16_t left, int16_t right)
     out_w(PWM_EN + 0x2000U,
           (left != 0 ? 1U << 4U : 0U) | (right != 0 ? 1U << 5U : 0U));
     pair_active = true;
-    active = true;
+    active      = true;
     return E_OK;
 }
 
 ER motor_pwm_drive (unsigned int wheel, bool channel_a, uint16_t duty_permille)
 {
-    UINT pin;
+    UINT     pin;
     uint32_t compare;
     uint32_t base;
-    ER result = owner_context();
+    ER       result = owner_context();
 
     if (result != E_OK)
     {
@@ -233,8 +231,8 @@ ER motor_pwm_drive (unsigned int wheel, bool channel_a, uint16_t duty_permille)
     {
         return E_BUSY;
     }
-    pin = motor_pins[wheel][channel_a ? 0U : 1U];
-    base = MOTOR_SLICE_BASE((pin >> 1U) & 7U);
+    pin     = motor_pins[wheel][channel_a ? 0U : 1U];
+    base    = MOTOR_SLICE_BASE((pin >> 1U) & 7U);
     compare = (MOTOR_PWM_PERIOD * (uint32_t)duty_permille) / 1000U;
     out_w(base + PWM_CHx_CC, (pin & 1U) != 0U ? compare << 16U : compare);
     (void)pwm_set_pin(pin);

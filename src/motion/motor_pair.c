@@ -8,7 +8,7 @@ bool motor_pair_plan (const int16_t previous[2], int16_t left, int16_t right,
                       motor_pair_plan_t * p_plan)
 {
     motor_pair_plan_t plan = {{left, right}, {0U, 0U}, false};
-    unsigned int wheel;
+    unsigned int      wheel;
 
     if ((previous == NULL) || (p_plan == NULL))
     {
@@ -16,16 +16,16 @@ bool motor_pair_plan (const int16_t previous[2], int16_t left, int16_t right,
     }
     for (wheel = 0U; wheel < 2U; wheel++)
     {
-        int32_t duty = plan.duty[wheel];
+        int32_t  duty = plan.duty[wheel];
         uint32_t compare;
 
-        if ((duty < -1000) || (duty > 1000) ||
-            (previous[wheel] < -1000) || (previous[wheel] > 1000))
+        if ((duty < -1000) || (duty > 1000) || (previous[wheel] < -1000) ||
+            (previous[wheel] > 1000))
         {
             return false;
         }
-        compare = (MOTOR_PAIR_PERIOD * (uint32_t)(duty < 0 ? -duty : duty)) /
-                  1000U;
+        compare =
+            (MOTOR_PAIR_PERIOD * (uint32_t)(duty < 0 ? -duty : duty)) / 1000U;
         plan.compare[wheel] = duty < 0 ? compare << 16U : compare;
         if (((previous[wheel] > 0) && (duty < 0)) ||
             ((previous[wheel] < 0) && (duty > 0)))

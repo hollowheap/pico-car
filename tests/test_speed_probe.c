@@ -30,8 +30,6 @@ int main (void)
     {
         assert(config.speed[wheel].max_duty_permille <= 200U);
         assert(config.speed[wheel].kd_q16 == 0U);
-        assert(!config.sampling.wheel[wheel].scale_verified);
-        assert(config.speed[wheel].allow_provisional_scale);
         assert(config.speed[wheel].max_target_um_s >= (uint32_t)SPEED_PROBE_TARGET_UM_S);
     }
     speed_probe_init(NULL);

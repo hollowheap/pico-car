@@ -7,8 +7,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define ENCODER_LEFT  0U
-#define ENCODER_RIGHT 1U
+#define ENCODER_LEFT   0U
+#define ENCODER_RIGHT  1U
 #define ENCODER_WHEELS 2U
 
 typedef struct

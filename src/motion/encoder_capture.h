@@ -9,9 +9,9 @@
 
 typedef struct
 {
-    uint32_t timestamp_us;
+    uint32_t              timestamp_us;
     encoder_quad_counts_t wheel[ENCODER_WHEELS];
-    uint8_t captured_states;
+    uint8_t               captured_states;
     /* Bits 0..3: live A/B states; 4/5: pending L/R edge IRQ;
      * 6/7: L/R edge enables AND this core's NVIC enable. */
     uint8_t pins_and_irq;

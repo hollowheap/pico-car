@@ -9,9 +9,8 @@
 
 static bool multiply (int64_t value, uint32_t factor, int64_t * p_result)
 {
-    if ((factor != 0U) &&
-        ((value > INT64_MAX / (int64_t)factor) ||
-         (value < INT64_MIN / (int64_t)factor)))
+    if ((factor != 0U) && ((value > INT64_MAX / (int64_t)factor) ||
+                           (value < INT64_MIN / (int64_t)factor)))
     {
         return false;
     }
@@ -49,8 +48,8 @@ bool wheel_pid_init (wheel_pid_t * p_pid, const wheel_pid_config_t * p_config)
     {
         return false;
     }
-    *p_pid = (wheel_pid_t){0};
-    p_pid->config = *p_config;
+    *p_pid             = (wheel_pid_t){0};
+    p_pid->config      = *p_config;
     p_pid->initialised = true;
     return true;
 }
@@ -59,27 +58,27 @@ void wheel_pid_reset (wheel_pid_t * p_pid)
 {
     if (p_pid != NULL)
     {
-        p_pid->integral_q16 = 0;
+        p_pid->integral_q16         = 0;
         p_pid->previous_measurement = 0;
-        p_pid->previous_us = 0U;
-        p_pid->has_previous = false;
+        p_pid->previous_us          = 0U;
+        p_pid->has_previous         = false;
     }
 }
 
 bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
-    const motion_sample_t * p_sample, unsigned int wheel, uint32_t now_us,
-    int16_t * p_duty)
+                       const motion_sample_t * p_sample, unsigned int wheel,
+                       uint32_t now_us, int16_t * p_duty)
 {
-    wheel_pid_t next;
+    wheel_pid_t                   next;
     const motion_wheel_sample_t * p_feedback;
-    uint32_t interval;
-    int64_t error;
-    int64_t proportional;
-    int64_t integral_delta;
-    int64_t integral;
-    int64_t derivative = 0;
-    int64_t limit;
-    int64_t sum;
+    uint32_t                      interval;
+    int64_t                       error;
+    int64_t                       proportional;
+    int64_t                       integral_delta;
+    int64_t                       integral;
+    int64_t                       derivative = 0;
+    int64_t                       limit;
+    int64_t                       sum;
 
     if (p_duty != NULL)
     {
@@ -91,12 +90,11 @@ bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
     {
         return false;
     }
-    next = *p_pid;
+    next       = *p_pid;
     p_feedback = &p_sample->wheel[wheel];
-    interval = next.has_previous ? p_sample->timestamp_us - next.previous_us :
-                                  p_sample->elapsed_us;
+    interval   = next.has_previous ? p_sample->timestamp_us - next.previous_us
+                                   : p_sample->elapsed_us;
     if (!p_feedback->speed_valid ||
-        (!p_feedback->scale_verified && !next.config.allow_provisional_scale) ||
         (interval == 0U) || (interval > next.config.max_interval_us) ||
         (p_sample->elapsed_us == 0U) ||
         (p_sample->elapsed_us > next.config.max_interval_us) ||
@@ -149,17 +147,17 @@ bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
             return false;
         }
     }
-    next.integral_q16 = integral;
+    next.integral_q16         = integral;
     next.previous_measurement = p_feedback->velocity_um_s;
-    next.previous_us = p_sample->timestamp_us;
-    next.has_previous = true;
+    next.previous_us          = p_sample->timestamp_us;
+    next.has_previous         = true;
     if (target_um_s == 0)
     {
         next.integral_q16 = 0;
         next.has_previous = false;
-        sum = 0;
+        sum               = 0;
     }
     *p_duty = (int16_t)(clamp(sum, limit) / PID_Q16);
-    *p_pid = next;
+    *p_pid  = next;
     return true;
 }

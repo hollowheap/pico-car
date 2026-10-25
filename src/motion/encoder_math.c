@@ -15,12 +15,11 @@
  * multiplier. The remainder stays below denominator, and subtraction tests
  * make both modular additions safe even when denominator is near UINT64_MAX.
  * Preconditions: denominator > 0 and remainder < denominator. */
-static uint32_t fractional_product (uint64_t remainder,
-                                   uint32_t multiplier,
-                                   uint64_t denominator)
+static uint32_t fractional_product (uint64_t remainder, uint32_t multiplier,
+                                    uint64_t denominator)
 {
     uint64_t accumulator = UINT64_C(0);
-    uint32_t quotient = UINT32_C(0);
+    uint32_t quotient    = UINT32_C(0);
     uint32_t mask;
 
     for (mask = UINT32_C(1) << 31; mask != UINT32_C(0); mask >>= 1)
@@ -58,10 +57,9 @@ uint32_t encoder_math_count_delta (uint32_t previous, uint32_t current)
     return (uint32_t)(current - previous);
 }
 
-bool encoder_math_distance_um (uint32_t count,
-                              uint32_t wheel_travel_um,
-                              uint32_t edges_per_revolution,
-                              uint32_t * p_distance_um)
+bool encoder_math_distance_um (uint32_t count, uint32_t wheel_travel_um,
+                               uint32_t   edges_per_revolution,
+                               uint32_t * p_distance_um)
 {
     uint64_t distance;
 
@@ -82,11 +80,10 @@ bool encoder_math_distance_um (uint32_t count,
     return true;
 }
 
-bool encoder_math_speed_um_s (uint32_t count,
-                             uint32_t elapsed_us,
-                             uint32_t wheel_travel_um,
-                             uint32_t edges_per_revolution,
-                             uint32_t * p_speed_um_s)
+bool encoder_math_speed_um_s (uint32_t count, uint32_t elapsed_us,
+                              uint32_t   wheel_travel_um,
+                              uint32_t   edges_per_revolution,
+                              uint32_t * p_speed_um_s)
 {
     uint64_t numerator;
     uint64_t denominator;
@@ -101,9 +98,9 @@ bool encoder_math_speed_um_s (uint32_t count,
         return false;
     }
 
-    numerator = (uint64_t)count * wheel_travel_um;
+    numerator   = (uint64_t)count * wheel_travel_um;
     denominator = (uint64_t)edges_per_revolution * elapsed_us;
-    whole = numerator / denominator;
+    whole       = numerator / denominator;
     if (whole > (UINT32_MAX / MICROSECONDS_PER_SECOND))
     {
         return false;
@@ -111,7 +108,7 @@ bool encoder_math_speed_um_s (uint32_t count,
 
     fraction = fractional_product(numerator % denominator,
                                   MICROSECONDS_PER_SECOND, denominator);
-    speed = (whole * MICROSECONDS_PER_SECOND) + fraction;
+    speed    = (whole * MICROSECONDS_PER_SECOND) + fraction;
     if (speed > UINT32_MAX)
     {
         return false;

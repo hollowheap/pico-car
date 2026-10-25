@@ -17,9 +17,11 @@ typedef enum
 typedef struct
 {
     motion_drive_action_t action;
-    int32_t speed_um_s;
-    int32_t inside_um_s; /* Left/right steering: 0..speed, no pivot/reverse. */
-    uint32_t sensed_us;  /* Timestamp when the decision's sensor data was read. */
+    int32_t               speed_um_s;
+    /* Left/right steering: 0..speed, no pivot/reverse. */
+    int32_t inside_um_s;
+    /* Timestamp when the decision's sensor data was read. */
+    uint32_t sensed_us;
     uint32_t valid_for_us;
 } motion_drive_request_t;
 
@@ -28,7 +30,8 @@ typedef struct
  * No wheel geometry/distance input. Failure leaves output unchanged.
  * Limits are per-wheel motor-service limits, not a guessed operating speed. */
 bool motion_request_plan (const motion_drive_request_t * p_request,
-    const uint32_t limits_um_s[ENCODER_WHEELS], uint32_t max_ttl_us,
-    uint32_t now_us, motion_command_t * p_command);
+                          const uint32_t limits_um_s[ENCODER_WHEELS],
+                          uint32_t max_ttl_us, uint32_t now_us,
+                          motion_command_t * p_command);
 
 #endif /* MOTION_REQUEST_H */

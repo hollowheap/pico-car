@@ -11,9 +11,9 @@
 
 typedef struct
 {
-    int16_t duty[2]; /* Signed permille; positive is verified car-forward. */
+    int16_t  duty[2]; /* Signed permille; positive is verified car-forward. */
     uint32_t compare[2];
-    bool reversal;
+    bool     reversal;
 } motor_pair_plan_t;
 
 /* Each channel pair has at most one nonzero compare. On this car both A-side

@@ -18,10 +18,11 @@ typedef struct
 typedef struct
 {
     motion_control_status_t control;
-    ER init_error;
-    bool ready;
-    bool stop_requested;
-    uint32_t hold_mask; /* Independent normal sensor holds; not emergency stop. */
+    ER                      init_error;
+    bool                    ready;
+    bool                    stop_requested;
+    uint32_t
+        hold_mask; /* Independent normal sensor holds; not emergency stop. */
 } motion_service_status_t;
 
 /* Lifecycle: call ONCE from core-0 startup task before launching producers
@@ -49,7 +50,10 @@ ER motion_service_submit_request (const motion_drive_request_t * p_request);
  * Clearing one never clears another. Last release requires a fresh request
  * sensed at/after release; cached old intent cannot restart motion. */
 ER motion_service_set_hold (uint32_t reason, bool held);
-ER motion_service_request_stop (void); /* Latches until reboot; next owner poll. */
+ER motion_service_request_stop (
+    void); /* Latches until reboot; next owner poll. */
 ER motion_service_read_status (motion_service_status_t * p_status);
 
 #endif /* MOTION_SERVICE_H */
+
+/*** end of file ***/

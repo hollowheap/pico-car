@@ -203,123 +203,63 @@ target_sources(mtk3smp PRIVATE
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
-# Compile the example into an executable
-add_library(buddy2_motion_core STATIC EXCLUDE_FROM_ALL
-    src/motion_control.c src/wheel_pid.c src/motion_sampler.c src/encoder_math.c
-    src/motion_request.c src/motion_inbox.c)
-target_include_directories(buddy2_motion_core PUBLIC src)
-target_compile_options(buddy2_motion_core PRIVATE
-    -ffreestanding -Wall -Wextra -Werror -Wshadow)
+# Compile the executable
+add_library(motion_core STATIC
+    src/motion/motion_control.c
+    src/motion/wheel_pid.c
+    src/motion/motion_sampler.c
+    src/motion/encoder_math.c
+    src/motion/motion_request.c
+    src/motion/motion_inbox.c
+)
+target_link_libraries(motion_core PUBLIC mtk3smp)
 
-add_library(buddy2_motion_service STATIC EXCLUDE_FROM_ALL
-    src/motion_service.c src/motor_pwm.c src/motor_pair.c
-    src/encoder_capture.c src/encoder_quad.c)
-target_link_libraries(buddy2_motion_service PUBLIC buddy2_motion_core mtk3smp)
-target_include_directories(buddy2_motion_service PUBLIC src)
-target_compile_options(buddy2_motion_service PRIVATE
-    -ffreestanding -Wall -Wextra -Werror -Wshadow)
+add_library(motion_service STATIC
+    src/motion/motion_service.c
+    src/motion/motor_pwm.c
+    src/motion/motor_pair.c
+    src/motion/encoder_capture.c
+    src/motion/encoder_quad.c
+)
+target_link_libraries(motion_service PUBLIC motion_core mtk3smp)
 
 add_executable(main
     src/main.c
     src/demo_tasks.c
-    src/encoder_math.c
 )
 
-# Opt-in hardware diagnostic. This has its own usermain(), holds the motor
-# bridges low and never starts the demo or autonomous movement.
-add_executable(buddy2_encoder_check EXCLUDE_FROM_ALL
-    src/buddy2_encoder_check.c
-    src/encoder_capture.c
-    src/encoder_quad.c
-)
+foreach(app_target IN ITEMS main)
+    # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
+    target_link_libraries(${app_target} PRIVATE mtk3smp motion_service)
+    # The kernel supplies its own startup code (vector table, boot stage 2, reset
+    # handler) and linker script; the SDK C runtime must not be linked in.
+    target_compile_options(${app_target} PRIVATE
+        -ffreestanding
+        -ffunction-sections
+        -fdata-sections
+    )
+    target_link_options(${app_target} PRIVATE
+        -nostartfiles
+        -Wl,--gc-sections
+        # The second-stage bootloader is an unreferenced data symbol in the kernel
+        # archive; without this it is not pulled in and the linker script's
+        # ".boot2 must be 256 bytes" assertion fails.
+        -Wl,--undefined=boot2
+        -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
+    )
+    # Create map/bin/hex/uf2 file etc.
+    pico_add_extra_outputs(${app_target})
+    # Extra compiler flags
+    target_compile_options(${app_target} PRIVATE
+        -Werror
+        -Wall
+        -Wextra
 
-add_executable(buddy2_encoder_selftest EXCLUDE_FROM_ALL
-    src/buddy2_encoder_check.c
-    src/encoder_capture.c
-    src/encoder_quad.c
-    src/encoder_input_selftest.c
-)
-target_compile_definitions(buddy2_encoder_selftest PRIVATE BUDDY2_INPUT_SELFTEST=1)
-
-# Hand-turn calibration: set both motor bridges to coast, never enable PWM.
-add_executable(buddy2_encoder_calibrate EXCLUDE_FROM_ALL
-    src/buddy2_encoder_check.c
-    src/encoder_capture.c
-    src/encoder_quad.c
-)
-target_compile_definitions(buddy2_encoder_calibrate PRIVATE BUDDY2_COAST_CALIBRATION=1)
-
-# Quiet hand-turn speed/displacement probe. Same coast-only button workflow.
-add_executable(buddy2_motion_check EXCLUDE_FROM_ALL
-    src/buddy2_encoder_check.c
-    src/encoder_capture.c
-    src/encoder_quad.c
-    src/encoder_math.c
-    src/motion_sampler.c
-)
-target_compile_definitions(buddy2_motion_check PRIVATE
-    BUDDY2_COAST_CALIBRATION=1 BUDDY2_MOTION_MEASUREMENT=1)
-
-# Explicitly selected wheel-up diagnostic: no pulse until the GP20 user button.
-add_executable(buddy2_motor_check EXCLUDE_FROM_ALL
-    src/buddy2_motor_check.c
-    src/motor_pwm.c
-    src/motor_pair.c
-    src/motor_pulse.c
-    src/encoder_capture.c
-    src/encoder_quad.c
-)
-
-add_executable(buddy2_motor_batch_check EXCLUDE_FROM_ALL
-    src/buddy2_motor_batch_check.c
-    src/motor_batch.c src/motor_pulse.c src/motor_pair.c src/motor_pwm.c
-    src/encoder_capture.c src/encoder_quad.c
-)
-
-add_executable(buddy2_speed_check EXCLUDE_FROM_ALL
-    src/buddy2_speed_check.c src/speed_probe.c src/motor_pulse.c)
-target_link_libraries(buddy2_speed_check PRIVATE buddy2_motion_service)
-
-# Same bounded/button-gated harness, but synthetic sensor intents/holds.
-add_executable(buddy2_guidance_check EXCLUDE_FROM_ALL
-    src/buddy2_speed_check.c src/speed_probe.c src/motor_pulse.c
-    src/guidance_replay.c)
-target_compile_definitions(buddy2_guidance_check PRIVATE BUDDY2_GUIDANCE_REPLAY=1)
-target_link_libraries(buddy2_guidance_check PRIVATE buddy2_motion_service)
-
-# Explicit once-only floor demonstration. Owns capture/PWM; no sensor tasks.
-add_executable(buddy2_route_check EXCLUDE_FROM_ALL
-    src/buddy2_route_check.c src/route_demo.c src/speed_probe.c src/motor_pulse.c)
-target_link_libraries(buddy2_route_check PRIVATE buddy2_motion_service)
-
-foreach(app_target IN ITEMS main buddy2_encoder_check buddy2_encoder_selftest buddy2_encoder_calibrate buddy2_motion_check buddy2_motor_check buddy2_motor_batch_check buddy2_speed_check buddy2_guidance_check buddy2_route_check)
-# Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
-target_link_libraries(${app_target} PRIVATE mtk3smp)
-# The kernel supplies its own startup code (vector table, boot stage 2, reset
-# handler) and linker script; the SDK C runtime must not be linked in.
-target_compile_options(${app_target} PRIVATE -ffreestanding -ffunction-sections -fdata-sections)
-target_link_options(${app_target} PRIVATE
-    -nostartfiles
-    -Wl,--gc-sections
-    # The second-stage bootloader is an unreferenced data symbol in the kernel
-    # archive; without this it is not pulled in and the linker script's
-    # ".boot2 must be 256 bytes" assertion fails.
-    -Wl,--undefined=boot2
-    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
-)
-# Create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(${app_target})
-# Extra compiler flags
-target_compile_options(${app_target} PRIVATE
-    -Werror
-    -Wall
-    -Wextra
-
-    -Wparentheses           # 8.6 suspicious assignment
-    -Wfloat-equal           # 5.4b.iv no float equality tests
-    -Wswitch-default        # 8.3b default required
-    -Wimplicit-fallthrough  # 8.3c commented fall-throughs
-    -Wshadow
-    -Wvla
-)
+        -Wparentheses           # 8.6 suspicious assignment
+        -Wfloat-equal           # 5.4b.iv no float equality tests
+        -Wswitch-default        # 8.3b default required
+        -Wimplicit-fallthrough  # 8.3c commented fall-throughs
+        -Wshadow
+        -Wvla
+    )
 endforeach()

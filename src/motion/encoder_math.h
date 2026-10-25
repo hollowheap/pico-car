@@ -27,10 +27,9 @@ uint32_t encoder_math_count_delta (uint32_t previous, uint32_t current);
  * values must be nonzero. A null output or a result above UINT32_MAX fails.
  * The output is unchanged on failure. For total odometry, convert the total
  * count rather than repeatedly accumulating rounded interval distances. */
-bool encoder_math_distance_um (uint32_t count,
-                              uint32_t wheel_travel_um,
-                              uint32_t edges_per_revolution,
-                              uint32_t * p_distance_um);
+bool encoder_math_distance_um (uint32_t count, uint32_t wheel_travel_um,
+                               uint32_t   edges_per_revolution,
+                               uint32_t * p_distance_um);
 
 /* Return floor(count * wheel_travel_um * 1000000 /
  *              (edges_per_revolution * elapsed_us)).
@@ -38,11 +37,10 @@ bool encoder_math_distance_um (uint32_t count,
  * invalid calibration, null output or out-of-range result fails without
  * changing the output. A successful zero speed is not proof of physical rest.
  * Run conversions in task context; they perform bounded 64-bit arithmetic. */
-bool encoder_math_speed_um_s (uint32_t count,
-                             uint32_t elapsed_us,
-                             uint32_t wheel_travel_um,
-                             uint32_t edges_per_revolution,
-                             uint32_t * p_speed_um_s);
+bool encoder_math_speed_um_s (uint32_t count, uint32_t elapsed_us,
+                              uint32_t   wheel_travel_um,
+                              uint32_t   edges_per_revolution,
+                              uint32_t * p_speed_um_s);
 
 #endif /* ENCODER_MATH_H */
 
