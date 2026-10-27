@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.12)
 set(ENV{PICO_SDK_PATH} "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk")
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 
-project(pico-blink C CXX ASM)
+project(pico-car C CXX ASM)
 
 # mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
 set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")
@@ -204,6 +204,11 @@ target_sources(mtk3smp PRIVATE
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
 # Compile the executable
+add_library(sys STATIC
+    src/sys/gpio_irq.c
+)
+target_link_libraries(sys PUBLIC mtk3smp)
+
 add_library(motion_core STATIC
     src/motion/motion_control.c
     src/motion/wheel_pid.c
@@ -221,7 +226,13 @@ add_library(motion_service STATIC
     src/motion/encoder_capture.c
     src/motion/encoder_quad.c
 )
-target_link_libraries(motion_service PUBLIC motion_core mtk3smp)
+target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
+
+add_library(ir_service STATIC
+    src/ir/ir_capture.c
+    src/ir/task.c
+)
+target_link_libraries(ir_service PUBLIC sys mtk3smp)
 
 add_executable(main
     src/main.c
@@ -230,7 +241,12 @@ add_executable(main
 
 foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
-    target_link_libraries(${app_target} PRIVATE mtk3smp motion_service)
+    target_link_libraries(${app_target} PRIVATE
+        sys
+        motion_service
+        ir_service
+        mtk3smp
+    )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset
     # handler) and linker script; the SDK C runtime must not be linked in.
     target_compile_options(${app_target} PRIVATE
