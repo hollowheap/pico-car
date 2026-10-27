@@ -4,17 +4,16 @@
 #include <tk/tkernel.h>
 #include <bsp/libbsp.h>
 #include <tk/smp.h>
+
 #include "motion_pins.h"
 #include "encoder_capture.h"
+#include "../sys/gpio_irq.h"
 
 /* RP2040 IO_BANK0 offsets, matching the pinned SDK's hardware/regs/io_bank0.h.
  * Use kernel MMIO accessors, not SDK IRQ registration: the kernel owns VTOR.
  */
-#define ENCODER_IRQ   13U
 #define BANK_INTR     (IO_BANK0_BASE + 0xF0U)
-#define CORE0_INTE    (IO_BANK0_BASE + 0x100U)
 #define CORE0_INTS    (IO_BANK0_BASE + 0x120U)
-#define CORE1_INTE    (IO_BANK0_BASE + 0x130U)
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
 #define EDGE_FLAGS    12U
 
@@ -40,11 +39,19 @@ static uint32_t edge_mask (unsigned int pin)
     return EDGE_FLAGS << ((pin % 8U) * 4U);
 }
 
+static void ack_encoder_gpio ()
+{
+    for (uint8_t wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        UW bank = g_encoder_pins[wheel][0] / 8U;
+        out_w(BANK_INTR + (bank * 4U), edge_mask(g_encoder_pins[wheel][0]) |
+                                           edge_mask(g_encoder_pins[wheel][1]));
+    }
+}
+
 static void encoder_isr (UINT intno)
 {
     uint32_t     pending[ENCODER_WHEELS];
-    uint32_t     a;
-    uint32_t     b;
     unsigned int wheel;
     UINT         saved;
 
@@ -55,8 +62,6 @@ static void encoder_isr (UINT intno)
         uint32_t     mask = edge_mask(g_encoder_pins[wheel][0]) |
                             edge_mask(g_encoder_pins[wheel][1]);
         pending[wheel]    = in_w(CORE0_INTS + (bank * 4U)) & mask;
-        /* W1C only our observed edge flags; never clear unrelated GPIOs. */
-        out_w(BANK_INTR + (bank * 4U), pending[wheel]);
     }
 
     /* Edges after the acknowledgement remain pending for the next entry. */
@@ -66,9 +71,11 @@ static void encoder_isr (UINT intno)
     {
         if (pending[wheel] != 0U)
         {
-            a = (pending[wheel] >> ((g_encoder_pins[wheel][0] % 8U) * 4U)) &
+            uint32_t a =
+                (pending[wheel] >> ((g_encoder_pins[wheel][0] % 8U) * 4U)) &
                 EDGE_FLAGS;
-            b = (pending[wheel] >> ((g_encoder_pins[wheel][1] % 8U) * 4U)) &
+            uint32_t b =
+                (pending[wheel] >> ((g_encoder_pins[wheel][1] % 8U) * 4U)) &
                 EDGE_FLAGS;
             /* Both channels changed, or both polarities on one pin: the
              * sequence is ambiguous. Record loss instead of guessing. */
@@ -83,9 +90,8 @@ static void encoder_isr (UINT intno)
 
 ER encoder_capture_init (void)
 {
-    T_DINT definition = {.intatr = TA_HLNG, .inthdr = (FP)encoder_isr};
-    UINT   saved;
-    ER     result;
+    UINT saved;
+    ER   result;
 
     if (tk_get_prc() != TP_PRC1)
     {
@@ -95,15 +101,7 @@ ER encoder_capture_init (void)
     {
         return E_OBJ;
     }
-    for (UW bank = 0U; bank < 4U; bank++)
-    {
-        if ((in_w(CORE0_INTE + (bank * 4U)) != 0U) ||
-            (in_w(CORE1_INTE + (bank * 4U)) != 0U))
-        {
-            return E_BUSY;
-        }
-    }
-    DisableInt(ENCODER_IRQ);
+
     for (uint8_t wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         for (uint8_t channel = 0U; channel < 2U; channel++)
@@ -115,33 +113,32 @@ ER encoder_capture_init (void)
         }
     }
 
-    result = tk_def_int(ENCODER_IRQ, &definition);
-    if (result != E_OK)
-    {
-        return result;
-    }
-    (void)InitSpinLock(&g_capture_lock);
-    (void)ISpinLock(&g_capture_lock, &saved);
+    uint32_t gpio_mask = 0;
     for (uint8_t wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        UW bank = g_encoder_pins[wheel][0] / 8U;
-        out_w(BANK_INTR + (bank * 4U), edge_mask(g_encoder_pins[wheel][0]) |
-                                           edge_mask(g_encoder_pins[wheel][1]));
+        for (uint8_t channel = 0U; channel < 2U; channel++)
+        {
+            unsigned int pin = g_encoder_pins[wheel][channel];
+            gpio_mask |= 1U << pin;
+        }
     }
+
+    (void)InitSpinLock(&g_capture_lock);
+    (void)ISpinLock(&g_capture_lock, &saved);
+    ack_encoder_gpio();
     uint32_t gpio = in_w(GPIO_IN);
     encoder_quad_init(&g_captured, (uint8_t)(pin_state(gpio, 0U) |
                                              (pin_state(gpio, 1U) << 2U)));
-    for (uint8_t wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+
+    result = gpio_irq_add_handler(TP_PRC1, gpio_mask, encoder_isr);
+    if (result != E_OK)
     {
-        UW bank = g_encoder_pins[wheel][0] / 8U;
-        set_w(CORE0_INTE + (bank * 4U),
-              edge_mask(g_encoder_pins[wheel][0]) |
-                  edge_mask(g_encoder_pins[wheel][1]));
+        (void)ISpinUnlock(&g_capture_lock, saved);
+        return result;
     }
+
     g_initialised = true;
     (void)ISpinUnlock(&g_capture_lock, saved);
-    ClearInt(ENCODER_IRQ);
-    EnableInt(ENCODER_IRQ, 2);
     return E_OK;
 }
 
@@ -174,11 +171,6 @@ ER encoder_capture_read (encoder_capture_sample_t * p_sample)
         {
             metadata |= (uint8_t)(1U << (4U + wheel));
         }
-        if (((in_w(CORE0_INTE + (bank * 4U)) & mask) == mask) &&
-            ((in_w(NVIC_ISER(ENCODER_IRQ)) & (1U << ENCODER_IRQ)) != 0U))
-        {
-            metadata |= (uint8_t)(1U << (6U + wheel));
-        }
     }
     p_sample->captured_states = g_captured.states;
     p_sample->pins_and_irq    = metadata;
@@ -189,10 +181,6 @@ ER encoder_capture_read (encoder_capture_sample_t * p_sample)
 
 ER encoder_capture_reset (void)
 {
-    UINT         saved;
-    uint32_t     gpio;
-    unsigned int wheel;
-
     if (tk_get_prc() != TP_PRC1)
     {
         return E_CTX;
@@ -201,14 +189,11 @@ ER encoder_capture_reset (void)
     {
         return E_OBJ;
     }
+
+    UINT saved = 0;
     (void)ISpinLock(&g_capture_lock, &saved);
-    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
-    {
-        unsigned int bank = g_encoder_pins[wheel][0] / 8U;
-        out_w(BANK_INTR + (bank * 4U), edge_mask(g_encoder_pins[wheel][0]) |
-                                           edge_mask(g_encoder_pins[wheel][1]));
-    }
-    gpio = in_w(GPIO_IN);
+    ack_encoder_gpio();
+    uint32_t gpio = in_w(GPIO_IN);
     encoder_quad_init(&g_captured, (uint8_t)(pin_state(gpio, 0U) |
                                              (pin_state(gpio, 1U) << 2U)));
     (void)ISpinUnlock(&g_capture_lock, saved);
