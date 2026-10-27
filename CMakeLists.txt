@@ -230,7 +230,6 @@ target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
 
 add_library(ir_service STATIC
     src/ir/ir_capture.c
-    src/ir/task.c
 )
 target_link_libraries(ir_service PUBLIC sys mtk3smp)
 
