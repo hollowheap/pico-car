@@ -207,7 +207,9 @@ target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 add_executable(main
     src/main.c
     src/demo_tasks.c
+    src/platform/isr_dispatcher.c
 )
+target_include_directories(main PRIVATE include)
 # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
 target_link_libraries(main PRIVATE mtk3smp)
 # The kernel supplies its own startup code (vector table, boot stage 2, reset
