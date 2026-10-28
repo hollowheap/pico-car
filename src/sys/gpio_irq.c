@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdint.h>
 #include <tk/tkernel.h>
 
@@ -38,29 +39,6 @@ LOCAL T_SPLOCK g_handlers_lock;
 LOCAL volatile handler_t g_handlers[MAX_GPIO_IRQ_HANDLERS] = {0};
 
 /**
- * Selects every 4th bit in a number and returns the result as a 4-bit int.
- * Example: 0b0000 1000 1000 0111 => 0b0110
- */
-LOCAL uint8_t inline unspread4(const uint16_t x)
-{
-    // x = 0b 1xxx 2xxx 3xxx 4xxx
-
-    // 0b 1000 2000
-    // 0b   30 0040
-    // 0b 1030 2040
-    uint16_t hi       = x & 0x8800U;
-    uint16_t lo       = x & 0x0088U;
-    uint16_t unspread = (hi >> 8U) | (lo >> 2U);
-    // 0b 1030
-    // 0b  204
-    // 0b 1234
-    hi       = unspread & 0xA0U;
-    lo       = unspread & 0x0AU;
-    unspread = (hi >> 4U) | (lo >> 1U);
-    return (uint8_t)unspread;
-}
-
-/**
  * Expands `gpio_mask` into the EDGE_LOW and EDGE_HIGH bits for each GPIO which
  * has its corresponding bit set. The bits are written to `enable_masks`.
  */
@@ -87,22 +65,23 @@ LOCAL void get_edge_masks (const uint32_t gpio_mask,
     }
 }
 
-LOCAL uint32_t get_edge_status (const UW proc)
+/**
+ * Returns whether any bits of the status registers are set, after masking with
+ * `enable_masks`. The masked status registers are written to `status_masks`.
+ */
+LOCAL bool has_status (const UW       proc,
+                       const uint32_t enable_masks[INT_REG_COUNT],
+                       uint32_t       status_masks[INT_REG_COUNT])
 {
     const UW status_base = (proc == TP_PRC1) ? PROC1_INTS : PROC2_INTS;
     uint32_t status      = 0;
     for (uint8_t idx = 0; idx < INT_REG_COUNT; idx++)
     {
         uint32_t status_w = in_w(status_base + (idx * sizeof(UW)));
-        // Combine every 3rd and 4th bits, so that the EDGE_LOW and EDGE_HIGH
-        // bits occupy a single bit.
-        status_w |= status_w << 1U;
-        const uint32_t lo   = unspread4((uint16_t)status_w);
-        const uint32_t hi   = unspread4((uint16_t)(status_w >> 16U));
-        const uint32_t byte = (hi << 4U) | lo;
-        status |= byte << (idx * 8U);
+        status_masks[idx] = status_w & enable_masks[idx];
+        status |= status_masks[idx];
     }
-    return status;
+    return status != 0;
 }
 
 /** Counts the number of commited handlers in `g_handlers`. */
@@ -150,8 +129,6 @@ LOCAL void ack_gpio_irqs (const uint32_t ack_masks[INT_REG_COUNT])
 
 LOCAL void gpio_isr (UINT intno)
 {
-    uint32_t status       = get_edge_status(THIS_PRC());
-    uint32_t handled_mask = 0;
     for (uint8_t idx = 0; idx < MAX_GPIO_IRQ_HANDLERS; idx++)
     {
         if (g_handlers[idx].handler == 0)
@@ -159,17 +136,15 @@ LOCAL void gpio_isr (UINT intno)
             break;
         }
 
-        const uint32_t status_mask = status & g_handlers[idx].mask;
-        if (status_mask != 0)
+        uint32_t enable_masks[INT_REG_COUNT];
+        get_edge_masks(g_handlers[idx].mask, enable_masks);
+        uint32_t status_masks[INT_REG_COUNT];
+        if (has_status(THIS_PRC(), enable_masks, status_masks))
         {
             g_handlers[idx].handler(intno);
-            handled_mask |= status_mask;
+            ack_gpio_irqs(status_masks);
         }
     }
-
-    uint32_t handled_edge_masks[INT_REG_COUNT];
-    get_edge_masks(handled_mask, handled_edge_masks);
-    ack_gpio_irqs(handled_edge_masks);
 }
 
 // TODO: set interrupt on both cores
