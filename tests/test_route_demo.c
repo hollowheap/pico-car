@@ -6,16 +6,16 @@
 #include "route_demo.h"
 
 static route_demo_t route;
-static motion_sample_t sample;
+static odometry_sample_t sample;
 static uint32_t now;
-static const motion_scale_t scales[2] = {
+static const odometry_scale_t scales[2] = {
     {1000U, 10U, -1, false}, {1000U, 10U, 1, false}
 };
 
 static void initialise (void)
 {
     now = UINT32_MAX - 10000U;
-    sample = (motion_sample_t){0};
+    sample = (odometry_sample_t){0};
     sample.elapsed_us = 20000U;
     sample.wheel[0].speed_valid = true;
     sample.wheel[1].speed_valid = true;
@@ -53,7 +53,7 @@ static void assert_aborted (route_demo_error_t error)
 int main (void)
 {
     unsigned int i;
-    motion_scale_t bad[2] = {{0U, 10U, -1, false}, {1000U, 10U, 1, false}};
+    odometry_scale_t bad[2] = {{0U, 10U, -1, false}, {1000U, 10U, 1, false}};
 
     initialise();
     assert(route.goals[0][0] == 5000 && route.goals[2][1] == 1000);
@@ -157,7 +157,7 @@ int main (void)
     route_demo_update(NULL, NULL, 0U, true);
     route_demo_targets(NULL, NULL, NULL);
     {
-        const motion_scale_t car[2] = {{210487U, 2541U, -1, false}, {210487U, 2530U, 1, false}};
+        const odometry_scale_t car[2] = {{210487U, 2541U, -1, false}, {210487U, 2530U, 1, false}};
         assert(route_demo_start(&route, car, 0U));
         assert(route.goals[1][0] == 7623);
         assert((uint64_t)route.goals[0][0] * 210487U >= UINT64_C(500000) * 2541U);

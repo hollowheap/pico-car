@@ -12,7 +12,7 @@ typedef struct
     bool latched;
 } fake_output_t;
 
-static motion_apply_result_t apply (void * context, int16_t left, int16_t right)
+static controller_apply_result_t apply (void * context, int16_t left, int16_t right)
 {
     fake_output_t * output = context;
 
@@ -21,7 +21,7 @@ static motion_apply_result_t apply (void * context, int16_t left, int16_t right)
     assert(right >= 0 && right <= (int16_t)SPEED_PROBE_DUTY_CAP);
     output->duty[0] = left;
     output->duty[1] = right;
-    return MOTION_APPLIED;
+    return CONTROLLER_APPLIED;
 }
 
 static bool brake (void * context, bool latch)
@@ -36,19 +36,19 @@ static bool brake (void * context, bool latch)
 
 int main (void)
 {
-    motion_control_config_t config = speed_probe_configuration();
+    controller_config_t config = speed_probe_configuration();
     const uint32_t limits[2] = {50000U, 50000U};
     const uint32_t reasons[2] = {MOTION_HOLD_OBSTACLE, MOTION_HOLD_LINE_LOST};
     const uint32_t boundaries[GUIDANCE_REPLAY_STAGES] = {
         0U, 600000U, 1200000U, 1800000U, 2000000U, 2200000U, 2400000U
     };
-    motion_control_t control;
-    motion_input_t input = {0};
-    motion_inbox_t inbox;
+    controller_t control;
+    odometry_input_t input = {0};
+    command_slot_t inbox;
     fake_output_t fake = {{0, 0}, false};
-    motion_output_t output = {&fake, apply, brake};
+    controller_output_t output = {&fake, apply, brake};
     speed_probe_t probe;
-    guidance_replay_frame_t frame = {MOTION_STEER_RIGHT, 99U, 99U};
+    guidance_replay_frame_t frame = {GUIDANCE_STEER_RIGHT, 99U, 99U};
     uint32_t started;
     uint32_t now = UINT32_MAX - 100000U;
     unsigned int stage;
@@ -83,12 +83,12 @@ int main (void)
     assert(speed_probe_update(&probe, now, true, false) == SPEED_PROBE_RUN);
     started = now;
     input.timestamp_us = now - 10000U;
-    assert(motion_control_init(&control, &config, &input, &output));
-    assert(motion_inbox_init(&inbox, config.max_command_ttl_us));
+    assert(controller_init(&control, &config, &input, &output));
+    assert(command_slot_init(&inbox, config.max_command_ttl_us));
 
     for (ticks = 0U; ticks < 300U; ticks++)
     {
-        motion_drive_request_t request;
+        guidance_request_t request;
         motion_command_t planned;
         motion_command_t taken;
         bool received;
@@ -102,29 +102,29 @@ int main (void)
         {
             if ((frame.hold_mask & reasons[reason]) != 0U)
             {
-                assert(motion_inbox_hold(&inbox, reasons[reason], true, now));
+                assert(command_slot_hold(&inbox, reasons[reason], true, now));
             }
         }
         for (reason = 0U; reason < 2U; reason++)
         {
             if ((frame.hold_mask & reasons[reason]) == 0U)
             {
-                assert(motion_inbox_hold(&inbox, reasons[reason], false, now));
+                assert(command_slot_hold(&inbox, reasons[reason], false, now));
             }
         }
-        request = (motion_drive_request_t){frame.action, 50000, 25000,
+        request = (guidance_request_t){frame.action, 50000, 25000,
             now, SPEED_PROBE_TTL_US};
-        assert(motion_request_plan(&request, limits, SPEED_PROBE_TTL_US, now, &planned));
+        assert(guidance_plan(&request, limits, SPEED_PROBE_TTL_US, now, &planned));
         planned.id = ticks + 1U;
-        assert(motion_inbox_post(&inbox, &planned, now) ==
-            (frame.hold_mask != 0U ? MOTION_INBOX_HELD : MOTION_INBOX_ACCEPTED));
-        received = motion_inbox_take(&inbox, now, &taken, &stop);
+        assert(command_slot_post(&inbox, &planned, now) ==
+            (frame.hold_mask != 0U ? COMMAND_SLOT_HELD : COMMAND_SLOT_ACCEPTED));
+        received = command_slot_take(&inbox, now, &taken, &stop);
         assert(!stop);
         /* Artificial progress exercises signs/quality only; not a plant model. */
         input.wheel[0].negative += fake.duty[0] > 0 ? 1U : 0U;
         input.wheel[1].positive += fake.duty[1] > 0 ? 1U : 0U;
         input.timestamp_us = now;
-        motion_control_tick(&control, &input, now, received ? &taken : NULL, stop);
+        controller_tick(&control, &input, now, received ? &taken : NULL, stop);
         assert(control.status.fault == MOTION_FAULT_NONE);
         if (frame.hold_mask != 0U || old_holds != 0U)
         {
@@ -146,8 +146,8 @@ int main (void)
     assert(seen == (1U << GUIDANCE_REPLAY_STAGES) - 1U && resumed);
     assert(speed_probe_update(&probe, now, true, false) == SPEED_PROBE_FINISHED);
     assert(!probe.interrupted && !probe.gap_fault);
-    motion_inbox_stop(&inbox);
-    motion_control_tick(&control, NULL, now, NULL, true);
+    command_slot_stop(&inbox);
+    controller_tick(&control, NULL, now, NULL, true);
     assert(control.status.state == MOTION_STOPPED && fake.latched);
     assert(fake.duty[0] == 0 && fake.duty[1] == 0);
     assert(speed_probe_update(&probe, now + 1U, false, false) == SPEED_PROBE_FINISHED);
