@@ -204,47 +204,60 @@ target_sources(mtk3smp PRIVATE
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
 # Compile the executable
-add_library(sys STATIC
-    src/sys/gpio_irq.c
+add_library(platform STATIC
+    src/platform/isr_dispatcher.c
 )
-target_link_libraries(sys PUBLIC mtk3smp)
+target_include_directories(platform PUBLIC include)
+target_link_libraries(platform PUBLIC mtk3smp)
 
 add_library(motion_core STATIC
-    src/motion/motion_control.c
-    src/motion/wheel_pid.c
-    src/motion/motion_sampler.c
-    src/motion/encoder_math.c
-    src/motion/motion_request.c
-    src/motion/motion_inbox.c
+    src/subsystems/motion/controller.c
+    src/subsystems/motion/pid.c
+    src/subsystems/motion/odometry.c
+    src/subsystems/motion/encoder_math.c
+    src/subsystems/motion/guidance.c
+    src/subsystems/motion/command_slot.c
 )
+target_include_directories(motion_core PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/subsystems/motion)
 target_link_libraries(motion_core PUBLIC mtk3smp)
 
-add_library(motion_service STATIC
-    src/motion/motion_service.c
-    src/motion/motor_pwm.c
-    src/motion/motor_pair.c
-    src/motion/encoder_capture.c
-    src/motion/encoder_quad.c
+add_library(motion STATIC
+    src/subsystems/motion/config.c
+    src/subsystems/motion/motor_task.c
+    src/subsystems/motion/pwm.c
+    src/subsystems/motion/bridge.c
+    src/subsystems/motion/encoder_capture.c
+    src/subsystems/motion/quadrature.c
 )
-target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
+target_include_directories(motion PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/subsystems/motion)
+target_link_libraries(motion PUBLIC platform motion_core mtk3smp)
 
-add_library(ir_service STATIC
-    src/ir/ir_capture.c
-    src/ir/ir_task.c
+add_library(track STATIC
+    src/subsystems/track/ir_capture.c
+    src/subsystems/track/line_task.c
+    src/subsystems/track/line_filter.c
 )
-target_link_libraries(ir_service PUBLIC sys motion_service mtk3smp)
+target_link_libraries(track PUBLIC platform motion mtk3smp)
+
+add_library(navigation STATIC
+    src/subsystems/navigation/mission_task.c
+)
+target_include_directories(navigation PUBLIC include)
+target_link_libraries(navigation PUBLIC motion mtk3smp)
 
 add_executable(main
     src/main.c
     src/demo_tasks.c
+    src/system/startup_task.c
 )
 
 foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
     target_link_libraries(${app_target} PRIVATE
-        sys
-        motion_service
-        ir_service
+        platform
+        motion
+        track
+        navigation
         mtk3smp
     )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset
