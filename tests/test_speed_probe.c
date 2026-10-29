@@ -20,12 +20,12 @@ static uint32_t start (speed_probe_t * p_probe, uint32_t now)
 int main (void)
 {
     speed_probe_t probe;
-    motion_control_config_t config = speed_probe_configuration();
+    controller_config_t config = speed_probe_configuration();
     uint32_t now;
     unsigned int tick;
     unsigned int wheel;
 
-    assert(motion_control_config_valid(&config));
+    assert(controller_config_valid(&config));
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         assert(config.speed[wheel].max_duty_permille <= 200U);

@@ -83,8 +83,8 @@ int main (void)
                              false, false) == MOTOR_BATCH_STOPPED);
     assert(batch.gap_fault);
     {
-        encoder_quad_counts_t baseline[2] = {{0U, UINT32_MAX - 2U, 0U}, {0U, 0U, 0U}};
-        encoder_quad_counts_t endpoint[2] = {{0U, 7U, 0U}, {9U, 0U, 0U}};
+        quadrature_counts_t baseline[2] = {{0U, UINT32_MAX - 2U, 0U}, {0U, 0U, 0U}};
+        quadrature_counts_t endpoint[2] = {{0U, 7U, 0U}, {9U, 0U, 0U}};
 
         assert(motor_batch_feedback(baseline, endpoint, 200, 200) == MOTOR_BATCH_FEEDBACK_OK);
         assert(motor_batch_feedback(baseline, endpoint, -200, 0) == MOTOR_BATCH_FEEDBACK_REVERSED);
