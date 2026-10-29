@@ -1,27 +1,26 @@
-/** @file motion_control.c
+/** @file controller.c
  * @brief Command expiry, feedback faults, PID ownership and braked reversal.
  */
 #include <limits.h>
 #include <stddef.h>
-#include "motion_control.h"
-#include "tm/tmonitor.h"
+#include "controller.h"
 
 static int8_t sign (int32_t value)
 {
     return value > 0 ? 1 : (value < 0 ? -1 : 0);
 }
 
-static void reset_pid (motion_control_t * p_control)
+static void reset_pid (controller_t * p_control)
 {
     unsigned int wheel;
 
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        wheel_pid_reset(&p_control->pid[wheel]);
+        pid_reset(&p_control->pid[wheel]);
     }
 }
 
-static void brake (motion_control_t * p_control, uint32_t now_us, bool latch)
+static void brake (controller_t * p_control, uint32_t now_us, bool latch)
 {
     if (!p_control->braked)
     {
@@ -42,23 +41,20 @@ static void brake (motion_control_t * p_control, uint32_t now_us, bool latch)
     }
 }
 
-static void fault (motion_control_t * p_control, uint32_t now_us,
+static void fault (controller_t * p_control, uint32_t now_us,
                    motion_fault_t reason)
 {
     p_control->status.state = MOTION_FAULT;
     p_control->status.fault = reason;
     reset_pid(p_control);
     brake(p_control, now_us, true);
-#ifndef NDEBUG
-    tm_printf((UB *)"MOTION FAULT, reason: %d\n", p_control->status.fault);
-#endif
 }
 
-bool motion_control_config_valid (const motion_control_config_t * p_config)
+bool controller_config_valid (const controller_config_t * p_config)
 {
-    motion_sampler_t sampler;
-    motion_input_t   baseline = {0};
-    wheel_pid_t      pid;
+    odometry_t sampler;
+    odometry_input_t   baseline = {0};
+    pid_state_t      pid;
     unsigned int     wheel;
 
     if ((p_config == NULL) || (p_config->max_command_ttl_us == 0U) ||
@@ -69,13 +65,13 @@ bool motion_control_config_valid (const motion_control_config_t * p_config)
         (p_config->feedback_timeout_us > (uint32_t)INT32_MAX) ||
         (p_config->reversal_brake_us == 0U) ||
         (p_config->reversal_brake_us > (uint32_t)INT32_MAX) ||
-        !motion_sampler_init(&sampler, &p_config->sampling, &baseline))
+        !odometry_init(&sampler, &p_config->sampling, &baseline))
     {
         return false;
     }
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        if (!wheel_pid_init(&pid, &p_config->speed[wheel]) ||
+        if (!pid_init(&pid, &p_config->speed[wheel]) ||
             ((p_config->speed[wheel].kp_q16 == 0U) &&
              (p_config->speed[wheel].ki_q16 == 0U)) ||
             (p_config->max_control_gap_us >
@@ -87,24 +83,24 @@ bool motion_control_config_valid (const motion_control_config_t * p_config)
     return true;
 }
 
-bool motion_control_init (motion_control_t *              p_control,
-                          const motion_control_config_t * p_config,
-                          const motion_input_t *          p_baseline,
-                          const motion_output_t *         p_output)
+bool controller_init (controller_t *              p_control,
+                          const controller_config_t * p_config,
+                          const odometry_input_t *          p_baseline,
+                          const controller_output_t *         p_output)
 {
-    motion_control_t next = {0};
+    controller_t next = {0};
     unsigned int     wheel;
 
     if ((p_control == NULL) || (p_baseline == NULL) || (p_output == NULL) ||
         (p_output->apply == NULL) || (p_output->brake == NULL) ||
-        !motion_control_config_valid(p_config) ||
-        !motion_sampler_init(&next.sampler, &p_config->sampling, p_baseline))
+        !controller_config_valid(p_config) ||
+        !odometry_init(&next.sampler, &p_config->sampling, p_baseline))
     {
         return false;
     }
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        (void)wheel_pid_init(&next.pid[wheel], &p_config->speed[wheel]);
+        (void)pid_init(&next.pid[wheel], &p_config->speed[wheel]);
         next.progress_us[wheel] = p_baseline->timestamp_us;
     }
     if (!p_output->brake(p_output->context, false))
@@ -122,7 +118,7 @@ bool motion_control_init (motion_control_t *              p_control,
     return true;
 }
 
-static bool valid_command (const motion_control_t * p_control,
+static bool valid_command (const controller_t * p_control,
                            const motion_command_t * p_command, uint32_t now_us)
 {
     unsigned int wheel;
@@ -146,8 +142,8 @@ static bool valid_command (const motion_control_t * p_control,
     return true;
 }
 
-void motion_control_tick (motion_control_t *     p_control,
-                          const motion_input_t * p_input, uint32_t now_us,
+void controller_tick (controller_t *     p_control,
+                          const odometry_input_t * p_input, uint32_t now_us,
                           const motion_command_t * p_command,
                           bool                     stop_requested)
 {
@@ -155,7 +151,7 @@ void motion_control_tick (motion_control_t *     p_control,
     bool                  reversal = false;
     unsigned int          wheel;
     int16_t               requested[ENCODER_WHEELS] = {0, 0};
-    motion_apply_result_t applied;
+    controller_apply_result_t applied;
 
     if ((p_control == NULL) || !p_control->initialised)
     {
@@ -205,7 +201,7 @@ void motion_control_tick (motion_control_t *     p_control,
             if (sign(p_command->target_um_s[wheel]) !=
                 sign(p_control->command.target_um_s[wheel]))
             {
-                wheel_pid_reset(&p_control->pid[wheel]);
+                pid_reset(&p_control->pid[wheel]);
             }
         }
         p_control->command           = *p_command;
@@ -225,7 +221,7 @@ void motion_control_tick (motion_control_t *     p_control,
         return;
     }
 
-    p_control->status.sample_available = motion_sampler_update(
+    p_control->status.sample_available = odometry_update(
         &p_control->sampler, p_input, &p_control->status.sample);
     if (!active)
     {
@@ -265,7 +261,7 @@ void motion_control_tick (motion_control_t *     p_control,
             return;
         }
         p_control->last_edges[wheel] = edges;
-        if (!wheel_pid_update(
+        if (!pid_update(
                 &p_control->pid[wheel], p_control->command.target_um_s[wheel],
                 &p_control->status.sample, wheel, now_us, &requested[wheel]))
         {
@@ -278,7 +274,7 @@ void motion_control_tick (motion_control_t *     p_control,
             sign(p_control->command.target_um_s[wheel]))
         {
             requested[wheel] = 0;
-            wheel_pid_reset(&p_control->pid[wheel]);
+            pid_reset(&p_control->pid[wheel]);
         }
         if ((requested[wheel] != 0) && (p_control->drive_sign[wheel] != 0) &&
             (sign(requested[wheel]) != p_control->drive_sign[wheel]))
@@ -304,11 +300,11 @@ void motion_control_tick (motion_control_t *     p_control,
     }
     applied = p_control->output.apply(p_control->output.context, requested[0],
                                       requested[1]);
-    if (applied == MOTION_OUTPUT_FAILED)
+    if (applied == CONTROLLER_OUTPUT_FAILED)
     {
         fault(p_control, now_us, MOTION_FAULT_OUTPUT);
     }
-    else if (applied == MOTION_BRAKED_RETRY)
+    else if (applied == CONTROLLER_BRAKED_RETRY)
     {
         p_control->status.state = MOTION_REVERSING;
         reset_pid(p_control);
@@ -317,7 +313,7 @@ void motion_control_tick (motion_control_t *     p_control,
         p_control->braked = false;
         brake(p_control, now_us, false);
     }
-    else if (applied == MOTION_APPLIED)
+    else if (applied == CONTROLLER_APPLIED)
     {
         p_control->status.state = MOTION_RUNNING;
         p_control->braked       = false;

@@ -1,10 +1,10 @@
-/** @file encoder_quad.c
+/** @file quadrature.c
  * @brief Count valid adjacent quadrature transitions in either direction.
  */
 #include <stddef.h>
-#include "encoder_quad.h"
+#include "quadrature.h"
 
-void encoder_quad_init (encoder_quad_t * p_quad, uint8_t states)
+void quadrature_init (quadrature_t * p_quad, uint8_t states)
 {
     unsigned int wheel;
 
@@ -20,7 +20,7 @@ void encoder_quad_init (encoder_quad_t * p_quad, uint8_t states)
     }
 }
 
-bool encoder_quad_update (encoder_quad_t * p_quad, unsigned int wheel,
+bool quadrature_update (quadrature_t * p_quad, unsigned int wheel,
                           uint8_t state, bool ambiguous)
 {
     static const int8_t steps[16] = {0, 1, -1, 2,  -1, 0,  2, 1,

@@ -1,9 +1,9 @@
-/** @file wheel_pid.c
+/** @file pid.c
  * @brief Checked fixed-point PID; no floating point or hardware access.
  */
 #include <limits.h>
 #include <stddef.h>
-#include "wheel_pid.h"
+#include "pid.h"
 
 #define PID_Q16 INT64_C(65536)
 
@@ -34,7 +34,7 @@ static int64_t clamp (int64_t value, int64_t limit)
     return value > limit ? limit : (value < -limit ? -limit : value);
 }
 
-bool wheel_pid_init (wheel_pid_t * p_pid, const wheel_pid_config_t * p_config)
+bool pid_init (pid_state_t * p_pid, const pid_config_t * p_config)
 {
     if ((p_pid == NULL) || (p_config == NULL) ||
         (p_config->max_target_um_s == 0U) ||
@@ -48,13 +48,13 @@ bool wheel_pid_init (wheel_pid_t * p_pid, const wheel_pid_config_t * p_config)
     {
         return false;
     }
-    *p_pid             = (wheel_pid_t){0};
+    *p_pid             = (pid_state_t){0};
     p_pid->config      = *p_config;
     p_pid->initialised = true;
     return true;
 }
 
-void wheel_pid_reset (wheel_pid_t * p_pid)
+void pid_reset (pid_state_t * p_pid)
 {
     if (p_pid != NULL)
     {
@@ -65,12 +65,12 @@ void wheel_pid_reset (wheel_pid_t * p_pid)
     }
 }
 
-bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
-                       const motion_sample_t * p_sample, unsigned int wheel,
+bool pid_update (pid_state_t * p_pid, int32_t target_um_s,
+                       const odometry_sample_t * p_sample, unsigned int wheel,
                        uint32_t now_us, int16_t * p_duty)
 {
-    wheel_pid_t                   next;
-    const motion_wheel_sample_t * p_feedback;
+    pid_state_t                   next;
+    const odometry_wheel_sample_t * p_feedback;
     uint32_t                      interval;
     int64_t                       error;
     int64_t                       proportional;
@@ -86,7 +86,7 @@ bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
     }
     if ((p_pid == NULL) || (p_duty == NULL) || !p_pid->initialised ||
         (p_sample == NULL) || (wheel >= ENCODER_WHEELS) ||
-        !motion_sample_fresh(p_sample, now_us, p_pid->config.max_sample_age_us))
+        !odometry_fresh(p_sample, now_us, p_pid->config.max_sample_age_us))
     {
         return false;
     }

@@ -1,15 +1,11 @@
-/** @file motion_inbox.h
+/** @file command_slot.h
  * @brief Bounded command/hold/stop policy; caller supplies synchronisation.
  */
-#ifndef MOTION_INBOX_H
-#define MOTION_INBOX_H
+#ifndef COMMAND_SLOT_H
+#define COMMAND_SLOT_H
 
-#include "motion_control.h"
-
-#define MOTION_HOLD_OBSTACLE  UINT32_C(1)
-#define MOTION_HOLD_LINE_LOST UINT32_C(2)
-#define MOTION_HOLD_OPERATOR  UINT32_C(4)
-#define MOTION_HOLD_ALL       UINT32_C(7)
+#include "controller.h"
+#include "motion/types.h"
 
 typedef struct
 {
@@ -21,22 +17,22 @@ typedef struct
     bool             brake_pending;
     bool             require_fresh;
     bool             stopped;
-} motion_inbox_t;
+} command_slot_t;
 
 typedef enum
 {
-    MOTION_INBOX_ACCEPTED = 0,
-    MOTION_INBOX_HELD,
-    MOTION_INBOX_STOPPED,
-    MOTION_INBOX_STALE
-} motion_inbox_result_t;
+    COMMAND_SLOT_ACCEPTED = 0,
+    COMMAND_SLOT_HELD,
+    COMMAND_SLOT_STOPPED,
+    COMMAND_SLOT_STALE
+} command_slot_result_t;
 
-bool motion_inbox_init (motion_inbox_t * p_inbox, uint32_t max_ttl_us);
-void motion_inbox_cancel (motion_inbox_t * p_inbox); /* One normal brake. */
-void motion_inbox_stop (motion_inbox_t * p_inbox);   /* Terminal. */
-bool motion_inbox_hold (motion_inbox_t * p_inbox, uint32_t reason, bool held,
+bool command_slot_init (command_slot_t * p_slot, uint32_t max_ttl_us);
+void command_slot_cancel (command_slot_t * p_slot); /* One normal brake. */
+void command_slot_stop (command_slot_t * p_slot);   /* Terminal. */
+bool command_slot_hold (command_slot_t * p_slot, uint32_t reason, bool held,
                         uint32_t now_us);
-motion_inbox_result_t motion_inbox_post (motion_inbox_t *         p_inbox,
+command_slot_result_t command_slot_post (command_slot_t *         p_slot,
                                          const motion_command_t * p_command,
                                          uint32_t                 now_us);
 
@@ -46,7 +42,7 @@ motion_inbox_result_t motion_inbox_post (motion_inbox_t *         p_inbox,
  * No post-clear cached request from before release can resume old movement.
  * now/issued/released times must be within the documented half-range window;
  * producer leases must be nonzero <=INT32_MAX. Not thread-safe by itself. */
-bool motion_inbox_take (motion_inbox_t * p_inbox, uint32_t now_us,
+bool command_slot_take (command_slot_t * p_slot, uint32_t now_us,
                         motion_command_t * p_command, bool * p_stop);
 
-#endif /* MOTION_INBOX_H */
+#endif /* COMMAND_SLOT_H */

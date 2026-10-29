@@ -1,14 +1,14 @@
-/** @file motion_request.c
+/** @file guidance.c
  * @brief Translate high-level guidance without reading another buddy's GPIO.
  */
 #include <limits.h>
 #include <stddef.h>
-#include "motion_request.h"
+#include "guidance.h"
 
-bool motion_request_plan (const motion_drive_request_t * p_request,
-                          const uint32_t limits_um_s[ENCODER_WHEELS],
-                          uint32_t max_ttl_us, uint32_t now_us,
-                          motion_command_t * p_command)
+bool guidance_plan (const guidance_request_t * p_request,
+                    const uint32_t limits_um_s[ENCODER_WHEELS],
+                    uint32_t max_ttl_us, uint32_t now_us,
+                    motion_command_t * p_command)
 {
     motion_command_t command = {0};
     unsigned int     wheel;
@@ -25,25 +25,25 @@ bool motion_request_plan (const motion_drive_request_t * p_request,
     command.ttl_us    = p_request->valid_for_us;
     switch (p_request->action)
     {
-        case MOTION_DRIVE_STRAIGHT:
+        case GUIDANCE_STRAIGHT:
             command.target_um_s[0] = p_request->speed_um_s;
             command.target_um_s[1] = p_request->speed_um_s;
             break;
-        case MOTION_STEER_LEFT:
-        case MOTION_STEER_RIGHT:
+        case GUIDANCE_STEER_LEFT:
+        case GUIDANCE_STEER_RIGHT:
             if ((p_request->inside_um_s < 0) ||
                 (p_request->inside_um_s > p_request->speed_um_s))
             {
                 return false;
             }
-            command.target_um_s[0] = p_request->action == MOTION_STEER_LEFT
+            command.target_um_s[0] = p_request->action == GUIDANCE_STEER_LEFT
                                          ? p_request->inside_um_s
                                          : p_request->speed_um_s;
-            command.target_um_s[1] = p_request->action == MOTION_STEER_RIGHT
+            command.target_um_s[1] = p_request->action == GUIDANCE_STEER_RIGHT
                                          ? p_request->inside_um_s
                                          : p_request->speed_um_s;
             break;
-        case MOTION_DRIVE_HOLD:
+        case GUIDANCE_HOLD:
             break;
         default:
             return false;

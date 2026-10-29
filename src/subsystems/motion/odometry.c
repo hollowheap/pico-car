@@ -1,16 +1,16 @@
-/** @file motion_sampler.c
+/** @file odometry.c
  * @brief Checked signed odometry with measured sample intervals.
  */
 #include <stddef.h>
 #include "encoder_math.h"
-#include "motion_sampler.h"
+#include "odometry.h"
 
 static uint64_t magnitude (int64_t value)
 {
     return value < 0 ? (uint64_t)(-(value + 1)) + UINT64_C(1) : (uint64_t)value;
 }
 
-static bool displacement (int64_t edges, const motion_scale_t * p_scale,
+static bool displacement (int64_t edges, const odometry_scale_t * p_scale,
                           int64_t * p_distance)
 {
     uint64_t count = magnitude(edges);
@@ -34,11 +34,11 @@ static bool displacement (int64_t edges, const motion_scale_t * p_scale,
     return true;
 }
 
-bool motion_sampler_init (motion_sampler_t *      p_sampler,
-                          const motion_config_t * p_config,
-                          const motion_input_t *  p_baseline)
+bool odometry_init (odometry_t *      p_sampler,
+                          const odometry_config_t * p_config,
+                          const odometry_input_t *  p_baseline)
 {
-    motion_sampler_t initial = {0};
+    odometry_t initial = {0};
     unsigned int     wheel;
 
     if ((p_sampler == NULL) || (p_config == NULL) || (p_baseline == NULL) ||
@@ -49,7 +49,7 @@ bool motion_sampler_init (motion_sampler_t *      p_sampler,
     }
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        const motion_scale_t * p_scale = &p_config->wheel[wheel];
+        const odometry_scale_t * p_scale = &p_config->wheel[wheel];
 
         if ((p_scale->wheel_travel_um == 0U) ||
             (p_scale->edges_per_revolution == 0U) ||
@@ -66,12 +66,12 @@ bool motion_sampler_init (motion_sampler_t *      p_sampler,
     return true;
 }
 
-bool motion_sampler_update (motion_sampler_t *     p_sampler,
-                            const motion_input_t * p_input,
-                            motion_sample_t *      p_output)
+bool odometry_update (odometry_t *     p_sampler,
+                            const odometry_input_t * p_input,
+                            odometry_sample_t *      p_output)
 {
-    motion_sampler_t next;
-    motion_sample_t  output = {0};
+    odometry_t next;
+    odometry_sample_t  output = {0};
     unsigned int     wheel;
 
     if ((p_sampler == NULL) || (p_input == NULL) || (p_output == NULL) ||
@@ -88,10 +88,10 @@ bool motion_sampler_update (motion_sampler_t *     p_sampler,
     }
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        const motion_scale_t *        p_scale  = &next.config.wheel[wheel];
-        const encoder_quad_counts_t * p_before = &next.previous.wheel[wheel];
-        const encoder_quad_counts_t * p_after  = &p_input->wheel[wheel];
-        motion_wheel_sample_t *       p_result = &output.wheel[wheel];
+        const odometry_scale_t *        p_scale  = &next.config.wheel[wheel];
+        const quadrature_counts_t * p_before = &next.previous.wheel[wheel];
+        const quadrature_counts_t * p_after  = &p_input->wheel[wheel];
+        odometry_wheel_sample_t *       p_result = &output.wheel[wheel];
         uint32_t                      positive =
             encoder_math_count_delta(p_before->positive, p_after->positive);
         uint32_t negative =
@@ -133,7 +133,7 @@ bool motion_sampler_update (motion_sampler_t *     p_sampler,
     return true;
 }
 
-bool motion_sample_fresh (const motion_sample_t * p_sample, uint32_t now_us,
+bool odometry_fresh (const odometry_sample_t * p_sample, uint32_t now_us,
                           uint32_t max_age_us)
 {
     return (p_sample != NULL) && (max_age_us <= (uint32_t)INT32_MAX) &&

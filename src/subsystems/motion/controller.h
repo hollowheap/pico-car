@@ -1,30 +1,11 @@
-/** @file motion_control.h
+/** @file controller.h
  * @brief Single-owner feedback-to-output controller, independent of the RTOS.
  */
-#ifndef MOTION_CONTROL_H
-#define MOTION_CONTROL_H
+#ifndef CONTROLLER_H
+#define CONTROLLER_H
 
-#include "wheel_pid.h"
-
-typedef enum
-{
-    MOTION_IDLE = 0,
-    MOTION_RUNNING,
-    MOTION_REVERSING,
-    MOTION_STOPPED,
-    MOTION_FAULT
-} motion_state_t;
-
-typedef enum
-{
-    MOTION_FAULT_NONE = 0,
-    MOTION_FAULT_COMMAND,
-    MOTION_FAULT_EXPIRED,
-    MOTION_FAULT_FEEDBACK,
-    MOTION_FAULT_GAP,
-    MOTION_FAULT_NO_EDGES,
-    MOTION_FAULT_OUTPUT
-} motion_fault_t;
+#include "pid.h"
+#include "motion/types.h"
 
 typedef struct
 {
@@ -36,29 +17,29 @@ typedef struct
 
 typedef struct
 {
-    motion_config_t    sampling;
-    wheel_pid_config_t speed[ENCODER_WHEELS];
+    odometry_config_t    sampling;
+    pid_config_t speed[ENCODER_WHEELS];
     uint32_t           max_command_ttl_us;
     uint32_t           max_control_gap_us;
     uint32_t           feedback_timeout_us;
     uint32_t           reversal_brake_us;
-} motion_control_config_t;
+} controller_config_t;
 
 typedef enum
 {
-    MOTION_APPLIED = 0,
-    MOTION_BRAKED_RETRY,
-    MOTION_OUTPUT_FAILED
-} motion_apply_result_t;
+    CONTROLLER_APPLIED = 0,
+    CONTROLLER_BRAKED_RETRY,
+    CONTROLLER_OUTPUT_FAILED
+} controller_apply_result_t;
 
 /* Callbacks belong to the PWM owner. RETRY means the driver has braked both
  * wheels; the controller enforces a timed brake interval before retrying. */
 typedef struct
 {
     void * context;
-    motion_apply_result_t (*apply)(void * context, int16_t left, int16_t right);
+    controller_apply_result_t (*apply)(void * context, int16_t left, int16_t right);
     bool (*brake)(void * context, bool latch);
-} motion_output_t;
+} controller_output_t;
 
 typedef struct
 {
@@ -70,17 +51,17 @@ typedef struct
     int16_t         duty[ENCODER_WHEELS];
     bool            sample_available;
     bool            brake_failed;
-    motion_sample_t sample;
-} motion_control_status_t;
+    odometry_sample_t sample;
+} controller_status_t;
 
 typedef struct
 {
-    motion_control_config_t config;
-    motion_output_t         output;
-    motion_sampler_t        sampler;
-    wheel_pid_t             pid[ENCODER_WHEELS];
+    controller_config_t config;
+    controller_output_t         output;
+    odometry_t        sampler;
+    pid_state_t             pid[ENCODER_WHEELS];
     motion_command_t        command;
-    motion_control_status_t status;
+    controller_status_t status;
     uint32_t                previous_tick_us;
     uint32_t                brake_started_us;
     uint32_t                progress_us[ENCODER_WHEELS];
@@ -88,18 +69,18 @@ typedef struct
     int8_t                  drive_sign[ENCODER_WHEELS];
     bool                    braked;
     bool                    initialised;
-} motion_control_t;
+} controller_t;
 
 /* No default speed/gain/timing settings. Init issues brake through the output
  * callback; the hardware owner must already be initialised. One task owns all
  * calls. Stop/fault states are terminal: no public reset/rearm operation. */
-bool motion_control_init (motion_control_t *              p_control,
-                          const motion_control_config_t * p_config,
-                          const motion_input_t *          p_baseline,
-                          const motion_output_t *         p_output);
+bool controller_init (controller_t *              p_control,
+                          const controller_config_t * p_config,
+                          const odometry_input_t *          p_baseline,
+                          const controller_output_t *         p_output);
 
 /* Configuration-only check: no output callback or hardware access. */
-bool motion_control_config_valid (const motion_control_config_t * p_config);
+bool controller_config_valid (const controller_config_t * p_config);
 
 /* A new command replaces the previous command; NULL keeps its original TTL.
  * Stop has priority over feedback, expiry and new commands. Both targets zero
@@ -109,9 +90,9 @@ bool motion_control_config_valid (const motion_control_config_t * p_config);
  * Output direction is limited to the target sign (overspeed requests brake,
  * not active reverse drive). Reversals preserve an explicit braked interval.
  * Timestamps and counters must be updated within one 2^32-us cycle. */
-void motion_control_tick (motion_control_t *     p_control,
-                          const motion_input_t * p_input, uint32_t now_us,
+void controller_tick (controller_t *     p_control,
+                          const odometry_input_t * p_input, uint32_t now_us,
                           const motion_command_t * p_command,
                           bool                     stop_requested);
 
-#endif /* MOTION_CONTROL_H */
+#endif /* CONTROLLER_H */

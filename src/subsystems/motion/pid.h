@@ -1,10 +1,10 @@
-/** @file wheel_pid.h
+/** @file pid.h
  * @brief Task-owned integer PID with timestamp/quality checks.
  */
-#ifndef WHEEL_PID_H
-#define WHEEL_PID_H
+#ifndef PID_H
+#define PID_H
 
-#include "motion_sampler.h"
+#include "odometry.h"
 
 typedef struct
 {
@@ -18,20 +18,20 @@ typedef struct
     uint32_t max_interval_us;
     uint32_t max_sample_age_us;
     uint16_t max_duty_permille; /* 1..1000. */
-} wheel_pid_config_t;
+} pid_config_t;
 
 typedef struct
 {
-    wheel_pid_config_t config;
+    pid_config_t config;
     int64_t            integral_q16;
     int32_t            previous_measurement;
     uint32_t           previous_us;
     bool               has_previous;
     bool               initialised;
-} wheel_pid_t;
+} pid_state_t;
 
-bool wheel_pid_init (wheel_pid_t * p_pid, const wheel_pid_config_t * p_config);
-void wheel_pid_reset (wheel_pid_t * p_pid);
+bool pid_init (pid_state_t * p_pid, const pid_config_t * p_config);
+void pid_reset (pid_state_t * p_pid);
 
 /* Supply a new coherent sample for the selected wheel each call. Rejects
  * invalid/stale/unverified feedback, duplicate/excessively spaced samples,
@@ -44,8 +44,8 @@ void wheel_pid_reset (wheel_pid_t * p_pid);
  * and returns zero. It commands brake rather than holding position.
  * Not an RTOS task, mailbox or tuned controller. Calls must be serialised by
  * one owner. No default gains or physical speed limits are supplied. */
-bool wheel_pid_update (wheel_pid_t * p_pid, int32_t target_um_s,
-                       const motion_sample_t * p_sample, unsigned int wheel,
+bool pid_update (pid_state_t * p_pid, int32_t target_um_s,
+                       const odometry_sample_t * p_sample, unsigned int wheel,
                        uint32_t now_us, int16_t * p_duty);
 
-#endif /* WHEEL_PID_H */
+#endif /* PID_H */
