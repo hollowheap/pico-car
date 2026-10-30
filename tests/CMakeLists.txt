@@ -8,8 +8,8 @@ set(CMAKE_C_EXTENSIONS OFF)
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-set(MOTION_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/subsystems/motion)
-set(IR_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/subsystems/track)
+set(MOTION_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion)
+set(IR_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/track)
 set(INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 set(TEST_FLAGS -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 

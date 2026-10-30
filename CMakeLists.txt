@@ -16,8 +16,8 @@ endif()
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Barr standard enforces C99
-set(CMAKE_C_STANDARD 99)
+# C11 is the repository standard.
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
@@ -211,36 +211,36 @@ target_include_directories(platform PUBLIC include)
 target_link_libraries(platform PUBLIC mtk3smp)
 
 add_library(motion_core STATIC
-    src/subsystems/motion/controller.c
-    src/subsystems/motion/pid.c
-    src/subsystems/motion/odometry.c
-    src/subsystems/motion/encoder_math.c
-    src/subsystems/motion/guidance.c
-    src/subsystems/motion/command_slot.c
+    src/motion/controller.c
+    src/motion/pid.c
+    src/motion/odometry.c
+    src/motion/encoder_math.c
+    src/motion/guidance.c
+    src/motion/command_slot.c
 )
-target_include_directories(motion_core PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/subsystems/motion)
+target_include_directories(motion_core PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/motion)
 target_link_libraries(motion_core PUBLIC mtk3smp)
 
 add_library(motion STATIC
-    src/subsystems/motion/config.c
-    src/subsystems/motion/motor_task.c
-    src/subsystems/motion/pwm.c
-    src/subsystems/motion/bridge.c
-    src/subsystems/motion/encoder_capture.c
-    src/subsystems/motion/quadrature.c
+    src/motion/config.c
+    src/motion/motor_task.c
+    src/motion/pwm.c
+    src/motion/bridge.c
+    src/motion/encoder_capture.c
+    src/motion/quadrature.c
 )
-target_include_directories(motion PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/subsystems/motion)
+target_include_directories(motion PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/motion)
 target_link_libraries(motion PUBLIC platform motion_core mtk3smp)
 
 add_library(track STATIC
-    src/subsystems/track/ir_capture.c
-    src/subsystems/track/line_task.c
-    src/subsystems/track/line_filter.c
+    src/track/ir_capture.c
+    src/track/line_task.c
+    src/track/line_filter.c
 )
 target_link_libraries(track PUBLIC platform motion mtk3smp)
 
 add_library(navigation STATIC
-    src/subsystems/navigation/mission_task.c
+    src/navigation/mission_task.c
 )
 target_include_directories(navigation PUBLIC include)
 target_link_libraries(navigation PUBLIC motion mtk3smp)
