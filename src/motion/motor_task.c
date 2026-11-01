@@ -336,6 +336,14 @@ ER motion_submit (const guidance_request_t * p_request)
     {
         return E_OBJ;
     }
+    if (commander == 0)
+    {
+        return E_OBJ;
+    }
+    if (tk_get_tid() != commander)
+    {
+        return E_CTX;
+    }
     limits[0] = configuration.control.speed[0].max_target_um_s;
     limits[1] = configuration.control.speed[1].max_target_um_s;
     now       = in_w(TIMER_RAW_LOW);

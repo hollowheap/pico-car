@@ -135,9 +135,15 @@ static void gpio_bank0_handler (UINT intno)
             continue;
         }
 
-        event.changed_pins = (rise | fall) & slot->pin_mask;
-        event.rise_pins    = rise & slot->pin_mask & slot->event_mask;
-        event.fall_pins    = fall & slot->pin_mask & slot->event_mask;
+        event.rise_pins =
+            ((slot->event_mask & ISR_GPIO_EDGE_RISE) != 0U)
+                ? (rise & slot->pin_mask)
+                : 0U;
+        event.fall_pins =
+            ((slot->event_mask & ISR_GPIO_EDGE_FALL) != 0U)
+                ? (fall & slot->pin_mask)
+                : 0U;
+        event.changed_pins = event.rise_pins | event.fall_pins;
         if ((event.rise_pins | event.fall_pins) != 0U)
         {
             slot->callback(&event, slot->user_data);
