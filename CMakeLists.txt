@@ -278,3 +278,58 @@ foreach(app_target IN ITEMS main)
         -Wvla
     )
 endforeach()
+
+# ---------------------------------------------------------------------------
+# Buddy 5: obstacle detection and avoidance (src/obstacle)
+#   obstacle        library: sensor, servo, scan, planner, statechart
+#   obstacle_nav    Phase 2 glue used by the line task in main.c
+#   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
+#                   Buddy 5 + a pretend Navigation; the motors are never driven.
+# ---------------------------------------------------------------------------
+set(B5_WARNINGS
+    -Werror
+    -Wall
+    -Wextra
+    -Wparentheses
+    -Wfloat-equal
+    -Wswitch-default
+    -Wimplicit-fallthrough
+    -Wshadow
+    -Wvla
+)
+
+add_library(obstacle STATIC
+    src/obstacle/scan_algo.c
+    src/obstacle/b5_plan.c
+    src/obstacle/b5_fsm.c
+    src/obstacle/b5_comms.c
+    src/obstacle/scan_hw.c
+    src/obstacle/scan_task.c
+    src/obstacle/obstacle.c
+)
+target_link_libraries(obstacle PUBLIC sys mtk3smp)
+target_compile_options(obstacle PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${B5_WARNINGS})
+
+add_executable(obstacle_bench
+    src/obstacle/b5_bench_main.c
+)
+target_link_libraries(obstacle_bench PRIVATE obstacle sys mtk3smp)
+target_compile_options(obstacle_bench PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${B5_WARNINGS})
+target_link_options(obstacle_bench PRIVATE
+    -nostartfiles
+    -Wl,--gc-sections
+    -Wl,--undefined=boot2
+    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
+)
+pico_add_extra_outputs(obstacle_bench)
+
+# Phase 2: main.uf2 runs Buddy 5 through the line task (src/main.c).
+add_library(obstacle_nav STATIC
+    src/obstacle/b5_nav.c
+)
+target_link_libraries(obstacle_nav PUBLIC obstacle motion_service sys mtk3smp)
+target_compile_options(obstacle_nav PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${B5_WARNINGS})
+target_link_libraries(main PRIVATE obstacle_nav)

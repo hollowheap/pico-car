@@ -7,6 +7,7 @@
 #include "motion/motion_request.h"
 #include "motion/motion_service.h"
 #include "motion/encoder_capture.h"
+#include "obstacle/b5_nav.h"
 #include "sys/gpio_irq.h"
 
 /* Every task uses 4096 bytes.  The SMP kernel path is deeper than the
@@ -69,6 +70,10 @@ LOCAL void line_task (INT stacd, void * exinf)
     }
     tm_printf((UB *)"Inited ir_capture\n");
 
+    /* Buddy 5 obstacle avoidance. If it fails, line following still runs. */
+    result = b5_nav_init();
+    tm_printf((UB *)"b5_nav_init -> %d\n", result);
+
     // for (int i = 0; i < 50; i++) // Counts of 100ms
     // {
     //     motion_drive_request_t request = {
@@ -90,6 +95,9 @@ LOCAL void line_task (INT stacd, void * exinf)
     const uint32_t speed     = 40841U;
     const uint32_t poll_ms   = 20;
     const uint32_t ms_per_us = 1000U;
+    /* Each speed lease must outlast one loop pass (up to poll_ms plus
+     * processing); an expired active lease latches MOTION_FAULT_EXPIRED. */
+    const uint32_t lease_us = 3U * poll_ms * ms_per_us;
     // int            count     = 0;
     while (true)
     {
@@ -106,22 +114,26 @@ LOCAL void line_task (INT stacd, void * exinf)
         // tm_printf((UB *)"right: %d\n", ir_get_state().right);
 
         const ir_sensors_state_t state = ir_get_state();
-        if (state.left && state.right)
+        if (b5_nav_step(state.left, state.right))
+        {
+            /* Buddy 5 is holding the car or driving round an obstacle. */
+        }
+        else if (state.left && state.right)
         {
             // TODO: run command at junction
-            motion_service_set_speed(0, 0, poll_ms * ms_per_us);
+            motion_service_set_speed(speed, speed, lease_us);
         }
         else if (state.left)
         {
-            motion_service_set_speed(0, speed, poll_ms * ms_per_us);
+            motion_service_set_speed(0, speed, lease_us);
         }
         else if (state.right)
         {
-            motion_service_set_speed(speed, 0, poll_ms * ms_per_us);
+            motion_service_set_speed(speed, 0, lease_us);
         }
         else
         {
-            motion_service_set_speed(speed, speed, poll_ms * ms_per_us);
+            motion_service_set_speed(speed, speed, lease_us);
         }
         ir_wait_change(IR_TYPE_LINE, poll_ms);
     }
