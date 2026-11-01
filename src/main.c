@@ -2,7 +2,6 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
-#include "demo_tasks.h"
 #include "track/line_task.h"
 #include "motion/motion.h"
 #include "navigation/mission_task.h"
@@ -47,13 +46,6 @@ LOCAL void mission_task (INT stacd, void * exinf)
     mission_run();
 }
 
-LOCAL T_CTSK ctsk_blink = {
-    .itskpri = 10,
-    .stksz   = STACK_SZ,
-    .task    = blink_task,
-    .tskatr  = TA_HLNG | TA_RNG3,
-};
-
 LOCAL T_CTSK ctsk_startup = {
     .itskpri = 2,
     .stksz   = STACK_SZ,
@@ -79,7 +71,7 @@ LOCAL T_CTSK ctsk_motion = {
 };
 
 LOCAL T_CTSK ctsk_mission = {
-    .itskpri = 3,
+    .itskpri = 2,
     .stksz   = STACK_SZ,
     .task    = mission_task,
 #if TK_SUPPORT_SMP
@@ -91,7 +83,7 @@ LOCAL T_CTSK ctsk_mission = {
 };
 
 LOCAL T_CTSK ctsk_line = {
-    .itskpri = 2,
+    .itskpri = 3,
     .stksz   = STACK_SZ,
     .task    = line_task,
 #if TK_SUPPORT_SMP
@@ -132,12 +124,7 @@ EXPORT INT usermain (void)
                   mission_result);
     }
 
-    ID tid = tk_cre_tsk(&ctsk_blink);
-    if (made("tsk(blink)", tid))
-    {
-        tk_sta_tsk(tid, 0);
-    }
-    tid = tk_cre_tsk(&ctsk_startup);
+    ID tid = tk_cre_tsk(&ctsk_startup);
     if (made("tsk(startup)", tid))
     {
         tk_sta_tsk(tid, 0);

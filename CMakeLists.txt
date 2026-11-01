@@ -247,7 +247,6 @@ target_link_libraries(navigation PUBLIC motion mtk3smp)
 
 add_executable(main
     src/main.c
-    src/demo_tasks.c
     src/system/startup_task.c
 )
 
