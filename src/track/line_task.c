@@ -2,9 +2,9 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
-#include "track/ir_capture.h"
+#include "track/track.h"
 #include "line_filter.h"
-#include "navigation/mission_task.h"
+#include "navigation/navigation.h"
 #include "system/startup_task.h"
 
 #define LINE_SAMPLE_MS 5U

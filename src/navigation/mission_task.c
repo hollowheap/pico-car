@@ -6,7 +6,7 @@
 #include <bsp/libbsp.h>
 
 #include "motion/motion.h"
-#include "navigation/mission_task.h"
+#include "navigation/navigation.h"
 
 #define MISSION_PERIOD_MS 10U
 #define MISSION_START_PIN      20U

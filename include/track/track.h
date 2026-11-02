@@ -1,5 +1,8 @@
-#ifndef IR_CAPTURE_H
-#define IR_CAPTURE_H
+/** @file track.h
+ * @brief Track subsystem facade: line sensor capture and line task.
+ */
+#ifndef TRACK_TRACK_H
+#define TRACK_TRACK_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -7,17 +10,8 @@
 
 typedef struct
 {
-    /*
-     * The barcode sensor.
-     */
     bool barcode : 1;
-    /*
-     * The left line sensor.
-     */
     bool left : 1;
-    /*
-     * The right line sensor.
-     */
     bool right : 1;
 } ir_sensors_state_t;
 
@@ -26,6 +20,7 @@ ER ir_capture_init (void);
 /** Get the current state of the IR sensors. */
 ir_sensors_state_t ir_get_state (void);
 
-#endif /* IR_CAPTURE_H */
+/** Composition-root line task entry. */
+void line_task (INT stacd, void * exinf);
 
-/*** end of file ***/
+#endif /* TRACK_TRACK_H */

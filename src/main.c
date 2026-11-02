@@ -2,9 +2,9 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
-#include "track/line_task.h"
+#include "track/track.h"
 #include "motion/motion.h"
-#include "navigation/mission_task.h"
+#include "navigation/navigation.h"
 #include "system/startup_task.h"
 
 /* Every task uses 4096 bytes.  The SMP kernel path is deeper than the

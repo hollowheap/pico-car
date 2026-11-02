@@ -4,7 +4,7 @@
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 
-#include "track/ir_capture.h"
+#include "track/track.h"
 #include "platform/isr.h"
 #include "system/startup_task.h"
 

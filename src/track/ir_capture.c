@@ -4,7 +4,7 @@
 #include <bsp/libbsp.h>
 
 #include "platform/isr.h"
-#include "track/ir_capture.h"
+#include "track/track.h"
 #include "ir_pins.h"
 
 /**
