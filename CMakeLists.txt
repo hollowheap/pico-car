@@ -282,7 +282,8 @@ endforeach()
 # ---------------------------------------------------------------------------
 # Buddy 5: obstacle detection and avoidance (src/obstacle)
 #   obstacle        library: sensor, servo, scan, planner, statechart
-#   obstacle_nav    Phase 2 glue used by the line task in main.c
+#   obstacle_nav    Phase 2 glue used by the line task in main.c, plus
+#                   the Buddy 5 flight recorder (b5_log.c)
 #   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
 #                   Buddy 5 + a pretend Navigation; the motors are never driven.
 # ---------------------------------------------------------------------------
@@ -328,6 +329,7 @@ pico_add_extra_outputs(obstacle_bench)
 # Phase 2: main.uf2 runs Buddy 5 through the line task (src/main.c).
 add_library(obstacle_nav STATIC
     src/obstacle/b5_nav.c
+    src/obstacle/b5_log.c
 )
 target_link_libraries(obstacle_nav PUBLIC obstacle motion_service sys mtk3smp)
 target_compile_options(obstacle_nav PRIVATE

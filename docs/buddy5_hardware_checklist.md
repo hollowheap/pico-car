@@ -16,8 +16,8 @@ each step: these are your evidence for the tribunal.
 | H2c | Servo scale | Protractor under the sensor. Compare the ±60° slots with the real angle and adjust `B5_SERVO_US_PER_10DEG`. | ±60° within ±3° | |
 | H2d | Settle on a low battery | Repeat a scan on a LiPo at ~3.5 V. Then double `B5_SETTLE_MS_PER_DEG`, rebuild and scan again. | The two profiles match within 15 mm | |
 | H3 | Detection distance | Status lines show distance. Slide a flat box toward the sensor. | OBSTACLE event at 250 ± 15 mm | |
-| H4 | 100 mm box at 200 mm | Box centred 200 mm ahead, AUTO-RUN on. Read the printed profile and SCAN_RESULT. | Region is slots 9–15; fine slots 7, 8, 16, 17 measured; width 75–125 mm; scan < 8 s | |
-| H4b | Beam half-angle | Slide a thin pole sideways at 200 mm and note the servo angle where it first appears. | Use the offset as `B5_BEAM_HALF_DECI` and re-run H4 | |
+| H4 | 100 mm box at 200 mm | Box centred 200 mm ahead, AUTO-RUN on. Keep everything else (wires, hands, walls) more than 600 mm away. Read the printed profile and SCAN_RESULT. | Region is slots 9–15; fine slots 7, 8, 16, 17 measured; width 75–125 mm; scan < 8 s | |
+| H4b | Beam half-angle | Servo straight ahead. Power bank 300 mm ahead, flat face to the sensor; slide it sideways until the status line jumps to the background or OPEN. Measure centre line → near edge, both sides. | Done: 50 mm left, 65 mm right → 9.5° (`B5_BEAM_HALF_DECI` 95). Re-run H4. | 50 / 65 mm |
 | H5 | Full handshake | AUTO-RUN: box ahead → watch the log. | STATE goes MONITOR → WAIT_STOP → SCANNING → PLAN → BYPASS → REACQUIRE → MONITOR, with STEER lines | |
 | H5b | Time limits | AUTO-RUN off (GP20 to "AUTO-RUN on/off"). Trigger an OBSTACLE and don't send SCAN_REQ. | STOPPED cause HANDOVER after 1 s; FAULT event; "EMERGENCY STOP called" | |
 | H6 | Emergency stop during bypass | During BYPASS/REACQUIRE, put a hand within 80 mm of the sensor. | STOPPED cause COLLISION within 2 pings (~120 ms); STEER HOLD; stop link called | |
@@ -25,7 +25,7 @@ each step: these are your evidence for the tribunal.
 | H7b | ECHO stuck high | Tie ECHO to 3V3 through 1 kΩ. | STOPPED cause ECHO_STUCK after 3 pings | |
 | H8 | Open room | Point the sensor at open space for 30 s. | Only OPEN or far VALID, no false STUCK. If STUCK appears, the module holds ECHO high longer than 60 ms on no-echo: report it. | |
 | H9a | Phase 2, wheels up | Flash `main.uf2`, wheels off the floor. Let the wheels spin, then put a hand 20 cm in front of the sensor. | Wheels stop; `[b5-nav] OBSTACLE`; servo sweeps; after you remove your hand the wheels turn again (SCAN_RESULT CLEAR → ACCEPT) | |
-| H9 | Hug on the car (Phase 2) | Flash `main.uf2`. Box on the line, car following the line towards it. | Car stops, scans, curves round without contact, finds the line, line following resumes | |
+| H9 | Hug on the car (Phase 2) | Flash `main.uf2`. Box on the line, car following the line towards it. Nothing else within 600 mm of the box. After the run keep the car on, plug in USB and open the serial monitor to print the flight log. | Car stops, scans, pivots until the way is clear and the planned angle is reached, drives out, zig-zags along the obstacle, turns back at about 30°, line following resumes at the first line contact. Takes about 20–30 s. Flight log: no `MOTION ... fault=` other than NONE, no FAULT lines. | |
 
 Settings named in this list (`B5_SERVO_CENTRE_US`, `B5_SERVO_DIR`,
 `B5_SERVO_US_PER_10DEG`, `B5_SETTLE_MS_PER_DEG`, `B5_BEAM_HALF_DECI`) are in

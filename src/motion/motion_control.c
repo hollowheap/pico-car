@@ -6,6 +6,11 @@
 #include "motion_control.h"
 #include "tm/tmonitor.h"
 
+/* Consecutive invalid speed samples tolerated per wheel before FEEDBACK.
+ * One sample is 10 ms, so a single encoder glitch (e.g. a motor switching
+ * spike) is ridden through, while a dead encoder still faults in ~30 ms. */
+#define MAX_BAD_SAMPLES 3U
+
 static int8_t sign (int32_t value)
 {
     return value > 0 ? 1 : (value < 0 ? -1 : 0);
@@ -235,6 +240,7 @@ void motion_control_tick (motion_control_t *     p_control,
         for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
         {
             p_control->progress_us[wheel] = now_us;
+            p_control->bad_samples[wheel] = 0U;
             if (p_control->status.sample_available)
             {
                 p_control->last_edges[wheel] =
@@ -265,6 +271,16 @@ void motion_control_tick (motion_control_t *     p_control,
             return;
         }
         p_control->last_edges[wheel] = edges;
+        if (!p_control->status.sample.wheel[wheel].speed_valid &&
+            (p_control->bad_samples[wheel] < MAX_BAD_SAMPLES))
+        {
+            /* Isolated encoder glitch: keep the duty already applied and
+             * skip this controller update instead of latching FEEDBACK. */
+            p_control->bad_samples[wheel]++;
+            requested[wheel] = p_control->status.duty[wheel];
+            continue;
+        }
+        p_control->bad_samples[wheel] = 0U;
         if (!wheel_pid_update(
                 &p_control->pid[wheel], p_control->command.target_um_s[wheel],
                 &p_control->status.sample, wheel, now_us, &requested[wheel]))

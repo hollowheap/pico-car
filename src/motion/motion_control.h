@@ -85,6 +85,7 @@ typedef struct
     uint32_t                brake_started_us;
     uint32_t                progress_us[ENCODER_WHEELS];
     int64_t                 last_edges[ENCODER_WHEELS];
+    uint8_t                 bad_samples[ENCODER_WHEELS];
     int8_t                  drive_sign[ENCODER_WHEELS];
     bool                    braked;
     bool                    initialised;

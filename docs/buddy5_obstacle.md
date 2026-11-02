@@ -156,8 +156,8 @@ Fault counters:
 | WAIT_STOP | 0° | SCAN_REQ(id); 1 s limit |
 | SCANNING | sweeps | profile done → SCAN_RESULT event; 8 s limit |
 | PLAN | 0° | ACCEPT(id) → BYPASS (or MONITOR if CLEAR); REJECT → STOPPED; 1 s limit |
-| BYPASS (escape) | 0° | obstacle out of the forward beam, then 3 more pings; 10 s limit |
-| REACQUIRE (hug) | ±45° toward obstacle | LINE_FOUND(id) after ≥ 200 mm; 30 s / 1.5 m limit |
+| BYPASS (escape) | 0° | forward beam clear for 2 pings in a row; 10 s limit |
+| REACQUIRE (out, along, back) | ±45° toward obstacle | LINE_FOUND(id); 60 s / 2.5 m limit |
 
 These rules apply in every state:
 
@@ -171,10 +171,15 @@ These rules apply in every state:
 - **Grid:** 25 slots, −60° to +60° in 5° steps, positive = left.
 - **Coarse:** every 3rd slot, swept right to left.
 - **Region:** the closest VALID ≤ 600 mm, plus coarse neighbours within
-  closest + 250 mm.
-- **Fine:** in-between slots outward from each edge, up to the first miss.
-  - An edge at ±60°, or one followed by an UNKNOWN reading, is **unbounded**,
-    and that side is treated as unsafe.
+  closest + 250 mm. The closest reading is looked for inside the car's path
+  (±30°) first, and only then over the whole sweep, so clutter off to one
+  side cannot take the place of the obstacle that stopped the car.
+- **Fine:** walk outward from each edge, one slot at a time, up to the first
+  real miss (OPEN, or VALID beyond closest + 250 mm).
+  - An UNKNOWN or STUCK slot proves nothing, so the walk assumes the obstacle
+    goes on and steps past it (the car gets more room, never less).
+  - An edge that reaches ±60° without a miss is **unbounded**, and that side
+    is treated as unsafe.
 - **Per slot:**
   - settle for 3 ms/° + 20 ms;
   - ping until two pings agree (same class, within 15 mm), keeping the closer
@@ -201,17 +206,43 @@ is usable → NO_SAFE_PATH.
 
 **Start angle:** `atan(needed offset / closest distance)`.
 
-**Bypass (your design).** The car keeps rolling and steers by slowing one wheel.
+**Bypass [Chat].** The car never reverses; it turns by slowing one wheel.
 
-- **BYPASS:** steer **away** every ping.
-- **REACQUIRE:** steer from the 45° look-ray:
+1. **Escape (BYPASS):** spin away on the spot (inside wheel −40 mm/s,
+   outside wheel +40 mm/s) until the forward beam has been clear for 2
+   pings in a row. NOTE: a pivot with the inside wheel held dragged that
+   wheel backwards on the car, the encoder reported invalid steps and the
+   motion service latched FEEDBACK; the spin drives both wheels.
+2. **TURN:** if the beam cleared before the car had turned the planned start
+   angle, keep pivoting until it has (the beam is on the car's centre line,
+   so "beam clear" alone would let the car's side clip the corner).
+3. **OUT:** straight on at that angle until the car is the planned offset
+   to the side of the line (from the wheel odometry).
+4. **ALONG (zig-zag):** hold that offset (−10 / +30 mm) and a heading within
+   ±30° of the line, by curving gently (inside wheel 40 mm/s, outside
+   60 mm/s), until the tail has passed the far end of the obstacle
+   (closest + assumed depth 180 mm + servo-to-tail 170 mm).
+5. **BACK:** curve towards the line until heading 30° across it, then
+   straight on. The IR sensors count from ALONG on (the car is then beside
+   the obstacle, never over the line it left), and the first line contact
+   hands back to line following at once.
 
-| Look-ray reading | Steering |
+Throughout 3–5 the servo looks 45° towards the obstacle; a reading under
+150 mm bends the car away. The statechart still publishes its own hug
+STEER words (band below), but Navigation drives from the odometry.
+
+| Look-ray reading | STEER word published |
 |---|---|
-| < 120 mm | away |
-| 120–200 mm | straight |
-| > 200 mm or OPEN | towards |
+| < 150 mm | away |
+| 150–250 mm | straight |
+| > 250 mm or OPEN | towards |
 | UNKNOWN | keep the last choice |
+
+NOTE: An earlier version steered only from the 45° look-ray and accepted
+the line once the ray had seen and then lost the obstacle. A simulation
+showed why that fails: while the car is still angled out, the 45° ray
+points almost straight ahead, loses the obstacle early and the car curves
+back into its side. Dead reckoning fixes this.
 
 STEER words use the order of Buddy 2's `motion_drive_action_t`:
 STRAIGHT / LEFT / RIGHT / HOLD. In Phase 2, Navigation turns them into
@@ -347,8 +378,11 @@ Search `b5_cfg.h` for **FILL**. Status:
 | Free floor `B5_FREE_FLOOR_MM` | **Done:** 500 mm cap; the course has no side boundary, and the planner always uses the smaller offset |
 | Servo direction `B5_SERVO_DIR` | **Confirmed** on the bench (+1) |
 | Bypass speed `B5_BYPASS_SPEED_MM_S` | 40 mm/s, matches `main.c` (40.8 mm/s) |
-| Beam half-angle `B5_BEAM_HALF_DECI` | **Pending:** cone measurement (slide a target sideways at 25 cm). The scans suggest about ±40°, not 7.5°. |
-| Wheel track, servo→front/rear | Pending (optional) |
+| Beam half-angle `B5_BEAM_HALF_DECI` | **Done:** 9.5° (95). Power bank at 300 mm dropped out with its near edge 50 mm left / 65 mm right of centre (9.5° / 12.2°); the smaller value gives more room. The left/right difference comes from the two transducers sitting either side of the centre. |
+| Wheel diameter | **Done:** 65 mm (already in the motion service scale) |
+| Wheel track `B5_WHEEL_TRACK_MM` | **Done:** 107 mm (measured) |
+| Servo→tail `B5_SERVO_TO_REAR_MM` | Pending (170 mm); sets when the car turns back |
+| Servo→front | Pending (optional) |
 | Servo centre / scale | Looks right by eye; protractor check optional |
 | Power source | Pending (settle time on a low LiPo, H2d) |
 
@@ -365,7 +399,7 @@ calls `obstacle_init()` with these links, then sends RESET and START:
 | Link | Wired to | Why |
 |---|---|---|
 | `p_stop` | `motion_service_set_hold(MOTION_HOLD_OBSTACLE, true)` | Stops the car without the reboot latch of `motion_service_request_stop()`, so RESET + START can recover. |
-| `p_get_distance_mm` | Mean forward `displacement_um` of both wheels from `motion_service_read_status()`, in mm | Real odometer for the 200 mm line-ignore and the 1.5 m hug limit. It keeps the last good value if a sample is invalid. |
+| `p_get_distance_mm` | Mean forward `displacement_um` of both wheels from `motion_service_read_status()`, in mm | Real odometer for the 2.5 m bypass limit. It keeps the last good value if a sample is invalid. |
 | `h_nav_mbf` | 0 | Events go to Buddy 5's own outbox; the line task polls it. |
 
 If `b5_nav_init()` fails, it prints the error and line following runs
@@ -379,23 +413,68 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 |---|---|---|
 | MONITOR | releases the obstacle hold, unless the latest reading is a VALID echo within 250 mm (so a retry never creeps into the obstacle) | drives as before |
 | WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id) | paused |
-| BYPASS | releases the hold; sends the STEER word as a speed command | paused |
-| REACQUIRE | same as BYPASS; sends LINE_FOUND(id) when either IR sensor sees the line (at most every 100 ms; Buddy 5 ignores the first 200 mm) | paused |
+| BYPASS | releases the hold; pivots away (STEER word) until Buddy 5 sees the way ahead is clear | paused |
+| REACQUIRE | TURN / OUT / ALONG / BACK from the wheel odometry (see Bypass above); from ALONG on, sends LINE_FOUND(id) as soon as either IR sensor sees the line (at most every 100 ms) | paused |
 | STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR | paused |
 
-**STEER → speed** (`motion_service_set_speed()`, lease 100 ms). The inside
-wheel stops while escaping (BYPASS, sharp turn, like the line follower's
-own turns) and runs at half speed while hugging (REACQUIRE):
+**Speeds** (`motion_service_set_speed()`, lease 100 ms). The car stands
+still while the servo turns (entering BYPASS, REACQUIRE or MONITOR): a
+servo swing while a motor drives can disturb the wheel encoders.
 
-| STEER | BYPASS left / right | REACQUIRE left / right |
+| Phase | Straight | Turning (inside / outside wheel) |
 |---|---|---|
-| STRAIGHT | 40 000 / 40 000 µm/s | 40 000 / 40 000 µm/s |
-| LEFT | 0 / 40 000 µm/s | 20 000 / 40 000 µm/s |
-| RIGHT | 40 000 / 0 µm/s | 40 000 / 20 000 µm/s |
-| HOLD | 0 / 0 | 0 / 0 |
+| Escape spin, TURN | — | −40 000 / +40 000 µm/s |
+| OUT, ALONG, BACK | 40 000 / 40 000 µm/s | 40 000 / 60 000 µm/s |
 
-The glue also logs `[b5-nav] state N`, `[b5-nav] steer N: left .. right ..`
-and every `SCAN_RESULT` with side, width and start angle.
+NOTE: The inside wheel never runs between 0 and 40 mm/s. The motors only
+get up to 25 % duty, and a driven wheel that makes no encoder edges for 2 s
+latches the motion service's NO_EDGES fault, which only a reboot clears.
+If the motors cannot reach 60 mm/s, the outside wheel runs at its top
+speed, which still curves the car.
+
+**Dead reckoning.** Heading = `(right − left wheel distance) /
+B5_WHEEL_TRACK_MM` (from the totals, so it does not drift); position is
+summed along that heading every pass. `B5_WHEEL_TRACK_MM` is 107 mm
+(measured). The wheel diameter
+(65 mm) is already in the motion service's scale (204.2 mm per turn).
+
+**Simulation** (host, the real Buddy 5 code in a closed loop with a
+kinematic car), from detection to rejoining the line: obstacles 60/105/160 mm wide,
+real beam 9.5°/15°/25°, true track 90/100/115 mm, obstacle centred or
+35 mm off-centre: 81 of 81 runs pass without contact (closest gap
+57–150 mm), rejoin the line at about 30° and resume line following. A
+bypass takes about 20–30 s at these speeds.
+
+The glue prints `[b5-nav] state N cause N`, `[b5-nav] plan: ...`,
+`[b5-nav] phase N: side .. ahead .. heading ..`, `[b5-nav] steer N: left ..
+right ..`, `[b5-nav] escape turned N deg`, motion changes and every
+`SCAN_RESULT`, and writes all of it to the flight recorder.
+
+### Flight recorder (`b5_log.c`)
+
+The car has no wireless link, so `main.uf2` keeps a log in RAM
+(1024 records, about 2 minutes of driving round obstacles) and prints it
+over USB when a serial monitor is opened.
+
+**How to read it after a run:**
+
+1. Do **not** switch the car off (RAM is lost). Pick it up so the wheels
+   are off the floor.
+2. Plug the USB cable into the laptop and open the serial monitor
+   (VS Code Serial Monitor or `screen`, any baud).
+3. The log prints once, oldest first. Close and reopen the monitor to
+   print it again.
+
+**What is in it:** every Buddy 5 state change with its cause, OBSTACLE,
+FAULT, every SCAN_RESULT with the full 25-slot profile, every steering
+change with how far the car has turned, every motion-service state/fault
+change, every command sent, and a trace line (state, echo, IR sensors,
+wheel distances) every 100 ms while Buddy 5 drives and every 500 ms
+otherwise.
+
+**Tethered alternative:** run the car on a long USB cable with the
+monitor open; the live `[b5-nav]` lines show the same events as they
+happen.
 
 The speeds, lease, brake wait, retry time and LINE_FOUND rate are the
 `B5_NAV_*` settings in `b5_cfg.h`.
@@ -405,9 +484,10 @@ The speeds, lease, brake wait, retry time and LINE_FOUND rate are the
 | File | Change |
 |---|---|
 | `src/main.c` | +1 include (`obstacle/b5_nav.h`); +4 lines calling `b5_nav_init()` after `ir_capture_init()`; the steering `if` gets a new first branch `if (b5_nav_step(state.left, state.right)) { }` and the old first `if` becomes `else if`. Nothing else changed. |
-| `CMakeLists.txt` | Buddy 5 block: comment updated; new `obstacle_nav` library; `target_link_libraries(main PRIVATE obstacle_nav)`. |
+| `CMakeLists.txt` | Buddy 5 block: comment updated; new `obstacle_nav` library (`b5_nav.c`, `b5_log.c`); `target_link_libraries(main PRIVATE obstacle_nav)`. |
+| `src/motion/motion_control.h`, `src/motion/motion_control.c` (Buddy 2's motion code, applied with the user's approval) | Glitch tolerance: a wheel may have up to 3 consecutive invalid speed samples (30 ms) before FEEDBACK is latched; during a bad sample the wheel keeps the duty already applied and the controller update is skipped. New field `bad_samples[]`, new `MAX_BAD_SAMPLES 3U`, counter reset when idle. Reason: single encoder spikes when motors start, stop or reverse latched FEEDBACK (reboot only) in 5 car runs, on both wheels, with 1-2 bad steps each. Other checks (NO_EDGES, GAP, missing sample, expiry, STOP pin) unchanged. Needs Buddy 2's review. |
 
-No motion, IR or `sys` file was changed.
+No IR or `sys` file was changed. The only motion change is the glitch tolerance above.
 
 **Before driving on the floor:**
 

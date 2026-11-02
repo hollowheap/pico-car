@@ -118,8 +118,9 @@
 #define B5_AGREE_MM  (15U)
 #define B5_MAX_PINGS (4U)
 
-/* [Chat][Default] CLEAR needs a real reading in every slot within
- * +-30 degrees of straight ahead. */
+/* [Chat][Default] The car's path: +-30 degrees of straight ahead. CLEAR
+ * needs a real reading in every slot of it, and the scan looks for the
+ * closest reading here before it looks at the whole sweep. */
 #define B5_PATH_HALF_DECI (300)
 
 /* ------------------------------------------------------------------ *
@@ -152,6 +153,12 @@
 #define B5_SETTLE_MS_PER_DEG (3U)
 #define B5_SETTLE_BASE_MS    (20U)
 
+/* [Chat] In states where the car may be driving, the servo waits this long
+ * before it moves, so that Navigation (20 ms loop) and the motion service
+ * (10 ms) have stopped the wheels: a servo swing while a motor drives
+ * disturbs the wheel encoders (seen on the car as a FEEDBACK fault). */
+#define B5_SERVO_PREDELAY_MS (60U)
+
 /* PWM: 125 MHz / 125 = 1 MHz count and TOP 19999 give 50 Hz. CHx_DIV is
  * an 8.4 fixed-point value. */
 #define B5_PWM_DIV_INT   (125U)
@@ -172,23 +179,29 @@
 /* The bend-away phase may last 10 s. */
 #define B5_ESCAPE_MAX_MS (10000U)
 
-/* The hug may last 30 s or 1500 mm before the line must be found. */
-#define B5_HUG_MAX_MS (30000U)
-#define B5_HUG_MAX_MM (1500U)
+/* The rest of the bypass (out, along, back) may last 60 s or 2500 mm
+ * before the line must be found. At 40-50 mm/s a bypass of a 10 cm
+ * obstacle is about 1 m and 20-25 s. */
+#define B5_HUG_MAX_MS (60000U)
+#define B5_HUG_MAX_MM (2500U)
 
-/* [Chat] The line is ignored for the first 200 mm, so that the car does
- * not find the line it has just left. */
-#define B5_LINE_IGNORE_MM (200U)
+/* [Chat] The escape ends after this many clear forward pings in a row
+ * (two, so that one noisy reading cannot end the turn early; about 1
+ * degree of extra turn). Navigation also keeps turning until the planned
+ * start angle is reached (b5_nav.c). */
+#define B5_ESCAPE_CLEAR_PINGS (2U)
 
-/* [Chat] The car keeps bending away for 3 pings after the obstacle has
- * left the forward beam. */
-#define B5_ESCAPE_EXTRA_PINGS (3U)
-
-/* [Chat][Default] Hug band on the 45 degree look-ray: closer than NEAR
- * bends away, further than FAR (or OPEN) bends towards. */
-#define B5_HUG_NEAR_MM    (120U)
-#define B5_HUG_FAR_MM     (200U)
+/* [Chat] Zig-zag band on the 45 degree look-ray: closer than NEAR bends
+ * away, further than FAR (or OPEN) bends towards. 150 / 250 mm on the ray
+ * is about 106 / 177 mm sideways from the sensor, leaving room for the
+ * tail to swing when the car bends away. */
+#define B5_HUG_NEAR_MM    (150U)
+#define B5_HUG_FAR_MM     (250U)
 #define B5_HUG_SERVO_DECI (450)
+
+/* NOTE: Navigation (b5_nav.c) steers REACQUIRE from the wheel odometry
+ * and uses only B5_HUG_NEAR_MM (bend away when closer); the STEER words
+ * from the band above are published but not used for driving. */
 
 /* ------------------------------------------------------------------ *
  * Car geometry. FILL: measure with a ruler and replace the values.
@@ -198,8 +211,14 @@
  * outside of wheel), so half is 63 mm. */
 #define B5_CAR_HALF_W_MM (63U)
 
-/* FILL: wheel centre to wheel centre (needed by Navigation for curves). */
-#define B5_WHEEL_TRACK_MM (120U)
+/* [Measured] Wheel diameter 65 mm. NOTE: The motion service already
+ * uses 204 204 um per wheel turn (pi x 65 mm, main.c), so the odometer
+ * needs no change. */
+
+/* [Measured] Wheel centre to wheel centre: 107 mm. Used to measure how
+ * far the car has turned (b5_nav.c); a value that is too small makes the
+ * car stop turning a little early. */
+#define B5_WHEEL_TRACK_MM (107U)
 
 /* FILL: servo shaft to the front bumper, and to the tail of the car. */
 #define B5_SERVO_TO_FRONT_MM (30U)
@@ -222,8 +241,11 @@
 /* [Tribunal] Assumed obstacle depth. */
 #define B5_DEPTH_ASSUMED_MM (180U)
 
-/* [Tribunal] Half of the ~15 degree sensor cone. FILL: calibrate (H4b). */
-#define B5_BEAM_HALF_DECI (75)
+/* [Measured] Half of the sensor cone. A power bank 300 mm ahead dropped
+ * out with its near edge 50 mm left and 65 mm right of the centre line:
+ * atan(50 / 300) = 9.5 and atan(65 / 300) = 12.2 degrees. The smaller
+ * value is used, because a narrower cone gives the car more room. */
+#define B5_BEAM_HALF_DECI (95)
 
 /* ------------------------------------------------------------------ *
  * Phase 2 navigation glue (b5_nav.c) [Default]: how the line task drives
@@ -234,13 +256,52 @@
  * the 40 mm/s used for the odometer estimate (main.c uses 40 841 um/s). */
 #define B5_NAV_SPEED_UM_S (B5_BYPASS_SPEED_MM_S * 1000U)
 
-/* During a steer the inside wheel runs at this percentage of the speed
- * (the car curves by slowing one wheel, never by reversing it). BYPASS
- * must turn sharply enough to clear an obstacle about 20 cm ahead, so it
- * stops the inside wheel, as the line follower does for its turns; the
- * hug in REACQUIRE uses a gentler curve. */
-#define B5_NAV_ESCAPE_INSIDE_PCT (0U)
-#define B5_NAV_HUG_INSIDE_PCT    (50U)
+/* [Chat] Escape turn: spin on the spot, the inside wheel backwards at this
+ * speed and the outside wheel forwards at B5_NAV_SPEED_UM_S. NOTE: With the
+ * inside wheel stopped instead (a pivot), the car scrubbed the held wheel
+ * backwards (-31 and -56 mm/s seen on the car); the geared motor chattered,
+ * the encoder reported invalid steps and the motion service latched its
+ * FEEDBACK fault. A spin drives both wheels, so none is dragged. */
+#define B5_NAV_ESCAPE_INSIDE_UM_S (-40000)
+
+/* [Chat] Zig-zag (option A): the inside wheel keeps B5_NAV_SPEED_UM_S and
+ * the outside wheel runs faster, so the car curves gently (about 250 mm
+ * radius with a 100 mm track). NOTE: Slower inside speeds are avoided: the
+ * motors only get up to 25 % duty, and a driven wheel with no encoder
+ * edges for 2 s latches the motion service's NO_EDGES fault (reboot only).
+ * If the motors cannot reach 60 mm/s, the outside wheel just runs at its
+ * top speed, which still curves the car. FILL: check the speeds in the
+ * flight log (wheel distances in the trace lines). */
+#define B5_NAV_HUG_OUTSIDE_UM_S (60000U)
+
+/* [Chat] The escape pivot goes on until the forward beam is clear AND the
+ * car has turned the planned start angle (wheel odometry and
+ * B5_WHEEL_TRACK_MM), whichever comes later. 573 is deci-degrees per
+ * radian. */
+#define B5_NAV_DECI_PER_RAD (573)
+
+/* [Default] Zig-zag along the obstacle (ALONG phase): the car keeps its
+ * sideways offset between (planned - IN) and (planned + OUT) mm, and its
+ * heading within +-HEAD_MAX of the line. */
+#define B5_NAV_BAND_IN_MM    (10U)
+#define B5_NAV_BAND_OUT_MM   (30U)
+#define B5_NAV_HEAD_MAX_DECI (300)
+
+/* [Default] BACK phase: the car curves towards the line until it heads
+ * this many deci-degrees across it, then drives straight to the line, so
+ * it meets the line at a shallow angle and does not overshoot. */
+#define B5_NAV_REJOIN_DECI (300)
+
+/* [Chat] Before any wheel changes direction (end of the escape spin), both
+ * wheels stop for this long. While both are at 0 the motion service is
+ * idle and does not check the encoders, which rattle while a geared motor
+ * brakes (seen on the car as invalid steps and a FEEDBACK fault). */
+#define B5_NAV_REVERSE_PAUSE_MS (300U)
+
+/* [Chat] Longest wait for the servo to settle after it is moved while the
+ * car could drive (entering REACQUIRE or MONITOR). The car stands still
+ * meanwhile; normally the wait ends at the next ping (about 0.2 s). */
+#define B5_NAV_SERVO_WAIT_MS (600U)
 
 /* Lease of every speed command. It must cover several 20 ms loop passes
  * and stay within the motion service limit (200 ms in main.c). */
@@ -255,6 +316,29 @@
 
 /* While looking for the line, LINE_FOUND is sent at most this often. */
 #define B5_NAV_LINE_REPEAT_MS (100U)
+
+/* ------------------------------------------------------------------ *
+ * Flight recorder (b5_log.c) [Default].
+ * ------------------------------------------------------------------ */
+
+/* Records kept in RAM (16 bytes each; must be a power of two). */
+#define B5_LOG_RECORDS (1024U)
+
+/* Scan profiles kept in RAM. */
+#define B5_LOG_PROFILES (8U)
+
+/* A profile belongs to the RESULT record logged within this time. */
+#define B5_LOG_PROFILE_MATCH_MS (50U)
+
+/* Trace period while Buddy 5 drives the car (BYPASS, REACQUIRE), and
+ * otherwise. */
+#define B5_LOG_TRACE_MS      (100U)
+#define B5_LOG_IDLE_TRACE_MS (500U)
+
+/* Dump pacing: lines per line-task pass, and the most bytes left in the
+ * 4 KB USB ring before another line is printed. */
+#define B5_LOG_LINES_PER_PASS (4U)
+#define B5_LOG_PENDING_MAX    (1024U)
 
 /* ------------------------------------------------------------------ *
  * Kernel resources [Chat].
@@ -328,13 +412,18 @@ B5_CT_ASSERT(unknown_cnt_fits, B5_NO_ECHO_COUNT <= B5_CNT3_MAX);
 B5_CT_ASSERT(stuck_cnt_fits, B5_STUCK_COUNT <= B5_CNT2_MAX);
 B5_CT_ASSERT(hit_cnt_fits, B5_DETECT_HITS <= B5_CNT3_MAX);
 B5_CT_ASSERT(coll_cnt_fits, B5_COLLISION_HITS <= B5_CNT2_MAX);
-B5_CT_ASSERT(clear_cnt_fits, (B5_ESCAPE_EXTRA_PINGS + 1U) <= B5_CNT3_MAX);
+B5_CT_ASSERT(clear_cnt_fits, B5_ESCAPE_CLEAR_PINGS <= B5_CNT3_MAX);
 B5_CT_ASSERT(hug_band_order, B5_COLLISION_MM < B5_HUG_NEAR_MM);
 B5_CT_ASSERT(hug_band_order2, B5_HUG_NEAR_MM < B5_HUG_FAR_MM);
 B5_CT_ASSERT(nav_brake_in_time, B5_NAV_BRAKE_MS < B5_WAIT_STOP_MS);
-B5_CT_ASSERT(nav_escape_pct, B5_NAV_ESCAPE_INSIDE_PCT <= 100U);
-B5_CT_ASSERT(nav_hug_pct, B5_NAV_HUG_INSIDE_PCT <= 100U);
+B5_CT_ASSERT(nav_escape_in_range, (B5_NAV_ESCAPE_INSIDE_UM_S >= -100000) &&
+                                      (B5_NAV_ESCAPE_INSIDE_UM_S <= 0));
+B5_CT_ASSERT(nav_hug_faster, B5_NAV_HUG_OUTSIDE_UM_S > B5_NAV_SPEED_UM_S);
+B5_CT_ASSERT(nav_hug_in_range, B5_NAV_HUG_OUTSIDE_UM_S <= 100000U);
+B5_CT_ASSERT(nav_band_order, B5_NAV_BAND_IN_MM < B5_NAV_BAND_OUT_MM);
 B5_CT_ASSERT(nav_ttl_in_range, B5_NAV_TTL_US <= 200000U);
+B5_CT_ASSERT(log_pow2, 0U == (B5_LOG_RECORDS & (B5_LOG_RECORDS - 1U)));
+B5_CT_ASSERT(log_fits_16bit, B5_LOG_RECORDS <= 65536U);
 
 #endif /* B5_CFG_H */
 

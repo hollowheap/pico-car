@@ -6,11 +6,16 @@
  * Scan order (Spec 3a-3d):
  *   1. Coarse: slots 0, 3, ... 24, from right to left.
  *   2. Region: the closest VALID reading within 600 mm, grown over coarse
- *      neighbours that are VALID and within closest + 250 mm.
+ *      neighbours that are VALID and within closest + 250 mm. The closest
+ *      reading is looked for inside the car's path (+-30 degrees) first,
+ *      so clutter off to one side cannot take the place of the obstacle
+ *      that stopped the car.
  *   3. Fine, left edge first because the servo is already on the left:
- *      the in-between slots are measured outward until the first miss.
- *      An edge at +-60 degrees, or one whose next reading is not a real
- *      miss, is UNBOUNDED, so the planner treats that side as unsafe.
+ *      the slots are walked outward until the first real miss (OPEN, or
+ *      VALID beyond closest + 250 mm). An UNKNOWN or STUCK slot proves
+ *      nothing, so the walk assumes the obstacle goes on and steps past
+ *      it. An edge that reaches +-60 degrees without a miss is
+ *      UNBOUNDED, so the planner treats that side as unsafe.
  */
 
 #include <stdbool.h>
@@ -28,13 +33,20 @@
 /* Highest slot number (24); fits easily in uint8_t. */
 #define LAST_SLOT (B5_SLOT_COUNT - 1U)
 
-static void begin_right (scan_algo_ctx_t * p_ctx);
-static void begin_left (scan_algo_ctx_t * p_ctx);
-static void finish_coarse (scan_algo_ctx_t * p_ctx);
-static void close_edge (scan_algo_ctx_t * p_ctx, uint8_t side, uint8_t state,
-                        uint8_t miss_slot);
-static void step_fine_hit (scan_algo_ctx_t * p_ctx, uint8_t side);
-static void step_fine (scan_algo_ctx_t * p_ctx, uint8_t side);
+/* Outcome of walking one edge. */
+#define WALK_MEASURE   (0U) /* p_ctx->slot must be measured next */
+#define WALK_BOUNDED   (1U) /* a real miss was found             */
+#define WALK_UNBOUNDED (2U) /* the walk ran past +-60 degrees     */
+
+/* Largest angle of the sweep in deci-degrees (600). */
+#define SWEEP_HALF_DECI (-B5_SLOT_FIRST_DECI)
+
+static bool    find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
+                             uint16_t * p_best_mm);
+static void    finish_coarse (scan_algo_ctx_t * p_ctx);
+static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
+                          uint8_t * p_miss);
+static void    run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first);
 
 /*!
  * @brief Convert an echo width to a distance (integer maths, 343 m/s).
@@ -336,11 +348,11 @@ bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
             break;
 
             case PHASE_FINE_LEFT:
-                step_fine(p_ctx, SCAN_ALGO_LEFT);
+                run_fine(p_ctx, SCAN_ALGO_LEFT, (int32_t)p_ctx->slot);
             break;
 
             case PHASE_FINE_RIGHT:
-                step_fine(p_ctx, SCAN_ALGO_RIGHT);
+                run_fine(p_ctx, SCAN_ALGO_RIGHT, (int32_t)p_ctx->slot);
             break;
 
             default:
@@ -353,49 +365,42 @@ bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
 }
 
 /*!
- * @brief Begin the fine scan of the right edge, or skip it at -60 degrees.
+ * @brief Find the closest VALID coarse reading within 600 mm, looking only
+ *        at slots no further than half_deci from straight ahead.
  *
- * @param[in,out] p_ctx Scan engine state.
- */
-static void begin_right (scan_algo_ctx_t * p_ctx)
-{
-    p_ctx->edge_hit[SCAN_ALGO_RIGHT] = p_ctx->region_lo;
-
-    if (0U == p_ctx->region_lo)
-    {
-        p_ctx->edge_state[SCAN_ALGO_RIGHT] = SCAN_ALGO_EDGE_UNBOUNDED;
-        p_ctx->phase                       = PHASE_DONE;
-    }
-    else
-    {
-        p_ctx->phase = PHASE_FINE_RIGHT;
-
-        /* Cast is safe: region_lo is at least 1 here. */
-        p_ctx->slot = (uint8_t)(p_ctx->region_lo - 1U);
-    }
-}
-
-/*!
- * @brief Begin the fine scan of the left edge, or skip it at +60 degrees.
+ * @param[in,out] p_ctx     Scan engine state; closest_slot is set on success.
+ * @param[in]     half_deci Largest angle to look at, in deci-degrees.
+ * @param[out]    p_best_mm Closest distance on success.
  *
- * @param[in,out] p_ctx Scan engine state.
+ * @return True if a reading was found.
  */
-static void begin_left (scan_algo_ctx_t * p_ctx)
+static bool find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
+                          uint16_t * p_best_mm)
 {
-    p_ctx->edge_hit[SCAN_ALGO_LEFT] = p_ctx->region_hi;
+    uint32_t slot    = 0U;
+    bool     b_found = false;
 
-    if (p_ctx->region_hi >= LAST_SLOT)
+    for (slot = 0U; slot <= LAST_SLOT; slot += B5_COARSE_STRIDE)
     {
-        p_ctx->edge_state[SCAN_ALGO_LEFT] = SCAN_ALGO_EDGE_UNBOUNDED;
-        begin_right(p_ctx);
-    }
-    else
-    {
-        p_ctx->phase = PHASE_FINE_LEFT;
+        /* Cast is safe: slot is at most 24. */
+        int32_t const  deci     = scan_algo_slot_deci((uint8_t)slot);
+        uint16_t const slot_val = p_ctx->profile[slot];
+        uint16_t const dist     = b5_pack_slot_dist(slot_val);
 
-        /* Cast is safe: region_hi is at most 23 here. */
-        p_ctx->slot = (uint8_t)(p_ctx->region_hi + 1U);
+        if ((deci >= -half_deci) && (deci <= half_deci) &&
+            (b5_pack_slot_is_measured(slot_val)) &&
+            (B5_CLASS_VALID == b5_pack_slot_class(slot_val)) &&
+            (dist <= B5_REGION_MAX_MM) && ((!b_found) || (dist < *p_best_mm)))
+        {
+            *p_best_mm = dist;
+
+            /* Cast is safe: slot is at most 24. */
+            p_ctx->closest_slot = (uint8_t)slot;
+            b_found             = true;
+        }
     }
+
+    return (b_found);
 }
 
 /*!
@@ -406,25 +411,13 @@ static void begin_left (scan_algo_ctx_t * p_ctx)
  */
 static void finish_coarse (scan_algo_ctx_t * p_ctx)
 {
-    uint32_t slot    = 0U;
-    bool     b_found = false;
     uint16_t best_mm = 0U;
+    bool     b_found = find_closest(p_ctx, B5_PATH_HALF_DECI, &best_mm);
 
-    for (slot = 0U; slot <= LAST_SLOT; slot += B5_COARSE_STRIDE)
+    if (!b_found)
     {
-        uint16_t const slot_val = p_ctx->profile[slot];
-        uint16_t const dist     = b5_pack_slot_dist(slot_val);
-
-        if ((b5_pack_slot_is_measured(slot_val)) &&
-            (B5_CLASS_VALID == b5_pack_slot_class(slot_val)) &&
-            (dist <= B5_REGION_MAX_MM) && ((!b_found) || (dist < best_mm)))
-        {
-            best_mm = dist;
-
-            /* Cast is safe: slot is at most 24. */
-            p_ctx->closest_slot = (uint8_t)slot;
-            b_found             = true;
-        }
+        /* Nothing in the car's path: fall back to the whole sweep. */
+        b_found = find_closest(p_ctx, SWEEP_HALF_DECI, &best_mm);
     }
 
     if (!b_found)
@@ -456,89 +449,124 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
             p_ctx->region_lo = (uint8_t)(p_ctx->region_lo - B5_COARSE_STRIDE);
         }
 
-        begin_left(p_ctx);
+        p_ctx->edge_hit[SCAN_ALGO_LEFT] = p_ctx->region_hi;
+        run_fine(p_ctx, SCAN_ALGO_LEFT, (int32_t)p_ctx->region_hi + 1);
     }
 }
 
 /*!
- * @brief Close one edge and move on to the next one.
+ * @brief Walk one edge outward, starting at slot first, over the slots
+ *        that are already measured.
  *
- * @param[in,out] p_ctx     Scan engine state.
- * @param[in]     side      SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
- * @param[in]     state     SCAN_ALGO_EDGE_BOUNDED or _UNBOUNDED.
- * @param[in]     miss_slot First slot beyond the edge.
+ * A hit moves the edge out. An UNKNOWN or STUCK slot proves nothing, so
+ * the walk assumes the obstacle goes on and steps past it without moving
+ * the edge (edge_hit always names a VALID reading, whose range the planner
+ * uses). The walk stops at the first slot not measured yet, at the first
+ * real miss, or past +-60 degrees.
+ *
+ * @param[in,out] p_ctx  Scan engine state.
+ * @param[in]     side   SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
+ * @param[in]     first  First slot to look at; may be -1 or 25.
+ * @param[out]    p_miss First slot beyond the edge (BOUNDED/UNBOUNDED).
+ *
+ * @return WALK_MEASURE, WALK_BOUNDED or WALK_UNBOUNDED.
  */
-static void close_edge (scan_algo_ctx_t * p_ctx, uint8_t side, uint8_t state,
-                        uint8_t miss_slot)
+static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
+                          uint8_t * p_miss)
 {
-    p_ctx->edge_state[side] = state;
-    p_ctx->edge_miss[side]  = miss_slot;
+    int32_t const step   = (SCAN_ALGO_LEFT == side) ? 1 : -1;
+    int32_t       slot   = first;
+    uint8_t       result = WALK_MEASURE;
+    bool          b_more = true;
 
-    if (SCAN_ALGO_LEFT == side)
+    while (b_more)
     {
-        begin_right(p_ctx);
+        bool const b_inside = (slot >= 0) && (slot <= (int32_t)LAST_SLOT);
+
+        /* An outside slot reads as empty; it is never used below. */
+        uint16_t const slot_val = b_inside ? p_ctx->profile[slot] : 0U;
+
+        if (!b_inside)
+        {
+            /* The obstacle reaches the end of the sweep. */
+            *p_miss = (SCAN_ALGO_LEFT == side) ? (uint8_t)LAST_SLOT : 0U;
+            result  = WALK_UNBOUNDED;
+            b_more  = false;
+        }
+        else if (!b5_pack_slot_is_measured(slot_val))
+        {
+            /* Cast is safe: slot is 0..24 here. */
+            p_ctx->slot = (uint8_t)slot;
+            result      = WALK_MEASURE;
+            b_more      = false;
+        }
+        else if (scan_algo_is_miss(slot_val, p_ctx->closest_mm))
+        {
+            /* Cast is safe: slot is 0..24 here. */
+            *p_miss = (uint8_t)slot;
+            result  = WALK_BOUNDED;
+            b_more  = false;
+        }
+        else if (scan_algo_is_hit(slot_val, p_ctx->closest_mm))
+        {
+            /* Cast is safe: slot is 0..24 here. */
+            p_ctx->edge_hit[side] = (uint8_t)slot;
+            slot += step;
+        }
+        else
+        {
+            /* UNKNOWN or STUCK: assume the obstacle goes on. */
+            slot += step;
+        }
     }
-    else
-    {
-        p_ctx->phase = PHASE_DONE;
-    }
+
+    return (result);
 }
 
 /*!
- * @brief The fine slot just measured still hits: go one slot further out,
- *        or judge the coarse slot when both in-between slots hit.
+ * @brief Carry the fine scan on from slot first: walk the left edge, then
+ *        the right edge, until a slot needs measuring or both are closed.
  *
  * @param[in,out] p_ctx Scan engine state.
- * @param[in]     side  SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
+ * @param[in]     side  Edge being walked (SCAN_ALGO_LEFT or _RIGHT).
+ * @param[in]     first First slot to look at.
  */
-static void step_fine_hit (scan_algo_ctx_t * p_ctx, uint8_t side)
+static void run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first)
 {
-    /* Casts are safe: fine slots stay inside 1..23, so the neighbours and
-     * the next coarse slot stay inside 0..24. */
-    uint8_t const coarse = (SCAN_ALGO_LEFT == side)
-                               ? (uint8_t)(p_ctx->region_hi + B5_COARSE_STRIDE)
-                               : (uint8_t)(p_ctx->region_lo - B5_COARSE_STRIDE);
-    uint8_t const next = (SCAN_ALGO_LEFT == side) ? (uint8_t)(p_ctx->slot + 1U)
-                                                  : (uint8_t)(p_ctx->slot - 1U);
+    uint8_t cur_side  = side;
+    int32_t cur_first = first;
+    bool    b_more    = true;
 
-    p_ctx->edge_hit[side] = p_ctx->slot;
+    while (b_more)
+    {
+        uint8_t       miss   = 0U;
+        uint8_t const result = walk_edge(p_ctx, cur_side, cur_first, &miss);
 
-    if (next != coarse)
-    {
-        p_ctx->slot = next;
-    }
-    else if (scan_algo_is_miss(p_ctx->profile[coarse], p_ctx->closest_mm))
-    {
-        close_edge(p_ctx, side, SCAN_ALGO_EDGE_BOUNDED, coarse);
-    }
-    else
-    {
-        /* The coarse slot was UNKNOWN or STUCK: the edge is not proven. */
-        close_edge(p_ctx, side, SCAN_ALGO_EDGE_UNBOUNDED, coarse);
-    }
-}
+        if (WALK_MEASURE == result)
+        {
+            p_ctx->phase = (SCAN_ALGO_LEFT == cur_side) ? PHASE_FINE_LEFT
+                                                        : PHASE_FINE_RIGHT;
+            b_more       = false;
+        }
+        else
+        {
+            p_ctx->edge_state[cur_side] = (WALK_BOUNDED == result)
+                                              ? SCAN_ALGO_EDGE_BOUNDED
+                                              : SCAN_ALGO_EDGE_UNBOUNDED;
+            p_ctx->edge_miss[cur_side]  = miss;
 
-/*!
- * @brief Decide what comes after a fine slot.
- *
- * @param[in,out] p_ctx Scan engine state.
- * @param[in]     side  SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
- */
-static void step_fine (scan_algo_ctx_t * p_ctx, uint8_t side)
-{
-    uint16_t const slot_val = p_ctx->profile[p_ctx->slot];
-
-    if (scan_algo_is_hit(slot_val, p_ctx->closest_mm))
-    {
-        step_fine_hit(p_ctx, side);
-    }
-    else if (scan_algo_is_miss(slot_val, p_ctx->closest_mm))
-    {
-        close_edge(p_ctx, side, SCAN_ALGO_EDGE_BOUNDED, p_ctx->slot);
-    }
-    else
-    {
-        close_edge(p_ctx, side, SCAN_ALGO_EDGE_UNBOUNDED, p_ctx->slot);
+            if (SCAN_ALGO_LEFT == cur_side)
+            {
+                cur_side                         = SCAN_ALGO_RIGHT;
+                p_ctx->edge_hit[SCAN_ALGO_RIGHT] = p_ctx->region_lo;
+                cur_first = (int32_t)p_ctx->region_lo - 1;
+            }
+            else
+            {
+                p_ctx->phase = PHASE_DONE;
+                b_more       = false;
+            }
+        }
     }
 }
 

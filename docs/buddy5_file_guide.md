@@ -32,6 +32,7 @@ src/obstacle/
 ├── obstacle.c / .h              public API for other buddies       (kernel)
 │
 ├── b5_nav.c / .h                Phase 2 glue used by main.c       (kernel)
+├── b5_log.c / .h                flight recorder, printed over USB  (kernel)
 └── b5_bench_main.c              bench program with a pretend Navigation
 ```
 
@@ -131,7 +132,7 @@ functions, who uses it, and when you would edit it.
 - **What it does:** after a scan, works out the obstacle width (corrected
   for the sensor's 15° beam), which side to pass on, and the start angle.
   During the bypass it gives the per-ping steering rules (steer away, then
-  hug at 12–20 cm). All maths is whole numbers: no floating point, no libm.
+  hug band 15–25 cm). All maths is whole numbers: no floating point, no libm.
 - **Main functions:** `b5_plan_cfg_default`, `b5_plan_build`,
   `b5_plan_hug_steer`, `b5_plan_is_escape_clear`, `b5_plan_steer_away`,
   `b5_plan_steer_toward`, plus integer trig (`b5_plan_sin_q14`,
@@ -198,14 +199,27 @@ functions, who uses it, and when you would edit it.
 
 #### `b5_nav.c / .h`
 - **What it does:** the Phase 2 glue. It starts Buddy 5 with links to the
-  motion service, and on every line-task pass turns Buddy 5's events and
-  STEER words into motion commands: hold the car, send SCAN_REQ, ACCEPT and
-  LINE_FOUND, drive the bypass, retry after a fault.
-- **Main functions:** `b5_nav_init`, `b5_nav_step`; private `drive_steer`,
-  `handle_event`, `nav_stop` (obstacle hold), `nav_distance_mm` (odometer).
+  motion service, and on every line-task pass turns Buddy 5's events into
+  motion commands: hold the car, send SCAN_REQ, ACCEPT and LINE_FOUND,
+  retry after a fault, and drive the bypass (escape pivot, then TURN / OUT
+  / ALONG zig-zag / BACK from wheel-odometry dead reckoning).
+- **Main functions:** `b5_nav_init`, `b5_nav_step`; private
+  `drive_reacquire`, `along_intent`, `back_intent`, `update_pose`,
+  `keep_plan`, `handle_event`, `nav_stop` (obstacle hold),
+  `nav_distance_mm` (odometer).
 - **Used by:** `line_task` in `src/main.c`.
-- **Edit it when:** the bypass speeds or the handshake with the line
-  follower change (the numbers are `B5_NAV_*` in `b5_cfg.h`).
+- **Edit it when:** the bypass or the handshake with the line follower
+  changes (the numbers are `B5_NAV_*` in `b5_cfg.h`).
+
+#### `b5_log.c / .h`
+- **What it does:** the flight recorder. Keeps the last 1024 records
+  (states, causes, scan results with profiles, steering, motion faults,
+  commands and a trace of the echo, IR sensors and wheel distances) in RAM
+  and prints them when a USB serial monitor is opened.
+- **Main functions:** `b5_log_add`, `b5_log_profile`, `b5_log_service`.
+- **Used by:** `b5_nav.c` only (one task owns the log, so no locking).
+- **Edit it when:** you want more or different things recorded (sizes are
+  `B5_LOG_*` in `b5_cfg.h`).
 
 ### 3.4 Bench (real car, no other buddy's code)
 
@@ -245,7 +259,7 @@ functions, who uses it, and when you would edit it.
 | change the 250 mm detection distance | `b5_cfg.h` → `B5_DETECT_MM` |
 | fix the servo pointing slightly off centre | `b5_cfg.h` → `B5_SERVO_CENTRE_US` |
 | change how a side is chosen | `b5_plan.c` → `b5_plan_build` |
-| change the hug distances (12 / 20 cm) | `b5_cfg.h` → `B5_HUG_NEAR_MM`, `B5_HUG_FAR_MM` |
+| change the hug distances (15 / 25 cm) | `b5_cfg.h` → `B5_HUG_NEAR_MM`, `B5_HUG_FAR_MM` |
 | change a state change or time limit | `b5_fsm.c` (limits are in `b5_cfg.h`) |
 | see how Navigation should call Buddy 5 | `obstacle.h`, then the design doc → Interfaces |
 | change bypass speed or steering strength | `b5_cfg.h` → `B5_NAV_SPEED_UM_S`, `B5_NAV_INSIDE_PCT` |

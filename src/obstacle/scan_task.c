@@ -59,6 +59,7 @@ static void     poll_commands (void);
 static void     wait_ms (uint32_t delay_ms);
 static void     tick (void);
 static uint32_t settle_ms (int16_t target);
+static bool     is_car_driving (void);
 static bool     move_servo (void);
 static void     ping (uint8_t * p_cls, uint16_t * p_dist_mm);
 static void     ping_and_step (void);
@@ -243,14 +244,36 @@ static uint32_t settle_ms (int16_t target)
 }
 
 /*!
+ * @brief Tell whether the car may be driving in the current state (line
+ *        following in MONITOR, or the bypass).
+ *
+ * @return True in MONITOR, BYPASS and REACQUIRE.
+ */
+static bool is_car_driving (void)
+{
+    return ((B5_STATE_MONITOR == g_fsm.state) ||
+            (B5_STATE_BYPASS == g_fsm.state) ||
+            (B5_STATE_REACQUIRE == g_fsm.state));
+}
+
+/*!
  * @brief Move the servo if the statechart wants a new angle.
  *
  * @return True if the servo moved (and has now settled).
  */
 static bool move_servo (void)
 {
-    bool          b_moved = false;
-    int16_t const target  = b5_fsm_servo_deci(&g_fsm);
+    bool    b_moved = false;
+    int16_t target  = b5_fsm_servo_deci(&g_fsm);
+
+    if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
+    {
+        /* Let Navigation stop the wheels before the servo swings: a servo
+         * swing while a motor drives disturbs the wheel encoders. The
+         * target may change meanwhile, so read it again. */
+        wait_ms(B5_SERVO_PREDELAY_MS);
+        target = b5_fsm_servo_deci(&g_fsm);
+    }
 
     if ((!g_servo.b_known) || (target != g_servo.deci))
     {

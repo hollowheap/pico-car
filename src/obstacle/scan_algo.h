@@ -18,7 +18,7 @@
 
 /* Edge result for one side of the region. NONE means there is no region,
  * BOUNDED means the last hit and the first miss are known, and UNBOUNDED
- * means the edge is at +-60 degrees or has an UNKNOWN reading beyond it. */
+ * means the obstacle reached +-60 degrees without a real miss. */
 #define SCAN_ALGO_EDGE_NONE      (0U)
 #define SCAN_ALGO_EDGE_BOUNDED   (1U)
 #define SCAN_ALGO_EDGE_UNBOUNDED (2U)

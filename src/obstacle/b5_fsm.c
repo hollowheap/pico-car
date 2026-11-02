@@ -186,9 +186,9 @@ void b5_fsm_command (b5_fsm_t * p_fsm, uint8_t cmd, uint32_t now_ms,
         break;
 
         case B5_CMD_LINE_FOUND:
-            /* Accepted only after the car has left the original line. */
-            if ((B5_STATE_REACQUIRE == state) && b_our_id &&
-                ((odo_mm - p_fsm->bypass_mm) >= B5_LINE_IGNORE_MM))
+            /* Navigation sends it only after the obstacle has been passed
+             * (b5_nav.c), so it is accepted at once. */
+            if ((B5_STATE_REACQUIRE == state) && b_our_id)
             {
                 enter(p_fsm, B5_STATE_MONITOR, now_ms);
             }
@@ -835,8 +835,9 @@ static void ping_scanning (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
 }
 
 /*!
- * @brief BYPASS: bend away until the obstacle has left the forward beam,
- *        then for 3 more pings, then start the hug.
+ * @brief BYPASS: bend away until the forward beam has been clear for
+ *        B5_ESCAPE_CLEAR_PINGS pings in a row, then start the zig-zag
+ *        (driving straight until its first ping).
  *
  * @param[in,out] p_fsm   Statechart.
  * @param[in]     cls     Ping class.
@@ -858,11 +859,17 @@ static void ping_bypass (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
         cnt_set(p_fsm, B5_CNT_CLEAR_SH, B5_CNT_CLEAR_MK, 0U);
     }
 
-    emit_steer(p_fsm, p_out, b5_plan_steer_away(p_fsm->plan.side));
-
-    if (clear_count > B5_ESCAPE_EXTRA_PINGS)
+    if (clear_count >= B5_ESCAPE_CLEAR_PINGS)
     {
+        /* Drive straight while the servo swings to the hug angle (about
+         * 155 ms), instead of pivoting on blind; the first hug ping then
+         * picks the steering. */
         enter(p_fsm, B5_STATE_REACQUIRE, now_ms);
+        emit_steer(p_fsm, p_out, B5_STEER_STRAIGHT);
+    }
+    else
+    {
+        emit_steer(p_fsm, p_out, b5_plan_steer_away(p_fsm->plan.side));
     }
 }
 
