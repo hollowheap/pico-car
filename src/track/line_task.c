@@ -1,4 +1,5 @@
 #include <tk/tkernel.h>
+#include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
 #include "track/ir_capture.h"
@@ -18,7 +19,11 @@ EXPORT void line_task (INT stacd, void * exinf)
     {
         if (startup_failed())
         {
-            return;
+            (void)tm_printf((UB *)"line task: startup failed\n");
+            for (;;)
+            {
+                (void)tk_slp_tsk(TMO_FEVR);
+            }
         }
         (void)tk_dly_tsk(10);
     }

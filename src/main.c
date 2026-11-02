@@ -15,6 +15,10 @@
 
 /* ------------------------------------------------------------------ *
  *  Task and object definitions
+ *
+ *  D62/D70: this composition root is the only place that creates or
+ *  starts tasks. Subsystems never call tk_cre_tsk/tk_sta_tsk and never
+ *  own a competing supervisor.
  * ------------------------------------------------------------------ */
 
 LOCAL void startup_task (INT stacd, void * exinf)
@@ -32,7 +36,12 @@ LOCAL void motion_task (INT stacd, void * exinf)
     {
         if (startup_failed())
         {
-            return;
+            (void)tm_printf((UB *)"motion task: startup failed\n");
+            (void)motion_stop();
+            for (;;)
+            {
+                (void)tk_slp_tsk(TMO_FEVR);
+            }
         }
         (void)tk_dly_tsk(10);
     }
