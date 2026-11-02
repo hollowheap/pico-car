@@ -86,22 +86,29 @@ static void apply_pending (uint32_t events)
 
     (void)ISpinLock(&event_lock, &saved);
     before = current_state;
-    /* Stop beats start; reset must come first. */
-    if ((events & (uint32_t)MISSION_EVENT_STOP) != 0U)
+    /* STOP and FAULT dominate; reset/start cannot erase them in the same batch. */
+    if ((events &
+         (uint32_t)(MISSION_EVENT_STOP | MISSION_EVENT_FAULT)) != 0U)
     {
-        (void)apply_event(&current_state, MISSION_EVENT_STOP);
+        if ((events & (uint32_t)MISSION_EVENT_STOP) != 0U)
+        {
+            (void)apply_event(&current_state, MISSION_EVENT_STOP);
+        }
+        if ((events & (uint32_t)MISSION_EVENT_FAULT) != 0U)
+        {
+            (void)apply_event(&current_state, MISSION_EVENT_FAULT);
+        }
     }
-    if ((events & (uint32_t)MISSION_EVENT_FAULT) != 0U)
+    else
     {
-        (void)apply_event(&current_state, MISSION_EVENT_FAULT);
-    }
-    if ((events & (uint32_t)MISSION_EVENT_RESET) != 0U)
-    {
-        (void)apply_event(&current_state, MISSION_EVENT_RESET);
-    }
-    if ((events & (uint32_t)MISSION_EVENT_START) != 0U)
-    {
-        (void)apply_event(&current_state, MISSION_EVENT_START);
+        if ((events & (uint32_t)MISSION_EVENT_RESET) != 0U)
+        {
+            (void)apply_event(&current_state, MISSION_EVENT_RESET);
+        }
+        if ((events & (uint32_t)MISSION_EVENT_START) != 0U)
+        {
+            (void)apply_event(&current_state, MISSION_EVENT_START);
+        }
     }
     after = current_state;
     (void)ISpinUnlock(&event_lock, saved);
@@ -151,8 +158,9 @@ static bool take_line (mission_line_state_t * p_line)
 
 static void drive_motion (void)
 {
-    const uint32_t       now = in_w(TIMER_RAW_LOW);
     mission_line_state_t line;
+    const bool           has_line = take_line(&line);
+    const uint32_t       now      = in_w(TIMER_RAW_LOW);
     mission_state_t      state;
     UINT                 saved;
 
@@ -160,7 +168,7 @@ static void drive_motion (void)
     state = current_state;
     (void)ISpinUnlock(&event_lock, saved);
 
-    if ((state != MISSION_STATE_RUNNING) || !take_line(&line) ||
+    if ((state != MISSION_STATE_RUNNING) || !has_line ||
         ((uint32_t)(now - line.sensed_us) >= MISSION_LINE_VALID_US))
     {
         guidance_request_t hold = {
