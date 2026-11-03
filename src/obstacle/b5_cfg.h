@@ -256,23 +256,29 @@
  * the 40 mm/s used for the odometer estimate (main.c uses 40 841 um/s). */
 #define B5_NAV_SPEED_UM_S (B5_BYPASS_SPEED_MM_S * 1000U)
 
-/* [Chat] Escape turn: spin on the spot, the inside wheel backwards at this
- * speed and the outside wheel forwards at B5_NAV_SPEED_UM_S. NOTE: With the
- * inside wheel stopped instead (a pivot), the car scrubbed the held wheel
- * backwards (-31 and -56 mm/s seen on the car); the geared motor chattered,
- * the encoder reported invalid steps and the motion service latched its
- * FEEDBACK fault. A spin drives both wheels, so none is dragged. */
-#define B5_NAV_ESCAPE_INSIDE_UM_S (-40000)
+/* [Measured] The encoder plugs on the car are crossed relative to
+ * src/motion/motion_pins.h (team decision, kept): the motion service's
+ * wheel 0 reads the right encoder and wheel 1 the left one. Flight log:
+ * both wheel totals fell while the car drove forwards, and the wheels ran
+ * at about 190 mm/s when asked for 40. 1 = b5_nav.c undoes the swap for
+ * its own odometry. NOTE: Set to 0 once motion_pins.h matches the plugs. */
+#define B5_ENCODERS_CROSSED (1)
 
-/* [Chat] Zig-zag (option A): the inside wheel keeps B5_NAV_SPEED_UM_S and
- * the outside wheel runs faster, so the car curves gently (about 250 mm
- * radius with a 100 mm track). NOTE: Slower inside speeds are avoided: the
- * motors only get up to 25 % duty, and a driven wheel with no encoder
- * edges for 2 s latches the motion service's NO_EDGES fault (reboot only).
- * If the motors cannot reach 60 mm/s, the outside wheel just runs at its
- * top speed, which still curves the car. FILL: check the speeds in the
- * flight log (wheel distances in the trace lines). */
-#define B5_NAV_HUG_OUTSIDE_UM_S (60000U)
+/* [Chat] Escape turn: pivot, the inside wheel stopped and the outside
+ * wheel forwards at B5_NAV_SPEED_UM_S. NOTE: With crossed encoders each
+ * motion PID reads the other wheel, so a driven wheel runs at the duty cap
+ * and a wheel asked to reverse while the other drives forwards is braked
+ * (the earlier "spin" was really a pivot on the left wheel). The motion
+ * service still does "forwards" and "stop" reliably, so the bypass only
+ * asks for those. */
+#define B5_NAV_ESCAPE_INSIDE_UM_S (0)
+
+/* [Chat] Zig-zag: bend by stopping the inside wheel; the outside wheel
+ * runs at B5_NAV_SPEED_UM_S. NOTE: The earlier 40/60 mm/s bend did not
+ * turn the car at all: with crossed encoders both driven wheels run at the
+ * duty cap, so the car went straight (see B5_NAV_ESCAPE_INSIDE_UM_S). */
+#define B5_NAV_HUG_INSIDE_UM_S  (0U)
+#define B5_NAV_HUG_OUTSIDE_UM_S (B5_NAV_SPEED_UM_S)
 
 /* [Chat] The escape pivot goes on until the forward beam is clear AND the
  * car has turned the planned start angle (wheel odometry and
@@ -287,10 +293,34 @@
 #define B5_NAV_BAND_OUT_MM   (30U)
 #define B5_NAV_HEAD_MAX_DECI (300)
 
+/* [Chat] ALONG: beside the obstacle the car never points more than this
+ * towards it (towards the line), so a correction cannot aim it at the
+ * obstacle (30 degrees was seen on the car). */
+#define B5_NAV_ALONG_TOWARD_DECI (100)
+
+/* [Chat] ALONG dead zone: inside the offset band the car turns until its
+ * heading is within LEVEL_IN, then drives straight until it is more than
+ * LEVEL_OUT off, so a pivot cannot overshoot into the opposite pivot. */
+#define B5_NAV_LEVEL_IN_DECI  (30)
+#define B5_NAV_LEVEL_OUT_DECI (80)
+
 /* [Default] BACK phase: the car curves towards the line until it heads
  * this many deci-degrees across it, then drives straight to the line, so
  * it meets the line at a shallow angle and does not overshoot. */
 #define B5_NAV_REJOIN_DECI (300)
+
+/* [Chat] ALIGN: at the first IR line contact in BACK the car pivots back
+ * until it heads at most this far towards the line, and hands back to the
+ * line follower at the next contact (a shallow crossing it can catch).
+ * SLACK allows one pass of pivot overshoot. */
+#define B5_NAV_ALIGN_DECI       (100)
+#define B5_NAV_ALIGN_SLACK_DECI (50)
+
+/* [Chat] Guard (OUT, ALONG, BACK): a 45 degree reading (median of the last
+ * three) under B5_HUG_NEAR_MM turns the car away from the obstacle until
+ * it reads over B5_HUG_FAR_MM. The turn away stops at this heading from
+ * the line, so a long wall cannot turn the car round. */
+#define B5_NAV_GUARD_HEAD_MAX_DECI (600)
 
 /* [Chat] Before any wheel changes direction (end of the escape spin), both
  * wheels stop for this long. While both are at 0 the motion service is
@@ -418,9 +448,17 @@ B5_CT_ASSERT(hug_band_order2, B5_HUG_NEAR_MM < B5_HUG_FAR_MM);
 B5_CT_ASSERT(nav_brake_in_time, B5_NAV_BRAKE_MS < B5_WAIT_STOP_MS);
 B5_CT_ASSERT(nav_escape_in_range, (B5_NAV_ESCAPE_INSIDE_UM_S >= -100000) &&
                                       (B5_NAV_ESCAPE_INSIDE_UM_S <= 0));
-B5_CT_ASSERT(nav_hug_faster, B5_NAV_HUG_OUTSIDE_UM_S > B5_NAV_SPEED_UM_S);
+B5_CT_ASSERT(nav_hug_turns, B5_NAV_HUG_INSIDE_UM_S < B5_NAV_HUG_OUTSIDE_UM_S);
 B5_CT_ASSERT(nav_hug_in_range, B5_NAV_HUG_OUTSIDE_UM_S <= 100000U);
 B5_CT_ASSERT(nav_band_order, B5_NAV_BAND_IN_MM < B5_NAV_BAND_OUT_MM);
+B5_CT_ASSERT(nav_level_order, B5_NAV_LEVEL_IN_DECI < B5_NAV_LEVEL_OUT_DECI);
+B5_CT_ASSERT(nav_toward_cap,
+             (B5_NAV_ALONG_TOWARD_DECI > 0) &&
+                 (B5_NAV_ALONG_TOWARD_DECI <= B5_NAV_HEAD_MAX_DECI));
+B5_CT_ASSERT(nav_align_shallow, (B5_NAV_ALIGN_DECI > 0) &&
+                                    (B5_NAV_ALIGN_DECI < B5_NAV_REJOIN_DECI));
+B5_CT_ASSERT(nav_guard_head, (B5_NAV_GUARD_HEAD_MAX_DECI > 0) &&
+                                 (B5_NAV_GUARD_HEAD_MAX_DECI <= 900));
 B5_CT_ASSERT(nav_ttl_in_range, B5_NAV_TTL_US <= 200000U);
 B5_CT_ASSERT(log_pow2, 0U == (B5_LOG_RECORDS & (B5_LOG_RECORDS - 1U)));
 B5_CT_ASSERT(log_fits_16bit, B5_LOG_RECORDS <= 65536U);

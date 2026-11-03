@@ -30,7 +30,8 @@
 #define B5_LOG_TURNED (9U)
 #define B5_LOG_PHASE  (10U)
 #define B5_LOG_MFAULT (11U)
-#define B5_LOG_KINDS  (12U)
+#define B5_LOG_GUARD  (12U)
+#define B5_LOG_KINDS  (13U)
 
 /* One record: 16 bytes. */
 typedef struct

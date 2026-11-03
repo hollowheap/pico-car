@@ -414,7 +414,7 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 | MONITOR | releases the obstacle hold, unless the latest reading is a VALID echo within 250 mm (so a retry never creeps into the obstacle) | drives as before |
 | WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id) | paused |
 | BYPASS | releases the hold; pivots away (STEER word) until Buddy 5 sees the way ahead is clear | paused |
-| REACQUIRE | TURN / OUT / ALONG / BACK from the wheel odometry (see Bypass above); from ALONG on, sends LINE_FOUND(id) as soon as either IR sensor sees the line (at most every 100 ms) | paused |
+| REACQUIRE | TURN / OUT / ALONG / BACK from the wheel odometry (see Bypass above). Guard in OUT, ALONG and BACK: median of the last three 45° readings under 150 mm turns the car away until it reads over 250 mm (at most 60° from the line). ALONG: dead zone (turn until within 3°, straight until over 8° off) and at most 10° towards the obstacle. IR gate: armed when the offset is reached, opens once both IR sensors have been off the line; the first line contact in BACK starts ALIGN (pivot back to 10° towards the line), and the next contact sends LINE_FOUND(id) (at most every 100 ms) | paused |
 | STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR | paused |
 
 **Speeds** (`motion_service_set_speed()`, lease 100 ms). The car stands

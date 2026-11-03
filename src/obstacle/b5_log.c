@@ -22,9 +22,12 @@
  *   TURNED  d = heading turned (deci-degrees), e = planned angle (deg)
  *   MFAULT  a = wheel, b = speed_valid, c = odometry_valid, d = bad
  *           encoder steps, e = speed (mm/s), f = sample interval (us)
- *   PHASE   a = bypass phase (0 TURN, 1 OUT, 2 ALONG, 3 BACK), d = side
- *           offset (mm), e = distance along the line (mm), f = heading
+ *   PHASE   a = bypass phase (0 TURN, 1 OUT, 2 ALONG, 3 BACK, 4 ALIGN), d =
+ * side offset (mm), e = distance along the line (mm), f = heading
  *           (deci-degrees, positive = away from the obstacle side)
+ *   GUARD   a = 1 guard on / 0 off, b = bypass phase, d = filtered 45
+ *           degree reading (mm), f = heading (deci-degrees, positive =
+ *           away from the obstacle side)
  *
  * NOTE: The kernel types UB, INT, UINT and SYSTIM are used where the
  * kernel requires them (deviation from BARR-C 5.2.a, see
@@ -54,7 +57,7 @@
 #define FIELD2_NAMES (4U)
 #define MOTION_NAMES (8U)
 #define CMD_NAMES    (8U)
-#define PHASE_NAMES  (4U)
+#define PHASE_NAMES  (5U)
 
 /* Slots printed per profile line. */
 #define SLOTS_PER_LINE (5U)
@@ -132,7 +135,7 @@ static char const * const g_cmd_name[CMD_NAMES] = {
     "LINE_FOUND", "STOP",     "RESET",  "START"};
 
 static char const * const g_phase_name[PHASE_NAMES] = {"TURN", "OUT", "ALONG",
-                                                       "BACK"};
+                                                       "BACK", "ALIGN"};
 
 static uint32_t now_ms (void);
 static void     print_profile (uint32_t index, uint32_t t_ms);
@@ -433,6 +436,14 @@ static void print_record (b5_log_rec_t const * p_rec)
                       t_ms, (INT)p_rec->val_a, (INT)p_rec->val_b,
                       (INT)p_rec->val_c, (INT)p_rec->val_d, (INT)p_rec->val_e,
                       (INT)p_rec->val_f);
+        break;
+
+        case B5_LOG_GUARD:
+            tm_printf((UB const *)"%8d GUARD %s in %s: 45 deg reading %d mm "
+                                  "(median of 3), heading %d deg\n",
+                      t_ms, (0U != p_rec->val_a) ? "ON" : "off",
+                      g_phase_name[p_rec->val_b % PHASE_NAMES],
+                      (INT)p_rec->val_d, (INT)(p_rec->val_f / DECI_PER_DEG));
         break;
 
         default:
