@@ -7,6 +7,7 @@
 
 #include "motion/motion.h"
 #include "navigation/navigation.h"
+#include "system/startup_task.h"
 
 #define MISSION_PERIOD_MS 10U
 #define MISSION_START_PIN      20U
@@ -215,11 +216,32 @@ void mission_run (void)
         }
     }
 
+    while (!startup_ready())
+    {
+        if (startup_failed())
+        {
+            (void)tm_printf((UB *)"mission task: startup failed\n");
+            for (;;)
+            {
+                (void)tk_slp_tsk(TMO_FEVR);
+            }
+        }
+        (void)tk_dly_tsk(10);
+    }
+
+    if (motion_bind(tk_get_tid()) != E_OK)
+    {
+        (void)tm_printf((UB *)"mission task: motion bind failed\n");
+        for (;;)
+        {
+            (void)tk_slp_tsk(TMO_FEVR);
+        }
+    }
+
     for (;;)
     {
         motion_status_t status;
 
-        (void)motion_bind(tk_get_tid());
         if (gpio_get_val(MISSION_START_PIN) == 0U)
         {
             (void)mission_arm_start();

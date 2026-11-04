@@ -120,14 +120,16 @@ LOCAL BOOL made (const char * what, ID id)
 
 EXPORT INT usermain (void)
 {
-    ER motion_result = motion_init();
-    if (motion_result != E_OK)
+    const ER motion_result = motion_init();
+    const BOOL motion_ready  = (motion_result == E_OK);
+    if (!motion_ready)
     {
         tm_printf((UB *)"[init] motion_init failed, er=%d\n", motion_result);
     }
 
-    ER mission_result = mission_init();
-    if (mission_result != E_OK)
+    const ER mission_result = mission_init();
+    const BOOL mission_ready = (mission_result == E_OK);
+    if (!mission_ready)
     {
         tm_printf((UB *)"[init] mission_init failed, er=%d\n",
                   mission_result);
@@ -138,15 +140,21 @@ EXPORT INT usermain (void)
     {
         tk_sta_tsk(tid, 0);
     }
-    tid = tk_cre_tsk(&ctsk_motion);
-    if (made("tsk(motion)", tid))
+    if (motion_ready)
     {
-        tk_sta_tsk(tid, 0);
+        tid = tk_cre_tsk(&ctsk_motion);
+        if (made("tsk(motion)", tid))
+        {
+            tk_sta_tsk(tid, 0);
+        }
     }
-    tid = tk_cre_tsk(&ctsk_mission);
-    if (made("tsk(mission)", tid))
+    if (mission_ready)
     {
-        tk_sta_tsk(tid, 0);
+        tid = tk_cre_tsk(&ctsk_mission);
+        if (made("tsk(mission)", tid))
+        {
+            tk_sta_tsk(tid, 0);
+        }
     }
     tid = tk_cre_tsk(&ctsk_line);
     if (made("tsk(line)", tid))
