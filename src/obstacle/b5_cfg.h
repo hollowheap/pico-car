@@ -191,17 +191,19 @@
  * start angle is reached (b5_nav.c). */
 #define B5_ESCAPE_CLEAR_PINGS (2U)
 
-/* [Chat] Zig-zag band on the 45 degree look-ray: closer than NEAR bends
- * away, further than FAR (or OPEN) bends towards. 150 / 250 mm on the ray
- * is about 106 / 177 mm sideways from the sensor, leaving room for the
- * tail to swing when the car bends away. */
-#define B5_HUG_NEAR_MM    (150U)
-#define B5_HUG_FAR_MM     (250U)
-#define B5_HUG_SERVO_DECI (450)
-
-/* NOTE: Navigation (b5_nav.c) steers REACQUIRE from the wheel odometry
- * and uses only B5_HUG_NEAR_MM (bend away when closer); the STEER words
- * from the band above are published but not used for driving. */
+/* [Chat] Guard band on the look-ray (b5_nav.c HUG loop): closer than NEAR
+ * turns the car away, and it keeps turning away until the reading is
+ * farther than FAR. [Default] 250 / 350 mm: in the closed-loop simulation
+ * 150 / 250 mm reacted too late (the car curved into 150 and 300 mm deep
+ * boxes). The FSM also publishes STEER words from this band; navigation
+ * does not use them for driving.
+ * [Chat] Look-ray angle: 60 degrees (the servo limit), raised from 45 for
+ * the steeper HUG curve: looking further sideways, the sensor sees the
+ * obstacle's side sooner. In the simulation the 13/20 curve hit the box
+ * in half the cases at 45 degrees and passed every case at 60. */
+#define B5_HUG_NEAR_MM    (250U)
+#define B5_HUG_FAR_MM     (350U)
+#define B5_HUG_SERVO_DECI (600)
 
 /* ------------------------------------------------------------------ *
  * Car geometry. FILL: measure with a ruler and replace the values.
@@ -231,9 +233,16 @@
  * obstacle allows. */
 #define B5_FREE_FLOOR_MM (500U)
 
-/* FILL: Buddy 2's bypass speed. It is used only when no distance reading
- * is available. */
-#define B5_BYPASS_SPEED_MM_S (40U)
+/* [Chat] Bypass speed. [Measured] 160 mm/s was asked for at first, but at
+ * the 25 % duty cap the fast wheel only reached about 142 mm/s while the
+ * slow wheel made its 120, so the HUG curve was much wider than planned
+ * (about 0.83 instead of 3/4). 140 mm/s is within reach, so the 3/4 curve
+ * is really driven. Also used for the odometer estimate when no distance
+ * reading is available. NOTE: motion_service_set_speed() rejects
+ * (E_PAR) any target above max_target_um_s in main.c, so the car would not
+ * move or its lease would expire; that limit must be at least
+ * B5_NAV_SPEED_UM_S. */
+#define B5_BYPASS_SPEED_MM_S (140U)
 
 /* [Default] Extra sideways clearance. */
 #define B5_SIDE_MARGIN_MM (50U)
@@ -252,8 +261,7 @@
  * the motion service while Buddy 5 is in charge.
  * ------------------------------------------------------------------ */
 
-/* Forward speed during the bypass, in micrometres per second. It matches
- * the 40 mm/s used for the odometer estimate (main.c uses 40 841 um/s). */
+/* Forward speed during the bypass, in micrometres per second. */
 #define B5_NAV_SPEED_UM_S (B5_BYPASS_SPEED_MM_S * 1000U)
 
 /* [Measured] The encoder plugs on the car are crossed relative to
@@ -261,23 +269,27 @@
  * wheel 0 reads the right encoder and wheel 1 the left one. Flight log:
  * both wheel totals fell while the car drove forwards, and the wheels ran
  * at about 190 mm/s when asked for 40. 1 = b5_nav.c undoes the swap for
- * its own odometry. NOTE: Set to 0 once motion_pins.h matches the plugs. */
-#define B5_ENCODERS_CROSSED (1)
+ * its own odometry; 0 = the plugs match motion_pins.h (swapped back on the
+ * car, way A). */
+#define B5_ENCODERS_CROSSED (0)
 
 /* [Chat] Escape turn: pivot, the inside wheel stopped and the outside
- * wheel forwards at B5_NAV_SPEED_UM_S. NOTE: With crossed encoders each
- * motion PID reads the other wheel, so a driven wheel runs at the duty cap
- * and a wheel asked to reverse while the other drives forwards is braked
- * (the earlier "spin" was really a pivot on the left wheel). The motion
- * service still does "forwards" and "stop" reliably, so the bypass only
- * asks for those. */
+ * wheel forwards at B5_NAV_SPEED_UM_S (kept as it was with crossed
+ * encoders: no wheel ever reverses). */
 #define B5_NAV_ESCAPE_INSIDE_UM_S (0)
 
-/* [Chat] Zig-zag: bend by stopping the inside wheel; the outside wheel
- * runs at B5_NAV_SPEED_UM_S. NOTE: The earlier 40/60 mm/s bend did not
- * turn the car at all: with crossed encoders both driven wheels run at the
- * duty cap, so the car went straight (see B5_NAV_ESCAPE_INSIDE_UM_S). */
-#define B5_NAV_HUG_INSIDE_UM_S  (0U)
+/* [Chat] HUG: the wheel next to the obstacle (or, while the guard turns
+ * the car away, the wheel on the other side) runs at INSIDE and the other
+ * at OUTSIDE, so the car curves. [Chat] INSIDE is 1/5 of OUTSIDE (28 /
+ * 140 mm/s): a near-pivot that keeps moving, so the car hugs the obstacle
+ * and the look-ray keeps finding it (team decision; in the simulation
+ * curves tighter than 13/20 hit the box in about half the cases). NOTE:
+ * Needs working speed control (encoders not crossed); with crossed
+ * encoders any driven wheel runs at the duty cap, so INSIDE had to be 0
+ * (pivots). FILL: check on the car that the slow wheel keeps turning; a
+ * wheel with no encoder edges for 2 s latches the motion service's
+ * NO_EDGES fault. */
+#define B5_NAV_HUG_INSIDE_UM_S  (B5_NAV_SPEED_UM_S / 5U)
 #define B5_NAV_HUG_OUTSIDE_UM_S (B5_NAV_SPEED_UM_S)
 
 /* [Chat] The escape pivot goes on until the forward beam is clear AND the
@@ -286,37 +298,7 @@
  * radian. */
 #define B5_NAV_DECI_PER_RAD (573)
 
-/* [Default] Zig-zag along the obstacle (ALONG phase): the car keeps its
- * sideways offset between (planned - IN) and (planned + OUT) mm, and its
- * heading within +-HEAD_MAX of the line. */
-#define B5_NAV_BAND_IN_MM    (10U)
-#define B5_NAV_BAND_OUT_MM   (30U)
-#define B5_NAV_HEAD_MAX_DECI (300)
-
-/* [Chat] ALONG: beside the obstacle the car never points more than this
- * towards it (towards the line), so a correction cannot aim it at the
- * obstacle (30 degrees was seen on the car). */
-#define B5_NAV_ALONG_TOWARD_DECI (100)
-
-/* [Chat] ALONG dead zone: inside the offset band the car turns until its
- * heading is within LEVEL_IN, then drives straight until it is more than
- * LEVEL_OUT off, so a pivot cannot overshoot into the opposite pivot. */
-#define B5_NAV_LEVEL_IN_DECI  (30)
-#define B5_NAV_LEVEL_OUT_DECI (80)
-
-/* [Default] BACK phase: the car curves towards the line until it heads
- * this many deci-degrees across it, then drives straight to the line, so
- * it meets the line at a shallow angle and does not overshoot. */
-#define B5_NAV_REJOIN_DECI (300)
-
-/* [Chat] ALIGN: at the first IR line contact in BACK the car pivots back
- * until it heads at most this far towards the line, and hands back to the
- * line follower at the next contact (a shallow crossing it can catch).
- * SLACK allows one pass of pivot overshoot. */
-#define B5_NAV_ALIGN_DECI       (100)
-#define B5_NAV_ALIGN_SLACK_DECI (50)
-
-/* [Chat] Guard (OUT, ALONG, BACK): a 45 degree reading (median of the last
+/* [Chat] Guard (OUT, HUG): a 45 degree reading (median of the last
  * three) under B5_HUG_NEAR_MM turns the car away from the obstacle until
  * it reads over B5_HUG_FAR_MM. The turn away stops at this heading from
  * the line, so a long wall cannot turn the car round. */
@@ -449,14 +431,7 @@ B5_CT_ASSERT(nav_brake_in_time, B5_NAV_BRAKE_MS < B5_WAIT_STOP_MS);
 B5_CT_ASSERT(nav_escape_in_range, (B5_NAV_ESCAPE_INSIDE_UM_S >= -100000) &&
                                       (B5_NAV_ESCAPE_INSIDE_UM_S <= 0));
 B5_CT_ASSERT(nav_hug_turns, B5_NAV_HUG_INSIDE_UM_S < B5_NAV_HUG_OUTSIDE_UM_S);
-B5_CT_ASSERT(nav_hug_in_range, B5_NAV_HUG_OUTSIDE_UM_S <= 100000U);
-B5_CT_ASSERT(nav_band_order, B5_NAV_BAND_IN_MM < B5_NAV_BAND_OUT_MM);
-B5_CT_ASSERT(nav_level_order, B5_NAV_LEVEL_IN_DECI < B5_NAV_LEVEL_OUT_DECI);
-B5_CT_ASSERT(nav_toward_cap,
-             (B5_NAV_ALONG_TOWARD_DECI > 0) &&
-                 (B5_NAV_ALONG_TOWARD_DECI <= B5_NAV_HEAD_MAX_DECI));
-B5_CT_ASSERT(nav_align_shallow, (B5_NAV_ALIGN_DECI > 0) &&
-                                    (B5_NAV_ALIGN_DECI < B5_NAV_REJOIN_DECI));
+B5_CT_ASSERT(nav_hug_in_range, B5_NAV_HUG_OUTSIDE_UM_S <= 200000U);
 B5_CT_ASSERT(nav_guard_head, (B5_NAV_GUARD_HEAD_MAX_DECI > 0) &&
                                  (B5_NAV_GUARD_HEAD_MAX_DECI <= 900));
 B5_CT_ASSERT(nav_ttl_in_range, B5_NAV_TTL_US <= 200000U);

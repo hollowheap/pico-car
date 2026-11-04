@@ -6,31 +6,30 @@
  * What the line task does with Buddy 5 (design review 4.1):
  *   - OBSTACLE      hold the car, wait B5_NAV_BRAKE_MS, send SCAN_REQ(id).
  *   - SCAN_RESULT   OK or CLEAR: send ACCEPT(id), and keep the plan: the
- *                   side, the start angle, the sideways offset the car
- *                   needs and how far ahead the obstacle ends.
+ *                   side, the start angle and the sideways offset the car
+ *                   needs.
  *   - BYPASS        pivot away from the obstacle (inside wheel stopped)
  *                   until Buddy 5 sees the way ahead is clear.
- *   - REACQUIRE     drive the rest of the bypass from the wheel odometry,
- *                   in four phases [Chat]:
+ *   - REACQUIRE     drive the rest of the bypass, in three phases [Chat]:
  *                     TURN   keep pivoting until the planned start angle
  *                            is reached (if the beam cleared first);
  *                     OUT    straight on until the car is the planned
- *                            offset to the side of the line;
- *                     ALONG  zig-zag along the obstacle, holding that
- *                            offset, until the tail has passed the far end
- *                            of the obstacle (front + assumed depth);
- *                     BACK   curve towards the line, then straight on
- *                            until the first IR line contact;
- *                     ALIGN  pivot back to a shallow angle to the line
- *                            (B5_NAV_ALIGN_DECI), then the next IR line
- *                            contact hands back to line following.
- *                   IR line contact counts only from BACK on, and only
- *                   once both IR sensors have been off the line since the
- *                   car reached its offset (the end of OUT).
- *                   Guard, in OUT, ALONG and BACK: when the median of the
- *                   last three 45 degree readings is closer than
- *                   B5_HUG_NEAR_MM, the car turns away until it is
- *                   farther than B5_HUG_FAR_MM.
+ *                            offset to the side of the line (wheel
+ *                            odometry);
+ *                     HUG    curve round the obstacle: the wheel next to
+ *                            the obstacle runs slower
+ *                            (B5_NAV_HUG_INSIDE_UM_S), so the car keeps
+ *                            turning towards it. When the median of the
+ *                            last three 45 degree readings is closer than
+ *                            B5_HUG_NEAR_MM, the wheel on the other side
+ *                            runs slower instead, turning the car away,
+ *                            until the reading is farther than
+ *                            B5_HUG_FAR_MM. The loop ends at the first IR
+ *                            line contact, which hands back to line
+ *                            following.
+ *                   The turn-away guard also runs in OUT. IR line contact
+ *                   counts only in HUG, and only once both IR sensors have
+ *                   been off the line since the car reached its offset.
  *   - FAULT         hold the car; retry RESET + START every 3 s.
  *   - MONITOR       release the hold and let the line follower drive,
  *                   except while Buddy 5's latest reading is a VALID echo
@@ -91,11 +90,9 @@
 #define NAV_ESCAPE_INSIDE_UM_S (B5_NAV_ESCAPE_INSIDE_UM_S)
 
 /* Bypass phases inside REACQUIRE (see the file comment). */
-#define PHASE_TURN  (0U)
-#define PHASE_OUT   (1U)
-#define PHASE_ALONG (2U)
-#define PHASE_BACK  (3U)
-#define PHASE_ALIGN (4U)
+#define PHASE_TURN (0U)
+#define PHASE_OUT  (1U)
+#define PHASE_HUG  (2U)
 
 /* Steering intent, turned into LEFT / RIGHT by the side being passed. */
 #define INTENT_STRAIGHT (0U)
@@ -141,7 +138,6 @@ typedef struct
     bool     b_ir_armed;
     bool     b_ir_cleared;
     bool     b_guard;
-    bool     b_level;
     uint8_t  req_id;
     uint8_t  next_id;
     uint8_t  last_state;
@@ -162,7 +158,6 @@ typedef struct
     uint32_t trace_ms;
     uint32_t motion_word;
     int32_t  need_mm;
-    int32_t  pass_mm;
     int32_t  obst_mm;
     int32_t  wheel_mm[WHEELS];
     int32_t  last_cmd[WHEELS];
@@ -188,7 +183,6 @@ static nav_state_t g_nav = {
     .b_ir_armed     = false,
     .b_ir_cleared   = false,
     .b_guard        = false,
-    .b_level        = false,
     .req_id         = 0U,
     .next_id        = 0U,
     .last_state     = NAV_UNSEEN,
@@ -209,7 +203,6 @@ static nav_state_t g_nav = {
     .trace_ms       = 0U,
     .motion_word    = UINT32_MAX,
     .need_mm        = 0,
-    .pass_mm        = 0,
     .obst_mm        = 0,
     .wheel_mm       = {0, 0},
     .last_cmd       = {0, 0},
@@ -239,15 +232,13 @@ static void     drive_steer (uint32_t steer, int32_t inside_um_s,
                              int32_t outside_um_s);
 static bool     is_reverse_pause (int32_t const p_speed[WHEELS]);
 static void     set_phase (uint8_t phase);
-static uint32_t along_intent (void);
-static uint32_t back_intent (void);
-static uint32_t align_intent (void);
-static bool     is_aligned (void);
-static void     drive_reacquire (uint32_t status, bool b_line_seen);
-static void     reset_guard (uint32_t status);
+static void     drive_reacquire (uint32_t status);
+static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now);
+static void reset_guard (uint32_t status);
 static uint32_t median_of_3 (uint32_t first, uint32_t second, uint32_t third);
 static uint32_t guard_reading (uint32_t status);
 static uint32_t guard_intent (uint32_t reading, uint32_t intent);
+static uint32_t latest_reading (void);
 static void     update_ir_gate (bool b_line_seen);
 static bool     is_obstacle_close (uint32_t status);
 static bool     is_servo_moving (uint32_t status, uint32_t now);
@@ -363,22 +354,7 @@ bool b5_nav_step (bool b_line_left, bool b_line_right)
             break;
 
             case B5_STATE_REACQUIRE:
-                update_pose();
-                if (is_servo_moving(status, now))
-                {
-                    /* The servo is swinging to 45 degrees: stand still. */
-                    hold_car(true);
-                }
-                else
-                {
-                    hold_car(false);
-                    update_ir_gate(b_line_left || b_line_right);
-                    drive_reacquire(status, b_line_left || b_line_right);
-                    look_for_line((PHASE_ALIGN == g_nav.phase) &&
-                                      (is_aligned()) &&
-                                      (b_line_left || b_line_right),
-                                  now);
-                }
+                step_reacquire(status, b_line_left || b_line_right, now);
                 b_in_charge = true;
             break;
 
@@ -402,6 +378,35 @@ bool b5_nav_step (bool b_line_left, bool b_line_right)
     }
 
     return (b_in_charge);
+}
+
+/*!
+ * @brief One line-task pass in REACQUIRE: stand still while the servo
+ *        swings to 45 degrees, otherwise drive the bypass and look for
+ *        the line.
+ *
+ * @param[in] status      Packed Buddy 5 status word.
+ * @param[in] b_line_seen An IR sensor sees the line.
+ * @param[in] now         Current time, ms.
+ */
+static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
+{
+    update_pose();
+
+    if (is_servo_moving(status, now))
+    {
+        /* The servo is swinging to 45 degrees: stand still. */
+        hold_car(true);
+    }
+    else
+    {
+        hold_car(false);
+        update_ir_gate(b_line_seen);
+        drive_reacquire(status);
+        look_for_line((PHASE_HUG == g_nav.phase) && g_nav.b_ir_cleared &&
+                          b_line_seen,
+                      now);
+    }
 }
 
 /*!
@@ -573,7 +578,6 @@ static void reset_pose (void)
     g_nav.b_turned              = false;
     g_nav.b_ir_armed            = false;
     g_nav.b_ir_cleared          = false;
-    g_nav.b_level               = false;
     g_nav.phase                 = PHASE_TURN;
 }
 
@@ -657,9 +661,9 @@ static uint32_t intent_steer (uint32_t intent)
  * stands still.
  *
  * @param[in] steer        Steering (B5_STEER_*).
- * @param[in] inside_um_s  Inside wheel speed (-40 000..40 000 um/s;
+ * @param[in] inside_um_s  Inside wheel speed (-160 000..160 000 um/s;
  *                          0 = pivot on the inside wheel).
- * @param[in] outside_um_s Outside wheel speed (40 000..100 000 um/s).
+ * @param[in] outside_um_s Outside wheel speed (up to 200 000 um/s).
  */
 static void drive_steer (uint32_t steer, int32_t inside_um_s,
                          int32_t outside_um_s)
@@ -669,7 +673,7 @@ static void drive_steer (uint32_t steer, int32_t inside_um_s,
     switch (steer)
     {
         case B5_STEER_STRAIGHT:
-            /* Cast is safe: the speed is 40 000 um/s. */
+            /* Cast is safe: the speed is 160 000 um/s. */
             speed[WHEEL_LEFT]  = (int32_t)B5_NAV_SPEED_UM_S;
             speed[WHEEL_RIGHT] = (int32_t)B5_NAV_SPEED_UM_S;
         break;
@@ -701,8 +705,8 @@ static void drive_steer (uint32_t steer, int32_t inside_um_s,
         int32_t const left_mm_s  = speed[WHEEL_LEFT] / UM_PER_MM;
         int32_t const right_mm_s = speed[WHEEL_RIGHT] / UM_PER_MM;
 
-        /* Casts are safe: both speeds are -100..100 mm/s, so the offset
-         * values are 28..228. */
+        /* Casts are safe: both speeds are -100..200 mm/s, so the offset
+         * values are 28..328, inside the 10-bit fields. */
         uint32_t const key =
             steer |
             ((uint32_t)(left_mm_s + DRIVE_OFFSET_MM_S) << DRIVE_LEFT_SH) |
@@ -800,147 +804,11 @@ static void set_phase (uint8_t phase)
 }
 
 /*!
- * @brief ALONG: zig-zag that holds the planned sideways offset. Too close
- *        bends away, too far bends towards, inside the band the car is
- *        steered back to parallel. The heading stays within
- *        B5_NAV_HEAD_MAX_DECI away from and B5_NAV_ALONG_TOWARD_DECI
- *        towards the line.
+ * @brief REACQUIRE: run the TURN, OUT and HUG phases.
  *
- * NOTE: Inside the band the car turns until its heading is within
- * B5_NAV_LEVEL_IN_DECI, then drives straight until it is more than
- * B5_NAV_LEVEL_OUT_DECI off (g_nav.b_level). Without this dead zone a
- * pivot (about 100 degrees per second while the encoders are crossed)
- * overshot past 0 every pass and the car flipped between left and right
- * pivots every 30-60 ms (seen on the car).
- *
- * @return INTENT_*.
+ * @param[in] status Packed Buddy 5 status word (latest 45 degree reading).
  */
-static uint32_t along_intent (void)
-{
-    int32_t const lateral = lateral_mm();
-    int32_t const heading = side_sign() * heading_deci();
-    uint32_t      intent  = INTENT_STRAIGHT;
-
-    int32_t const size = (heading < 0) ? -heading : heading;
-
-    if (lateral < (g_nav.need_mm - (int32_t)B5_NAV_BAND_IN_MM))
-    {
-        g_nav.b_level = false;
-        intent        = INTENT_AWAY;
-    }
-    else if (lateral > (g_nav.need_mm + (int32_t)B5_NAV_BAND_OUT_MM))
-    {
-        g_nav.b_level = false;
-        intent        = INTENT_TOWARD;
-    }
-    else
-    {
-        if (g_nav.b_level)
-        {
-            g_nav.b_level = (size <= B5_NAV_LEVEL_OUT_DECI);
-        }
-        else
-        {
-            g_nav.b_level = (size <= B5_NAV_LEVEL_IN_DECI);
-        }
-
-        if (g_nav.b_level)
-        {
-            intent = INTENT_STRAIGHT;
-        }
-        else
-        {
-            intent = (heading > 0) ? INTENT_TOWARD : INTENT_AWAY;
-        }
-    }
-
-    if ((INTENT_AWAY == intent) && (heading >= B5_NAV_HEAD_MAX_DECI))
-    {
-        intent = INTENT_STRAIGHT;
-    }
-    else if ((INTENT_TOWARD == intent) &&
-             (heading <= -B5_NAV_ALONG_TOWARD_DECI))
-    {
-        intent = INTENT_STRAIGHT;
-    }
-    else
-    {
-        /* Inside the heading limit. */
-    }
-
-    return (intent);
-}
-
-/*!
- * @brief BACK: curve towards the line until the rejoin angle, then
- *        straight on until an IR sensor finds the line.
- *
- * @return INTENT_*.
- */
-static uint32_t back_intent (void)
-{
-    int32_t const heading = side_sign() * heading_deci();
-
-    return ((heading > -B5_NAV_REJOIN_DECI) ? INTENT_TOWARD : INTENT_STRAIGHT);
-}
-
-/*!
- * @brief ALIGN: pivot back until the car heads no more than
- *        B5_NAV_ALIGN_DECI towards the line, then straight on.
- *
- * NOTE: BACK crosses the line at B5_NAV_REJOIN_DECI. At today's speed
- * (about 150 mm/s with the encoders crossed) the line follower saw the
- * line once and drove on across it (seen on the car). Turning to a
- * shallow angle at the first contact gives it a crossing it can follow.
- * The car is not turned fully parallel: the IR sensors are ahead of the
- * pivot, so that would leave the line beside the car, out of their
- * reach.
- *
- * @return INTENT_*.
- */
-static uint32_t align_intent (void)
-{
-    int32_t const toward = -(side_sign() * heading_deci());
-    uint32_t      intent = INTENT_STRAIGHT;
-
-    if (toward > B5_NAV_ALIGN_DECI)
-    {
-        intent = INTENT_AWAY;
-    }
-    else if (toward < 0)
-    {
-        intent = INTENT_TOWARD;
-    }
-    else
-    {
-        /* Shallow angle towards the line: straight on. */
-    }
-
-    return (intent);
-}
-
-/*!
- * @brief Tell whether ALIGN has finished its pivot.
- *
- * @return True once the car heads 0 .. B5_NAV_ALIGN_DECI (plus one pass
- *         of overshoot) towards the line.
- */
-static bool is_aligned (void)
-{
-    int32_t const toward = -(side_sign() * heading_deci());
-
-    return ((toward >= 0) &&
-            (toward <= (B5_NAV_ALIGN_DECI + B5_NAV_ALIGN_SLACK_DECI)));
-}
-
-/*!
- * @brief REACQUIRE: run the TURN, OUT, ALONG, BACK and ALIGN phases.
- *
- * @param[in] status      Packed Buddy 5 status word (latest 45 degree
- *                        reading).
- * @param[in] b_line_seen An IR sensor sees the line.
- */
-static void drive_reacquire (uint32_t status, bool b_line_seen)
+static void drive_reacquire (uint32_t status)
 {
     uint32_t const reading = guard_reading(status);
     uint32_t       intent  = INTENT_STRAIGHT;
@@ -952,18 +820,8 @@ static void drive_reacquire (uint32_t status, bool b_line_seen)
 
     if ((PHASE_OUT == g_nav.phase) && (lateral_mm() >= g_nav.need_mm))
     {
-        set_phase(PHASE_ALONG);
+        set_phase(PHASE_HUG);
         g_nav.b_ir_armed = true;
-    }
-
-    if ((PHASE_ALONG == g_nav.phase) && (ahead_mm() >= g_nav.pass_mm))
-    {
-        set_phase(PHASE_BACK);
-    }
-
-    if ((PHASE_BACK == g_nav.phase) && g_nav.b_ir_cleared && b_line_seen)
-    {
-        set_phase(PHASE_ALIGN);
     }
 
     if (PHASE_TURN == g_nav.phase)
@@ -974,23 +832,10 @@ static void drive_reacquire (uint32_t status, bool b_line_seen)
     }
     else
     {
-        if (PHASE_ALONG == g_nav.phase)
-        {
-            intent = along_intent();
-        }
-        else if (PHASE_BACK == g_nav.phase)
-        {
-            intent = back_intent();
-        }
-        else if (PHASE_ALIGN == g_nav.phase)
-        {
-            intent = align_intent();
-        }
-        else
-        {
-            /* OUT: straight on at the planned angle. */
-            intent = INTENT_STRAIGHT;
-        }
+        /* OUT: straight on at the planned angle. HUG: keep curving towards
+         * the obstacle; the guard below turns the car away when it gets
+         * too close. */
+        intent = (PHASE_HUG == g_nav.phase) ? INTENT_TOWARD : INTENT_STRAIGHT;
 
         intent = guard_intent(reading, intent);
 
@@ -1086,18 +931,43 @@ static uint32_t guard_reading (uint32_t status)
 
     if (GUARD_PINGS == g_nav.ping_count)
     {
-        reading =
-            median_of_3(g_nav.ping_mm[0], g_nav.ping_mm[1], g_nav.ping_mm[2]);
+        reading = median_of_3(g_nav.ping_mm[0], g_nav.ping_mm[1],
+                              g_nav.ping_mm[GUARD_PINGS - 1U]);
     }
 
     return (reading);
 }
 
 /*!
- * @brief Guard for OUT, ALONG and BACK: closer than B5_HUG_NEAR_MM turns
+ * @brief Newest 45 degree reading kept by guard_reading().
+ *
+ * @return Distance in mm (GUARD_FAR_MM before the first reading, or for
+ *         OPEN, UNKNOWN and STUCK).
+ */
+static uint32_t latest_reading (void)
+{
+    uint32_t reading = GUARD_FAR_MM;
+
+    if (g_nav.ping_count > 0U)
+    {
+        reading =
+            g_nav.ping_mm[(g_nav.ping_next + (GUARD_PINGS - 1U)) % GUARD_PINGS];
+    }
+
+    return (reading);
+}
+
+/*!
+ * @brief Guard for OUT and HUG: closer than B5_HUG_NEAR_MM turns
  *        the car away from the obstacle, and it keeps turning away until
  *        the reading is farther than B5_HUG_FAR_MM. The turn stops at
  *        B5_NAV_GUARD_HEAD_MAX_DECI away from the line.
+ *
+ * NOTE: The guard turns on as soon as the median OR the newest single
+ * reading is too close (one ping, 60 ms, earlier than the median), and
+ * turns off only when the median is clear. A stray close echo costs a
+ * short turn away; a late reaction in the steep HUG curve costs a
+ * collision (closed-loop simulation).
  *
  * @param[in] reading Filtered 45 degree reading, mm.
  * @param[in] intent  INTENT_* chosen by the phase.
@@ -1110,7 +980,8 @@ static uint32_t guard_intent (uint32_t reading, uint32_t intent)
     uint32_t      result  = intent;
     bool const    b_was   = g_nav.b_guard;
 
-    if ((!g_nav.b_guard) && (reading < B5_HUG_NEAR_MM))
+    if ((!g_nav.b_guard) &&
+        ((reading < B5_HUG_NEAR_MM) || (latest_reading() < B5_HUG_NEAR_MM)))
     {
         g_nav.b_guard = true;
     }
@@ -1130,7 +1001,7 @@ static uint32_t guard_intent (uint32_t reading, uint32_t intent)
                   g_nav.b_guard ? "ON (turn away)" : "off", (INT)reading,
                   (INT)(heading / DECI_PER_DEG));
 
-        /* Casts are safe: the phase is 0..3 and reading at most 4095. */
+        /* Casts are safe: the phase is 0..2 and reading at most 4095. */
         log_rec(B5_LOG_GUARD, (uint8_t)(g_nav.b_guard ? 1U : 0U), g_nav.phase,
                 0U, (int32_t)reading, 0, heading);
     }
@@ -1156,8 +1027,8 @@ static void update_ir_gate (bool b_line_seen)
     if (g_nav.b_ir_armed && (!g_nav.b_ir_cleared) && (!b_line_seen))
     {
         g_nav.b_ir_cleared = true;
-        tm_printf((UB *)"[b5-nav] IR clear of the line: line contacts count "
-                        "from BACK on\n");
+        tm_printf((UB *)"[b5-nav] IR clear of the line: the next line "
+                        "contact ends the bypass\n");
     }
 }
 
@@ -1260,10 +1131,9 @@ static bool is_servo_moving (uint32_t status, uint32_t now)
 
 /*!
  * @brief Keep the accepted plan: the start angle, the sideways offset the
- *        car needs (closest x tan(start angle), the planner's own offset)
- *        and how far ahead the tail must get before turning back (closest
- *        + assumed depth + servo-to-tail). The closest reading comes from
- *        the scan profile, as in scan_algo.c.
+ *        car needs (closest x tan(start angle), the planner's own offset).
+ *        The closest reading comes from the scan profile, as in
+ *        scan_algo.c.
  *
  * @param[in] angle Start angle from SCAN_RESULT, degrees.
  */
@@ -1296,11 +1166,9 @@ static void keep_plan (uint32_t angle)
     g_nav.start_deg = (uint8_t)angle;
     g_nav.need_mm =
         (closest * b5_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE;
-    g_nav.pass_mm =
-        closest + (int32_t)B5_DEPTH_ASSUMED_MM + (int32_t)B5_SERVO_TO_REAR_MM;
     tm_printf((UB *)"[b5-nav] plan: obstacle %d mm, start %d deg, side "
-                    "offset %d mm, turn back after %d mm\n",
-              (INT)closest, (INT)angle, (INT)g_nav.need_mm, (INT)g_nav.pass_mm);
+                    "offset %d mm\n",
+              (INT)closest, (INT)angle, (INT)g_nav.need_mm);
 }
 
 /*!
@@ -1475,10 +1343,11 @@ static void handle_event (uint32_t evt, uint32_t now)
 
 /*!
  * @brief In REACQUIRE, tell Buddy 5 when an IR sensor sees the line, once
- *        the car has turned to its shallow hand-back angle (ALIGN).
+ *        the car is curving round the obstacle (HUG) and both IR sensors
+ *        have been off the line since the end of OUT.
  *
- * @param[in] b_line_seen The car is aligned in ALIGN and an IR sensor sees
- *                        the line.
+ * @param[in] b_line_seen The car is in HUG, the IR gate is open and an IR
+ *                        sensor sees the line.
  * @param[in] now         Current time, ms.
  */
 static void look_for_line (bool b_line_seen, uint32_t now)

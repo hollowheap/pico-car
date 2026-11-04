@@ -22,7 +22,7 @@
  *   TURNED  d = heading turned (deci-degrees), e = planned angle (deg)
  *   MFAULT  a = wheel, b = speed_valid, c = odometry_valid, d = bad
  *           encoder steps, e = speed (mm/s), f = sample interval (us)
- *   PHASE   a = bypass phase (0 TURN, 1 OUT, 2 ALONG, 3 BACK, 4 ALIGN), d =
+ *   PHASE   a = bypass phase (0 TURN, 1 OUT, 2 HUG), d =
  * side offset (mm), e = distance along the line (mm), f = heading
  *           (deci-degrees, positive = away from the obstacle side)
  *   GUARD   a = 1 guard on / 0 off, b = bypass phase, d = filtered 45
@@ -57,7 +57,7 @@
 #define FIELD2_NAMES (4U)
 #define MOTION_NAMES (8U)
 #define CMD_NAMES    (8U)
-#define PHASE_NAMES  (5U)
+#define PHASE_NAMES  (3U)
 
 /* Slots printed per profile line. */
 #define SLOTS_PER_LINE (5U)
@@ -134,12 +134,12 @@ static char const * const g_cmd_name[CMD_NAMES] = {
     "NONE",       "SCAN_REQ", "ACCEPT", "REJECT",
     "LINE_FOUND", "STOP",     "RESET",  "START"};
 
-static char const * const g_phase_name[PHASE_NAMES] = {"TURN", "OUT", "ALONG",
-                                                       "BACK", "ALIGN"};
+static char const * const g_phase_name[PHASE_NAMES] = {"TURN", "OUT", "HUG"};
 
 static uint32_t now_ms (void);
 static void     print_profile (uint32_t index, uint32_t t_ms);
 static void     print_record (b5_log_rec_t const * p_rec);
+static void     print_nav_record (b5_log_rec_t const * p_rec);
 static void     start_dump (void);
 static void     continue_dump (void);
 
@@ -414,6 +414,24 @@ static void print_record (b5_log_rec_t const * p_rec)
                                    TRACE_STEER_MASK]);
         break;
 
+        default:
+            print_nav_record(p_rec);
+        break;
+    }
+}
+
+/*!
+ * @brief Print one bypass record (TURNED, PHASE, MFAULT, GUARD) as a
+ *        readable line.
+ *
+ * @param[in] p_rec Record to print.
+ */
+static void print_nav_record (b5_log_rec_t const * p_rec)
+{
+    INT const t_ms = (INT)p_rec->t_ms;
+
+    switch (p_rec->kind)
+    {
         case B5_LOG_TURNED:
             tm_printf((UB const *)"%8d ESCAPE planned angle reached: turned "
                                   "%d deg (plan %d deg)\n",

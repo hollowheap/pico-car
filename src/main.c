@@ -27,8 +27,8 @@ ER setup_motors (void)
         config.control.speed[wheel] = (wheel_pid_config_t){
             .kp_q16            = 256U,
             .ki_q16            = 256U,
-            .kd_q16            = 16U,
-            .max_target_um_s   = 100000U,
+            .kd_q16            = 2U,
+            .max_target_um_s   = 200000U,
             .max_interval_us   = 100000U,
             .max_sample_age_us = 600000U,
             .max_duty_permille = 250U,
@@ -92,7 +92,7 @@ LOCAL void line_task (INT stacd, void * exinf)
     //     tk_dly_tsk(100);
     // }
 
-    const uint32_t speed     = 40841U;
+    const uint32_t speed     = 163364U; /* 4 x 40841 um/s */
     const uint32_t poll_ms   = 20;
     const uint32_t ms_per_us = 1000U;
     /* Each speed lease must outlast one loop pass (up to poll_ms plus
