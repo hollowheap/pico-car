@@ -80,3 +80,20 @@ target_include_directories(test_faults PRIVATE ${INCLUDE}
 target_compile_options(test_faults PRIVATE ${TEST_FLAGS})
 target_link_libraries(test_faults PRIVATE pthread)
 add_test(NAME fault_register COMMAND test_faults)
+
+add_executable(test_line_recovery test_line_recovery.c
+    ${IR_SRC}/line_recovery.c)
+target_include_directories(test_line_recovery PRIVATE ${INCLUDE} ${IR_SRC})
+target_compile_options(test_line_recovery PRIVATE ${TEST_FLAGS})
+add_test(NAME line_recovery COMMAND test_line_recovery)
+
+add_executable(test_barcode test_barcode.c ${IR_SRC}/barcode.c)
+target_include_directories(test_barcode PRIVATE ${INCLUDE} ${IR_SRC})
+target_compile_options(test_barcode PRIVATE ${TEST_FLAGS})
+add_test(NAME barcode_decode COMMAND test_barcode)
+
+add_executable(test_barcode_filter test_barcode_filter.c
+    ${IR_SRC}/barcode_filter.c)
+target_include_directories(test_barcode_filter PRIVATE ${INCLUDE} ${IR_SRC})
+target_compile_options(test_barcode_filter PRIVATE ${TEST_FLAGS})
+add_test(NAME barcode_filter COMMAND test_barcode_filter)

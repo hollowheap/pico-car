@@ -235,7 +235,10 @@ target_include_directories(motion PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_
 target_link_libraries(motion PUBLIC platform motion_core mtk3smp)
 
 add_library(track STATIC
+    src/track/barcode.c
+    src/track/barcode_filter.c
     src/track/ir_capture.c
+    src/track/line_recovery.c
     src/track/line_task.c
     src/track/line_filter.c
 )
