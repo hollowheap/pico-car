@@ -27,6 +27,8 @@ static ID                      hold_owner[3];
 static bool             start_called;
 static controller_t controller;
 
+static void publish_emergency (void);
+
 static int hold_slot (uint32_t reason)
 {
     switch (reason)
@@ -99,9 +101,24 @@ static void stop_isr (const isr_gpio_event_t * p_event, void * p_user)
     }
     (void)ISpinLock(&service_lock, &saved);
     command_slot_stop(&inbox);
+    publish_emergency();
+    (void)ISpinUnlock(&service_lock, saved);
+}
+
+static void publish_emergency (void)
+{
     published.ready          = false;
     published.stop_requested = true;
-    (void)ISpinUnlock(&service_lock, saved);
+    published.state          = MOTION_STOPPED;
+    published.fault          = MOTION_FAULT_NONE;
+    published.hold_mask      = inbox.hold_mask;
+    published_feedback.left_speed_um_s       = 0;
+    published_feedback.right_speed_um_s      = 0;
+    published_feedback.left_displacement_um  = 0;
+    published_feedback.right_displacement_um = 0;
+    published_feedback.timestamp_us          = 0U;
+    published_feedback.speed_valid           = false;
+    published_feedback.odometry_valid        = false;
 }
 
 static void publish_feedback (void)
@@ -485,8 +502,7 @@ ER motion_stop (void)
     }
     (void)ISpinLock(&service_lock, &saved);
     command_slot_stop(&inbox);
-    published.ready          = false;
-    published.stop_requested = true;
+    publish_emergency();
     (void)ISpinUnlock(&service_lock, saved);
     return E_OK;
 }
@@ -498,8 +514,7 @@ void motion_emergency_service (void)
     pwm_emergency_stop();
     (void)ISpinLock(&service_lock, &saved);
     command_slot_stop(&inbox);
-    published.ready          = false;
-    published.stop_requested = true;
+    publish_emergency();
     (void)ISpinUnlock(&service_lock, saved);
 }
 

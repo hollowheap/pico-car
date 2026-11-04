@@ -143,6 +143,15 @@ LOCAL BOOL made (const char * what, ID id)
     return TRUE;
 }
 
+LOCAL void started (const char * what, ID id)
+{
+    const ER result = tk_sta_tsk(id, 0);
+    if (result != E_OK)
+    {
+        tm_printf((UB *)"[init] tk_sta_%s failed, er=%d\n", what, result);
+    }
+}
+
 EXPORT INT usermain (void)
 {
     const ER motion_result = motion_init();
@@ -163,19 +172,19 @@ EXPORT INT usermain (void)
     ID tid = tk_cre_tsk(&ctsk_startup);
     if (made("tsk(startup)", tid))
     {
-        tk_sta_tsk(tid, 0);
+        started("tsk(startup)", tid);
     }
     if (motion_ready)
     {
         tid = tk_cre_tsk(&ctsk_emergency);
         if (made("tsk(emergency)", tid))
         {
-            tk_sta_tsk(tid, 0);
+            started("tsk(emergency)", tid);
         }
         tid = tk_cre_tsk(&ctsk_motion);
         if (made("tsk(motion)", tid))
         {
-            tk_sta_tsk(tid, 0);
+            started("tsk(motion)", tid);
         }
     }
     if (mission_ready)
@@ -183,13 +192,13 @@ EXPORT INT usermain (void)
         tid = tk_cre_tsk(&ctsk_mission);
         if (made("tsk(mission)", tid))
         {
-            tk_sta_tsk(tid, 0);
+            started("tsk(mission)", tid);
         }
     }
     tid = tk_cre_tsk(&ctsk_line);
     if (made("tsk(line)", tid))
     {
-        tk_sta_tsk(tid, 0);
+        started("tsk(line)", tid);
     }
 
     /* The initial task has nothing left to do.  It must not return: on

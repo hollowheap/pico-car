@@ -37,9 +37,23 @@ LOCAL ER ir_sensor_init (UINT pin)
 
 EXPORT ER ir_capture_init (void)
 {
-    (void)ir_sensor_init(IR_BARCODE_PIN);
-    (void)ir_sensor_init(IR_LEFT_PIN);
-    (void)ir_sensor_init(IR_RIGHT_PIN);
+    ER result;
+
+    result = ir_sensor_init(IR_BARCODE_PIN);
+    if (result != E_OK)
+    {
+        return result;
+    }
+    result = ir_sensor_init(IR_LEFT_PIN);
+    if (result != E_OK)
+    {
+        return result;
+    }
+    result = ir_sensor_init(IR_RIGHT_PIN);
+    if (result != E_OK)
+    {
+        return result;
+    }
     g_state = current_state();
 
     return isr_register_gpio_handler(
