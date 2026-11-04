@@ -296,3 +296,6 @@ foreach(app_target IN ITEMS main)
         -Wvla
     )
 endforeach()
+
+# Buddy 4: IMU, terrain detection, and bring-up targets
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/buddy4.cmake)
