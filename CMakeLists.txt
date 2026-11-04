@@ -237,3 +237,7 @@ target_compile_options(main PRIVATE
     -Wshadow
     -Wvla
 )
+
+# Buddy 4: IMU, terrain detection, and bring-up targets
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/buddy4.cmake)
+
