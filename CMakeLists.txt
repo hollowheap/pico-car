@@ -207,6 +207,7 @@ target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 add_library(platform STATIC
     src/platform/faults.c
     src/platform/isr_dispatcher.c
+    src/platform/isr_select.c
 )
 target_include_directories(platform PUBLIC include)
 target_link_libraries(platform PUBLIC mtk3smp)
@@ -243,6 +244,7 @@ add_library(track STATIC
 target_link_libraries(track PUBLIC platform motion mtk3smp)
 
 add_library(navigation STATIC
+    src/navigation/mission_events.c
     src/navigation/mission_task.c
 )
 target_include_directories(navigation PUBLIC include)

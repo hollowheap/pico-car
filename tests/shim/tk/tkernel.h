@@ -16,5 +16,6 @@
 #include <stdint.h>
 
 typedef uint32_t UW;
+typedef int      ER;
 
 #endif /* TEST_SHIM_TK_TKERNEL_H */

@@ -6,6 +6,7 @@
 #include <bsp/libbsp.h>
 
 #include "motion/motion.h"
+#include "navigation/mission_events.h"
 #include "navigation/navigation.h"
 #include "system/startup_task.h"
 
@@ -22,45 +23,6 @@ static uint32_t             pending_events;
 static mission_line_state_t latest_line;
 static bool                 line_valid;
 static bool                 initialised;
-
-static bool apply_event (mission_state_t * p_state, mission_event_t event)
-{
-    mission_state_t next = *p_state;
-
-    switch (event)
-    {
-        case MISSION_EVENT_START:
-            if (*p_state == MISSION_STATE_READY)
-            {
-                next = MISSION_STATE_RUNNING;
-            }
-            break;
-        case MISSION_EVENT_STOP:
-            if (*p_state != MISSION_STATE_STOPPED)
-            {
-                next = MISSION_STATE_STOPPED;
-            }
-            break;
-        case MISSION_EVENT_RESET:
-            if (*p_state == MISSION_STATE_STOPPED)
-            {
-                next = MISSION_STATE_READY;
-            }
-            break;
-        case MISSION_EVENT_FAULT:
-            next = MISSION_STATE_STOPPED;
-            break;
-        default:
-            return false;
-    }
-
-    if (next == *p_state)
-    {
-        return false;
-    }
-    *p_state = next;
-    return true;
-}
 
 static uint32_t take_events (void)
 {
@@ -79,6 +41,7 @@ static void apply_pending (uint32_t events)
     UINT            saved;
     mission_state_t before;
     mission_state_t after;
+    bool            stop_action;
 
     if (events == 0U)
     {
@@ -87,34 +50,11 @@ static void apply_pending (uint32_t events)
 
     (void)ISpinLock(&event_lock, &saved);
     before = current_state;
-    /* STOP and FAULT dominate; reset/start cannot erase them in the same batch. */
-    if ((events &
-         (uint32_t)(MISSION_EVENT_STOP | MISSION_EVENT_FAULT)) != 0U)
-    {
-        if ((events & (uint32_t)MISSION_EVENT_STOP) != 0U)
-        {
-            (void)apply_event(&current_state, MISSION_EVENT_STOP);
-        }
-        if ((events & (uint32_t)MISSION_EVENT_FAULT) != 0U)
-        {
-            (void)apply_event(&current_state, MISSION_EVENT_FAULT);
-        }
-    }
-    else
-    {
-        if ((events & (uint32_t)MISSION_EVENT_RESET) != 0U)
-        {
-            (void)apply_event(&current_state, MISSION_EVENT_RESET);
-        }
-        if ((events & (uint32_t)MISSION_EVENT_START) != 0U)
-        {
-            (void)apply_event(&current_state, MISSION_EVENT_START);
-        }
-    }
+    current_state = mission_apply_events(before, events, &stop_action);
     after = current_state;
     (void)ISpinUnlock(&event_lock, saved);
 
-    if (after == MISSION_STATE_STOPPED && before != MISSION_STATE_STOPPED)
+    if (stop_action)
     {
         (void)motion_stop();
     }

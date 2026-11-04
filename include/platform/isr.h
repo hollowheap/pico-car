@@ -27,6 +27,10 @@ typedef struct
 typedef void (*gpio_irq_callback_t)(const isr_gpio_event_t * event,
                                     void *                   user_data);
 
+void isr_select_events (uint32_t rise, uint32_t fall, uint32_t pin_mask,
+                        uint32_t            event_mask,
+                        isr_gpio_event_t * p_event);
+
 ER isr_dispatcher_init (void);
 
 /* Register a non-overlapping pin mask and edge selection. */

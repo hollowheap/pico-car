@@ -86,3 +86,16 @@ add_executable(test_line_recovery test_line_recovery.c
 target_include_directories(test_line_recovery PRIVATE ${INCLUDE} ${IR_SRC})
 target_compile_options(test_line_recovery PRIVATE ${TEST_FLAGS})
 add_test(NAME line_recovery COMMAND test_line_recovery)
+
+add_executable(test_mission_events test_mission_events.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/mission_events.c)
+target_include_directories(test_mission_events PRIVATE ${INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_mission_events PRIVATE ${TEST_FLAGS})
+add_test(NAME mission_events COMMAND test_mission_events)
+
+add_executable(test_isr_select test_isr_select.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/isr_select.c)
+target_include_directories(test_isr_select PRIVATE ${INCLUDE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_isr_select PRIVATE ${TEST_FLAGS})
+add_test(NAME isr_select COMMAND test_isr_select)
