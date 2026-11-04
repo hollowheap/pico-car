@@ -99,6 +99,8 @@ static void stop_isr (const isr_gpio_event_t * p_event, void * p_user)
     }
     (void)ISpinLock(&service_lock, &saved);
     command_slot_stop(&inbox);
+    published.ready          = false;
+    published.stop_requested = true;
     (void)ISpinUnlock(&service_lock, saved);
 }
 
@@ -122,8 +124,13 @@ static void publish_feedback (void)
     }
     else
     {
-        published_feedback.speed_valid    = false;
-        published_feedback.odometry_valid = false;
+        published_feedback.left_speed_um_s       = 0;
+        published_feedback.right_speed_um_s      = 0;
+        published_feedback.left_displacement_um  = 0;
+        published_feedback.right_displacement_um = 0;
+        published_feedback.timestamp_us          = 0U;
+        published_feedback.speed_valid           = false;
+        published_feedback.odometry_valid        = false;
     }
 }
 
@@ -486,7 +493,14 @@ ER motion_stop (void)
 
 void motion_emergency_service (void)
 {
+    UINT saved;
+
     pwm_emergency_stop();
+    (void)ISpinLock(&service_lock, &saved);
+    command_slot_stop(&inbox);
+    published.ready          = false;
+    published.stop_requested = true;
+    (void)ISpinUnlock(&service_lock, saved);
 }
 
 ER motion_status (motion_status_t * p_status)

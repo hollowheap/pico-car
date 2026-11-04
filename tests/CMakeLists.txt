@@ -72,3 +72,11 @@ add_executable(test_motion_feedback test_motion_feedback.c
 target_include_directories(test_motion_feedback PRIVATE ${INCLUDE} ${MOTION_SRC})
 target_compile_options(test_motion_feedback PRIVATE ${TEST_FLAGS})
 add_test(NAME motion_feedback COMMAND test_motion_feedback)
+
+add_executable(test_faults test_faults.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/faults.c)
+target_include_directories(test_faults PRIVATE ${INCLUDE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_faults PRIVATE ${TEST_FLAGS})
+target_link_libraries(test_faults PRIVATE pthread)
+add_test(NAME fault_register COMMAND test_faults)
