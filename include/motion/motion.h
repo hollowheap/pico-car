@@ -44,6 +44,11 @@ ER motion_status (motion_status_t * p_status);
 /* Read-only motion feedback copy. Caller cannot mutate the controller. */
 ER motion_feedback_snapshot (motion_feedback_t * p_feedback);
 
+/* Direct emergency path. FLG_EMG_STOP wakes the emergency service. */
+#define FLG_EMG_STOP (1U << 0)
+extern ID flg_ctrl_id;
+void motion_emergency_service (void);
+
 #endif /* MOTION_H */
 
 /*** end of file ***/

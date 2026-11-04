@@ -14,6 +14,7 @@
 #define STOP_PIN      21U
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
 
+ID                             flg_ctrl_id;
 static T_SPLOCK                service_lock;
 static motion_config_t configuration;
 static motion_status_t published;
@@ -92,6 +93,10 @@ static void stop_isr (const isr_gpio_event_t * p_event, void * p_user)
         return;
     }
     pwm_emergency_stop();
+    if (flg_ctrl_id != 0)
+    {
+        (void)tk_set_flg(flg_ctrl_id, FLG_EMG_STOP);
+    }
     (void)ISpinLock(&service_lock, &saved);
     command_slot_stop(&inbox);
     (void)ISpinUnlock(&service_lock, saved);
@@ -256,6 +261,19 @@ ER motion_init (void)
     }
     (void)command_slot_init(&inbox, configuration.control.max_command_ttl_us);
     (void)InitSpinLock(&service_lock);
+    if (flg_ctrl_id == 0)
+    {
+        const T_CFLG cflg = {
+            .flgatr  = TA_TFIFO | TA_WMUL,
+            .iflgptn = 0U,
+        };
+        const ER result = tk_cre_flg(&cflg);
+        if (result <= E_OK)
+        {
+            return result;
+        }
+        flg_ctrl_id = (ID)result;
+    }
     start_called = true;
     pwm_boot_brake();
     return E_OK;
@@ -454,12 +472,21 @@ ER motion_stop (void)
         return E_OBJ;
     }
     pwm_emergency_stop();
+    if (flg_ctrl_id != 0)
+    {
+        (void)tk_set_flg(flg_ctrl_id, FLG_EMG_STOP);
+    }
     (void)ISpinLock(&service_lock, &saved);
     command_slot_stop(&inbox);
     published.ready          = false;
     published.stop_requested = true;
     (void)ISpinUnlock(&service_lock, saved);
     return E_OK;
+}
+
+void motion_emergency_service (void)
+{
+    pwm_emergency_stop();
 }
 
 ER motion_status (motion_status_t * p_status)

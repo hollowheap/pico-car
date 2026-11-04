@@ -55,6 +55,19 @@ LOCAL void mission_task (INT stacd, void * exinf)
     mission_run();
 }
 
+LOCAL void emergency_task (INT stacd, void * exinf)
+{
+    (void)stacd;
+    (void)exinf;
+    for (;;)
+    {
+        UINT pattern = 0U;
+        (void)tk_wai_flg(flg_ctrl_id, FLG_EMG_STOP,
+                         TWF_ORW | TWF_CLR, &pattern, TMO_FEVR);
+        motion_emergency_service();
+    }
+}
+
 LOCAL T_CTSK ctsk_startup = {
     .itskpri = 2,
     .stksz   = STACK_SZ,
@@ -71,6 +84,18 @@ LOCAL T_CTSK ctsk_motion = {
     .itskpri = 1,
     .stksz   = STACK_SZ,
     .task    = motion_task,
+#if TK_SUPPORT_SMP
+    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .assprc = TP_PRC1,
+#else
+    .tskatr = TA_HLNG | TA_RNG3,
+#endif
+};
+
+LOCAL T_CTSK ctsk_emergency = {
+    .itskpri = 1,
+    .stksz   = STACK_SZ,
+    .task    = emergency_task,
 #if TK_SUPPORT_SMP
     .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
     .assprc = TP_PRC1,
@@ -142,6 +167,11 @@ EXPORT INT usermain (void)
     }
     if (motion_ready)
     {
+        tid = tk_cre_tsk(&ctsk_emergency);
+        if (made("tsk(emergency)", tid))
+        {
+            tk_sta_tsk(tid, 0);
+        }
         tid = tk_cre_tsk(&ctsk_motion);
         if (made("tsk(motion)", tid))
         {
