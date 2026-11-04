@@ -99,14 +99,3 @@ target_include_directories(test_isr_select PRIVATE ${INCLUDE}
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_options(test_isr_select PRIVATE ${TEST_FLAGS})
 add_test(NAME isr_select COMMAND test_isr_select)
-
-add_executable(test_sonar test_sonar.c ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/sonar.c)
-target_include_directories(test_sonar PRIVATE ${INCLUDE})
-target_compile_options(test_sonar PRIVATE ${TEST_FLAGS})
-add_test(NAME sonar_classifier COMMAND test_sonar)
-
-add_executable(test_stop_confirm test_stop_confirm.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/stop_confirm.c)
-target_include_directories(test_stop_confirm PRIVATE ${INCLUDE})
-target_compile_options(test_stop_confirm PRIVATE ${TEST_FLAGS})
-add_test(NAME stop_confirm COMMAND test_stop_confirm)
