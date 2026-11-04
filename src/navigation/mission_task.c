@@ -12,6 +12,7 @@
 
 #define MISSION_PERIOD_MS 10U
 #define MISSION_START_PIN      20U
+#define LINE_RECOVERY_DEADBAND_MDEG 5000
 #define MISSION_LINE_SPEED_UM_S UINT32_C(40841)
 #define MISSION_LINE_VALID_US  UINT32_C(50000)
 #define MISSION_STOP_TTL_US    UINT32_C(20000)
@@ -135,6 +136,14 @@ static void drive_motion (void)
         request.action = GUIDANCE_STEER_LEFT;
     }
     else if (line.right)
+    {
+        request.action = GUIDANCE_STEER_RIGHT;
+    }
+    else if (line.heading_mdeg > LINE_RECOVERY_DEADBAND_MDEG)
+    {
+        request.action = GUIDANCE_STEER_LEFT;
+    }
+    else if (line.heading_mdeg < -LINE_RECOVERY_DEADBAND_MDEG)
     {
         request.action = GUIDANCE_STEER_RIGHT;
     }

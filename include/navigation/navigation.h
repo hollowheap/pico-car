@@ -34,6 +34,7 @@ typedef struct
     bool     left;
     bool     right;
     uint32_t sensed_us;
+    int32_t  heading_mdeg; /* integrated heading during line loss */
 } mission_line_state_t;
 
 /* Composition root only. */
