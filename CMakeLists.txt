@@ -246,6 +246,8 @@ target_link_libraries(track PUBLIC platform motion mtk3smp)
 add_library(navigation STATIC
     src/navigation/mission_events.c
     src/navigation/mission_task.c
+    src/navigation/sonar.c
+    src/navigation/stop_confirm.c
 )
 target_include_directories(navigation PUBLIC include)
 target_link_libraries(navigation PUBLIC motion mtk3smp)
