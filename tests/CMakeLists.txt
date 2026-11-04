@@ -70,3 +70,11 @@ target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC} ${AP
 target_compile_options(test_obstacle_statechart PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
+
+add_executable(test_barcode_parser test_barcode_parser.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
+target_include_directories(test_barcode_parser PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_barcode_parser PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME barcode_parser COMMAND test_barcode_parser)

@@ -332,6 +332,11 @@ add_library(ir_service STATIC
 target_include_directories(ir_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ir_service PUBLIC sys mtk3smp)
 
+add_library(barcode STATIC
+    src/barcode/parser.c
+)
+target_include_directories(barcode PUBLIC include)
+
 add_executable(main
     src/main.c
     src/demo_tasks.c
@@ -346,6 +351,7 @@ foreach(app_target IN ITEMS main)
         ir_service
         platform
         telemetry
+        barcode
         mtk3smp
     )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset
