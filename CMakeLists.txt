@@ -217,6 +217,7 @@ add_library(motion_core STATIC
     src/motion/encoder_math.c
     src/motion/guidance.c
     src/motion/command_slot.c
+    src/motion/feedback.c
 )
 target_include_directories(motion_core PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/motion)
 target_link_libraries(motion_core PUBLIC mtk3smp)

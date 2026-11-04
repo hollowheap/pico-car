@@ -6,6 +6,7 @@
 
 #include <stdbool.h>
 #include <tk/tkernel.h>
+#include "motion/feedback.h"
 #include "motion/types.h"
 
 typedef struct
@@ -39,6 +40,9 @@ ER motion_hold (uint32_t reason, bool held);
 ER motion_stop (
     void); /* Latches until reboot; next owner poll. */
 ER motion_status (motion_status_t * p_status);
+
+/* Read-only motion feedback copy. Caller cannot mutate the controller. */
+ER motion_feedback_snapshot (motion_feedback_t * p_feedback);
 
 #endif /* MOTION_H */
 

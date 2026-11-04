@@ -66,3 +66,9 @@ add_executable(test_line_filter test_line_filter.c ${IR_SRC}/line_filter.c)
 target_include_directories(test_line_filter PRIVATE ${IR_SRC} ${INCLUDE})
 target_compile_options(test_line_filter PRIVATE ${TEST_FLAGS})
 add_test(NAME line_filter_debounce COMMAND test_line_filter)
+
+add_executable(test_motion_feedback test_motion_feedback.c
+    ${MOTION_SRC}/feedback.c)
+target_include_directories(test_motion_feedback PRIVATE ${INCLUDE} ${MOTION_SRC})
+target_compile_options(test_motion_feedback PRIVATE ${TEST_FLAGS})
+add_test(NAME motion_feedback COMMAND test_motion_feedback)

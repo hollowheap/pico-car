@@ -17,6 +17,7 @@
 static T_SPLOCK                service_lock;
 static motion_config_t configuration;
 static motion_status_t published;
+static motion_feedback_t published_feedback;
 static command_slot_t          inbox;
 static uint32_t                next_id;
 static ID                      commander;
@@ -96,6 +97,31 @@ static void stop_isr (const isr_gpio_event_t * p_event, void * p_user)
     (void)ISpinUnlock(&service_lock, saved);
 }
 
+static void publish_feedback (void)
+{
+    if (controller.status.sample_available)
+    {
+        const odometry_sample_t * p_sample = &controller.status.sample;
+        published_feedback.left_speed_um_s     = p_sample->wheel[0].velocity_um_s;
+        published_feedback.right_speed_um_s    = p_sample->wheel[1].velocity_um_s;
+        published_feedback.left_displacement_um =
+            p_sample->wheel[0].displacement_um;
+        published_feedback.right_displacement_um =
+            p_sample->wheel[1].displacement_um;
+        published_feedback.timestamp_us        = p_sample->timestamp_us;
+        published_feedback.speed_valid         =
+            p_sample->wheel[0].speed_valid && p_sample->wheel[1].speed_valid;
+        published_feedback.odometry_valid      =
+            p_sample->wheel[0].odometry_valid &&
+            p_sample->wheel[1].odometry_valid;
+    }
+    else
+    {
+        published_feedback.speed_valid    = false;
+        published_feedback.odometry_valid = false;
+    }
+}
+
 static void owner_task (INT start_code, void * p_extra)
 {
     controller_output_t output = {NULL, apply_output, brake_output};
@@ -153,6 +179,7 @@ static void owner_task (INT start_code, void * p_extra)
         controller_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL, true);
     }
     (void)ISpinLock(&service_lock, &saved);
+    publish_feedback();
     if (controller.status.state == MOTION_STOPPED)
     {
         command_slot_stop(&inbox);
@@ -197,6 +224,7 @@ static void owner_task (INT start_code, void * p_extra)
                                 stop);
         }
         (void)ISpinLock(&service_lock, &saved);
+        publish_feedback();
         if (controller.status.state == MOTION_STOPPED)
         {
             command_slot_stop(&inbox);
@@ -449,5 +477,24 @@ ER motion_status (motion_status_t * p_status)
     (void)ISpinLock(&service_lock, &saved);
     *p_status = published;
     (void)ISpinUnlock(&service_lock, saved);
+    return E_OK;
+}
+
+ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
+{
+    UINT saved;
+
+    if (p_feedback == NULL)
+    {
+        return E_PAR;
+    }
+    if (!start_called)
+    {
+        return E_OBJ;
+    }
+    (void)ISpinLock(&service_lock, &saved);
+    *p_feedback = published_feedback;
+    (void)ISpinUnlock(&service_lock, saved);
+    motion_feedback_evaluate(p_feedback, in_w(TIMER_RAW_LOW));
     return E_OK;
 }
