@@ -205,6 +205,7 @@ target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
 # Compile the executable
 add_library(platform STATIC
+    src/platform/faults.c
     src/platform/isr_dispatcher.c
 )
 target_include_directories(platform PUBLIC include)
