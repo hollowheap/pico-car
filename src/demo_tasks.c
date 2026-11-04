@@ -13,8 +13,11 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
+#include <bsp/libbsp.h>
 #include "usb_console_compat.h"
 #include "demo_tasks.h"
+
+#define LIVENESS_PIN 7
 
 /*
  * Blink task: liveness independent of the console, and -- since USB does not
@@ -39,19 +42,19 @@ LOCAL void blink_code (INT n)
 
     for (i = 0; i < n / 5; i++)
     { /* long flash = 5 */
-        gpio_set_val(BOARD_LED_PIN, 1);
+        gpio_set_val(LIVENESS_PIN, 1);
         tk_dly_tsk(600);
-        gpio_set_val(BOARD_LED_PIN, 0);
+        gpio_set_val(LIVENESS_PIN, 0);
         tk_dly_tsk(300);
     }
     for (i = 0; i < n % 5; i++)
     { /* short flash = 1 */
-        gpio_set_val(BOARD_LED_PIN, 1);
+        gpio_set_val(LIVENESS_PIN, 1);
         tk_dly_tsk(150);
-        gpio_set_val(BOARD_LED_PIN, 0);
+        gpio_set_val(LIVENESS_PIN, 0);
         tk_dly_tsk(250);
     }
-    gpio_set_val(BOARD_LED_PIN, 0);
+    gpio_set_val(LIVENESS_PIN, 0);
     tk_dly_tsk(2000);
 }
 
@@ -62,6 +65,7 @@ EXPORT void blink_task (INT stacd, void * exinf)
     (void)stacd;
     (void)exinf;
 
+    gpio_set_pin(LIVENESS_PIN, GPIO_MODE_OUT);
 #if BOARD_DIAG_GPIO_SCAN
     knl_diag_pulse(8); /* CP8: the blink task is being scheduled */
 #endif
@@ -73,9 +77,9 @@ EXPORT void blink_task (INT stacd, void * exinf)
         {
             /* Fully up: plain 2 Hz liveness, so a console stall or a
                blocked kernel is visible at a glance. */
-            gpio_set_val(BOARD_LED_PIN, 1);
+            gpio_set_val(LIVENESS_PIN, 1);
             tk_dly_tsk(250);
-            gpio_set_val(BOARD_LED_PIN, 0);
+            gpio_set_val(LIVENESS_PIN, 0);
             tk_dly_tsk(250);
         }
         else

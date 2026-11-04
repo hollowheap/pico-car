@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.12)
 set(ENV{PICO_SDK_PATH} "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk")
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 
-project(pico-blink C CXX ASM)
+project(pico-car C CXX ASM)
 
 # mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
 set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")
@@ -16,8 +16,8 @@ endif()
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Barr standard enforces C99
-set(CMAKE_C_STANDARD 99)
+# C11 is the repository standard.
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
@@ -203,37 +203,96 @@ target_sources(mtk3smp PRIVATE
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
-# Compile the example into an executable
+# Compile the executable
+add_library(platform STATIC
+    src/platform/faults.c
+    src/platform/isr_dispatcher.c
+    src/platform/isr_select.c
+)
+target_include_directories(platform PUBLIC include)
+target_link_libraries(platform PUBLIC mtk3smp)
+
+add_library(motion_core STATIC
+    src/motion/controller.c
+    src/motion/pid.c
+    src/motion/odometry.c
+    src/motion/encoder_math.c
+    src/motion/guidance.c
+    src/motion/command_slot.c
+    src/motion/feedback.c
+)
+target_include_directories(motion_core PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/motion)
+target_link_libraries(motion_core PUBLIC mtk3smp)
+
+add_library(motion STATIC
+    src/motion/config.c
+    src/motion/motor_task.c
+    src/motion/pwm.c
+    src/motion/bridge.c
+    src/motion/encoder_capture.c
+    src/motion/quadrature.c
+)
+target_include_directories(motion PUBLIC include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/motion)
+target_link_libraries(motion PUBLIC platform motion_core mtk3smp)
+
+add_library(track STATIC
+    src/track/ir_capture.c
+    src/track/line_recovery.c
+    src/track/line_task.c
+    src/track/line_filter.c
+)
+target_link_libraries(track PUBLIC platform motion mtk3smp)
+
+add_library(navigation STATIC
+    src/navigation/mission_events.c
+    src/navigation/mission_task.c
+)
+target_include_directories(navigation PUBLIC include)
+target_link_libraries(navigation PUBLIC motion mtk3smp)
+
 add_executable(main
     src/main.c
-    src/demo_tasks.c
+    src/system/startup_task.c
 )
-# Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
-target_link_libraries(main PRIVATE mtk3smp)
-# The kernel supplies its own startup code (vector table, boot stage 2, reset
-# handler) and linker script; the SDK C runtime must not be linked in.
-target_compile_options(main PRIVATE -ffreestanding -ffunction-sections -fdata-sections)
-target_link_options(main PRIVATE
-    -nostartfiles
-    -Wl,--gc-sections
-    # The second-stage bootloader is an unreferenced data symbol in the kernel
-    # archive; without this it is not pulled in and the linker script's
-    # ".boot2 must be 256 bytes" assertion fails.
-    -Wl,--undefined=boot2
-    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
-)
-# Create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(main)
-# Extra compiler flags
-target_compile_options(main PRIVATE
-    -Werror
-    -Wall
-    -Wextra
 
-    -Wparentheses           # 8.6 suspicious assignment
-    -Wfloat-equal           # 5.4b.iv no float equality tests
-    -Wswitch-default        # 8.3b default required
-    -Wimplicit-fallthrough  # 8.3c commented fall-throughs
-    -Wshadow
-    -Wvla
-)
+foreach(app_target IN ITEMS main)
+    # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
+    target_link_libraries(${app_target} PRIVATE
+        platform
+        motion
+        track
+        navigation
+        mtk3smp
+    )
+    # The kernel supplies its own startup code (vector table, boot stage 2, reset
+    # handler) and linker script; the SDK C runtime must not be linked in.
+    target_compile_options(${app_target} PRIVATE
+        -ffreestanding
+        -ffunction-sections
+        -fdata-sections
+    )
+    target_link_options(${app_target} PRIVATE
+        -nostartfiles
+        -Wl,--gc-sections
+        # The second-stage bootloader is an unreferenced data symbol in the kernel
+        # archive; without this it is not pulled in and the linker script's
+        # ".boot2 must be 256 bytes" assertion fails.
+        -Wl,--undefined=boot2
+        -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
+    )
+    # Create map/bin/hex/uf2 file etc.
+    pico_add_extra_outputs(${app_target})
+    # Extra compiler flags
+    target_compile_options(${app_target} PRIVATE
+        -Werror
+        -Wall
+        -Wextra
+
+        -Wparentheses           # 8.6 suspicious assignment
+        -Wfloat-equal           # 5.4b.iv no float equality tests
+        -Wswitch-default        # 8.3b default required
+        -Wimplicit-fallthrough  # 8.3c commented fall-throughs
+        -Wshadow
+        -Wvla
+    )
+endforeach()
