@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.12)
 set(ENV{PICO_SDK_PATH} "${CMAKE_CURRENT_LIST_DIR}/lib/pico-sdk")
 include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 
-project(pico-blink C CXX ASM)
+project(pico-car C CXX ASM)
 
 # mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
 set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")
@@ -203,41 +203,147 @@ target_sources(mtk3smp PRIVATE
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
-# Compile the example into an executable
+# Compile the executable
+add_library(sys STATIC
+    src/sys/gpio_irq.c
+)
+target_link_libraries(sys PUBLIC mtk3smp)
+
+add_library(motion_core STATIC
+    src/motion/motion_control.c
+    src/motion/wheel_pid.c
+    src/motion/motion_sampler.c
+    src/motion/encoder_math.c
+    src/motion/motion_request.c
+    src/motion/motion_inbox.c
+)
+target_link_libraries(motion_core PUBLIC mtk3smp)
+
+add_library(motion_service STATIC
+    src/motion/motion_service.c
+    src/motion/motor_pwm.c
+    src/motion/motor_pair.c
+    src/motion/encoder_capture.c
+    src/motion/encoder_quad.c
+)
+target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
+
+add_library(ir_service STATIC
+    src/ir/ir_capture.c
+)
+target_link_libraries(ir_service PUBLIC sys mtk3smp)
+
 add_executable(main
     src/main.c
     src/demo_tasks.c
 )
-# Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
-target_link_libraries(main PRIVATE mtk3smp)
-# The kernel supplies its own startup code (vector table, boot stage 2, reset
-# handler) and linker script; the SDK C runtime must not be linked in.
-target_compile_options(main PRIVATE -ffreestanding -ffunction-sections -fdata-sections)
-target_link_options(main PRIVATE
-    -nostartfiles
-    -Wl,--gc-sections
-    # The second-stage bootloader is an unreferenced data symbol in the kernel
-    # archive; without this it is not pulled in and the linker script's
-    # ".boot2 must be 256 bytes" assertion fails.
-    -Wl,--undefined=boot2
-    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
-)
-# Create map/bin/hex/uf2 file etc.
-pico_add_extra_outputs(main)
-# Extra compiler flags
-target_compile_options(main PRIVATE
+target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+
+foreach(app_target IN ITEMS main)
+    # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
+    target_link_libraries(${app_target} PRIVATE
+        sys
+        motion_service
+        ir_service
+        mtk3smp
+    )
+    # The kernel supplies its own startup code (vector table, boot stage 2, reset
+    # handler) and linker script; the SDK C runtime must not be linked in.
+    target_compile_options(${app_target} PRIVATE
+        -ffreestanding
+        -ffunction-sections
+        -fdata-sections
+    )
+    target_link_options(${app_target} PRIVATE
+        -nostartfiles
+        -Wl,--gc-sections
+        # The second-stage bootloader is an unreferenced data symbol in the kernel
+        # archive; without this it is not pulled in and the linker script's
+        # ".boot2 must be 256 bytes" assertion fails.
+        -Wl,--undefined=boot2
+        -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
+    )
+    # Create map/bin/hex/uf2 file etc.
+    pico_add_extra_outputs(${app_target})
+    # Extra compiler flags
+    target_compile_options(${app_target} PRIVATE
+        -Werror
+        -Wall
+        -Wextra
+
+        -Wparentheses           # 8.6 suspicious assignment
+        -Wfloat-equal           # 5.4b.iv no float equality tests
+        -Wswitch-default        # 8.3b default required
+        -Wimplicit-fallthrough  # 8.3c commented fall-throughs
+        -Wshadow
+        -Wvla
+    )
+endforeach()
+
+# ---------------------------------------------------------------------------
+# Buddy 5: obstacle detection and avoidance (src/navigation/obstacle)
+#   obstacle        library: sensor, servo, scan, planner, statechart
+#   obstacle_nav    Phase 2 glue used by the line task in main.c, plus
+#                   the Buddy 5 flight recorder (flight_log.c)
+#   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
+#                   Buddy 5 + a pretend Navigation; the motors are never driven.
+# ---------------------------------------------------------------------------
+set(OBSTACLE_WARNINGS
     -Werror
     -Wall
     -Wextra
-
-    -Wparentheses           # 8.6 suspicious assignment
-    -Wfloat-equal           # 5.4b.iv no float equality tests
-    -Wswitch-default        # 8.3b default required
-    -Wimplicit-fallthrough  # 8.3c commented fall-throughs
+    -Wparentheses
+    -Wfloat-equal
+    -Wswitch-default
+    -Wimplicit-fallthrough
     -Wshadow
     -Wvla
 )
 
+add_library(obstacle STATIC
+    src/navigation/obstacle/scan_algo.c
+    src/navigation/obstacle/planner.c
+    src/navigation/obstacle/statechart.c
+    src/navigation/obstacle/comms.c
+    src/navigation/obstacle/scan_hw.c
+    src/navigation/obstacle/scan_task.c
+    src/navigation/obstacle/obstacle.c
+)
+target_include_directories(obstacle PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle PUBLIC sys mtk3smp)
+target_compile_options(obstacle PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
+
+add_executable(obstacle_bench
+    src/navigation/obstacle/bench_main.c
+)
+target_include_directories(obstacle_bench PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle_bench PRIVATE obstacle sys mtk3smp)
+target_compile_options(obstacle_bench PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
+target_link_options(obstacle_bench PRIVATE
+    -nostartfiles
+    -Wl,--gc-sections
+    -Wl,--undefined=boot2
+    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
+)
+pico_add_extra_outputs(obstacle_bench)
+
+# Phase 2: main.uf2 runs Buddy 5 through the line task (src/main.c).
+add_library(obstacle_nav STATIC
+    src/navigation/obstacle/obstacle_nav.c
+    src/navigation/obstacle/flight_log.c
+)
+target_include_directories(obstacle_nav PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle_nav PUBLIC obstacle motion_service sys mtk3smp)
+target_compile_options(obstacle_nav PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
+target_link_libraries(main PRIVATE obstacle_nav)
+
 # Buddy 4: IMU, terrain detection, and bring-up targets
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/buddy4.cmake)
 
+target_link_libraries(main PRIVATE buddy4_physics)

@@ -1,6 +1,6 @@
 # Buddy 4 targets for pico-car/CMakeLists.txt. NOT yet added to the team repo.
 #
-# To try it: copy buddy4/src into pico-car/src/buddy4/ and this file into
+# To try it: copy the sources into pico-car/src/physics/ and this file into
 # pico-car/cmake/buddy4.cmake, then add this line at the end of
 # pico-car/CMakeLists.txt:
 #
@@ -12,7 +12,7 @@
 
 # PROJECT_SOURCE_DIR, not CMAKE_CURRENT_LIST_DIR: inside an included file
 # the latter is this cmake/ directory.
-set(BUDDY4_SRC ${PROJECT_SOURCE_DIR}/src/buddy4)
+set(BUDDY4_SRC ${PROJECT_SOURCE_DIR}/src/physics)
 
 # Portable logic and drivers. Uses <math.h>, so it links libm ("m"):
 # arm-none-eabi-gcc does not add -lm by itself, and the team build does not
@@ -38,10 +38,22 @@ target_compile_options(buddy4_task PRIVATE
     -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal)
 
 # Optional: Buddy 2 motion-service reader. Link this only into an
-# application that also links buddy2_motion_service and starts it.
+# application that also links motion_service and starts it.
 add_library(buddy4_b2_glue STATIC EXCLUDE_FROM_ALL
     ${BUDDY4_SRC}/b4_b2_glue.c)
-target_link_libraries(buddy4_b2_glue PUBLIC buddy4_core buddy2_motion_service)
+target_include_directories(buddy4_b2_glue PRIVATE
+    ${PROJECT_SOURCE_DIR}/src/motion)
+target_link_libraries(buddy4_b2_glue PUBLIC buddy4_core motion_service)
+
+# Public facade: physics_init()/physics_snapshot(). Keeps the packed hump
+# word and the LSM303 driver private.
+add_library(buddy4_physics STATIC
+    ${BUDDY4_SRC}/physics.c)
+target_include_directories(buddy4_physics PRIVATE
+    ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(buddy4_physics PUBLIC buddy4_task buddy4_b2_glue)
+target_compile_options(buddy4_physics PRIVATE
+    -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal)
 
 # Stage 1/2 bring-up and CSV logger. Motors held low; Buddy 2 not started.
 add_executable(buddy4_imu_check EXCLUDE_FROM_ALL

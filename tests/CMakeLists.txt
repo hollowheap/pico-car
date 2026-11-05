@@ -7,7 +7,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 enable_testing()
 
-set(BUDDY4_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/buddy4)
+set(BUDDY4_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/physics)
 
 # test_hump_detect
 add_executable(test_hump_detect test_hump_detect.c ${BUDDY4_SRC}/hump_detect.c)
@@ -42,3 +42,30 @@ target_include_directories(test_drivers PRIVATE ${BUDDY4_SRC})
 target_compile_options(test_drivers PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_drivers PRIVATE m)
 add_test(NAME drivers COMMAND test_drivers)
+
+# Obstacle avoidance pure modules
+set(OBSTACLE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/obstacle)
+
+add_executable(test_obstacle_scan test_obstacle_scan.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_scan PRIVATE ${OBSTACLE_SRC})
+target_compile_options(test_obstacle_scan PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
+
+add_executable(test_obstacle_plan test_obstacle_plan.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC})
+target_compile_options(test_obstacle_plan PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_plan COMMAND test_obstacle_plan)
+
+add_executable(test_obstacle_statechart test_obstacle_statechart.c
+    ${OBSTACLE_SRC}/statechart.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC})
+target_compile_options(test_obstacle_statechart PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)

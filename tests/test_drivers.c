@@ -271,7 +271,7 @@ static void test_reads (void)
 {
     chip_t chip;
     b4_i2c_bus_t bus;
-    lsm303_t dev;
+    lsm303_t dev = {0};
     lsm303_vec_t v;
 
     printf ("burst_reads_and_axis_order\n");

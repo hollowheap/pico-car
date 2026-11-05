@@ -19,7 +19,6 @@
 #include "hump_msg.h"
 #include "lsm303.h"
 
-#define B4_STACK_SIZE      (4096)   /* SMP kernel paths need ~4 KiB.     */
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
 #define SLEEP_TIMEOUT_MS   (200)    /* Wake-up missing for 10 periods.   */
 
@@ -126,7 +125,7 @@ static void log_header (void)
     tm_printf ((UB *)"B4H,mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
 }
 
-static void hump_task (INT stacd, void * p_exinf)
+void b4_task_run (void)
 {
     b4_task_stats_t local = { 0 };
     lsm303_vec_t acc = { 0 };
@@ -134,9 +133,6 @@ static void hump_task (INT stacd, void * p_exinf)
     uint32_t prev_us;
     uint32_t retry_count = 0U;
     uint8_t last_faults = 0xFFU;
-
-    (void)stacd;
-    (void)p_exinf;
 
     b4_i2c_rp2040_init (&g_bus);
     local.sensor_inits = 1U;
@@ -287,11 +283,10 @@ void b4_task_default_config (b4_task_config_t * p_cfg)
     }
 }
 
-ER b4_task_start (const b4_task_config_t * p_cfg)
+ER b4_task_init (const b4_task_config_t * p_cfg, ID task_id)
 {
     static const b4_task_stats_t zero_stats = { 0 };
     T_CMBF cmbf = { 0 };
-    T_CTSK ctsk = { 0 };
     T_CCYC ccyc = { 0 };
     ID id;
 
@@ -299,8 +294,9 @@ ER b4_task_start (const b4_task_config_t * p_cfg)
     {
         return E_OBJ;
     }
-    if ((NULL == p_cfg) || (p_cfg->period_ms < 1U) || (p_cfg->mag_every < 1U)
-        || ((TP_PRC1 != p_cfg->processor) && (TP_PRC2 != p_cfg->processor)))
+    if ((NULL == p_cfg) || (task_id <= 0) || (p_cfg->period_ms < 1U) ||
+        (p_cfg->mag_every < 1U) ||
+        ((TP_PRC1 != p_cfg->processor) && (TP_PRC2 != p_cfg->processor)))
     {
         return E_PAR;
     }
@@ -330,23 +326,7 @@ ER b4_task_start (const b4_task_config_t * p_cfg)
         return (ER)id;
     }
     g_telem_mbf = id;
-
-    ctsk.task = (FP)hump_task;
-    ctsk.itskpri = p_cfg->priority;
-    ctsk.stksz = B4_STACK_SIZE;
-    ctsk.tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC;
-    ctsk.assprc = p_cfg->processor;
-    id = tk_cre_tsk (&ctsk);
-    if (id < E_OK)
-    {
-        return (ER)id;
-    }
-    g_task_id = id;
-    id = tk_sta_tsk (g_task_id, 0);
-    if (id < E_OK)
-    {
-        return (ER)id;
-    }
+    g_task_id   = task_id;
 
     ccyc.cycatr = TA_HLNG | TA_STA;
     ccyc.cychdr = (FP)cyclic_wakeup;

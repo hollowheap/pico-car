@@ -67,9 +67,14 @@ typedef struct
 
 void b4_task_default_config (b4_task_config_t * p_cfg);
 
-/* Create the message buffers, task and cyclic handler. Call once from a
- * task. Returns E_OK or the first kernel error. */
-ER b4_task_start (const b4_task_config_t * p_cfg);
+/* Create the message buffers and the cyclic handler. The composition root
+ * creates the task named by task_id and calls b4_task_run() from it. The
+ * cyclic handler needs the task id, so create the task first. Returns E_OK
+ * or the first kernel error. */
+ER b4_task_init (const b4_task_config_t * p_cfg, ID task_id);
+
+/* Task body. Never returns. */
+void b4_task_run (void);
 
 /* Message buffer IDs for receivers (4-byte messages). Valid after start. */
 ID b4_task_nav_mbf (void);

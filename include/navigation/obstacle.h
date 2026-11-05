@@ -1,0 +1,90 @@
+/** @file obstacle.h
+ *
+ * @brief Buddy 5 public facade.
+ *
+ * This is the only Buddy 5 header another subsystem may include. The
+ * packed status word, the echo flags, the scan profile layout and the
+ * statechart are private to src/navigation/obstacle/.
+ *
+ * Start-up order (on processor 1, which is RP2040 core 0):
+ *   1. gpio_irq_init()            shared dispatcher
+ *   2. motion_service_init()      by the composition root
+ *   3. obstacle_line_init()       pins, servo, ISR, task, RESET and START
+ *
+ * The line follower then calls obstacle_line_step() every pass. Telemetry
+ * reads obstacle_snapshot() whenever it needs the latest state; it does
+ * not read the packed word.
+ */
+
+#ifndef NAVIGATION_OBSTACLE_H
+#define NAVIGATION_OBSTACLE_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <tk/tkernel.h>
+
+/* Emergency stop supplied by the motion subsystem. */
+typedef ER (*obstacle_stop_fn_t)(void);
+
+/* Distance travelled supplied by the motion subsystem, in mm. */
+typedef ER (*obstacle_distance_fn_t)(uint32_t * p_distance_mm);
+
+/* Links handed to Buddy 5 at start-up. Any member may be 0 or NULL.
+ * h_nav_mbf 0 means "use Buddy 5's own 4-slot outbox". */
+typedef struct
+{
+    ID                     h_nav_mbf;
+    obstacle_stop_fn_t     p_stop;
+    obstacle_distance_fn_t p_get_distance_mm;
+} obstacle_links_t;
+
+/* Latest state in engineering units. The numeric codes match the wire
+ * schema owned by protocol/ and the dashboard decoder; this header does
+ * not fix their values. */
+typedef struct
+{
+    bool     ready;         /* Task is running.                         */
+    uint8_t  state;         /* STOPPED, MONITOR, WAIT_STOP, ...         */
+    uint8_t  cause;         /* Why the statechart is stopped, else 0.   */
+    uint8_t  faults;        /* Latched OBSTACLE_FAULT_* bits.           */
+    uint8_t  echo_class;    /* Latest echo: VALID, OPEN, UNKNOWN, ...   */
+    uint16_t distance_mm;   /* Latest VALID echo, mm.                   */
+    uint8_t  req_id;        /* Current request id.                      */
+    uint8_t  seq;           /* Ping sequence, wraps at 64.              */
+    uint8_t  dropped_events;/* Events lost to a full queue.             */
+} obstacle_status_t;
+
+/* Start Buddy 5. Call once from the line task, after gpio_irq_init() and
+ * motion_service_init(). Uses the default links: motion-service stop and
+ * odometer, Buddy 5 outbox. The composition root creates the task and
+ * calls obstacle_run() from it. */
+ER obstacle_line_init (void);
+
+/* Task body. Never returns. */
+void obstacle_run (void);
+
+/* One handshake pass. Call every line-task loop. Returns true when Buddy 5
+ * owns the motors this pass, so the line follower must send no speed. */
+bool obstacle_line_step (bool b_line_left, bool b_line_right);
+
+/* Lower-level API used when the caller needs its own links. */
+ER obstacle_init (obstacle_links_t const * p_links);
+ER obstacle_post_cmd (uint8_t cmd);
+ER obstacle_get_event (uint32_t * p_evt, TMO tmout);
+
+/* Copy the latest status. Returns E_OBJ before obstacle_init(). */
+ER obstacle_snapshot (obstacle_status_t * p_status);
+
+uint8_t obstacle_get_faults (void);
+
+/* Copy of the scan profile: OBSTACLE_SLOT_COUNT packed slots. Never waits.
+ * Returns E_BUSY if Buddy 5 was writing it, E_OBJ before init. */
+ER obstacle_copy_profile (uint16_t * p_profile);
+
+/* Event flag for NAV_EVT and NAV_STEER waits. E_OBJ before init. */
+ID obstacle_flag_id (void);
+
+#endif /* NAVIGATION_OBSTACLE_H */
+
+/*** end of file ***/

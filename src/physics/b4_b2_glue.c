@@ -3,7 +3,7 @@
  * @brief Read Buddy 2's motion service into b4_b2_reading_t (target only).
  *
  * Link with buddy2_motion_service. Pass b4_read_b2_motion_service as
- * b4_task_config_t.read_b2 once motion_service_start() has been called.
+ * b4_task_config_t.read_b2 once motion_service_init() has been called.
  */
 
 /* motion_service.h brings in the kernel headers, which define NULL and

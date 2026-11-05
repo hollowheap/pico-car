@@ -40,10 +40,26 @@ static void hold_motors (void)
     }
 }
 
+LOCAL void check_task (INT stacd, void * exinf)
+{
+    (void)stacd;
+    (void)exinf;
+    b4_task_run();
+}
+
 EXPORT INT usermain (void)
 {
     b4_task_config_t cfg;
     b4_task_stats_t stats;
+    T_CTSK ctsk = {
+        .exinf   = NULL,
+        .itskpri = 4,
+        .stksz   = 4096U,
+        .task    = check_task,
+        .tskatr  = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+        .assprc  = TP_PRC1,
+    };
+    ID tid;
     ER er;
 
     hold_motors ();
@@ -51,11 +67,29 @@ EXPORT INT usermain (void)
     b4_task_default_config (&cfg);
     cfg.log_every = 1U;
     cfg.read_b2 = NULL;
+    ctsk.itskpri = cfg.priority;
+    ctsk.assprc = cfg.processor;
 
-    er = b4_task_start (&cfg);
-    tm_printf ((UB *)"B4H,b4_task_start=%d\n", (int)er);
+    tid = tk_cre_tsk (&ctsk);
+    if (tid <= E_OK)
+    {
+        tm_printf ((UB *)"B4H,tk_cre_tsk=%d\n", (int)tid);
+        (void)tk_slp_tsk (TMO_FEVR);
+        return 1;
+    }
+
+    er = b4_task_init (&cfg, tid);
+    tm_printf ((UB *)"B4H,b4_task_init=%d\n", (int)er);
     if (E_OK != er)
     {
+        (void)tk_slp_tsk (TMO_FEVR);
+        return 1;
+    }
+
+    er = tk_sta_tsk (tid, 0);
+    if (E_OK != er)
+    {
+        tm_printf ((UB *)"B4H,tk_sta_tsk=%d\n", (int)er);
         (void)tk_slp_tsk (TMO_FEVR);
         return 1;
     }
