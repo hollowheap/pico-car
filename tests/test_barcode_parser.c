@@ -40,6 +40,12 @@ static void put_space (barcode_parser_t * parser)
     assert(BARCODE_NO_CHAR == barcode_parser_input(parser, true, NARROW_UM));
 }
 
+static void assert_parser_reset (const barcode_parser_t * parser)
+{
+    assert(parser->elem_index == 0);
+    assert(parser->char_index == 0);
+}
+
 int main (void)
 {
     // Forwards
@@ -49,6 +55,14 @@ int main (void)
     assert(BARCODE_NO_CHAR == put_char(&parser, 5, 0, 8)); // A
     put_space(&parser);
     assert(char_to_data('A') == put_char(&parser, 1, 4, 6)); // *
+
+    // Forwards
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); // *
+    put_space(&parser);
+    assert(BARCODE_NO_CHAR == put_char(&parser, 7, 2, 8)); // L
+    put_space(&parser);
+    assert(char_to_data('L') == put_char(&parser, 1, 4, 6)); // *
 
     // Forwards
     parser = BARCODE_PARSER_INIT;
@@ -70,9 +84,44 @@ int main (void)
     parser = BARCODE_PARSER_INIT;
     assert(BARCODE_NO_CHAR == put_char(&parser, 7, 2, 4)); // *
     put_space(&parser);
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 0, 6)); // L
+    put_space(&parser);
+    assert(char_to_data('L') == put_char(&parser, 7, 2, 4)); // *
+
+    // Reversed
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 7, 2, 4)); // *
+    put_space(&parser);
     assert(BARCODE_NO_CHAR == put_char(&parser, 7, 4, 6)); // Z
     put_space(&parser);
     assert(char_to_data('Z') == put_char(&parser, 7, 2, 4)); // *
+
+    // Forwards
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); // *
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, WIDE_UM));
+    assert_parser_reset(&parser);
+
+    // Forwards
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); // *
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, NARROW_UM));
+    assert_parser_reset(&parser);
+
+    // Forwards
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); // *
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 1));
+    assert_parser_reset(&parser);
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, 65000));
+    assert_parser_reset(&parser);
+    // Reversed
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 7, 2, 4)); // *
+    put_space(&parser);
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 0, 6)); // L
+    put_space(&parser);
+    assert(char_to_data('L') == put_char(&parser, 7, 2, 4)); // *
 
     return 0;
 }
