@@ -49,13 +49,23 @@ target_compile_options(buddy4_b2_glue PRIVATE
 add_executable(buddy4_imu_check EXCLUDE_FROM_ALL
     ${BUDDY4_SRC}/buddy4_imu_check.c)
 target_link_libraries(buddy4_imu_check PRIVATE buddy4_task mtk3smp)
-target_compile_options(buddy4_imu_check PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections
-    -Werror -Wall -Wextra -Wparentheses -Wfloat-equal -Wswitch-default
-    -Wimplicit-fallthrough -Wshadow -Wvla)
-target_link_options(buddy4_imu_check PRIVATE
-    -nostartfiles
-    -Wl,--gc-sections
-    -Wl,--undefined=boot2
-    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld")
-pico_add_extra_outputs(buddy4_imu_check)
+
+# Powered S6 run: motion task drives the car straight, Buddy 4 logs with
+# real wheel feedback and require_motion on.
+add_executable(buddy4_drive_check EXCLUDE_FROM_ALL
+    ${BUDDY4_SRC}/buddy4_drive_check.c)
+target_link_libraries(buddy4_drive_check PRIVATE
+    buddy4_task buddy4_b2_glue motion platform mtk3smp)
+
+foreach(b4_app IN ITEMS buddy4_imu_check buddy4_drive_check)
+    target_compile_options(${b4_app} PRIVATE
+        -ffreestanding -ffunction-sections -fdata-sections
+        -Werror -Wall -Wextra -Wparentheses -Wfloat-equal -Wswitch-default
+        -Wimplicit-fallthrough -Wshadow -Wvla)
+    target_link_options(${b4_app} PRIVATE
+        -nostartfiles
+        -Wl,--gc-sections
+        -Wl,--undefined=boot2
+        -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld")
+    pico_add_extra_outputs(${b4_app})
+endforeach()
