@@ -56,6 +56,20 @@ static void stats_update (const b4_task_stats_t * p_local)
     (void)ISpinUnlock (&g_stats_lock, saved);
 }
 
+/* p_total = p_base + p_now, field by field. lsm303_init zeroes the device
+ * counters, so the task adds them to a base before each re-init. */
+static void i2c_stats_sum (const lsm303_stats_t * p_base,
+                           const lsm303_stats_t * p_now,
+                           lsm303_stats_t * p_total)
+{
+    p_total->transactions = p_base->transactions + p_now->transactions;
+    p_total->retries = p_base->retries + p_now->retries;
+    p_total->nacks = p_base->nacks + p_now->nacks;
+    p_total->timeouts = p_base->timeouts + p_now->timeouts;
+    p_total->errors = p_base->errors + p_now->errors;
+    p_total->failures = p_base->failures + p_now->failures;
+}
+
 static void send (ID mbf, b4_packed_hump_t word, uint32_t * p_sent,
                   uint32_t * p_dropped)
 {
@@ -129,6 +143,7 @@ static void log_header (void)
 static void hump_task (INT stacd, void * p_exinf)
 {
     b4_task_stats_t local = { 0 };
+    lsm303_stats_t i2c_base = { 0 };
     lsm303_vec_t acc = { 0 };
     lsm303_vec_t mag = { 0 };
     uint32_t prev_us;
@@ -197,13 +212,19 @@ static void hump_task (INT stacd, void * p_exinf)
             b4_pipeline_new_run (&g_pipe);
         }
 
-        /* Bring the sensor up if it was missing or failed to configure. */
+        /* Bring the sensor up if it was missing, failed to configure, or was
+         * lost (lsm303 clears ready after LSM303_LOST_AFTER bad reads, e.g.
+         * a re-powered chip reading all zero). */
         if (!g_imu.ready)
         {
             retry_count++;
             if (retry_count >= INIT_RETRY_CYCLES)
             {
+                lsm303_stats_t total;
+
                 retry_count = 0U;
+                i2c_stats_sum (&i2c_base, &g_imu.stats, &total);
+                i2c_base = total;
                 local.sensor_inits++;
                 local.last_init = lsm303_init (&g_imu, &g_bus,
                                                g_cfg.i2c_attempts);
@@ -259,7 +280,7 @@ static void hump_task (INT stacd, void * p_exinf)
             local.max_work_us = work_us;
         }
         local.cycles++;
-        local.i2c = g_imu.stats;
+        i2c_stats_sum (&i2c_base, &g_imu.stats, &local.i2c);
         local.last_word = step.word;
         stats_update (&local);
     }

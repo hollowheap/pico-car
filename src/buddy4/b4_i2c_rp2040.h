@@ -29,6 +29,13 @@ void b4_i2c_rp2040_init (b4_i2c_bus_t * p_bus);
 /* Microsecond timestamp from the RP2040 timer (wraps every 71.6 min). */
 uint32_t b4_time_us (void);
 
+/* Make the RP2040 timer count at 1 MHz: set the watchdog tick generator to
+ * clk_ref / 12. The kernel leaves it at its reset value, which gives
+ * 23.4 kHz after a cold boot. Does nothing if already set. Called by
+ * b4_i2c_rp2040_init(); call it earlier from usermain() if another task
+ * uses the timer before the Hump task starts. Affects every TIMER user. */
+void b4_timer_tick_init (void);
+
 #endif /* B4_I2C_RP2040_H */
 
 /*** end of file ***/

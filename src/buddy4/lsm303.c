@@ -113,6 +113,24 @@ static bool read_regs (lsm303_t * p_dev, uint8_t addr7, uint8_t reg,
     return transfer (p_dev, addr7, &reg, 1U, p_buf, len);
 }
 
+/* Track bad reads in a row; clear ready when the sensor looks lost. */
+static void note_read (lsm303_t * p_dev, bool good)
+{
+    if (good)
+    {
+        p_dev->bad_reads = 0U;
+    }
+    else
+    {
+        p_dev->bad_reads++;
+        if (p_dev->bad_reads >= LSM303_LOST_AFTER)
+        {
+            p_dev->bad_reads = 0U;
+            p_dev->ready = false;
+        }
+    }
+}
+
 lsm303_result_t lsm303_init (lsm303_t * p_dev, const b4_i2c_bus_t * p_bus,
                              uint8_t max_attempts)
 {
@@ -137,6 +155,7 @@ lsm303_result_t lsm303_init (lsm303_t * p_dev, const b4_i2c_bus_t * p_bus,
     p_dev->max_attempts = max_attempts;
     p_dev->ready = false;
     p_dev->fault = false;
+    p_dev->bad_reads = 0U;
     p_dev->stats.transactions = 0U;
     p_dev->stats.retries = 0U;
     p_dev->stats.nacks = 0U;
@@ -212,6 +231,7 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
     if (!read_regs (p_dev, LSM303_ACC_ADDR,
                     (uint8_t)(LSM303_OUT_X_L_A | LSM303_AUTO_INC_A), buf, 6U))
     {
+        note_read (p_dev, false);
         return LSM303_BUS_FAULT;
     }
 
@@ -223,6 +243,13 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
         p_out->value[axis] = (float)p_out->raw[axis] * ACC_MG_PER_LSB;
     }
 
+    if ((0 == p_out->raw[0]) && (0 == p_out->raw[1]) && (0 == p_out->raw[2]))
+    {
+        note_read (p_dev, false);
+        return LSM303_NO_DATA;
+    }
+
+    note_read (p_dev, true);
     return LSM303_OK;
 }
 
@@ -236,6 +263,7 @@ lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out)
     }
     if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_OUT_X_H_M, buf, 6U))
     {
+        note_read (p_dev, false);
         return LSM303_BUS_FAULT;
     }
 

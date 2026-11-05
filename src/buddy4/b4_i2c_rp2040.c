@@ -91,6 +91,16 @@
 
 #define TIMER_RAWL          (TIMER_ADDR + 0x28UL)
 
+/* Watchdog tick generator: clocks the 1 MHz TIMER from clk_ref. The kernel
+ * never sets it, so after a cold boot CYCLES is 0 (counts as 512) and the
+ * timer runs at 12 MHz / 512 = 23.4 kHz (car day S5-S10: 469 counts per
+ * 20 ms cycle). Datasheet 4.7.2: CYCLES = clk_ref in MHz. */
+#define WATCHDOG_TICK       (0x4005802CUL)
+#define TICK_ENABLE         (1UL << 9U)
+#define TICK_RUNNING        (1UL << 10U)
+#define TICK_CYCLES_MASK    (0x1FFUL)
+#define TICK_CYCLES_12MHZ   (12UL)      /* clk_ref = XOSC 12 MHz (cpu_clock.c). */
+
 #define SDA_MASK            (1UL << B4_I2C_SDA_PIN)
 #define SCL_MASK            (1UL << B4_I2C_SCL_PIN)
 #define RECOVER_HALF_US     (5U)        /* 100 kHz bit-banged clock.   */
@@ -99,6 +109,23 @@
 uint32_t b4_time_us (void)
 {
     return in_w (TIMER_RAWL);
+}
+
+void b4_timer_tick_init (void)
+{
+    uint32_t tick = in_w (WATCHDOG_TICK);
+
+    if (((tick & TICK_CYCLES_MASK) != TICK_CYCLES_12MHZ)
+        || ((tick & TICK_ENABLE) == 0UL))
+    {
+        /* Stop the generator before changing CYCLES, then restart it. */
+        out_w (WATCHDOG_TICK, 0UL);
+        while ((in_w (WATCHDOG_TICK) & TICK_RUNNING) != 0UL)
+        {
+            /* Wait for the tick generator to stop. */
+        }
+        out_w (WATCHDOG_TICK, TICK_ENABLE | TICK_CYCLES_12MHZ);
+    }
 }
 
 static bool expired (uint32_t start_us, uint32_t limit_us)
@@ -326,6 +353,8 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
 void b4_i2c_rp2040_init (b4_i2c_bus_t * p_bus)
 {
     uint32_t pad = PAD_IE | PAD_DRIVE_4MA | PAD_PUE | PAD_SCHMITT;
+
+    b4_timer_tick_init ();   /* Timeouts and dt_s need a 1 MHz timer. */
 
     out_w (B4_RESETS_RESET + B4_ALIAS_SET, B4_RESET_I2C1);
     out_w (B4_RESETS_RESET + B4_ALIAS_CLR, B4_RESET_I2C1);

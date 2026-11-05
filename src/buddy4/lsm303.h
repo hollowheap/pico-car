@@ -23,6 +23,13 @@
  * Every transaction is retried up to max_attempts times. A bus that times
  * out is given a recovery (9 clocks + STOP) before the retry. A transaction
  * that fails every attempt latches the fault flag; reading continues.
+ *
+ * Lost sensor: an accelerometer read of exactly (0, 0, 0) is rejected with
+ * LSM303_NO_DATA, because gravity makes it impossible on a working part; it
+ * is what a re-powered LSM303 returns before its registers are reloaded
+ * (car day S9). After LSM303_LOST_AFTER bad reads in a row (bus failure or
+ * no data, accelerometer or magnetometer) ready is cleared, so the caller
+ * runs lsm303_init again.
  */
 
 #ifndef LSM303_H
@@ -50,6 +57,9 @@
 #define LSM303_CRB_REG_M_VAL   (0x20U)
 #define LSM303_MR_REG_M_VAL    (0x00U)
 
+/* Bad reads in a row before the sensor counts as lost (100 ms at 50 Hz). */
+#define LSM303_LOST_AFTER      (5U)
+
 typedef enum
 {
     B4_BUS_OK = 0,
@@ -75,7 +85,8 @@ typedef enum
     LSM303_BAD_ARG,
     LSM303_BUS_FAULT,            /* Every attempt failed; fault latched.   */
     LSM303_BAD_ID,               /* Magnetometer identity is not 'H43'.    */
-    LSM303_CONFIG_MISMATCH       /* Read-back differs from what was set.   */
+    LSM303_CONFIG_MISMATCH,      /* Read-back differs from what was set.   */
+    LSM303_NO_DATA               /* Accelerometer read all zero.           */
 } lsm303_result_t;
 
 typedef struct
@@ -92,8 +103,9 @@ typedef struct
 {
     b4_i2c_bus_t   bus;
     uint8_t        max_attempts;
-    bool           ready;        /* init succeeded.                        */
+    bool           ready;        /* init succeeded and sensor not lost.    */
     bool           fault;        /* Latched; see lsm303_clear_fault.       */
+    uint8_t        bad_reads;    /* Bad reads in a row.                    */
     lsm303_stats_t stats;
 } lsm303_t;
 
@@ -109,7 +121,8 @@ typedef struct
 lsm303_result_t lsm303_init (lsm303_t * p_dev, const b4_i2c_bus_t * p_bus,
                              uint8_t max_attempts);
 
-/* One 6-byte burst read. Requires a successful init. */
+/* One 6-byte burst read. Requires a successful init. A failed read or an
+ * all-zero accelerometer read counts toward LSM303_LOST_AFTER. */
 lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out);
 lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out);
 
