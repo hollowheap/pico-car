@@ -243,6 +243,11 @@ add_library(track STATIC
 )
 target_link_libraries(track PUBLIC platform motion mtk3smp)
 
+add_library(barcode STATIC
+    src/barcode/parser.c
+)
+target_include_directories(barcode PUBLIC include)
+
 add_library(navigation STATIC
     src/navigation/mission_events.c
     src/navigation/mission_task.c
@@ -261,6 +266,7 @@ foreach(app_target IN ITEMS main)
         platform
         motion
         track
+        barcode
         navigation
         mtk3smp
     )

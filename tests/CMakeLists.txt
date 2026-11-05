@@ -99,3 +99,9 @@ target_include_directories(test_isr_select PRIVATE ${INCLUDE}
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_options(test_isr_select PRIVATE ${TEST_FLAGS})
 add_test(NAME isr_select COMMAND test_isr_select)
+
+add_executable(test_barcode_parser test_barcode_parser.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
+target_include_directories(test_barcode_parser PRIVATE ${INCLUDE})
+target_compile_options(test_barcode_parser PRIVATE ${TEST_FLAGS})
+add_test(NAME barcode_parser COMMAND test_barcode_parser)
