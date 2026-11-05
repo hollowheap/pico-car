@@ -72,31 +72,31 @@ static float pitch_from_axes (const hump_config_t * p_cfg, const float axes[3])
     return atan2f (fwd, sqrtf (other_sq)) * RAD_TO_DEG;
 }
 
-/* Push a raw pitch into the median window and return the median of the
- * samples held. Before the window is full, the median of what is held is
+/* Push a value into a median window of len samples and return the median of
+ * the samples held. Before the window is full, the median of what is held is
  * used (upper middle value for an even count). */
-static float median_push (hump_ctx_t * p_ctx, float raw_deg)
+static float median_push (hump_median_t * p_med, uint8_t len, float value)
 {
     float sorted[HUMP_MEDIAN_MAX];
     uint8_t n;
     uint8_t i;
     uint8_t j;
 
-    p_ctx->median_buf[p_ctx->median_next] = raw_deg;
-    p_ctx->median_next++;
-    if (p_ctx->median_next >= p_ctx->cfg.median_len)
+    p_med->buf[p_med->next] = value;
+    p_med->next++;
+    if (p_med->next >= len)
     {
-        p_ctx->median_next = 0U;
+        p_med->next = 0U;
     }
-    if (p_ctx->median_count < p_ctx->cfg.median_len)
+    if (p_med->count < len)
     {
-        p_ctx->median_count++;
+        p_med->count++;
     }
 
-    n = p_ctx->median_count;
+    n = p_med->count;
     for (i = 0U; i < n; i++)
     {
-        sorted[i] = p_ctx->median_buf[i];
+        sorted[i] = p_med->buf[i];
     }
 
     /* Insertion sort: at most 5 values. */
@@ -116,6 +116,73 @@ static float median_push (hump_ctx_t * p_ctx, float raw_deg)
     return sorted[n / 2U];
 }
 
+static float vec_norm (const float v[3])
+{
+    return sqrtf ((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2]));
+}
+
+/* Angle between axes and the rest direction g0_unit, in degrees, 0..180.
+ * atan2 of |cross| and dot stays accurate at small angles. */
+static float tilt_from_axes (const hump_ctx_t * p_ctx, const float axes[3])
+{
+    const float * g0 = p_ctx->g0_unit;
+    float cross[3];
+
+    cross[0] = (axes[1] * g0[2]) - (axes[2] * g0[1]);
+    cross[1] = (axes[2] * g0[0]) - (axes[0] * g0[2]);
+    cross[2] = (axes[0] * g0[1]) - (axes[1] * g0[0]);
+
+    return atan2f (vec_norm (cross),
+                   (axes[0] * g0[0]) + (axes[1] * g0[1]) + (axes[2] * g0[2]))
+           * RAD_TO_DEG;
+}
+
+/* Median then EMA, seeded by the first value. */
+static float filter_step (hump_median_t * p_med, bool * p_have, float * p_filt,
+                          const hump_config_t * p_cfg, float raw)
+{
+    float med = median_push (p_med, p_cfg->median_len, raw);
+
+    if (*p_have)
+    {
+        *p_filt += p_cfg->alpha * (med - *p_filt);
+    }
+    else
+    {
+        *p_filt = med;
+        *p_have = true;
+    }
+
+    return *p_filt;
+}
+
+/* Moving average of the last tilt_avg_len EMA tilts. Summed fresh each call
+ * (at most 16 adds), so no running-sum float error builds up. */
+static float tilt_avg_push (hump_ctx_t * p_ctx, float value)
+{
+    uint8_t len = p_ctx->cfg.tilt_avg_len;
+    float sum = 0.0f;
+    uint8_t i;
+
+    p_ctx->tilt_avg_buf[p_ctx->tilt_avg_next] = value;
+    p_ctx->tilt_avg_next++;
+    if (p_ctx->tilt_avg_count < len)
+    {
+        p_ctx->tilt_avg_count++;
+    }
+    if (p_ctx->tilt_avg_next >= len)
+    {
+        p_ctx->tilt_avg_next = 0U;
+    }
+
+    for (i = 0U; i < p_ctx->tilt_avg_count; i++)
+    {
+        sum += p_ctx->tilt_avg_buf[i];
+    }
+
+    return sum / (float)p_ctx->tilt_avg_count;
+}
+
 static void reset_hump (hump_ctx_t * p_ctx)
 {
     p_ctx->state = HUMP_STATE_FLAT;
@@ -129,6 +196,8 @@ static void reset_hump (hump_ctx_t * p_ctx)
     p_ctx->height_m = 0.0f;
     p_ctx->peak_m = 0.0f;
     p_ctx->peak_pitch_deg = 0.0f;
+    p_ctx->pending_peak_tilt_deg = 0.0f;
+    p_ctx->peak_tilt_deg = 0.0f;
     p_ctx->height_valid = true;
 }
 
@@ -192,6 +261,18 @@ static bool cal_add (hump_ctx_t * p_ctx, const float axes[3], float raw_deg,
             /* theta_0 from the mean vector, which averages out noise better
              * than the mean of per-sample angles. Scale does not matter. */
             p_ctx->theta0_deg = pitch_from_axes (p_cfg, p_ctx->cal_sum);
+            {
+                float sum_norm = vec_norm (p_ctx->cal_sum);
+                uint8_t axis;
+
+                /* sum_norm > 0: every sample passed the |a| check and they
+                 * point within cal_max_spread_deg of each other. */
+                for (axis = HUMP_AXIS_X; axis <= HUMP_AXIS_Z; axis++)
+                {
+                    p_ctx->g0_unit[axis] = p_ctx->cal_sum[axis] / sum_norm;
+                }
+                p_ctx->rest_mag_g = sum_norm / (float)p_ctx->cal_count;
+            }
             p_ctx->calibrated = true;
             done = true;
         }
@@ -204,6 +285,7 @@ void hump_default_config (hump_config_t * p_cfg)
 {
     if (NULL != p_cfg)
     {
+        p_cfg->mode = HUMP_MODE_PITCH;
         p_cfg->fwd_axis = HUMP_AXIS_X;
         p_cfg->fwd_sign = 1;
         p_cfg->median_len = 5U;
@@ -217,8 +299,17 @@ void hump_default_config (hump_config_t * p_cfg)
         p_cfg->min_speed_mps = 0.08f;
         p_cfg->max_motion_age_s = 0.025f;
         p_cfg->cal_samples = 50U;
-        p_cfg->cal_max_dev_g = 0.05f;
+        /* 0.10 g: this LSM303 reads 1.03-1.06 g at rest (car days 1 and 2),
+         * which is inside its zero-g offset spec. 0.05 g blocked calibration. */
+        p_cfg->cal_max_dev_g = 0.10f;
         p_cfg->cal_max_spread_deg = 2.0f;
+        /* Team car: W = 112 mm, rear axle to caster L = 82 mm, so the right
+         * rear wheel is W*L / sqrt(L^2 + (W/2)^2) = 92.5 mm from the line
+         * through the left wheel and the caster. */
+        p_cfg->lever_m = 0.0925f;
+        p_cfg->tilt_avg_len = 10U;
+        p_cfg->entry_max_dev_g = 0.05f;
+        p_cfg->require_motion = false;
     }
 }
 
@@ -228,7 +319,8 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg)
 
     if (ok)
     {
-        ok = (p_cfg->fwd_axis <= HUMP_AXIS_Z)
+        ok = (p_cfg->mode <= HUMP_MODE_TILT)
+             && (p_cfg->fwd_axis <= HUMP_AXIS_Z)
              && ((1 == p_cfg->fwd_sign) || (-1 == p_cfg->fwd_sign))
              && (p_cfg->median_len >= 1U)
              && (p_cfg->median_len <= HUMP_MEDIAN_MAX)
@@ -249,14 +341,19 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg)
              && is_finite (p_cfg->cal_max_dev_g)
              && (p_cfg->cal_max_dev_g > 0.0f)
              && is_finite (p_cfg->cal_max_spread_deg)
-             && (p_cfg->cal_max_spread_deg > 0.0f);
+             && (p_cfg->cal_max_spread_deg > 0.0f)
+             && is_finite (p_cfg->lever_m) && (p_cfg->lever_m > 0.0f)
+             && (p_cfg->tilt_avg_len >= 1U)
+             && (p_cfg->tilt_avg_len <= HUMP_TILT_AVG_MAX)
+             && is_finite (p_cfg->entry_max_dev_g)
+             && (p_cfg->entry_max_dev_g > 0.0f);
     }
 
     if (ok)
     {
         p_ctx->cfg = *p_cfg;
-        p_ctx->median_count = 0U;
-        p_ctx->median_next = 0U;
+        p_ctx->pitch_med.count = 0U;
+        p_ctx->pitch_med.next = 0U;
         p_ctx->have_pitch = false;
         p_ctx->filt_deg = 0.0f;
         hump_recalibrate (p_ctx);
@@ -271,9 +368,106 @@ void hump_recalibrate (hump_ctx_t * p_ctx)
     {
         p_ctx->calibrated = false;
         p_ctx->theta0_deg = 0.0f;
+        p_ctx->g0_unit[HUMP_AXIS_X] = 0.0f;
+        p_ctx->g0_unit[HUMP_AXIS_Y] = 0.0f;
+        p_ctx->g0_unit[HUMP_AXIS_Z] = 1.0f;
+        p_ctx->rest_mag_g = 1.0f;
+        p_ctx->tilt_med.count = 0U;
+        p_ctx->tilt_med.next = 0U;
+        p_ctx->have_tilt = false;
+        p_ctx->tilt_ema_deg = 0.0f;
+        p_ctx->tilt_avg_count = 0U;
+        p_ctx->tilt_avg_next = 0U;
+        p_ctx->tilt_deg = 0.0f;
+        p_ctx->entry_block = 0U;
         cal_restart (p_ctx);
         reset_hump (p_ctx);
     }
+}
+
+/* One tilt-mode step after calibration. entry_ok allows a hump to start;
+ * gate_ok is false for shock samples and the samples just after them, which
+ * cannot raise the peak. Returns true when the hump finishes and sets
+ * *p_complete. */
+static bool tilt_step (hump_ctx_t * p_ctx, float tilt, bool entry_ok,
+                       bool gate_ok, bool * p_complete, hump_event_t * p_event)
+{
+    const hump_config_t * p_cfg = &p_ctx->cfg;
+    bool finished = false;
+
+    if (HUMP_STATE_FLAT == p_ctx->state)
+    {
+        if (entry_ok && (tilt > p_cfg->enter_deg))
+        {
+            p_ctx->up_count++;
+            if (tilt > p_ctx->pending_peak_tilt_deg)
+            {
+                p_ctx->pending_peak_tilt_deg = tilt;
+            }
+            if (p_ctx->up_count >= p_cfg->enter_samples)
+            {
+                p_ctx->state = HUMP_STATE_CLIMB;
+                p_ctx->peak_tilt_deg = p_ctx->pending_peak_tilt_deg;
+                p_ctx->height_valid = true;
+                p_ctx->hump_samples = p_ctx->up_count;
+                p_ctx->up_count = 0U;
+                p_ctx->flat_count = 0U;
+                *p_event = HUMP_EVENT_STARTED;
+            }
+        }
+        else
+        {
+            p_ctx->up_count = 0U;
+            p_ctx->pending_peak_tilt_deg = 0.0f;
+        }
+    }
+    else
+    {
+        p_ctx->hump_samples++;
+        if (gate_ok && (tilt > p_ctx->peak_tilt_deg))
+        {
+            p_ctx->peak_tilt_deg = tilt;
+        }
+
+        if (tilt <= p_cfg->exit_band_deg)
+        {
+            p_ctx->flat_count++;
+        }
+        else
+        {
+            p_ctx->flat_count = 0U;
+        }
+
+        if ((HUMP_STATE_CLIMB == p_ctx->state)
+            && (tilt < (0.5f * p_ctx->peak_tilt_deg)))
+        {
+            p_ctx->state = HUMP_STATE_DESCEND;
+        }
+
+        if (p_ctx->flat_count >= p_cfg->exit_samples)
+        {
+            finished = true;
+            *p_complete = true;
+        }
+        else if (p_ctx->hump_samples >= p_cfg->max_hump_samples)
+        {
+            finished = true;
+            *p_complete = false;
+        }
+        else
+        {
+            /* Hump continues. */
+        }
+    }
+
+    if (HUMP_STATE_FLAT != p_ctx->state)
+    {
+        p_ctx->height_m = p_cfg->lever_m * sinf (tilt * DEG_TO_RAD);
+        p_ctx->peak_m = p_cfg->lever_m
+                        * sinf (p_ctx->peak_tilt_deg * DEG_TO_RAD);
+    }
+
+    return finished;
 }
 
 bool hump_update (hump_ctx_t * p_ctx,
@@ -283,13 +477,15 @@ bool hump_update (hump_ctx_t * p_ctx,
     const hump_config_t * p_cfg;
     float axes[3];
     float raw;
-    float med;
     float pitch;
     float abs_pitch;
+    float tilt = 0.0f;
     float magnitude;
     float delta_m;
     bool motion_fresh;
     bool speed_ok;
+    bool gate_ok = false;
+    bool entry_ok;
     bool finished = false;
     bool complete = false;
 
@@ -322,16 +518,8 @@ bool hump_update (hump_ctx_t * p_ctx,
     /* Pitch: dv/dt correction, median, then EMA seeded by the first value. */
     corrected_axes (p_cfg, p_sample, motion_fresh, axes);
     raw = pitch_from_axes (p_cfg, axes);
-    med = median_push (p_ctx, raw);
-    if (p_ctx->have_pitch)
-    {
-        p_ctx->filt_deg += p_cfg->alpha * (med - p_ctx->filt_deg);
-    }
-    else
-    {
-        p_ctx->filt_deg = med;
-        p_ctx->have_pitch = true;
-    }
+    (void)filter_step (&p_ctx->pitch_med, &p_ctx->have_pitch, &p_ctx->filt_deg,
+                       p_cfg, raw);
 
     magnitude = sqrtf ((p_sample->ax_g * p_sample->ax_g)
                        + (p_sample->ay_g * p_sample->ay_g)
@@ -356,6 +544,34 @@ bool hump_update (hump_ctx_t * p_ctx,
     pitch = p_ctx->filt_deg - p_ctx->theta0_deg;
     abs_pitch = fabsf (pitch);
 
+    if (p_ctx->calibrated)
+    {
+        /* Tilt from g0, and the entry gate on the corrected magnitude. */
+        bool quiet = fabsf (vec_norm (axes) - p_ctx->rest_mag_g)
+                     <= p_cfg->entry_max_dev_g;
+
+        tilt = filter_step (&p_ctx->tilt_med, &p_ctx->have_tilt,
+                            &p_ctx->tilt_ema_deg, p_cfg,
+                            tilt_from_axes (p_ctx, axes));
+        tilt = tilt_avg_push (p_ctx, tilt);
+        p_ctx->tilt_deg = tilt;
+
+        gate_ok = quiet && (0U == p_ctx->entry_block);
+        if (!quiet)
+        {
+            p_ctx->entry_block = (uint16_t)(p_cfg->median_len
+                                            + p_cfg->enter_samples);
+        }
+        else if (p_ctx->entry_block > 0U)
+        {
+            p_ctx->entry_block--;
+        }
+        else
+        {
+            /* Gate open. */
+        }
+    }
+
     /* Height step for this sample, if the motion data is usable. */
     speed_ok = motion_fresh && (p_sample->speed_mps >= p_cfg->min_speed_mps);
     delta_m = 0.0f;
@@ -364,13 +580,32 @@ bool hump_update (hump_ctx_t * p_ctx,
         delta_m = p_sample->ds_m * sinf (pitch * DEG_TO_RAD);
     }
 
+    /* Entry needs the shock gate open and, if configured, a moving car. */
+    entry_ok = gate_ok
+               && (!p_cfg->require_motion
+                   || (motion_fresh
+                       && (fabsf (p_sample->speed_mps)
+                           >= p_cfg->min_speed_mps)));
+
     if (!p_ctx->calibrated)
     {
         /* No detection until theta_0 is known. */
     }
+    else if (HUMP_MODE_TILT == p_cfg->mode)
+    {
+        finished = tilt_step (p_ctx, tilt, entry_ok, gate_ok, &complete,
+                              &p_out->event);
+        if ((HUMP_STATE_FLAT != p_ctx->state) || finished)
+        {
+            if (pitch > p_ctx->peak_pitch_deg)
+            {
+                p_ctx->peak_pitch_deg = pitch;
+            }
+        }
+    }
     else if (HUMP_STATE_FLAT == p_ctx->state)
     {
-        if (pitch > p_cfg->enter_deg)
+        if (entry_ok && (pitch > p_cfg->enter_deg))
         {
             p_ctx->up_count++;
             p_ctx->pending_height_m += delta_m;
@@ -487,6 +722,8 @@ bool hump_update (hump_ctx_t * p_ctx,
     p_out->calibrated = p_ctx->calibrated;
     p_out->theta0_deg = p_ctx->theta0_deg;
     p_out->pitch_deg = pitch;
+    p_out->tilt_deg = tilt;
+    p_out->peak_tilt_deg = p_ctx->peak_tilt_deg;
     p_out->height_m = p_ctx->height_m;
     p_out->peak_m = p_ctx->peak_m;
     p_out->peak_pitch_deg = p_ctx->peak_pitch_deg;

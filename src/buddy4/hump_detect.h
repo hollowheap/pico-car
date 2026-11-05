@@ -15,8 +15,31 @@
  *   6. Height = sum of ds * sin(pitch - theta_0), ds from encoder distance.
  *
  * Calibration: after init (or hump_recalibrate) the first cal_samples samples
- * taken at rest set theta_0. Any sample that is not at rest restarts the
- * count. No hump is detected until calibration is done.
+ * taken at rest set theta_0, the rest gravity direction g0 and the rest
+ * magnitude |g0|. Any sample that is not at rest restarts the count. No hump
+ * is detected until calibration is done.
+ *
+ * Two detection modes (hump_config_t.mode):
+ *   HUMP_MODE_PITCH: steps 5 and 6 above. For humps that both drive wheels
+ *     climb, which tilt the car nose-up then nose-down.
+ *   HUMP_MODE_TILT: for a hump under one wheel. Tilt = angle between the
+ *     current gravity vector and g0, in any direction: median, EMA, then a
+ *     tilt_avg_len moving average, because pushes and hand contact give
+ *     0.1-0.3 s tilt spikes that would otherwise set the peak.
+ *     FLAT -> CLIMB when tilt exceeds enter_deg, CLIMB -> DESCEND when tilt
+ *     falls below half its peak, FINISHED after exit_samples inside the exit
+ *     band. Height = lever_m * sin(tilt). lever_m is the distance from the
+ *     lifted wheel to the line through the other two contact points, so
+ *     height needs no Buddy 2 data and height_valid stays true. CREST is not
+ *     used. A hump under both wheels is still detected, but its height is
+ *     wrong because the car pivots about a different line.
+ *
+ * Entry gate (both modes): a sample whose dv/dt-corrected magnitude differs
+ * from |g0| by more than entry_max_dev_g is a shock. It and the next
+ * median_len + enter_samples samples cannot start a hump or raise the tilt
+ * peak, so a knock does not look like a slope. With require_motion set, a
+ * hump can also only start while Buddy 2 reports the car moving, so lifting
+ * or tilting the car by hand is ignored.
  *
  * Limits: the accelerometer sees vibration and bumps as well as tilt. The
  * dv/dt correction only removes acceleration along the direction of travel.
@@ -52,17 +75,25 @@ typedef enum
 #define HUMP_AXIS_Y (1U)
 #define HUMP_AXIS_Z (2U)
 
+/* Values for hump_config_t.mode. */
+#define HUMP_MODE_PITCH (0U)
+#define HUMP_MODE_TILT  (1U)
+
 /* Largest supported median window (odd). */
 #define HUMP_MEDIAN_MAX (5U)
 
+/* Largest tilt moving-average window, samples. */
+#define HUMP_TILT_AVG_MAX (16U)
+
 typedef struct
 {
+    uint8_t  mode;               /* HUMP_MODE_PITCH or HUMP_MODE_TILT.         */
     uint8_t  fwd_axis;           /* HUMP_AXIS_X, _Y or _Z: points along travel. */
     int8_t   fwd_sign;           /* +1 or -1: sign that makes nose-up positive. */
     uint8_t  median_len;         /* Median window: 1, 3 or 5 samples.          */
     float    alpha;              /* EMA weight of the new value, 0 < a <= 1.   */
-    float    enter_deg;          /* Pitch magnitude that starts a slope.       */
-    float    exit_band_deg;      /* Pitch magnitude counted as flat.           */
+    float    enter_deg;          /* Pitch (or tilt) that starts a slope.       */
+    float    exit_band_deg;      /* Pitch (or tilt) magnitude counted as flat. */
     uint16_t enter_samples;      /* Consecutive samples above enter_deg.       */
     uint16_t exit_samples;       /* Consecutive samples inside exit band.      */
     uint32_t max_hump_samples;   /* Give up on a hump that lasts longer.       */
@@ -72,6 +103,13 @@ typedef struct
     uint16_t cal_samples;        /* Rest samples needed to set theta_0.        */
     float    cal_max_dev_g;      /* At rest: | |a| - 1 g | at most this.       */
     float    cal_max_spread_deg; /* At rest: max - min raw pitch at most this. */
+    float    lever_m;            /* Tilt mode: wheel to pivot line, metres.    */
+    uint8_t  tilt_avg_len;       /* Tilt mode: moving average after the EMA,
+                                    1..HUMP_TILT_AVG_MAX samples.             */
+    float    entry_max_dev_g;    /* Entry gate: | |a| - |g0| | at most this.   */
+    bool     require_motion;     /* Entry also needs fresh Buddy 2 data with
+                                    |speed| >= min_speed_mps. Off when Buddy 2
+                                    is not running (bring-up logger).        */
 } hump_config_t;
 
 typedef struct
@@ -94,6 +132,9 @@ typedef struct
     bool  calibrated;            /* theta_0 is set; detection is active.       */
     float theta0_deg;            /* Rest pitch subtracted from every sample.   */
     float pitch_deg;             /* Filtered pitch relative to theta_0.        */
+    float tilt_deg;              /* Filtered tilt from g0, >= 0. 0 before
+                                    calibration.                              */
+    float peak_tilt_deg;         /* Tilt mode: highest tilt in this hump.      */
     float height_m;              /* Running height of the current hump. On
                                     FINISHED this is the end height, which
                                     should be near zero for a full hump.       */
@@ -107,14 +148,28 @@ typedef struct
 
 typedef struct
 {
+    float    buf[HUMP_MEDIAN_MAX];
+    uint8_t  count;
+    uint8_t  next;
+} hump_median_t;
+
+typedef struct
+{
     hump_config_t cfg;
 
     /* Pitch filter. */
-    float    median_buf[HUMP_MEDIAN_MAX];
-    uint8_t  median_count;
-    uint8_t  median_next;
+    hump_median_t pitch_med;
     bool     have_pitch;
     float    filt_deg;           /* Filtered absolute pitch (before theta_0). */
+
+    /* Tilt filter (runs once calibrated). */
+    hump_median_t tilt_med;
+    bool     have_tilt;
+    float    tilt_ema_deg;
+    float    tilt_avg_buf[HUMP_TILT_AVG_MAX];
+    uint8_t  tilt_avg_count;
+    uint8_t  tilt_avg_next;
+    float    tilt_deg;           /* Moving average of tilt_ema_deg.           */
 
     /* Calibration. */
     bool     calibrated;
@@ -123,6 +178,11 @@ typedef struct
     float    cal_min_deg;
     float    cal_max_deg;
     float    theta0_deg;
+    float    g0_unit[3];         /* Rest gravity direction.                   */
+    float    rest_mag_g;         /* Rest |a|.                                 */
+
+    /* Entry gate. */
+    uint16_t entry_block;        /* Samples left before entry is allowed.     */
 
     /* Hump tracking. */
     hump_state_t state;
@@ -136,6 +196,8 @@ typedef struct
     float    height_m;
     float    peak_m;
     float    peak_pitch_deg;
+    float    pending_peak_tilt_deg;
+    float    peak_tilt_deg;
     bool     height_valid;
 } hump_ctx_t;
 

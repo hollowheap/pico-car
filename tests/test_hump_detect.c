@@ -584,7 +584,7 @@ static void test_median_rejects_spike (void)
         uint32_t started = 0U;
 
         hump_default_config (&cfg);
-        cfg.median_len = (0U == pass) ? 5U : 1U;
+        cfg.median_len = (0U == pass) ? 5U : 1U; cfg.entry_max_dev_g = 1.0f;
         CHECK (hump_init (&ctx, &cfg));
         for (i = 0U; i < (CAL_SAMPLES + 50U); i++)
         {
