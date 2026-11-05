@@ -37,11 +37,13 @@ target_link_libraries(buddy4_task PUBLIC buddy4_core mtk3smp)
 target_compile_options(buddy4_task PRIVATE
     -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal)
 
-# Optional: Buddy 2 motion-service reader. Link this only into an
-# application that also links buddy2_motion_service and starts it.
+# Optional: Buddy 2 motion feedback reader. Link this only into an
+# application that also calls motion_init() and runs the motor task.
 add_library(buddy4_b2_glue STATIC EXCLUDE_FROM_ALL
     ${BUDDY4_SRC}/b4_b2_glue.c)
-target_link_libraries(buddy4_b2_glue PUBLIC buddy4_core buddy2_motion_service)
+target_link_libraries(buddy4_b2_glue PUBLIC buddy4_core motion)
+target_compile_options(buddy4_b2_glue PRIVATE
+    -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal)
 
 # Stage 1/2 bring-up and CSV logger. Motors held low; Buddy 2 not started.
 add_executable(buddy4_imu_check EXCLUDE_FROM_ALL
