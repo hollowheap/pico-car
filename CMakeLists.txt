@@ -6,6 +6,47 @@ include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 
 project(pico-car C CXX ASM)
 
+# Telemetry broker endpoint and credentials.  Override with -D on the
+# configure line; the defaults target a LAN Mosquitto instance.
+set(PICO_CAR_MQTT_HOST "mosquitto" CACHE STRING "MQTT broker host or IP")
+set(PICO_CAR_MQTT_PORT "1883" CACHE STRING "MQTT broker TCP port")
+set(PICO_CAR_MQTT_USERNAME "" CACHE STRING "MQTT username (empty for anonymous)")
+set(PICO_CAR_MQTT_PASSWORD "" CACHE STRING "MQTT password (empty for anonymous)")
+set(PICO_CAR_TOPIC_PREFIX "car/SE01" CACHE STRING "MQTT topic prefix")
+set(PICO_CAR_CLIENT_ID "pico-car" CACHE STRING "MQTT client identifier")
+
+if (NOT PICO_CAR_MQTT_PORT MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "PICO_CAR_MQTT_PORT must be numeric")
+endif()
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/telemetry_config.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/telemetry_config.h
+    @ONLY
+)
+
+# Wi-Fi join. Empty SSID or password keeps TM_WIFI_JOIN=0. The generated
+# credentials header lives in build/ and is never committed.
+set(PICO_CAR_WIFI_SSID "" CACHE STRING "Wi-Fi SSID (empty disables the join)")
+set(PICO_CAR_WIFI_PASSWORD "" CACHE STRING "Wi-Fi password (empty disables the join)")
+set(PICO_CAR_WIFI_AUTH "CYW43_AUTH_WPA2_AES_PSK" CACHE STRING
+    "CYW43 auth constant for the join")
+
+if (PICO_CAR_WIFI_SSID AND PICO_CAR_WIFI_PASSWORD)
+    set(PICO_CAR_WIFI_JOIN 1)
+    string(REPLACE "\\" "\\\\" PICO_CAR_WIFI_SSID_ESC "${PICO_CAR_WIFI_SSID}")
+    string(REPLACE "\"" "\\\"" PICO_CAR_WIFI_SSID_ESC "${PICO_CAR_WIFI_SSID_ESC}")
+    string(REPLACE "\\" "\\\\" PICO_CAR_WIFI_PASSWORD_ESC "${PICO_CAR_WIFI_PASSWORD}")
+    string(REPLACE "\"" "\\\"" PICO_CAR_WIFI_PASSWORD_ESC "${PICO_CAR_WIFI_PASSWORD_ESC}")
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/wifi_credentials.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/wifi_credentials.h
+        @ONLY
+    )
+else()
+    set(PICO_CAR_WIFI_JOIN 0)
+endif()
+
 # mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
 set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")
 
@@ -45,15 +86,15 @@ target_compile_definitions(mtk3smp PUBLIC
     CNF_SMP=1
     TM_CONSOLE_USB_CDC=1
     TM_WIFI_CYW43=1
-    TM_WIFI_JOIN=0
-    TM_WIFI_NETIF=0
+    TM_WIFI_JOIN=${PICO_CAR_WIFI_JOIN}
+    TM_WIFI_NETIF=1
     TM_WIFI_STATIC=0
-    TM_WIFI_DHCP=0
-    TM_WIFI_DNS=0
+    TM_WIFI_DHCP=1
+    TM_WIFI_DNS=1
     TM_WIFI_UDP=0
     TM_WIFI_TCP=0
     TM_WIFI_TCPBULK=0
-    CYW43_LWIP=0
+    CYW43_LWIP=1
     CYW43_ENABLE_BLUETOOTH=0
     CYW43_USE_OTP_MAC=1
     CYW43_DEFAULT_PIN_WL_REG_ON=23u
@@ -74,6 +115,7 @@ target_compile_definitions(mtk3smp PUBLIC
 
 target_include_directories(mtk3smp PUBLIC
     ${MTK3SMP_PATH}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${MTK3SMP_PATH}/config
     ${MTK3SMP_PATH}/kernel/knlinc
     ${MTK3SMP_PATH}/kernel/tkernel
@@ -82,6 +124,9 @@ target_include_directories(mtk3smp PUBLIC
     ${MTK3SMP_PATH}/kernel/sysdepend/pico_rp2040
     ${MTK3SMP_PATH}/device
     ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/include
+    ${MTK3SMP_PATH}/lib/libnet/lwip/include
     ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
   PRIVATE
     ${PICO_SDK_PATH}/src/boards/include
@@ -187,6 +232,7 @@ target_sources(mtk3smp PRIVATE
 
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_ctrl.c
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_ll.c
+    ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_lwip.c
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_stats.c
     ${PICO_SDK_PATH}/lib/tinyusb/src/tusb.c
     ${PICO_SDK_PATH}/lib/tinyusb/src/common/tusb_fifo.c
@@ -199,6 +245,34 @@ target_sources(mtk3smp PRIVATE
     ${PICO_SDK_PATH}/src/rp2_common/hardware_gpio/gpio.c
     ${PICO_SDK_PATH}/src/rp2_common/hardware_pio/pio.c
     ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cyw43_bus_pio_spi.c
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/init.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/def.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/dns.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/inet_chksum.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ip.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/mem.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/memp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/netif.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/pbuf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/raw.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/stats.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/sys.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/tcp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/tcp_in.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/tcp_out.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/timeouts.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/udp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/acd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/dhcp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/etharp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/icmp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/ip4.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/ip4_addr.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/ip4_frag.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/netif/ethernet.c
+    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk.c
+    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk_ipv4.c
 )
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
@@ -207,30 +281,55 @@ target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 add_library(sys STATIC
     src/sys/gpio_irq.c
 )
+target_include_directories(sys PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(sys PUBLIC mtk3smp)
 
+add_library(platform STATIC
+    src/platform/faults.c
+)
+target_include_directories(platform PUBLIC include)
+target_link_libraries(platform PUBLIC mtk3smp)
+
+add_library(telemetry STATIC
+    src/telemetry/cmd.c
+    src/telemetry/connection_task.c
+    src/telemetry/mqtt_client.c
+    src/telemetry/net_queue.c
+    src/telemetry/packet.c
+    src/telemetry/publisher.c
+    src/telemetry/queue.c
+    src/telemetry/tcp_transport.c
+    src/telemetry/worker.c
+)
+target_include_directories(telemetry PUBLIC include PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(telemetry PUBLIC platform mtk3smp)
+
 add_library(motion_core STATIC
-    src/motion/motion_control.c
-    src/motion/wheel_pid.c
-    src/motion/motion_sampler.c
+    src/motion/controller.c
+    src/motion/pid.c
+    src/motion/odometry.c
     src/motion/encoder_math.c
     src/motion/motion_request.c
     src/motion/motion_inbox.c
 )
+target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(motion_core PUBLIC mtk3smp)
 
 add_library(motion_service STATIC
     src/motion/motion_service.c
-    src/motion/motor_pwm.c
-    src/motion/motor_pair.c
-    src/motion/encoder_capture.c
-    src/motion/encoder_quad.c
+    src/motion/pwm.c
+    src/motion/motor.c
+    src/motion/encoder.c
+    src/motion/quadrature.c
 )
+target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
 
 add_library(ir_service STATIC
     src/ir/ir_capture.c
 )
+target_include_directories(ir_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(ir_service PUBLIC sys mtk3smp)
 
 add_executable(main
@@ -245,6 +344,8 @@ foreach(app_target IN ITEMS main)
         sys
         motion_service
         ir_service
+        platform
+        telemetry
         mtk3smp
     )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset

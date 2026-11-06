@@ -4,7 +4,7 @@
 #ifndef MOTION_REQUEST_H
 #define MOTION_REQUEST_H
 
-#include "motion_control.h"
+#include "controller.h"
 
 typedef enum
 {

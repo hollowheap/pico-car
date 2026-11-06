@@ -3,7 +3,7 @@
  * @brief Convert Buddy 2's motion status into Buddy 4's SI inputs.
  *
  * b4_b2_reading_t mirrors the fields of Buddy 2's motion_sample_t
- * (pico-car/src/motion_sampler.h), filled by b4_b2_glue.c on the car. Keeping
+ * (pico-car/src/odometry.h), filled by b4_b2_glue.c on the car. Keeping
  * the conversion here makes it testable on the laptop.
  *
  * Rules:

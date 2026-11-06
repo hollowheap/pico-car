@@ -66,7 +66,7 @@
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 
-#include "../../motion/motion_service.h"
+#include "motion/motion.h"
 #include "obstacle_config.h"
 #include "flight_log.h"
 #include "obstacle_nav.h"
@@ -251,8 +251,10 @@ static void     explain_scan (uint16_t const * p_profile);
 static void     handle_event (uint32_t evt, uint32_t now);
 static void     look_for_line (bool b_line_seen, uint32_t now);
 static void     update_motion (void);
-static int64_t true_wheel_um (motion_sample_t const * p_sample, uint32_t wheel);
-static void    report_fault (motion_service_status_t const * p_status);
+static int64_t true_wheel_um (motion_feedback_t const * p_feedback,
+                              uint32_t wheel);
+static void    report_fault (motion_status_t const * p_status,
+                             motion_feedback_t const * p_feedback);
 static void    trace (uint32_t status, bool b_left, bool b_right, uint32_t now);
 static ER      nav_stop (void);
 static ER      nav_distance_mm (uint32_t * p_distance_mm);
@@ -506,7 +508,7 @@ static void post (uint32_t type, uint8_t req_id)
  */
 static void hold_car (bool b_held)
 {
-    (void)motion_service_set_hold(MOTION_HOLD_OBSTACLE, b_held);
+    (void)motion_set_hold(MOTION_HOLD_OBSTACLE, b_held);
 }
 
 /*!
@@ -727,7 +729,7 @@ static void drive_steer (uint32_t steer, int32_t inside_um_s,
         }
     }
 
-    (void)motion_service_set_speed(speed[WHEEL_LEFT], speed[WHEEL_RIGHT],
+    (void)motion_set_speed(speed[WHEEL_LEFT], speed[WHEEL_RIGHT],
                                    OBSTACLE_NAV_TTL_US);
 }
 
@@ -1380,34 +1382,32 @@ static void look_for_line (bool b_line_seen, uint32_t now)
  *
  * @param[in] p_status Motion service status at the fault.
  */
-static void report_fault (motion_service_status_t const * p_status)
+static void report_fault (motion_status_t const * p_status,
+                          motion_feedback_t const * p_feedback)
 {
     uint32_t wheel = 0U;
 
-    tm_printf((UB *)"[obstacle-nav] MOTION FAULT %d: sample %d, elapsed %d us\n",
-              (INT)p_status->control.fault,
-              (INT)p_status->control.sample_available,
-              (INT)p_status->control.sample.elapsed_us);
+    tm_printf((UB *)"[obstacle-nav] MOTION FAULT %d: state %d, stop %d, "
+                    "hold %d\n",
+              (INT)p_status->fault, (INT)p_status->state,
+              (INT)p_status->stop_requested, (INT)p_status->hold_mask);
 
     for (wheel = 0U; wheel < WHEELS; wheel++)
     {
-        motion_wheel_sample_t const * const p_wheel =
-            &p_status->control.sample.wheel[wheel];
+        int32_t const speed = (wheel == WHEEL_LEFT)
+                                  ? p_feedback->left_speed_um_s
+                                  : p_feedback->right_speed_um_s;
 
-        tm_printf((UB *)"[obstacle-nav]   wheel %d: target %d um/s, duty %d, "
-                        "speed %d um/s, speed_valid %d, odo_valid %d, "
-                        "bad encoder steps %d\n",
-                  (INT)wheel, (INT)p_status->control.target_um_s[wheel],
-                  (INT)p_status->control.duty[wheel],
-                  (INT)p_wheel->velocity_um_s, (INT)p_wheel->speed_valid,
-                  (INT)p_wheel->odometry_valid, (INT)p_wheel->invalid_delta);
+        tm_printf((UB *)"[obstacle-nav]   wheel %d: speed %d um/s, "
+                        "speed_valid %d, odo_valid %d\n",
+                  (INT)wheel, (INT)speed,
+                  (INT)p_feedback->speed_valid[wheel],
+                  (INT)p_feedback->odometry_valid[wheel]);
 
-        /* Casts are safe: wheel is 0..1 and the flags are 0/1. */
-        log_rec(OBSTACLE_LOG_MFAULT, (uint8_t)wheel, (uint8_t)p_wheel->speed_valid,
-                (uint8_t)p_wheel->odometry_valid,
-                (int32_t)p_wheel->invalid_delta,
-                p_wheel->velocity_um_s / UM_PER_MM,
-                (int32_t)p_status->control.sample.elapsed_us);
+        log_rec(OBSTACLE_LOG_MFAULT, (uint8_t)wheel,
+                (uint8_t)p_feedback->speed_valid[wheel],
+                (uint8_t)p_feedback->odometry_valid[wheel], 0,
+                speed / UM_PER_MM, 0);
     }
 }
 
@@ -1423,46 +1423,46 @@ static void report_fault (motion_service_status_t const * p_status)
  */
 static void update_motion (void)
 {
-    motion_service_status_t status;
+    motion_status_t   status;
+    motion_feedback_t feedback;
 
-    if (E_OK == motion_service_read_status(&status))
+    if (E_OK == motion_status(&status))
     {
-        /* Casts are safe: the enums are 0..6 and the hold mask is 0..7. */
-        uint32_t const word = ((uint32_t)status.control.state << 16U) |
-                              ((uint32_t)status.control.fault << 8U) |
+        uint32_t const word = ((uint32_t)status.state << 16U) |
+                              ((uint32_t)status.fault << 8U) |
                               status.hold_mask;
         bool const b_changed = (word != g_nav.motion_word);
-        uint32_t   wheel     = 0U;
 
         if (b_changed)
         {
             g_nav.motion_word = word;
             tm_printf((UB *)"[obstacle-nav] motion state=%d fault=%d hold=%d\n",
-                      (INT)status.control.state, (INT)status.control.fault,
+                      (INT)status.state, (INT)status.fault,
                       (INT)status.hold_mask);
-            log_rec(OBSTACLE_LOG_MOTION, (uint8_t)status.control.state,
-                    (uint8_t)status.control.fault, (uint8_t)status.hold_mask, 0,
-                    0, 0);
+            log_rec(OBSTACLE_LOG_MOTION, status.state, status.fault,
+                    (uint8_t)status.hold_mask, 0, 0, 0);
         }
 
-        if (b_changed && (MOTION_FAULT == status.control.state))
+        if (b_changed && (MOTION_STATE_FAULT == status.state))
         {
-            report_fault(&status);
+            if (E_OK == motion_feedback_snapshot(&feedback))
+            {
+                report_fault(&status, &feedback);
+            }
         }
+    }
+
+    if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
+    {
+        uint32_t wheel = 0U;
 
         for (wheel = 0U; wheel < WHEELS; wheel++)
         {
-            /* NOTE: odometry_valid latches false after one invalid encoder
-             * step; the displacement is still counted, so keep using it. */
-            if (status.control.sample_available)
-            {
-                g_nav.wheel_um[wheel] =
-                    true_wheel_um(&status.control.sample, wheel);
+            g_nav.wheel_um[wheel] = true_wheel_um(&feedback, wheel);
 
-                /* Cast is safe: a run is far shorter than 2147 km. */
-                g_nav.wheel_mm[wheel] =
-                    (int32_t)(g_nav.wheel_um[wheel] / UM_PER_MM);
-            }
+            /* Cast is safe: a run is far shorter than 2147 km. */
+            g_nav.wheel_mm[wheel] =
+                (int32_t)(g_nav.wheel_um[wheel] / UM_PER_MM);
         }
     }
 }
@@ -1515,11 +1515,11 @@ static void trace (uint32_t status, bool b_left, bool b_right, uint32_t now)
 /*!
  * @brief Emergency-stop link for Buddy 5: hold the car at once.
  *
- * @return The result of motion_service_set_hold().
+ * @return The result of motion_set_hold().
  */
 static ER nav_stop (void)
 {
-    return (motion_service_set_hold(MOTION_HOLD_OBSTACLE, true));
+    return (motion_set_hold(MOTION_HOLD_OBSTACLE, true));
 }
 
 /*!
@@ -1535,23 +1535,13 @@ static ER nav_stop (void)
  */
 static ER nav_distance_mm (uint32_t * p_distance_mm)
 {
-    motion_service_status_t status;
-    bool                    b_valid = false;
+    motion_feedback_t feedback;
 
-    if (E_OK == motion_service_read_status(&status))
-    {
-        /* NOTE: odometry_valid latches false after one invalid encoder
-         * step, which would freeze the odometer for the rest of the run;
-         * the displacement is still counted, so only the sample is
-         * checked. */
-        b_valid = status.control.sample_available;
-    }
-
-    if (b_valid)
+    if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
     {
         int64_t const sum_um =
-            true_wheel_um(&status.control.sample, WHEEL_LEFT) +
-            true_wheel_um(&status.control.sample, WHEEL_RIGHT);
+            true_wheel_um(&feedback, WHEEL_LEFT) +
+            true_wheel_um(&feedback, WHEEL_RIGHT);
         int64_t const mean_mm = (sum_um / 2) / UM_PER_MM;
 
         if (mean_mm <= 0)
@@ -1588,14 +1578,18 @@ static ER nav_distance_mm (uint32_t * p_distance_mm)
  *
  * @return Signed travel since boot in um, positive = forwards.
  */
-static int64_t true_wheel_um (motion_sample_t const * p_sample, uint32_t wheel)
+static int64_t true_wheel_um (motion_feedback_t const * p_feedback,
+                              uint32_t wheel)
 {
     int64_t travel_um = 0;
 
 #if (OBSTACLE_ENCODERS_CROSSED)
-    travel_um = -(p_sample->wheel[(WHEELS - 1U) - wheel].displacement_um);
+    travel_um = (wheel == WHEEL_LEFT) ? p_feedback->right_displacement_um
+                                      : p_feedback->left_displacement_um;
+    travel_um = -travel_um;
 #else
-    travel_um = p_sample->wheel[wheel].displacement_um;
+    travel_um = (wheel == WHEEL_LEFT) ? p_feedback->left_displacement_um
+                                      : p_feedback->right_displacement_um;
 #endif
 
     return (travel_um);

@@ -4,3 +4,6 @@
 [submodule "lib/mtk3smp-rp2040"]
 	path = lib/mtk3smp-rp2040
 	url = https://github.com/hollowheap/mtk3smp-rp2040
+[submodule "lib/lwip"]
+	path = lib/lwip
+	url = https://github.com/lwip-tcpip/lwip.git

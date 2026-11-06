@@ -5,8 +5,8 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
-#include "../sys/gpio_irq.h"
-#include "ir_capture.h"
+#include "platform/isr.h"
+#include "track/track.h"
 #include "ir_pins.h"
 
 #define IO_IRQ_BANK0 13U

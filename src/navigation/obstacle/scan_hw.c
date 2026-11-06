@@ -30,7 +30,7 @@
 #include <tk/tkernel.h>
 #include <bsp/libbsp.h>
 
-#include "../../sys/gpio_irq.h"
+#include "platform/isr.h"
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
 #include "obstacle.h"

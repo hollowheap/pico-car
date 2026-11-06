@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <tk/tkernel.h>
 
-#include "gpio_irq.h"
+#include "platform/isr.h"
 
 #define GPIO_INTNO     13
 #define GPIO_INT_PRI   2

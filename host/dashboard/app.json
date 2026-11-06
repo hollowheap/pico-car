@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Pico Car Mission Control",
+    "slug": "se01-dashboard",
+    "version": "0.1.0",
+    "scheme": "se01",
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.picocar.se01"
+    }
+  }
+}

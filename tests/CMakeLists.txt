@@ -45,10 +45,11 @@ add_test(NAME drivers COMMAND test_drivers)
 
 # Obstacle avoidance pure modules
 set(OBSTACLE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/obstacle)
+set(APP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 
 add_executable(test_obstacle_scan test_obstacle_scan.c
     ${OBSTACLE_SRC}/scan_algo.c)
-target_include_directories(test_obstacle_scan PRIVATE ${OBSTACLE_SRC})
+target_include_directories(test_obstacle_scan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
 target_compile_options(test_obstacle_scan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
@@ -56,7 +57,7 @@ add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
 add_executable(test_obstacle_plan test_obstacle_plan.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
-target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC})
+target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
 target_compile_options(test_obstacle_plan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_plan COMMAND test_obstacle_plan)
@@ -65,7 +66,7 @@ add_executable(test_obstacle_statechart test_obstacle_statechart.c
     ${OBSTACLE_SRC}/statechart.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
-target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC})
+target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
 target_compile_options(test_obstacle_statechart PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)

@@ -3,13 +3,21 @@
 #include <bsp/libbsp.h>
 
 #include "demo_tasks.h"
-#include "ir/ir_capture.h"
+#include "track/track.h"
+#include "motion/motion.h"
 #include "motion/motion_request.h"
 #include "motion/motion_service.h"
-#include "motion/encoder_capture.h"
+#include "motion/encoder.h"
 #include "navigation/obstacle.h"
 #include "physics/physics.h"
-#include "sys/gpio_irq.h"
+#include "platform/faults.h"
+#include "platform/isr.h"
+#include "telemetry/cmd.h"
+#include "telemetry/connection.h"
+#include "telemetry/net_queue.h"
+#include "telemetry/packet.h"
+#include "telemetry/queue.h"
+#include "telemetry/worker.h"
 
 /* Every task uses 4096 bytes.  The SMP kernel path is deeper than the
    single-core one -- each critical section runs the global ready-queue
@@ -46,7 +54,7 @@ ER setup_motors (void)
     config.control.sampling.max_interval_us = 100000U;
     for (uint8_t wheel = 0U; wheel < 2U; wheel++)
     {
-        config.control.speed[wheel] = (wheel_pid_config_t){
+        config.control.speed[wheel] = (pid_config_t){
             .kp_q16            = 256U,
             .ki_q16            = 256U,
             .kd_q16            = 2U,
@@ -200,22 +208,232 @@ LOCAL void line_task (INT stacd, void * exinf)
         else if (state.left && state.right)
         {
             // TODO: run command at junction
-            motion_service_set_speed(speed, speed, lease_us);
+            motion_set_speed(speed, speed, lease_us);
         }
         else if (state.left)
         {
-            motion_service_set_speed(turn_speed, speed, lease_us);
+            motion_set_speed(turn_speed, speed, lease_us);
         }
         else if (state.right)
         {
-            motion_service_set_speed(speed, turn_speed, lease_us);
+            motion_set_speed(speed, turn_speed, lease_us);
         }
         else
         {
-            motion_service_set_speed(speed, speed, lease_us);
+            motion_set_speed(speed, speed, lease_us);
         }
         ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
     }
+}
+
+/*!
+ * @brief Queue one telemetry frame for the connection task.
+ */
+LOCAL int net_sink (const uint8_t * frame, uint16_t len)
+{
+    (void)telemetry_net_queue_push(frame, len);
+    return 0;
+}
+
+/*!
+ * @brief Map the motion state to the dashboard state value.
+ *
+ * 0 INIT, 2 RUNNING, 3 STOPPED. The dashboard schema owns these values.
+ */
+LOCAL uint8_t telemetry_state (motion_status_t const * p_status)
+{
+    uint8_t state = 0U;
+
+    if ((MOTION_STATE_RUNNING == p_status->state) ||
+        (MOTION_STATE_REVERSING == p_status->state))
+    {
+        state = 2U;
+    }
+    else if ((MOTION_STATE_STOPPED == p_status->state) ||
+             (MOTION_STATE_FAULT == p_status->state))
+    {
+        state = 3U;
+    }
+    else
+    {
+        /* IDLE. */
+    }
+
+    return (state);
+}
+
+/*!
+ * @brief Build and queue a status packet every four passes.
+ */
+LOCAL void telemetry_task (INT stacd, void * exinf)
+{
+    uint32_t ticks = 0U;
+    uint32_t system_ticks = 0U;
+
+    (void)stacd;
+    (void)exinf;
+
+    if (!wait_startup())
+    {
+        park();
+    }
+
+    for (;;)
+    {
+        telemetry_worker_run(telemetry_queue_pop, net_sink, TMO_POL);
+
+        ticks++;
+        if (ticks >= 4U)
+        {
+            uint8_t           payload[TELEMETRY_STATUS_WIRE_SIZE];
+            motion_status_t   status;
+            motion_feedback_t feedback;
+            int16_t                 speed_mms = 0;
+            uint16_t                distance_mm = 0U;
+            uint16_t                faults = system_fault_get();
+            uint8_t                 heading_deg = 0U;
+            uint8_t                 state = 0U;
+
+            ticks = 0U;
+            if (E_OK == motion_status(&status))
+            {
+                state = telemetry_state(&status);
+
+                if (status.stop_requested)
+                {
+                    faults |= FAULT_ESTOP_LATCHED_BIT;
+                }
+            }
+
+            if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
+            {
+                int32_t const average_um_s =
+                    (feedback.left_speed_um_s + feedback.right_speed_um_s) / 2;
+                int64_t const average_um =
+                    (feedback.left_displacement_um +
+                     feedback.right_displacement_um) / 2;
+                int64_t distance = average_um / 1000;
+
+                speed_mms = (int16_t)(average_um_s / 1000);
+                if (distance < 0)
+                {
+                    distance = 0;
+                }
+                else if (distance > UINT16_MAX)
+                {
+                    distance = UINT16_MAX;
+                }
+                else
+                {
+                    /* In range. */
+                }
+                distance_mm = (uint16_t)distance;
+            }
+
+            (void)telemetry_pack_status(payload, speed_mms, distance_mm,
+                                        heading_deg, state, faults);
+            (void)telemetry_queue_push(payload, TELEMETRY_STATUS_WIRE_SIZE,
+                                       (uint8_t)'s', 0U);
+        }
+
+        system_ticks++;
+        if (system_ticks >= 10U)
+        {
+            uint8_t           system_payload[TELEMETRY_SYSTEM_WIRE_SIZE];
+            obstacle_status_t obstacle;
+            physics_status_t  physics;
+            telemetry_system_t system_state = {0};
+
+            system_ticks = 0U;
+
+            if (E_OK == obstacle_snapshot(&obstacle))
+            {
+                system_state.obstacle_state  = obstacle.state;
+                system_state.obstacle_cause  = obstacle.cause;
+                system_state.obstacle_faults = obstacle.faults;
+                system_state.echo_class      = obstacle.echo_class;
+                system_state.obstacle_dist_mm = obstacle.distance_mm;
+                system_state.obstacle_seq    = obstacle.seq;
+                system_state.obstacle_req_id = obstacle.req_id;
+            }
+
+            if (E_OK == physics_snapshot(&physics))
+            {
+                system_state.physics_state  = physics.state;
+                system_state.physics_motion = physics.motion;
+                system_state.physics_faults = physics.faults;
+                system_state.pitch_cdeg     = physics.pitch_cdeg;
+                system_state.hump_peak_mm   = physics.hump_peak_mm;
+
+                if (physics.hump_active)
+                {
+                    system_state.physics_flags |= 0x01U;
+                }
+                if (physics.finished)
+                {
+                    system_state.physics_flags |= 0x02U;
+                }
+                if (physics.height_valid)
+                {
+                    system_state.physics_flags |= 0x04U;
+                }
+            }
+
+            (void)telemetry_pack_system(system_payload, &system_state);
+            (void)telemetry_queue_push(system_payload,
+                                       TELEMETRY_SYSTEM_WIRE_SIZE,
+                                       (uint8_t)'t', 0U);
+        }
+
+        (void)tk_dly_tsk(50);
+    }
+}
+
+/*!
+ * @brief Join telemetry commands to motion and Buddy 5.
+ *
+ * NOTE: STOP uses the direct motion emergency latch (fault bit 9) and also
+ * stops Buddy 5. D75: the latch needs a reboot; the dashboard disables
+ * Reset while bit 9 is set.
+ */
+LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
+{
+    (void)context;
+
+    switch (cmd->opcode)
+    {
+        case (uint8_t)TELEMETRY_CMD_STOP:
+            (void)motion_request_stop();
+            (void)obstacle_post_cmd(OBSTACLE_CMD_STOP);
+        break;
+
+        case (uint8_t)TELEMETRY_CMD_START:
+            (void)motion_set_hold(MOTION_HOLD_OPERATOR, false);
+            (void)obstacle_post_cmd(OBSTACLE_CMD_START);
+        break;
+
+        case (uint8_t)TELEMETRY_CMD_RESET:
+            (void)motion_set_hold(MOTION_HOLD_OPERATOR, false);
+            (void)obstacle_post_cmd(OBSTACLE_CMD_RESET);
+        break;
+
+        default:
+            /* Unknown opcode: ignore. */
+        break;
+    }
+}
+
+LOCAL void connection_task (INT stacd, void * exinf)
+{
+    (void)stacd;
+    (void)exinf;
+
+    if (!wait_startup())
+    {
+        park();
+    }
+
+    connection_run();
 }
 
 /* ------------------------------------------------------------------ *
@@ -289,6 +507,25 @@ LOCAL T_CTSK ctsk_line = {
 #endif
 };
 
+LOCAL T_CTSK ctsk_telemetry = {
+    .itskpri = 7,
+    .stksz   = STACK_SZ,
+    .task    = telemetry_task,
+    .tskatr  = TA_HLNG | TA_RNG3,
+};
+
+LOCAL T_CTSK ctsk_connection = {
+    .itskpri = 6,
+    .stksz   = STACK_SZ,
+    .task    = connection_task,
+#if TK_SUPPORT_SMP
+    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .assprc = TP_PRC2,
+#else
+    .tskatr = TA_HLNG | TA_RNG3,
+#endif
+};
+
 /* ------------------------------------------------------------------ *
  *  Entry point
  * ------------------------------------------------------------------ */
@@ -307,12 +544,35 @@ LOCAL BOOL made (const char * what, ID id)
 EXPORT INT usermain (void)
 {
     bool b_ok = true;
+    bool b_telemetry;
+    bool b_connection;
+    ER   result;
     ID   startup_tid;
     ID   motion_tid;
     ID   physics_tid;
     ID   obstacle_tid;
     ID   line_tid;
     ID   blink_tid;
+    ID   telemetry_tid = 0;
+    ID   connection_tid = 0;
+
+    /* Telemetry is optional: the car still runs when the queues or the
+     * network initialisation fail. */
+    result = telemetry_queue_create();
+    b_telemetry = (E_OK == result);
+    result = telemetry_net_queue_create();
+    b_telemetry = b_telemetry && (E_OK == result);
+    if (!b_telemetry)
+    {
+        tm_printf((UB *)"[init] telemetry queues failed: %d\n", result);
+    }
+
+    result = connection_init(command_dispatch, NULL);
+    b_connection = (E_OK == result);
+    if (!b_connection)
+    {
+        tm_printf((UB *)"[init] connection_init failed: %d\n", result);
+    }
 
     /* D62/D70: this composition root creates every task. Subsystems only
      * prepare their resources and expose a task body. */
@@ -356,6 +616,24 @@ EXPORT INT usermain (void)
         b_ok = false;
     }
 
+    if (b_telemetry)
+    {
+        telemetry_tid = tk_cre_tsk(&ctsk_telemetry);
+        if (!made("tsk(telemetry)", telemetry_tid))
+        {
+            b_telemetry = false;
+        }
+    }
+
+    if (b_connection)
+    {
+        connection_tid = tk_cre_tsk(&ctsk_connection);
+        if (!made("tsk(connection)", connection_tid))
+        {
+            b_connection = false;
+        }
+    }
+
     if (!b_ok)
     {
         tm_printf((UB *)"[init] task creation failed, system stays stopped\n");
@@ -368,6 +646,15 @@ EXPORT INT usermain (void)
     tk_sta_tsk(obstacle_tid, 0);
     tk_sta_tsk(line_tid, 0);
     tk_sta_tsk(blink_tid, 0);
+
+    if (b_telemetry)
+    {
+        tk_sta_tsk(telemetry_tid, 0);
+    }
+    if (b_connection)
+    {
+        tk_sta_tsk(connection_tid, 0);
+    }
 
     /* The initial task has nothing left to do.  It must not return: on
        return the kernel shuts the system down. */

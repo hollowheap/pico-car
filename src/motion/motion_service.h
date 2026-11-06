@@ -5,19 +5,19 @@
 #define MOTION_SERVICE_H
 
 #include <tk/tkernel.h>
-#include "motion_control.h"
+#include "controller.h"
 #include "motion_request.h"
 #include "motion_inbox.h"
 
 typedef struct
 {
-    motion_control_config_t control;
+    controller_config_t control;
     uint32_t poll_delay_ms; /* Nominal delay, not a guaranteed task period. */
 } motion_service_config_t;
 
 typedef struct
 {
-    motion_control_status_t control;
+    controller_status_t control;
     ER                      init_error;
     bool                    ready;
     bool                    stop_requested;

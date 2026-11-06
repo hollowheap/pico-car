@@ -24,6 +24,8 @@
 
 #include <tk/tkernel.h>
 
+#include "navigation/obstacle_cmd.h"
+
 /* Emergency stop supplied by the motion subsystem. */
 typedef ER (*obstacle_stop_fn_t)(void);
 

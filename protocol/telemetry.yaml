@@ -1,0 +1,73 @@
+# Single source of truth for the vehicle wire protocol.
+# Firmware, CLI, backend, and dashboard consumers must be generated from
+# this file; do not hand-edit generated constants or decoders.
+
+schema: 1
+byte_order: big
+
+topics:
+  status: "s"
+  event: "e"
+  heartbeat: "h"
+  command: "c"
+  system: "t"
+
+packets:
+  status:
+    wire_size: 8
+    fields:
+      - { name: speed_mms, offset: 0, type: int16 }
+      - { name: dist_mm, offset: 2, type: uint16 }
+      - { name: heading_deg, offset: 4, type: uint8 }
+      - { name: state, offset: 5, type: uint8 }
+      - { name: faults, offset: 6, type: uint16 }
+  system:
+    wire_size: 16
+    fields:
+      - { name: obstacle_state, offset: 0, type: uint8 }
+      - { name: obstacle_cause, offset: 1, type: uint8 }
+      - { name: obstacle_faults, offset: 2, type: uint8 }
+      - { name: echo_class, offset: 3, type: uint8 }
+      - { name: obstacle_dist_mm, offset: 4, type: uint16 }
+      - { name: obstacle_seq, offset: 6, type: uint8 }
+      - { name: obstacle_req_id, offset: 7, type: uint8 }
+      - { name: physics_state, offset: 8, type: uint8 }
+      - { name: physics_motion, offset: 9, type: uint8 }
+      - { name: physics_faults, offset: 10, type: uint8 }
+      - { name: physics_flags, offset: 11, type: uint8 }
+      - { name: pitch_cdeg, offset: 12, type: int16 }
+      - { name: hump_peak_mm, offset: 14, type: uint16 }
+  event:
+    wire_size: 8
+    fields:
+      - { name: event_id, offset: 0, type: uint16 }
+      - { name: event_type, offset: 2, type: uint8 }
+      - { name: p1, offset: 3, type: int16 }
+      - { name: p2, offset: 5, type: uint16 }
+      - { name: reserved, offset: 7, type: uint8 }
+  heartbeat:
+    wire_size: 4
+    fields:
+      - { name: uptime_s, offset: 0, type: uint16 }
+      - { name: drops, offset: 2, type: uint8 }
+      - { name: wifi_rssi, offset: 3, type: int8 }
+
+commands:
+  stop: 0x00
+  start: 0x01
+  reset: 0x02
+
+# Event IDs are defined with the command/event schema in T04.
+events: {}
+
+fault_bits:
+  - { name: wifi_disconn, bit: 0 }
+  - { name: mqtt_nack, bit: 1 }
+  - { name: motor_stall, bit: 2 }
+  - { name: encoder_dead, bit: 3 }
+  - { name: line_lost, bit: 4 }
+  - { name: imu_nack, bit: 5 }
+  - { name: stale_speed, bit: 6 }
+  - { name: invalid_tilt, bit: 7 }
+  - { name: sonar_no_echo, bit: 8 }
+  - { name: estop_latched, bit: 9 }

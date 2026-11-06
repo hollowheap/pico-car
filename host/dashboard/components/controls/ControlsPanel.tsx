@@ -1,0 +1,156 @@
+import { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+
+import { useTheme } from '../../lib/theme-provider';
+import { Button } from '../ui/button';
+import { confirmControl, type ControlAction } from './controls';
+
+type Props = {
+  emergencyLatched: boolean;
+  onAction: (action: ControlAction) => void;
+  title?: string;
+  disabled?: boolean;
+  feedback?: string | null;
+  feedbackError?: boolean;
+};
+
+export function ControlsPanel({
+  emergencyLatched,
+  onAction,
+  title = 'Controls',
+  disabled = false,
+  feedback = null,
+  feedbackError = false,
+}: Props) {
+  const [pending, setPending] = useState<ControlAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const theme = useTheme();
+
+  const request = (action: ControlAction) => {
+    setPending(action);
+    setError(null);
+  };
+
+  const confirm = () => {
+    if (pending === null) {
+      return;
+    }
+    const decision = confirmControl(pending, true, emergencyLatched);
+    if (!decision.allowed) {
+      setError(decision.reason ?? 'action rejected');
+      return;
+    }
+    onAction(pending);
+    setPending(null);
+  };
+
+  return (
+    <View
+      style={[
+        styles.card,
+        {
+          backgroundColor: theme.colors.card,
+          borderColor: theme.colors.border,
+          borderRadius: theme.radii.card,
+          padding: theme.spacing.lg,
+        },
+      ]}
+    >
+      <Text
+        style={[theme.typography.headingSm, { color: theme.colors.text }]}
+      >
+        {title}
+      </Text>
+      {disabled ? (
+        <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
+          Link offline. Commands are disabled.
+        </Text>
+      ) : null}
+      {emergencyLatched ? (
+        <Text
+          style={[
+            theme.typography.body,
+            {
+              backgroundColor: theme.colors.dangerSurface,
+              color: theme.colors.danger,
+            },
+          ]}
+        >
+          Emergency latch engaged. Reset requires a power cycle.
+        </Text>
+      ) : null}
+      {feedback === null ? null : (
+        <Text
+          style={[
+            theme.typography.body,
+            {
+              color: feedbackError
+                ? theme.colors.danger
+                : theme.colors.muted,
+            },
+          ]}
+        >
+          {feedback}
+        </Text>
+      )}
+      {error === null ? null : (
+        <Text
+          style={[
+            theme.typography.body,
+            {
+              backgroundColor: theme.colors.dangerSurface,
+              color: theme.colors.danger,
+            },
+          ]}
+        >
+          {error}
+        </Text>
+      )}
+      {pending === null ? (
+        <View style={styles.row}>
+          <Button
+            disabled={disabled || emergencyLatched}
+            onPress={() => request('start')}
+          >
+            <Button.Text>Start</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled}
+            variant="secondary"
+            onPress={() => request('stop')}
+          >
+            <Button.Text>Stop</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled || emergencyLatched}
+            variant="secondary"
+            onPress={() => request('reset')}
+          >
+            <Button.Text>Reset</Button.Text>
+          </Button>
+        </View>
+      ) : (
+        <View style={styles.row}>
+          <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+            Confirm {pending}?
+          </Text>
+          <Button disabled={disabled} onPress={confirm}>
+            <Button.Text>Confirm</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled}
+            variant="secondary"
+            onPress={() => setPending(null)}
+          >
+            <Button.Text>Cancel</Button.Text>
+          </Button>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { gap: 8, borderWidth: 1 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+});

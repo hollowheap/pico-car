@@ -44,9 +44,36 @@ task and starts one startup task that initialises the shared hardware.
 | `src/physics/` | Buddy 4 IMU, hump detection, pipeline, task |
 | `src/motion/` | Motor owner, encoders, PID |
 | `src/ir/`, `src/sys/` | Line sensors and the shared GPIO IRQ dispatcher |
+| `src/telemetry/` | lwIP transport, MQTT client, queues, command ingress |
+| `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and JSON bridge |
+| `protocol/telemetry.yaml` | Wire schema shared by firmware and host |
 
 The opt-in bring-up targets build with `make buddy4_imu_check` or
 `make obstacle_bench` inside `build/`.
+
+## Telemetry
+
+The firmware publishes the status, system, heartbeat and event packets on
+MQTT and accepts STOP/START/RESET commands. Broker settings are CMake cache
+values: `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`,
+`PICO_CAR_MQTT_USERNAME`, `PICO_CAR_MQTT_PASSWORD`,
+`PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.
+
+The system packet carries the Buddy 4 and Buddy 5 state every 500 ms. The
+status packet keeps the motion state, speed, distance and fault word at the
+original 8 bytes.
+
+`lib/lwip` is a submodule used by the telemetry build; `configure.sh`
+initialises it. Set the Wi-Fi credentials on the configure line:
+
+```sh
+./configure.sh \
+  -DPICO_CAR_WIFI_SSID=your-ssid \
+  -DPICO_CAR_WIFI_PASSWORD=your-password
+```
+
+The generated credentials header stays in `build/` and is never committed.
+An empty SSID or password keeps `TM_WIFI_JOIN=0`.
 
 ## Tests
 

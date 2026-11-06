@@ -42,7 +42,7 @@ target_compile_options(buddy4_task PRIVATE
 add_library(buddy4_b2_glue STATIC EXCLUDE_FROM_ALL
     ${BUDDY4_SRC}/b4_b2_glue.c)
 target_include_directories(buddy4_b2_glue PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/motion)
+    ${PROJECT_SOURCE_DIR}/src/motion ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(buddy4_b2_glue PUBLIC buddy4_core motion_service)
 
 # Public facade: physics_init()/physics_snapshot(). Keeps the packed hump

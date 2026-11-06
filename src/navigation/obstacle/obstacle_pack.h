@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 #include "obstacle_config.h"
+#include "navigation/obstacle_cmd.h"
 
 /* ------------------------------------------------------------------ *
  * Codes.
@@ -67,9 +68,6 @@
 #define OBSTACLE_CMD_ACCEPT     (2U)
 #define OBSTACLE_CMD_REJECT     (3U)
 #define OBSTACLE_CMD_LINE_FOUND (4U)
-#define OBSTACLE_CMD_STOP       (5U)
-#define OBSTACLE_CMD_RESET      (6U)
-#define OBSTACLE_CMD_START      (7U)
 
 /* Events to Navigation, 2 bits. */
 #define OBSTACLE_EVT_OBSTACLE    (0U)
