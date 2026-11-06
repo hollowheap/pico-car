@@ -235,8 +235,8 @@ bool imu_motion_init (imu_motion_ctx_t * p_ctx,
         p_ctx->cfg = *p_cfg;
         p_ctx->fwd_axis = p_hump_cfg->fwd_axis;
         p_ctx->fwd_sign = p_hump_cfg->fwd_sign;
-        p_ctx->motion = B4_MOTION_UNKNOWN;
-        p_ctx->candidate = B4_MOTION_UNKNOWN;
+        p_ctx->motion = MOTION_CLASS_UNKNOWN;
+        p_ctx->candidate = MOTION_CLASS_UNKNOWN;
         p_ctx->candidate_count = 0U;
         p_ctx->impact_left = 0U;
         p_ctx->have_heading = false;
@@ -265,8 +265,8 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
     bool wheels_ok;
     bool enc_valid;
     bool collision;
-    b4_motion_t previous;
-    b4_motion_t cand;
+    motion_class_t previous;
+    motion_class_t cand;
 
     if ((NULL == p_ctx) || (NULL == p_sample) || (NULL == p_hump)
         || (NULL == p_in) || (NULL == p_out))
@@ -355,13 +355,13 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
     /* Classification. */
     if (!p_hump->calibrated)
     {
-        p_ctx->motion = B4_MOTION_UNKNOWN;
+        p_ctx->motion = MOTION_CLASS_UNKNOWN;
         p_ctx->candidate_count = 0U;
         p_ctx->impact_left = 0U;
     }
     else if (collision)
     {
-        p_ctx->motion = B4_MOTION_IMPACT;
+        p_ctx->motion = MOTION_CLASS_IMPACT;
         p_ctx->candidate_count = 0U;
         p_ctx->impact_left = p_cfg->impact_hold;
     }
@@ -375,35 +375,35 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
 
         if (HUMP_STATE_CLIMB == p_hump->state)
         {
-            cand = B4_MOTION_CLIMBING;
+            cand = MOTION_CLASS_CLIMBING;
         }
         else if (HUMP_STATE_DESCEND == p_hump->state)
         {
-            cand = B4_MOTION_DESCENDING;
+            cand = MOTION_CLASS_DESCENDING;
         }
         else if (wheels_ok
                  && (fabsf (p_in->v_left_mps) < p_cfg->stat_speed_mps)
                  && (fabsf (p_in->v_right_mps) < p_cfg->stat_speed_mps)
                  && (fabsf (acc_norm - 1.0f) <= p_cfg->stat_dev_g))
         {
-            cand = B4_MOTION_STATIONARY;
+            cand = MOTION_CLASS_STATIONARY;
         }
         else if ((IMU_YAW_NONE != p_out->yaw_src)
                  && (fabsf (p_out->yaw_rate_dps) > p_cfg->turn_dps))
         {
-            cand = B4_MOTION_TURNING;
+            cand = MOTION_CLASS_TURNING;
         }
         else if (fresh && (fabsf (p_sample->accel_mps2) > p_cfg->accel_mps2))
         {
-            cand = B4_MOTION_ACCELERATING;
+            cand = MOTION_CLASS_ACCELERATING;
         }
         else if (fresh)
         {
-            cand = B4_MOTION_MOVING;
+            cand = MOTION_CLASS_MOVING;
         }
         else
         {
-            cand = B4_MOTION_UNKNOWN;
+            cand = MOTION_CLASS_UNKNOWN;
         }
 
         if (cand == p_ctx->motion)

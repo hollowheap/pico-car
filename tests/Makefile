@@ -4,7 +4,7 @@ BUILD   := build
 SRC     := ../src/physics
 
 LOGIC   := $(SRC)/hump_detect.c $(SRC)/imu_motion.c $(SRC)/hump_msg.c
-DRIVERS := $(SRC)/lsm303.c $(SRC)/b4_b2_adapter.c $(SRC)/b4_pipeline.c
+DRIVERS := $(SRC)/lsm303.c $(SRC)/motion_adapter.c $(SRC)/pipeline.c
 HDRS    := $(wildcard $(SRC)/*.h)
 TESTS   := $(BUILD)/test_hump_detect $(BUILD)/test_hump_msg \
            $(BUILD)/test_imu_motion $(BUILD)/test_drivers

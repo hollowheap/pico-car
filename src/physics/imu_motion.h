@@ -39,20 +39,20 @@
 
 #include "hump_detect.h"
 
-/* Motion classes. 8 values: fits the 3-bit field of b4_packed_hump_t. */
+/* Motion classes. 8 values: fits the 3-bit field of packed_hump_t. */
 typedef enum
 {
-    B4_MOTION_UNKNOWN = 0,       /* Not calibrated, or cannot classify.    */
-    B4_MOTION_STATIONARY,
-    B4_MOTION_MOVING,            /* Moving at near-constant speed, level.  */
-    B4_MOTION_ACCELERATING,      /* Speeding up or braking.                */
-    B4_MOTION_TURNING,
-    B4_MOTION_CLIMBING,
-    B4_MOTION_DESCENDING,
-    B4_MOTION_IMPACT
-} b4_motion_t;
+    MOTION_CLASS_UNKNOWN = 0,       /* Not calibrated, or cannot classify.    */
+    MOTION_CLASS_STATIONARY,
+    MOTION_CLASS_MOVING,            /* Moving at near-constant speed, level.  */
+    MOTION_CLASS_ACCELERATING,      /* Speeding up or braking.                */
+    MOTION_CLASS_TURNING,
+    MOTION_CLASS_CLIMBING,
+    MOTION_CLASS_DESCENDING,
+    MOTION_CLASS_IMPACT
+} motion_class_t;
 
-#define B4_MOTION_COUNT (8U)
+#define MOTION_CLASS_COUNT (8U)
 
 typedef enum
 {
@@ -104,7 +104,7 @@ typedef struct
 
 typedef struct
 {
-    b4_motion_t motion;
+    motion_class_t motion;
     bool  changed;               /* motion differs from the previous call. */
     bool  collision;             /* Hit detected on this sample.           */
     float fwd_residual_g;
@@ -124,8 +124,8 @@ typedef struct
     imu_motion_config_t cfg;
     uint8_t     fwd_axis;        /* Copied from hump_config_t.             */
     int8_t      fwd_sign;
-    b4_motion_t motion;
-    b4_motion_t candidate;
+    motion_class_t motion;
+    motion_class_t candidate;
     uint16_t    candidate_count;
     uint16_t    impact_left;
     bool        have_heading;

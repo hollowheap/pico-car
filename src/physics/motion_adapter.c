@@ -1,4 +1,4 @@
-/** @file b4_b2_adapter.c
+/** @file motion_adapter.c
  *
  * @brief Convert Buddy 2's motion status into Buddy 4's SI inputs.
  */
@@ -9,14 +9,14 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "b4_b2_adapter.h"
-#include "b4_pipeline.h"
+#include "motion_adapter.h"
+#include "pipeline.h"
 
 #define UM_TO_M        (1.0e-6f)
 #define US_TO_S        (1.0e-6f)
 #define FUTURE_LIMIT   (0x80000000UL)   /* now - ts beyond this: future. */
 
-bool b4_b2_adapter_init (b4_b2_adapter_t * p_ad, float accel_alpha)
+bool motion_adapter_init (motion_adapter_t * p_ad, float accel_alpha)
 {
     if ((NULL == p_ad) || !isfinite (accel_alpha) || (accel_alpha <= 0.0f)
         || (accel_alpha > 1.0f))
@@ -29,8 +29,8 @@ bool b4_b2_adapter_init (b4_b2_adapter_t * p_ad, float accel_alpha)
     return true;
 }
 
-bool b4_b2_convert (b4_b2_adapter_t * p_ad, const b4_b2_reading_t * p_reading,
-                    uint32_t now_us, b4_motion_in_t * p_out)
+bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p_reading,
+                    uint32_t now_us, motion_input_t * p_out)
 {
     uint32_t age_us;
     bool speeds_ok;
@@ -53,13 +53,13 @@ bool b4_b2_convert (b4_b2_adapter_t * p_ad, const b4_b2_reading_t * p_reading,
     }
 
     age_us = now_us - p_reading->timestamp_us;   /* Wrap-safe. */
-    speeds_ok = p_reading->speed_valid[B4_B2_LEFT]
-                && p_reading->speed_valid[B4_B2_RIGHT];
-    odo_ok = p_reading->odometry_valid[B4_B2_LEFT]
-             && p_reading->odometry_valid[B4_B2_RIGHT];
+    speeds_ok = p_reading->speed_valid[PHYSICS_WHEEL_LEFT]
+                && p_reading->speed_valid[PHYSICS_WHEEL_RIGHT];
+    odo_ok = p_reading->odometry_valid[PHYSICS_WHEEL_LEFT]
+             && p_reading->odometry_valid[PHYSICS_WHEEL_RIGHT];
 
-    p_out->v_left_mps = (float)p_reading->velocity_um_s[B4_B2_LEFT] * UM_TO_M;
-    p_out->v_right_mps = (float)p_reading->velocity_um_s[B4_B2_RIGHT]
+    p_out->v_left_mps = (float)p_reading->velocity_um_s[PHYSICS_WHEEL_LEFT] * UM_TO_M;
+    p_out->v_right_mps = (float)p_reading->velocity_um_s[PHYSICS_WHEEL_RIGHT]
                          * UM_TO_M;
     p_out->wheels_valid = speeds_ok;
     speed = 0.5f * (p_out->v_left_mps + p_out->v_right_mps);
@@ -71,16 +71,16 @@ bool b4_b2_convert (b4_b2_adapter_t * p_ad, const b4_b2_reading_t * p_reading,
     {
         if (p_ad->have_disp)
         {
-            int64_t dl = p_reading->displacement_um[B4_B2_LEFT]
-                         - p_ad->prev_disp_um[B4_B2_LEFT];
-            int64_t dr = p_reading->displacement_um[B4_B2_RIGHT]
-                         - p_ad->prev_disp_um[B4_B2_RIGHT];
+            int64_t dl = p_reading->displacement_um[PHYSICS_WHEEL_LEFT]
+                         - p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT];
+            int64_t dr = p_reading->displacement_um[PHYSICS_WHEEL_RIGHT]
+                         - p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT];
 
             p_out->ds_m = 0.5f * ((float)dl + (float)dr) * UM_TO_M;
         }
-        p_ad->prev_disp_um[B4_B2_LEFT] = p_reading->displacement_um[B4_B2_LEFT];
-        p_ad->prev_disp_um[B4_B2_RIGHT] =
-            p_reading->displacement_um[B4_B2_RIGHT];
+        p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT] = p_reading->displacement_um[PHYSICS_WHEEL_LEFT];
+        p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT] =
+            p_reading->displacement_um[PHYSICS_WHEEL_RIGHT];
         p_ad->have_disp = true;
     }
     else

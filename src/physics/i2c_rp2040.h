@@ -1,4 +1,4 @@
-/** @file b4_i2c_rp2040.h
+/** @file i2c_rp2040.h
  *
  * @brief Polled RP2040 I2C1 master on GP2 (SDA) / GP3 (SCL), 400 kHz.
  *
@@ -11,24 +11,24 @@
  * 1% of one core at 50 Hz. Timeouts use the 1 MHz TIMERAWL counter.
  */
 
-#ifndef B4_I2C_RP2040_H
-#define B4_I2C_RP2040_H
+#ifndef I2C_RP2040_H
+#define I2C_RP2040_H
 
 #include <stdint.h>
 
 #include "lsm303.h"
 
-#define B4_I2C_SDA_PIN     (2U)
-#define B4_I2C_SCL_PIN     (3U)
-#define B4_I2C_TIMEOUT_US  (5000U)   /* Per transaction (PostTri1).  */
+#define I2C_SDA_PIN     (2U)
+#define I2C_SCL_PIN     (3U)
+#define I2C_TIMEOUT_US  (5000U)   /* Per transaction (PostTri1).  */
 
 /* Reset I2C1, route GP2/GP3 to it and set 400 kHz for clk_sys = 125 MHz.
  * Fills *p_bus with this driver's callbacks. */
-void b4_i2c_rp2040_init (b4_i2c_bus_t * p_bus);
+void i2c_rp2040_init (i2c_bus_t * p_bus);
 
 /* Microsecond timestamp from the RP2040 timer (wraps every 71.6 min). */
-uint32_t b4_time_us (void);
+uint32_t physics_time_us (void);
 
-#endif /* B4_I2C_RP2040_H */
+#endif /* I2C_RP2040_H */
 
 /*** end of file ***/

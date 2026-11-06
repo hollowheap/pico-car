@@ -39,7 +39,7 @@ typedef enum
 
 static uint16_t fp16_mul (uint16_t a, uint16_t b)
 {
-    return ((uint32_t)a * (uint32_t)b) >> FP16_OFFSET;
+    return (uint16_t)(((uint32_t)a * (uint32_t)b) >> FP16_OFFSET);
 }
 
 /**
@@ -77,7 +77,7 @@ static uint8_t decode_space_value (uint8_t idx, bool is_reverse)
     {
         idx = 3U - idx;
     }
-    return ((idx - 2U) & 0b11U) << 4U;
+    return ((idx - 2U) & 0x3U) << 4U;
 }
 
 static elem_type_t get_elem_type (barcode_parser_t * state,
@@ -111,7 +111,7 @@ static uint8_t decode_data (uint8_t data)
     {
         ones -= 1;
     }
-    return (tens * 10) + ones;
+    return (uint8_t)((tens * 10U) + ones);
 }
 
 /**
@@ -143,9 +143,10 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
                 {
                     return true;
                 }
-                state->wide_space_count += 1;
-                state->curr_value += decode_space_value(state->elem_index >> 1,
-                                                        state->is_reverse);
+                state->wide_space_count = (uint8_t)(state->wide_space_count + 1U);
+                state->curr_value = (uint8_t)(state->curr_value +
+                    decode_space_value(state->elem_index >> 1,
+                                       state->is_reverse));
             }
             else
             {
@@ -153,16 +154,17 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
                 {
                     return true;
                 }
-                state->wide_bar_count += 1;
-                state->curr_value +=
-                    decode_bar_value(state->elem_index >> 1, state->is_reverse);
+                state->wide_bar_count = (uint8_t)(state->wide_bar_count + 1U);
+                state->curr_value = (uint8_t)(state->curr_value +
+                    decode_bar_value(state->elem_index >> 1,
+                                     state->is_reverse));
             }
             break;
         case ELEM_TYPE_INVALID:
         default:
             return true;
     }
-    state->elem_index += 1;
+    state->elem_index = (uint8_t)(state->elem_index + 1U);
     return false;
 }
 
@@ -219,7 +221,7 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
             goto invalid;
         }
         // First element is assumed to be narrow
-        state->narrow_width_um = elem_width_um;
+        state->narrow_width_um = (uint16_t)(elem_width_um & 0x3FFFU);
     }
 
     const elem_type_t elem_type = get_elem_type(state, elem_width_um);

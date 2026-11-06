@@ -1,9 +1,9 @@
-/** @file b4_b2_adapter.h
+/** @file motion_adapter.h
  *
  * @brief Convert Buddy 2's motion status into Buddy 4's SI inputs.
  *
- * b4_b2_reading_t mirrors the fields of Buddy 2's motion_sample_t
- * (pico-car/src/odometry.h), filled by b4_b2_glue.c on the car. Keeping
+ * motion_reading_t mirrors the fields of Buddy 2's motion_sample_t
+ * (pico-car/src/odometry.h), filled by motion_glue.c on the car. Keeping
  * the conversion here makes it testable on the laptop.
  *
  * Rules:
@@ -19,16 +19,16 @@
  *     2's value once available.
  */
 
-#ifndef B4_B2_ADAPTER_H
-#define B4_B2_ADAPTER_H
+#ifndef MOTION_ADAPTER_H
+#define MOTION_ADAPTER_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "b4_pipeline.h"
+#include "pipeline.h"
 
-#define B4_B2_LEFT  (0U)   /* Same as Buddy 2's ENCODER_LEFT.  */
-#define B4_B2_RIGHT (1U)   /* Same as Buddy 2's ENCODER_RIGHT. */
+#define PHYSICS_WHEEL_LEFT  (0U)   /* Same as Buddy 2's ENCODER_LEFT.  */
+#define PHYSICS_WHEEL_RIGHT (1U)   /* Same as Buddy 2's ENCODER_RIGHT. */
 
 typedef struct
 {
@@ -38,7 +38,7 @@ typedef struct
     int64_t  displacement_um[2]; /* Signed, since Buddy 2's sampler init.  */
     bool     speed_valid[2];
     bool     odometry_valid[2];
-} b4_b2_reading_t;
+} motion_reading_t;
 
 typedef struct
 {
@@ -50,16 +50,16 @@ typedef struct
     float    prev_speed_mps;
     bool     accel_valid;
     float    accel_mps2;
-} b4_b2_adapter_t;
+} motion_adapter_t;
 
 /* accel_alpha in (0, 1]. Returns false for a null pointer or bad alpha. */
-bool b4_b2_adapter_init (b4_b2_adapter_t * p_ad, float accel_alpha);
+bool motion_adapter_init (motion_adapter_t * p_ad, float accel_alpha);
 
 /* p_reading may be NULL when Buddy 2 is not running; out is then invalid.
  * Returns false only for a null p_ad or p_out. */
-bool b4_b2_convert (b4_b2_adapter_t * p_ad, const b4_b2_reading_t * p_reading,
-                    uint32_t now_us, b4_motion_in_t * p_out);
+bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p_reading,
+                    uint32_t now_us, motion_input_t * p_out);
 
-#endif /* B4_B2_ADAPTER_H */
+#endif /* MOTION_ADAPTER_H */
 
 /*** end of file ***/

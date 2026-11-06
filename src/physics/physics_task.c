@@ -1,4 +1,4 @@
-/** @file b4_task.c
+/** @file physics_task.c
  *
  * @brief Buddy 4 Hump task for micro T-Kernel 3.0 (target only).
  */
@@ -12,21 +12,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "b4_b2_adapter.h"
-#include "b4_i2c_rp2040.h"
-#include "b4_pipeline.h"
-#include "b4_task.h"
+#include "motion_adapter.h"
+#include "i2c_rp2040.h"
+#include "pipeline.h"
+#include "physics_task.h"
 #include "hump_msg.h"
 #include "lsm303.h"
 
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
 #define SLEEP_TIMEOUT_MS   (200)    /* Wake-up missing for 10 periods.   */
 
-static b4_task_config_t g_cfg;
-static b4_pipeline_t    g_pipe;
-static b4_b2_adapter_t  g_b2;
+static physics_task_config_t g_cfg;
+static pipeline_t    g_pipe;
+static motion_adapter_t  g_b2;
 static lsm303_t         g_imu;
-static b4_i2c_bus_t     g_bus;
+static i2c_bus_t     g_bus;
 static ID               g_task_id = 0;
 static ID               g_nav_mbf = 0;
 static ID               g_telem_mbf = 0;
@@ -34,7 +34,7 @@ static bool             g_started = false;
 
 /* Counters: written by the task, copied by readers under the spinlock. */
 static T_SPLOCK         g_stats_lock;
-static b4_task_stats_t  g_stats;
+static physics_task_stats_t  g_stats;
 
 /* Requests from other tasks: single-word flags, set elsewhere, cleared here. */
 static volatile bool    g_req_new_run = false;
@@ -46,7 +46,7 @@ static void cyclic_wakeup (void * p_exinf)
     (void)tk_wup_tsk (g_task_id);
 }
 
-static void stats_update (const b4_task_stats_t * p_local)
+static void stats_update (const physics_task_stats_t * p_local)
 {
     UINT saved;
 
@@ -55,7 +55,7 @@ static void stats_update (const b4_task_stats_t * p_local)
     (void)ISpinUnlock (&g_stats_lock, saved);
 }
 
-static void send (ID mbf, b4_packed_hump_t word, uint32_t * p_sent,
+static void send (ID mbf, packed_hump_t word, uint32_t * p_sent,
                   uint32_t * p_dropped)
 {
     ER er = tk_snd_mbf (mbf, &word, (INT)sizeof (word), TMO_POL);
@@ -88,8 +88,8 @@ static int32_t scaled (float value, float scale)
 /* One CSV row. tm_printf has no %f, so values are scaled integers. */
 static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
                      const lsm303_vec_t * p_mag, bool mag_ok,
-                     const b4_motion_in_t * p_mot,
-                     const b4_step_out_t * p_step)
+                     const motion_input_t * p_mot,
+                     const pipeline_step_t * p_step)
 {
     tm_printf ((UB *)"B4,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%08x\n",
                (unsigned int)t_us,
@@ -119,37 +119,37 @@ static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
 
 static void log_header (void)
 {
-    tm_printf ((UB *)"B4H,t_us,ax_mg,ay_mg,az_mg,mx_raw,my_raw,mz_raw,mag_new,"
+    tm_printf ((UB *)"PHYS_H,t_us,ax_mg,ay_mg,az_mg,mx_raw,my_raw,mz_raw,mag_new,"
                "b2_valid,vl_mm_s,vr_mm_s,ds_um,acc_mm_s2,pitch_cdeg,state,"
                "motion,yaw_ddps,cal,theta0_cdeg,word\n");
-    tm_printf ((UB *)"B4H,mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
+    tm_printf ((UB *)"PHYS_H,mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
 }
 
-void b4_task_run (void)
+void physics_task_run (void)
 {
-    b4_task_stats_t local = { 0 };
+    physics_task_stats_t local = { 0 };
     lsm303_vec_t acc = { 0 };
     lsm303_vec_t mag = { 0 };
     uint32_t prev_us;
     uint32_t retry_count = 0U;
     uint8_t last_faults = 0xFFU;
 
-    b4_i2c_rp2040_init (&g_bus);
+    i2c_rp2040_init (&g_bus);
     local.sensor_inits = 1U;
     local.last_init = lsm303_init (&g_imu, &g_bus, g_cfg.i2c_attempts);
     if (g_cfg.log_every > 0U)
     {
         log_header ();
-        tm_printf ((UB *)"B4H,lsm303_init=%d\n", (int)local.last_init);
+        tm_printf ((UB *)"PHYS_H,lsm303_init=%d\n", (int)local.last_init);
     }
-    prev_us = b4_time_us ();
+    prev_us = physics_time_us ();
 
     for (;;)
     {
-        b4_b2_reading_t reading = { 0 };
-        b4_motion_in_t motion;
-        b4_step_out_t step;
-        b4_hump_fields_t fields;
+        motion_reading_t reading = { 0 };
+        motion_input_t motion;
+        pipeline_step_t step;
+        hump_fields_t fields;
         bool have_b2 = false;
         bool acc_ok = false;
         bool mag_ok = false;
@@ -174,7 +174,7 @@ void b4_task_run (void)
             /* Normal wake-up. */
         }
 
-        now_us = b4_time_us ();
+        now_us = physics_time_us ();
         dt_s = (float)(now_us - prev_us) * 1.0e-6f;
         prev_us = now_us;
         if (dt_s <= 0.0f)
@@ -190,7 +190,7 @@ void b4_task_run (void)
         if (g_req_new_run)
         {
             g_req_new_run = false;
-            b4_pipeline_new_run (&g_pipe);
+            pipeline_new_run (&g_pipe);
         }
 
         /* Bring the sensor up if it was missing or failed to configure. */
@@ -220,10 +220,10 @@ void b4_task_run (void)
         {
             have_b2 = g_cfg.read_b2 (&reading);
         }
-        (void)b4_b2_convert (&g_b2, have_b2 ? &reading : NULL, now_us,
+        (void)motion_adapter_convert (&g_b2, have_b2 ? &reading : NULL, now_us,
                              &motion);
 
-        (void)b4_pipeline_step (&g_pipe, acc_ok ? acc.value : NULL,
+        (void)pipeline_step (&g_pipe, acc_ok ? acc.value : NULL,
                                 mag_ok ? mag.value : NULL, &motion, dt_s,
                                 g_imu.fault || !g_imu.ready, &step);
 
@@ -237,7 +237,7 @@ void b4_task_run (void)
                   &local.telem_dropped);
         }
 
-        (void)b4_hump_unpack (step.word, &fields);
+        (void)hump_unpack (step.word, &fields);
         if ((fields.faults != last_faults) && (NULL != g_cfg.publish_faults))
         {
             g_cfg.publish_faults (fields.faults);
@@ -249,7 +249,7 @@ void b4_task_run (void)
             log_row (now_us, &acc, acc_ok, &mag, mag_ok, &motion, &step);
         }
 
-        work_us = b4_time_us () - now_us;
+        work_us = physics_time_us () - now_us;
         if (work_us > local.max_work_us)
         {
             local.max_work_us = work_us;
@@ -261,11 +261,11 @@ void b4_task_run (void)
     }
 }
 
-void b4_task_default_config (b4_task_config_t * p_cfg)
+void physics_task_default_config (physics_task_config_t * p_cfg)
 {
     if (NULL != p_cfg)
     {
-        static const b4_task_config_t zero_cfg = { 0 };
+        static const physics_task_config_t zero_cfg = { 0 };
 
         *p_cfg = zero_cfg;
         p_cfg->priority = 4;
@@ -283,9 +283,9 @@ void b4_task_default_config (b4_task_config_t * p_cfg)
     }
 }
 
-ER b4_task_init (const b4_task_config_t * p_cfg, ID task_id)
+ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id)
 {
-    static const b4_task_stats_t zero_stats = { 0 };
+    static const physics_task_stats_t zero_stats = { 0 };
     T_CMBF cmbf = { 0 };
     T_CCYC ccyc = { 0 };
     ID id;
@@ -302,9 +302,9 @@ ER b4_task_init (const b4_task_config_t * p_cfg, ID task_id)
     }
 
     g_cfg = *p_cfg;
-    if (!b4_pipeline_init (&g_pipe, &g_cfg.hump, &g_cfg.motion,
+    if (!pipeline_init (&g_pipe, &g_cfg.hump, &g_cfg.motion,
                            g_cfg.telem_every)
-        || !b4_b2_adapter_init (&g_b2, g_cfg.b2_accel_alpha))
+        || !motion_adapter_init (&g_b2, g_cfg.b2_accel_alpha))
     {
         return E_PAR;
     }
@@ -312,8 +312,8 @@ ER b4_task_init (const b4_task_config_t * p_cfg, ID task_id)
     g_stats = zero_stats;
 
     cmbf.mbfatr = TA_TFIFO;
-    cmbf.bufsz = (SZ)B4_MBF_BUFSZ;
-    cmbf.maxmsz = (INT)sizeof (b4_packed_hump_t);
+    cmbf.bufsz = (SZ)PHYSICS_MBF_BUFSZ;
+    cmbf.maxmsz = (INT)sizeof (packed_hump_t);
     id = tk_cre_mbf (&cmbf);
     if (id < E_OK)
     {
@@ -342,17 +342,17 @@ ER b4_task_init (const b4_task_config_t * p_cfg, ID task_id)
     return E_OK;
 }
 
-ID b4_task_nav_mbf (void)
+ID physics_task_nav_mbf (void)
 {
     return g_nav_mbf;
 }
 
-ID b4_task_telem_mbf (void)
+ID physics_task_telem_mbf (void)
 {
     return g_telem_mbf;
 }
 
-void b4_task_get_stats (b4_task_stats_t * p_stats)
+void physics_task_get_stats (physics_task_stats_t * p_stats)
 {
     UINT saved;
 
@@ -364,12 +364,12 @@ void b4_task_get_stats (b4_task_stats_t * p_stats)
     }
 }
 
-void b4_task_request_new_run (void)
+void physics_task_request_new_run (void)
 {
     g_req_new_run = true;
 }
 
-void b4_task_request_clear_fault (void)
+void physics_task_request_clear_fault (void)
 {
     g_req_clear_fault = true;
 }

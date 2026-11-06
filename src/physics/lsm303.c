@@ -53,7 +53,7 @@ static bool transfer (lsm303_t * p_dev, uint8_t addr7,
 
     for (attempt = 0U; (attempt < p_dev->max_attempts) && !ok; attempt++)
     {
-        b4_bus_result_t result;
+        i2c_bus_result_t result;
 
         if (attempt > 0U)
         {
@@ -64,15 +64,15 @@ static bool transfer (lsm303_t * p_dev, uint8_t addr7,
                                         p_wr, wr_len, p_rd, rd_len);
         switch (result)
         {
-            case B4_BUS_OK:
+            case I2C_BUS_OK:
                 ok = true;
                 break;
 
-            case B4_BUS_NACK:
+            case I2C_BUS_NACK:
                 p_dev->stats.nacks++;
                 break;
 
-            case B4_BUS_TIMEOUT:
+            case I2C_BUS_TIMEOUT:
                 p_dev->stats.timeouts++;
                 /* A slave holding SDA low can block every later transfer:
                  * clock it free before the next attempt. */
@@ -113,7 +113,7 @@ static bool read_regs (lsm303_t * p_dev, uint8_t addr7, uint8_t reg,
     return transfer (p_dev, addr7, &reg, 1U, p_buf, len);
 }
 
-lsm303_result_t lsm303_init (lsm303_t * p_dev, const b4_i2c_bus_t * p_bus,
+lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
                              uint8_t max_attempts)
 {
     static const uint8_t acc_regs[2] = { LSM303_CTRL_REG1_A,

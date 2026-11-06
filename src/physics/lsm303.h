@@ -2,8 +2,8 @@
  *
  * @brief LSM303DLHC (GY-511) accelerometer and magnetometer protocol.
  *
- * Talks to the chip through an abstract I2C bus (b4_i2c_bus_t), so the same
- * code runs against the RP2040 driver (b4_i2c_rp2040.c) on the car and a
+ * Talks to the chip through an abstract I2C bus (i2c_bus_t), so the same
+ * code runs against the RP2040 driver (i2c_rp2040.c) on the car and a
  * simulated chip in the host tests.
  *
  * Settings, from SE01_PostTri1 and the datasheet (DocID018771 Rev 2):
@@ -52,22 +52,22 @@
 
 typedef enum
 {
-    B4_BUS_OK = 0,
-    B4_BUS_NACK,                 /* Address or data not acknowledged.      */
-    B4_BUS_TIMEOUT,              /* Transfer did not finish in time.       */
-    B4_BUS_ERROR                 /* Any other controller error.            */
-} b4_bus_result_t;
+    I2C_BUS_OK = 0,
+    I2C_BUS_NACK,                 /* Address or data not acknowledged.      */
+    I2C_BUS_TIMEOUT,              /* Transfer did not finish in time.       */
+    I2C_BUS_ERROR                 /* Any other controller error.            */
+} i2c_bus_result_t;
 
 /* Write wr_len bytes, then (if rd_len > 0) repeated-start and read rd_len
  * bytes, then STOP. One call = one complete transaction. */
 typedef struct
 {
     void * p_ctx;
-    b4_bus_result_t (*write_read) (void * p_ctx, uint8_t addr7,
+    i2c_bus_result_t (*write_read) (void * p_ctx, uint8_t addr7,
                                    const uint8_t * p_wr, uint32_t wr_len,
                                    uint8_t * p_rd, uint32_t rd_len);
     void (*recover) (void * p_ctx);  /* Optional; may be NULL. */
-} b4_i2c_bus_t;
+} i2c_bus_t;
 
 typedef enum
 {
@@ -90,7 +90,7 @@ typedef struct
 
 typedef struct
 {
-    b4_i2c_bus_t   bus;
+    i2c_bus_t   bus;
     uint8_t        max_attempts;
     bool           ready;        /* init succeeded.                        */
     bool           fault;        /* Latched; see lsm303_clear_fault.       */
@@ -106,7 +106,7 @@ typedef struct
 
 /* Check the identity, write the configuration and read it back.
  * max_attempts must be 1 to 8. */
-lsm303_result_t lsm303_init (lsm303_t * p_dev, const b4_i2c_bus_t * p_bus,
+lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
                              uint8_t max_attempts);
 
 /* One 6-byte burst read. Requires a successful init. */

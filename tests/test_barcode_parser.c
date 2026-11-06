@@ -12,7 +12,7 @@
 
 static uint8_t char_to_data (char c)
 {
-    return c - 'A';
+    return (uint8_t)(c - 'A');
 }
 
 static uint8_t put_char (barcode_parser_t * parser, uint8_t wide_space,
