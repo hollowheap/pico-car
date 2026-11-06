@@ -29,7 +29,7 @@ Override the synchronized value with `--sent-ms` for controlled tests.
 
 ## Outage check
 
-`artifacts/scripts/test_wifi_outage.py` starts a loopback broker, publishes
+the project notes starts a loopback broker, publishes
 telemetry, drops the link for 30 seconds, and checks reconnect (NFR6), live
 decode, and the CLI command path including heartbeat synchronization. Set `PICO_CAR_CLI_DIR` and
 `PICO_CAR_SCHEMA` when running it against a worktree.

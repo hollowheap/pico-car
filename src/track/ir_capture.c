@@ -10,6 +10,19 @@
 #include "ir_pins.h"
 
 #define IO_IRQ_BANK0 13U
+#define BARCODE_EDGE_RING 64U
+#define BARCODE_TIMER_REG (TIMER_BASE + 0x28U)
+
+typedef struct
+{
+    uint32_t timestamp_us;
+    uint8_t  level;
+} barcode_edge_t;
+
+static barcode_edge_t    g_barcode_edges[BARCODE_EDGE_RING];
+static volatile uint32_t g_barcode_head;
+static volatile uint32_t g_barcode_tail;
+static volatile uint32_t g_barcode_drops;
 
 /**
  * After the isr has been initialised, this can only be written to by `ir_isr`.
@@ -57,6 +70,22 @@ LOCAL void ir_isr (UINT intno)
 
     if (old_state.barcode != new_state.barcode)
     {
+        uint32_t const now  = in_w(BARCODE_TIMER_REG);
+        uint32_t const next = (g_barcode_head + 1U) % BARCODE_EDGE_RING;
+
+        if (next != g_barcode_tail)
+        {
+            g_barcode_edges[g_barcode_head].timestamp_us = now;
+            g_barcode_edges[g_barcode_head].level =
+                (uint8_t)(new_state.barcode ? 1U : 0U);
+            mp_memory_barrir();
+            g_barcode_head = next;
+        }
+        else
+        {
+            g_barcode_drops++;
+        }
+
         (void)tk_sig_sem(g_barcode_sem, 1);
     }
     if ((old_state.left != new_state.left) ||
@@ -108,6 +137,27 @@ EXPORT ER ir_capture_init (void)
 EXPORT ir_sensors_state_t ir_get_state (void)
 {
     return load_state(&g_state);
+}
+
+EXPORT bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
+{
+    bool b_popped = false;
+
+    if ((NULL != p_timestamp_us) && (NULL != p_level) &&
+        (g_barcode_tail != g_barcode_head))
+    {
+        *p_timestamp_us = g_barcode_edges[g_barcode_tail].timestamp_us;
+        *p_level        = (0U != g_barcode_edges[g_barcode_tail].level);
+        g_barcode_tail  = (g_barcode_tail + 1U) % BARCODE_EDGE_RING;
+        b_popped        = true;
+    }
+
+    return (b_popped);
+}
+
+EXPORT uint32_t ir_barcode_drops (void)
+{
+    return (g_barcode_drops);
 }
 
 EXPORT ER ir_wait_change (uint8_t type, TMO tmout)

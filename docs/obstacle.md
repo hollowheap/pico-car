@@ -121,7 +121,7 @@ block at the end of the team `CMakeLists.txt`. The
 | Item | Value |
 |---|---|
 | Buddy 5 task | priority 6, processor 1 (core 0), 4096 B stack |
-| Echo ISR | 1 slot in the shared `src/sys/gpio_irq` dispatcher, processor 1 |
+| Echo ISR | 1 slot in the shared `src/platform/isr` dispatcher, processor 1 |
 | Kernel objects created | **1 event flag** (`flg_obs_id`); no message buffer, cyclic handler or mutex |
 | PWM | slice 6 channel A (GP12), 125 MHz / 125 = 1 MHz, TOP 19999 = 50 Hz |
 

@@ -9,6 +9,7 @@
 #include "motion/motion_service.h"
 #include "motion/encoder.h"
 #include "navigation/obstacle.h"
+#include "track/barcode.h"
 #include "physics/physics.h"
 #include "platform/faults.h"
 #include "platform/isr.h"
@@ -224,6 +225,35 @@ LOCAL void line_task (INT stacd, void * exinf)
         }
         ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
     }
+}
+
+/*!
+ * @brief Publish one decoded barcode character as a telemetry event.
+ */
+LOCAL void barcode_command (uint8_t code)
+{
+    uint8_t         event[TELEMETRY_EVENT_WIRE_SIZE];
+    static uint16_t event_id;
+
+    (void)telemetry_pack_event(event, event_id, (uint8_t)'B', (int16_t)code,
+                               0U);
+    event_id++;
+    (void)telemetry_queue_push(event, TELEMETRY_EVENT_WIRE_SIZE,
+                               (uint8_t)'e', 1U);
+    tm_printf((UB *)"[barcode] %c\n", (INT)(code + (uint8_t)'A'));
+}
+
+LOCAL void barcode_task (INT stacd, void * exinf)
+{
+    (void)stacd;
+    (void)exinf;
+
+    if (!wait_startup())
+    {
+        park();
+    }
+
+    barcode_task_run();
 }
 
 /*!
@@ -526,6 +556,13 @@ LOCAL T_CTSK ctsk_connection = {
 #endif
 };
 
+LOCAL T_CTSK ctsk_barcode = {
+    .itskpri = 7,
+    .stksz   = STACK_SZ,
+    .task    = barcode_task,
+    .tskatr  = TA_HLNG | TA_RNG3,
+};
+
 /* ------------------------------------------------------------------ *
  *  Entry point
  * ------------------------------------------------------------------ */
@@ -555,6 +592,8 @@ EXPORT INT usermain (void)
     ID   blink_tid;
     ID   telemetry_tid = 0;
     ID   connection_tid = 0;
+    ID   barcode_tid = 0;
+    bool b_barcode;
 
     /* Telemetry is optional: the car still runs when the queues or the
      * network initialisation fail. */
@@ -566,6 +605,8 @@ EXPORT INT usermain (void)
     {
         tm_printf((UB *)"[init] telemetry queues failed: %d\n", result);
     }
+
+    barcode_set_handler(barcode_command);
 
     result = connection_init(command_dispatch, NULL);
     b_connection = (E_OK == result);
@@ -625,6 +666,9 @@ EXPORT INT usermain (void)
         }
     }
 
+    barcode_tid = tk_cre_tsk(&ctsk_barcode);
+    b_barcode   = made("tsk(barcode)", barcode_tid);
+
     if (b_connection)
     {
         connection_tid = tk_cre_tsk(&ctsk_connection);
@@ -654,6 +698,10 @@ EXPORT INT usermain (void)
     if (b_connection)
     {
         tk_sta_tsk(connection_tid, 0);
+    }
+    if (b_barcode)
+    {
+        tk_sta_tsk(barcode_tid, 0);
     }
 
     /* The initial task has nothing left to do.  It must not return: on

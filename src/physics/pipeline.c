@@ -1,4 +1,4 @@
-/** @file b4_pipeline.c
+/** @file pipeline.c
  *
  * @brief One 20 ms Buddy 4 cycle: sensor values in, packed messages out.
  */
@@ -9,17 +9,17 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "b4_pipeline.h"
+#include "pipeline.h"
 #include "hump_detect.h"
 #include "hump_msg.h"
 #include "imu_motion.h"
 
-bool b4_pipeline_init (b4_pipeline_t * p_pipe,
+bool pipeline_init (pipeline_t * p_pipe,
                        const hump_config_t * p_hump_cfg,
                        const imu_motion_config_t * p_motion_cfg,
                        uint32_t telem_every)
 {
-    b4_pipeline_t fresh;
+    pipeline_t fresh;
 
     if ((NULL == p_pipe) || (NULL == p_hump_cfg) || (NULL == p_motion_cfg)
         || (telem_every < 1U))
@@ -33,55 +33,55 @@ bool b4_pipeline_init (b4_pipeline_t * p_pipe,
     {
         return false;
     }
-    b4_run_init (&fresh.run);
+    hump_run_init (&fresh.run);
     fresh.telem_every = telem_every;
-    fresh.last_motion = B4_MOTION_UNKNOWN;
+    fresh.last_motion = MOTION_CLASS_UNKNOWN;
 
     *p_pipe = fresh;
     return true;
 }
 
-void b4_pipeline_new_run (b4_pipeline_t * p_pipe)
+void pipeline_new_run (pipeline_t * p_pipe)
 {
     if (NULL != p_pipe)
     {
         hump_recalibrate (&p_pipe->hump);
-        b4_run_init (&p_pipe->run);
+        hump_run_init (&p_pipe->run);
     }
 }
 
 /* Message for a cycle with no accelerometer data: the last message with the
  * I2C fault set, no event flags, and the height marked not valid. */
-static b4_packed_hump_t fault_word (const b4_pipeline_t * p_pipe)
+static packed_hump_t fault_word (const pipeline_t * p_pipe)
 {
-    b4_hump_fields_t fields;
-    b4_packed_hump_t word = 0U;
+    hump_fields_t fields;
+    packed_hump_t word = 0U;
 
     (void)memset (&fields, 0, sizeof (fields));
     if (p_pipe->have_last)
     {
-        (void)b4_hump_unpack (p_pipe->last_word, &fields);
+        (void)hump_unpack (p_pipe->last_word, &fields);
     }
-    fields.faults = (uint8_t)(fields.faults | B4_FAULT_I2C);
+    fields.faults = (uint8_t)(fields.faults | PHYSICS_FAULT_I2C);
     fields.finished = false;
     fields.height_valid = false;
-    (void)b4_hump_pack (&fields, &word);
+    (void)hump_pack (&fields, &word);
 
     return word;
 }
 
-bool b4_pipeline_step (b4_pipeline_t * p_pipe,
+bool pipeline_step (pipeline_t * p_pipe,
                        const float * p_acc_g,
                        const float * p_mag_g,
-                       const b4_motion_in_t * p_motion,
+                       const motion_input_t * p_motion,
                        float dt_s,
                        bool i2c_fault,
-                       b4_step_out_t * p_out)
+                       pipeline_step_t * p_out)
 {
     hump_sample_t sample;
     imu_motion_input_t in;
-    b4_hump_fields_t fields;
-    b4_packed_hump_t word = 0U;
+    hump_fields_t fields;
+    packed_hump_t word = 0U;
     uint8_t faults;
     bool event = false;
 
@@ -157,11 +157,11 @@ bool b4_pipeline_step (b4_pipeline_t * p_pipe,
 
     if (p_out->sensors_ok)
     {
-        b4_run_update (&p_pipe->run, &p_out->hump);
-        (void)b4_hump_fields_from_output (&p_out->hump, &p_pipe->run,
+        hump_run_update (&p_pipe->run, &p_out->hump);
+        (void)hump_fields_from_output (&p_out->hump, &p_pipe->run,
                                           p_out->motion.motion, i2c_fault,
                                           &fields);
-        if (!b4_hump_pack (&fields, &word))
+        if (!hump_pack (&fields, &word))
         {
             p_out->sensors_ok = false;
         }
@@ -178,7 +178,7 @@ bool b4_pipeline_step (b4_pipeline_t * p_pipe,
         word = fault_word (p_pipe);
     }
 
-    (void)b4_hump_unpack (word, &fields);
+    (void)hump_unpack (word, &fields);
     faults = fields.faults;
     if (!p_pipe->have_last || (faults != p_pipe->last_faults))
     {

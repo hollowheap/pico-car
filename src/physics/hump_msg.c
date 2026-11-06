@@ -1,6 +1,6 @@
 /** @file hump_msg.c
  *
- * @brief Packed 32-bit Buddy 4 hump/terrain message (b4_packed_hump_t).
+ * @brief Packed 32-bit Buddy 4 hump/terrain message (packed_hump_t).
  *
  * See hump_msg.h for the bit layout and the reading rules.
  */
@@ -35,15 +35,15 @@
 #define HALF_DEG_PER_DEG (2.0f)
 
 /* Round a height in metres to a 7-bit code. Sets *p_overflow when the value
- * is above B4_HEIGHT_MAX_MM after rounding. Caller has checked >= 0. */
+ * is above HUMP_HEIGHT_MAX_MM after rounding. Caller has checked >= 0. */
 static uint32_t height_code (float height_m, bool * p_overflow)
 {
     float mm = floorf ((height_m * 1000.0f) + 0.5f);
     uint32_t code;
 
-    if (mm > (float)B4_HEIGHT_MAX_MM)
+    if (mm > (float)HUMP_HEIGHT_MAX_MM)
     {
-        code = B4_HEIGHT_OVERFLOW;
+        code = HUMP_HEIGHT_OVERFLOW;
         *p_overflow = true;
     }
     else
@@ -56,7 +56,7 @@ static uint32_t height_code (float height_m, bool * p_overflow)
 }
 
 /* Round a pitch to a 7-bit offset code. Sets *p_clipped when the value is
- * outside B4_PITCH_MIN_DEG .. B4_PITCH_MAX_DEG after rounding. */
+ * outside HUMP_PITCH_MIN_DEG .. HUMP_PITCH_MAX_DEG after rounding. */
 static uint32_t pitch_code (float pitch_deg, bool * p_clipped)
 {
     float code = floorf ((pitch_deg * HALF_DEG_PER_DEG) + 0.5f) + PITCH_OFFSET;
@@ -80,8 +80,8 @@ static uint32_t pitch_code (float pitch_deg, bool * p_clipped)
     return (uint32_t)code;
 }
 
-bool b4_hump_pack (const b4_hump_fields_t * p_fields,
-                   b4_packed_hump_t * p_word)
+bool hump_pack (const hump_fields_t * p_fields,
+                   packed_hump_t * p_word)
 {
     uint32_t word;
     uint32_t faults;
@@ -96,7 +96,7 @@ bool b4_hump_pack (const b4_hump_fields_t * p_fields,
     }
 
     if (((uint32_t)p_fields->state > (uint32_t)HUMP_STATE_DESCEND)
-        || ((uint32_t)p_fields->motion >= B4_MOTION_COUNT)
+        || ((uint32_t)p_fields->motion >= MOTION_CLASS_COUNT)
         || (((uint32_t)p_fields->faults & ~FAULT_MASK) != 0U)
         || !isfinite (p_fields->pitch_deg)
         || !isfinite (p_fields->hump_peak_m)
@@ -116,7 +116,7 @@ bool b4_hump_pack (const b4_hump_fields_t * p_fields,
     word |= pitch_code (p_fields->pitch_deg, &clipped) << PITCH_SHIFT;
     if (clipped)
     {
-        faults |= B4_FAULT_TILT;
+        faults |= PHYSICS_FAULT_TILT;
     }
 
     word |= height_code (p_fields->hump_peak_m, &hump_over) << HPEAK_SHIFT;
@@ -149,7 +149,7 @@ bool b4_hump_pack (const b4_hump_fields_t * p_fields,
     return true;
 }
 
-bool b4_hump_unpack (b4_packed_hump_t word, b4_hump_fields_t * p_fields)
+bool hump_unpack (packed_hump_t word, hump_fields_t * p_fields)
 {
     uint32_t pitch;
 
@@ -160,7 +160,7 @@ bool b4_hump_unpack (b4_packed_hump_t word, b4_hump_fields_t * p_fields)
     }
 
     p_fields->state = (hump_state_t)((word >> STATE_SHIFT) & STATE_MASK);
-    p_fields->motion = (b4_motion_t)((word >> MOTION_SHIFT) & MOTION_MASK);
+    p_fields->motion = (motion_class_t)((word >> MOTION_SHIFT) & MOTION_MASK);
     p_fields->faults = (uint8_t)((word >> FAULT_SHIFT) & FAULT_MASK);
     pitch = (word >> PITCH_SHIFT) & PITCH_MASK;
     p_fields->pitch_deg = ((float)pitch - PITCH_OFFSET) / HALF_DEG_PER_DEG;
@@ -175,7 +175,7 @@ bool b4_hump_unpack (b4_packed_hump_t word, b4_hump_fields_t * p_fields)
     return true;
 }
 
-void b4_hump_to_bytes (b4_packed_hump_t word, uint8_t p_bytes[4])
+void hump_to_bytes (packed_hump_t word, uint8_t p_bytes[4])
 {
     if (NULL != p_bytes)
     {
@@ -186,9 +186,9 @@ void b4_hump_to_bytes (b4_packed_hump_t word, uint8_t p_bytes[4])
     }
 }
 
-b4_packed_hump_t b4_hump_from_bytes (const uint8_t p_bytes[4])
+packed_hump_t hump_from_bytes (const uint8_t p_bytes[4])
 {
-    b4_packed_hump_t word = 0U;
+    packed_hump_t word = 0U;
 
     if (NULL != p_bytes)
     {
@@ -201,7 +201,7 @@ b4_packed_hump_t b4_hump_from_bytes (const uint8_t p_bytes[4])
     return word;
 }
 
-void b4_run_init (b4_run_t * p_run)
+void hump_run_init (hump_run_t * p_run)
 {
     if (NULL != p_run)
     {
@@ -211,7 +211,7 @@ void b4_run_init (b4_run_t * p_run)
     }
 }
 
-void b4_run_update (b4_run_t * p_run, const hump_output_t * p_out)
+void hump_run_update (hump_run_t * p_run, const hump_output_t * p_out)
 {
     if ((NULL == p_run) || (NULL == p_out)
         || (HUMP_EVENT_FINISHED != p_out->event))
@@ -240,11 +240,11 @@ void b4_run_update (b4_run_t * p_run, const hump_output_t * p_out)
     }
 }
 
-bool b4_hump_fields_from_output (const hump_output_t * p_out,
-                                 const b4_run_t * p_run,
-                                 b4_motion_t motion,
+bool hump_fields_from_output (const hump_output_t * p_out,
+                                 const hump_run_t * p_run,
+                                 motion_class_t motion,
                                  bool i2c_fault,
-                                 b4_hump_fields_t * p_fields)
+                                 hump_fields_t * p_fields)
 {
     bool finished;
     uint8_t faults = 0U;
@@ -258,17 +258,17 @@ bool b4_hump_fields_from_output (const hump_output_t * p_out,
 
     if (i2c_fault)
     {
-        faults |= (uint8_t)B4_FAULT_I2C;
+        faults |= (uint8_t)PHYSICS_FAULT_I2C;
     }
     if (p_out->motion_stale)
     {
-        faults |= (uint8_t)B4_FAULT_STALE;
+        faults |= (uint8_t)PHYSICS_FAULT_STALE;
     }
 
     /* hump_detect returns to FLAT on the FINISHED call, so state and the
      * active flag both describe the car after this sample. */
     p_fields->state = p_out->state;
-    p_fields->motion = p_out->calibrated ? motion : B4_MOTION_UNKNOWN;
+    p_fields->motion = p_out->calibrated ? motion : MOTION_CLASS_UNKNOWN;
     p_fields->faults = faults;
     p_fields->pitch_deg = p_out->pitch_deg;
     p_fields->hump_peak_m = (p_out->peak_m > 0.0f) ? p_out->peak_m : 0.0f;

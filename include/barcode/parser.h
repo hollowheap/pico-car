@@ -18,9 +18,9 @@ typedef struct
     /** Width of a narrow element. */
     uint16_t narrow_width_um : 14;
     /** Value of the middle data character. */
-    uint8_t data_value : 6;
+    uint8_t data_value;
     /** Value of the character. */
-    uint8_t curr_value : 6;
+    uint8_t curr_value;
     /** Bar/space index inside current character. */
     uint8_t elem_index : 4;
     /** Index of current character. */

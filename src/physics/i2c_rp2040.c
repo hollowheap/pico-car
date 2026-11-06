@@ -1,4 +1,4 @@
-/** @file b4_i2c_rp2040.c
+/** @file i2c_rp2040.c
  *
  * @brief Polled RP2040 I2C1 master on GP2 (SDA) / GP3 (SCL), 400 kHz.
  *
@@ -14,14 +14,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "b4_i2c_rp2040.h"
+#include "i2c_rp2040.h"
 #include "lsm303.h"
 
 /* Base addresses (RP2040 datasheet section 2.2). */
 #define I2C1_BASE_ADDR      (0x40048000UL)
 #define IO_BANK0_ADDR       (0x40014000UL)
 #define PADS_BANK0_ADDR     (0x4001C000UL)
-#define B4_RESETS_ADDR         (0x4000C000UL)
+#define I2C_RESETS_ADDR         (0x4000C000UL)
 #define SIO_ADDR            (0xD0000000UL)
 #define TIMER_ADDR          (0x40054000UL)
 
@@ -83,32 +83,32 @@
 #define SIO_GPIO_OE_CLR     (SIO_ADDR + 0x28UL)
 
 /* Resets. Atomic set/clear aliases are valid for peripheral registers. */
-#define B4_RESETS_RESET     (B4_RESETS_ADDR + 0x0UL)
-#define B4_RESETS_DONE      (B4_RESETS_ADDR + 0x8UL)
-#define B4_RESET_I2C1       (1UL << 4U)
-#define B4_ALIAS_SET        (0x2000UL)
-#define B4_ALIAS_CLR        (0x3000UL)
+#define I2C_RESETS_RESET     (I2C_RESETS_ADDR + 0x0UL)
+#define I2C_RESETS_DONE      (I2C_RESETS_ADDR + 0x8UL)
+#define I2C_RESET_I2C1       (1UL << 4U)
+#define LSM303_ALIAS_SET        (0x2000UL)
+#define LSM303_ALIAS_CLR        (0x3000UL)
 
 #define TIMER_RAWL          (TIMER_ADDR + 0x28UL)
 
-#define SDA_MASK            (1UL << B4_I2C_SDA_PIN)
-#define SCL_MASK            (1UL << B4_I2C_SCL_PIN)
+#define SDA_MASK            (1UL << I2C_SDA_PIN)
+#define SCL_MASK            (1UL << I2C_SCL_PIN)
 #define RECOVER_HALF_US     (5U)        /* 100 kHz bit-banged clock.   */
 #define ABORT_WAIT_US       (1000U)
 
-uint32_t b4_time_us (void)
+uint32_t physics_time_us (void)
 {
     return in_w (TIMER_RAWL);
 }
 
 static bool expired (uint32_t start_us, uint32_t limit_us)
 {
-    return (b4_time_us () - start_us) > limit_us;   /* Wrap-safe. */
+    return (physics_time_us () - start_us) > limit_us;   /* Wrap-safe. */
 }
 
 static void wait_us (uint32_t us)
 {
-    uint32_t start = b4_time_us ();
+    uint32_t start = physics_time_us ();
 
     while (!expired (start, us))
     {
@@ -118,14 +118,14 @@ static void wait_us (uint32_t us)
 
 static void pins_to (uint32_t funcsel)
 {
-    out_w (GPIO_CTRL_ADDR (B4_I2C_SDA_PIN), funcsel);
-    out_w (GPIO_CTRL_ADDR (B4_I2C_SCL_PIN), funcsel);
+    out_w (GPIO_CTRL_ADDR (I2C_SDA_PIN), funcsel);
+    out_w (GPIO_CTRL_ADDR (I2C_SCL_PIN), funcsel);
 }
 
 /* Stop a stuck transfer and leave the controller disabled. */
 static void abort_transfer (void)
 {
-    uint32_t start = b4_time_us ();
+    uint32_t start = physics_time_us ();
 
     out_w (IC_ENABLE, ENABLE_ENABLE | ENABLE_ABORT);
     while (((in_w (IC_ENABLE) & ENABLE_ABORT) != 0UL)
@@ -174,13 +174,13 @@ static void recover (void * p_ctx)
     pins_to (FUNCSEL_I2C);
 }
 
-static b4_bus_result_t abort_result (uint32_t source)
+static i2c_bus_result_t abort_result (uint32_t source)
 {
-    b4_bus_result_t result = B4_BUS_ERROR;
+    i2c_bus_result_t result = I2C_BUS_ERROR;
 
     if ((source & (ABRT_7B_ADDR_NOACK | ABRT_TXDATA_NOACK)) != 0UL)
     {
-        result = B4_BUS_NACK;
+        result = I2C_BUS_NACK;
     }
     return result;
 }
@@ -190,7 +190,7 @@ static bool wait_stop (uint32_t start_us)
 {
     while ((in_w (IC_RAW_INTR_STAT) & RAW_STOP_DET) == 0UL)
     {
-        if (expired (start_us, B4_I2C_TIMEOUT_US))
+        if (expired (start_us, I2C_TIMEOUT_US))
         {
             return false;
         }
@@ -199,27 +199,27 @@ static bool wait_stop (uint32_t start_us)
     return true;
 }
 
-static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
+static i2c_bus_result_t write_read (void * p_ctx, uint8_t addr7,
                                    const uint8_t * p_wr, uint32_t wr_len,
                                    uint8_t * p_rd, uint32_t rd_len)
 {
-    uint32_t start = b4_time_us ();
+    uint32_t start = physics_time_us ();
     uint32_t i;
     uint32_t source;
-    b4_bus_result_t result = B4_BUS_OK;
+    i2c_bus_result_t result = I2C_BUS_OK;
 
     (void)p_ctx;
     if (((wr_len > 0U) && (NULL == p_wr)) || ((rd_len > 0U) && (NULL == p_rd))
         || ((0U == wr_len) && (0U == rd_len)))
     {
-        return B4_BUS_ERROR;
+        return I2C_BUS_ERROR;
     }
 
     out_w (IC_ENABLE, 0UL);
     out_w (IC_TAR, (uint32_t)addr7);
     out_w (IC_ENABLE, ENABLE_ENABLE);
 
-    for (i = 0U; (i < wr_len) && (B4_BUS_OK == result); i++)
+    for (i = 0U; (i < wr_len) && (I2C_BUS_OK == result); i++)
     {
         bool last = ((i + 1U) == wr_len);
         uint32_t cmd = (uint32_t)p_wr[i];
@@ -232,13 +232,13 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
 
         while ((in_w (IC_RAW_INTR_STAT) & RAW_TX_EMPTY) == 0UL)
         {
-            if (expired (start, B4_I2C_TIMEOUT_US))
+            if (expired (start, I2C_TIMEOUT_US))
             {
-                result = B4_BUS_TIMEOUT;
+                result = I2C_BUS_TIMEOUT;
                 break;
             }
         }
-        if (B4_BUS_OK == result)
+        if (I2C_BUS_OK == result)
         {
             source = in_w (IC_TX_ABRT_SOURCE);
             if (source != 0UL)
@@ -247,12 +247,12 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
                 result = abort_result (source);
                 if (!wait_stop (start))
                 {
-                    result = B4_BUS_TIMEOUT;
+                    result = I2C_BUS_TIMEOUT;
                 }
             }
             else if (last && (0U == rd_len) && !wait_stop (start))
             {
-                result = B4_BUS_TIMEOUT;
+                result = I2C_BUS_TIMEOUT;
             }
             else
             {
@@ -261,7 +261,7 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
         }
     }
 
-    for (i = 0U; (i < rd_len) && (B4_BUS_OK == result); i++)
+    for (i = 0U; (i < rd_len) && (I2C_BUS_OK == result); i++)
     {
         uint32_t cmd = CMD_READ;
 
@@ -276,13 +276,13 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
 
         while (in_w (IC_TXFLR) >= TX_FIFO_DEPTH)
         {
-            if (expired (start, B4_I2C_TIMEOUT_US))
+            if (expired (start, I2C_TIMEOUT_US))
             {
-                result = B4_BUS_TIMEOUT;
+                result = I2C_BUS_TIMEOUT;
                 break;
             }
         }
-        if (B4_BUS_OK != result)
+        if (I2C_BUS_OK != result)
         {
             break;
         }
@@ -298,24 +298,24 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
                 (void)wait_stop (start);
                 break;
             }
-            if (expired (start, B4_I2C_TIMEOUT_US))
+            if (expired (start, I2C_TIMEOUT_US))
             {
-                result = B4_BUS_TIMEOUT;
+                result = I2C_BUS_TIMEOUT;
                 break;
             }
         }
-        if (B4_BUS_OK == result)
+        if (I2C_BUS_OK == result)
         {
             p_rd[i] = (uint8_t)(in_w (IC_DATA_CMD) & 0xFFUL);
         }
     }
 
-    if ((B4_BUS_OK == result) && (rd_len > 0U) && !wait_stop (start))
+    if ((I2C_BUS_OK == result) && (rd_len > 0U) && !wait_stop (start))
     {
-        result = B4_BUS_TIMEOUT;
+        result = I2C_BUS_TIMEOUT;
     }
 
-    if (B4_BUS_TIMEOUT == result)
+    if (I2C_BUS_TIMEOUT == result)
     {
         abort_transfer ();
     }
@@ -323,13 +323,13 @@ static b4_bus_result_t write_read (void * p_ctx, uint8_t addr7,
     return result;
 }
 
-void b4_i2c_rp2040_init (b4_i2c_bus_t * p_bus)
+void i2c_rp2040_init (i2c_bus_t * p_bus)
 {
     uint32_t pad = PAD_IE | PAD_DRIVE_4MA | PAD_PUE | PAD_SCHMITT;
 
-    out_w (B4_RESETS_RESET + B4_ALIAS_SET, B4_RESET_I2C1);
-    out_w (B4_RESETS_RESET + B4_ALIAS_CLR, B4_RESET_I2C1);
-    while ((in_w (B4_RESETS_DONE) & B4_RESET_I2C1) == 0UL)
+    out_w (I2C_RESETS_RESET + LSM303_ALIAS_SET, I2C_RESET_I2C1);
+    out_w (I2C_RESETS_RESET + LSM303_ALIAS_CLR, I2C_RESET_I2C1);
+    while ((in_w (I2C_RESETS_DONE) & I2C_RESET_I2C1) == 0UL)
     {
         /* Wait for I2C1 to leave reset. */
     }
@@ -345,8 +345,8 @@ void b4_i2c_rp2040_init (b4_i2c_bus_t * p_bus)
     out_w (IC_FS_SPKLEN, FS_SPKLEN);
     out_w (IC_SDA_HOLD, SDA_TX_HOLD);
 
-    out_w (PAD_ADDR (B4_I2C_SDA_PIN), pad);
-    out_w (PAD_ADDR (B4_I2C_SCL_PIN), pad);
+    out_w (PAD_ADDR (I2C_SDA_PIN), pad);
+    out_w (PAD_ADDR (I2C_SCL_PIN), pad);
     pins_to (FUNCSEL_I2C);
 
     if (NULL != p_bus)

@@ -22,24 +22,6 @@ export const PACKETS = {
         { name: 'faults', offset: 6, type: 'uint16' },
     ],
   },
-  event: {
-    wireSize: 8,
-    fields: [
-        { name: 'event_id', offset: 0, type: 'uint16' },
-        { name: 'event_type', offset: 2, type: 'uint8' },
-        { name: 'p1', offset: 3, type: 'int16' },
-        { name: 'p2', offset: 5, type: 'uint16' },
-        { name: 'reserved', offset: 7, type: 'uint8' },
-    ],
-  },
-  heartbeat: {
-    wireSize: 4,
-    fields: [
-        { name: 'uptime_s', offset: 0, type: 'uint16' },
-        { name: 'drops', offset: 2, type: 'uint8' },
-        { name: 'wifi_rssi', offset: 3, type: 'int8' },
-    ],
-  },
   system: {
     wireSize: 16,
     fields: [
@@ -56,6 +38,24 @@ export const PACKETS = {
         { name: 'physics_flags', offset: 11, type: 'uint8' },
         { name: 'pitch_cdeg', offset: 12, type: 'int16' },
         { name: 'hump_peak_mm', offset: 14, type: 'uint16' },
+    ],
+  },
+  event: {
+    wireSize: 8,
+    fields: [
+        { name: 'event_id', offset: 0, type: 'uint16' },
+        { name: 'event_type', offset: 2, type: 'uint8' },
+        { name: 'p1', offset: 3, type: 'int16' },
+        { name: 'p2', offset: 5, type: 'uint16' },
+        { name: 'reserved', offset: 7, type: 'uint8' },
+    ],
+  },
+  heartbeat: {
+    wireSize: 4,
+    fields: [
+        { name: 'uptime_s', offset: 0, type: 'uint16' },
+        { name: 'drops', offset: 2, type: 'uint8' },
+        { name: 'wifi_rssi', offset: 3, type: 'int8' },
     ],
   },
 } as const;

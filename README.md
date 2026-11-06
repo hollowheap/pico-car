@@ -43,12 +43,12 @@ task and starts one startup task that initialises the shared hardware.
 | `src/navigation/obstacle/` | Buddy 5 scan, planner, statechart, comms, flight log |
 | `src/physics/` | Buddy 4 IMU, hump detection, pipeline, task |
 | `src/motion/` | Motor owner, encoders, PID |
-| `src/ir/`, `src/sys/` | Line sensors and the shared GPIO IRQ dispatcher |
+| `src/track/`, `src/platform/` | Line sensors and the shared GPIO IRQ dispatcher |
 | `src/telemetry/` | lwIP transport, MQTT client, queues, command ingress |
 | `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and JSON bridge |
 | `protocol/telemetry.yaml` | Wire schema shared by firmware and host |
 
-The opt-in bring-up targets build with `make buddy4_imu_check` or
+The opt-in bring-up targets build with `make physics_check` or
 `make obstacle_bench` inside `build/`.
 
 ## Telemetry

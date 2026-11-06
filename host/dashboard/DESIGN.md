@@ -303,6 +303,6 @@ Base unit: 4px.
 ## 9. Impeccable anti-patterns
 
 The full negative prompt is in
-`artifacts/design/stitch/stitch-prompt.md`. It covers all 62 Impeccable
+the project notes. It covers all 62 Impeccable
 detector rules: 31 slop and 31 quality. This file defines the positive system.
 The negative prompt defines what not to do. Both apply.

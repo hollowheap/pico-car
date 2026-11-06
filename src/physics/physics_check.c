@@ -1,4 +1,4 @@
-/** @file buddy4_imu_check.c
+/** @file physics_check.c
  *
  * @brief Buddy 4 bring-up and CSV logger (stages 1 and 2).
  *
@@ -8,9 +8,9 @@
  * speed data is invalid and only static tilt and hand-tilt tests make sense.
  *
  * Output over the USB console:
- *   B4H lines: CSV header, LSM303 init result.
+ *   PHYS_H lines: CSV header, LSM303 init result.
  *   B4  lines: one CSV row per cycle (50 Hz).
- *   B4S lines: counters every 5 s.
+ *   PHYS_S lines: counters every 5 s.
  *
  * Keep the car still for the first second: calibration needs rest.
  */
@@ -22,7 +22,7 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
-#include "b4_task.h"
+#include "physics_task.h"
 
 #define STATS_PERIOD_MS (5000)
 
@@ -44,13 +44,13 @@ LOCAL void check_task (INT stacd, void * exinf)
 {
     (void)stacd;
     (void)exinf;
-    b4_task_run();
+    physics_task_run();
 }
 
 EXPORT INT usermain (void)
 {
-    b4_task_config_t cfg;
-    b4_task_stats_t stats;
+    physics_task_config_t cfg;
+    physics_task_stats_t stats;
     T_CTSK ctsk = {
         .exinf   = NULL,
         .itskpri = 4,
@@ -64,7 +64,7 @@ EXPORT INT usermain (void)
 
     hold_motors ();
 
-    b4_task_default_config (&cfg);
+    physics_task_default_config (&cfg);
     cfg.log_every = 1U;
     cfg.read_b2 = NULL;
     ctsk.itskpri = cfg.priority;
@@ -73,13 +73,13 @@ EXPORT INT usermain (void)
     tid = tk_cre_tsk (&ctsk);
     if (tid <= E_OK)
     {
-        tm_printf ((UB *)"B4H,tk_cre_tsk=%d\n", (int)tid);
+        tm_printf ((UB *)"PHYS_H,tk_cre_tsk=%d\n", (int)tid);
         (void)tk_slp_tsk (TMO_FEVR);
         return 1;
     }
 
-    er = b4_task_init (&cfg, tid);
-    tm_printf ((UB *)"B4H,b4_task_init=%d\n", (int)er);
+    er = physics_task_init (&cfg, tid);
+    tm_printf ((UB *)"PHYS_H,physics_task_init=%d\n", (int)er);
     if (E_OK != er)
     {
         (void)tk_slp_tsk (TMO_FEVR);
@@ -89,7 +89,7 @@ EXPORT INT usermain (void)
     er = tk_sta_tsk (tid, 0);
     if (E_OK != er)
     {
-        tm_printf ((UB *)"B4H,tk_sta_tsk=%d\n", (int)er);
+        tm_printf ((UB *)"PHYS_H,tk_sta_tsk=%d\n", (int)er);
         (void)tk_slp_tsk (TMO_FEVR);
         return 1;
     }
@@ -97,8 +97,8 @@ EXPORT INT usermain (void)
     for (;;)
     {
         (void)tk_dly_tsk (STATS_PERIOD_MS);
-        b4_task_get_stats (&stats);
-        tm_printf ((UB *)"B4S,cycles=%u,overruns=%u,max_work_us=%u,"
+        physics_task_get_stats (&stats);
+        tm_printf ((UB *)"PHYS_S,cycles=%u,overruns=%u,max_work_us=%u,"
                    "inits=%u,init=%d,i2c_tx=%u,retries=%u,nacks=%u,"
                    "timeouts=%u,fails=%u,nav=%u/%u,telem=%u/%u,word=%08x\n",
                    (unsigned int)stats.cycles, (unsigned int)stats.overruns,

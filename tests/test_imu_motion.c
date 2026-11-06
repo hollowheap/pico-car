@@ -268,11 +268,11 @@ static void test_unknown_then_stationary (void)
     for (i = 0U; i < 49U; i++)
     {
         sim_step (&s, &w);
-        unknown_ok = unknown_ok && (B4_MOTION_UNKNOWN == s.mout.motion);
+        unknown_ok = unknown_ok && (MOTION_CLASS_UNKNOWN == s.mout.motion);
     }
     CHECK (unknown_ok);
     sim_run (&s, &w, 5U);
-    CHECK (B4_MOTION_STATIONARY == s.mout.motion);
+    CHECK (MOTION_CLASS_STATIONARY == s.mout.motion);
 }
 
 static void test_moving_and_accelerating (void)
@@ -286,7 +286,7 @@ static void test_moving_and_accelerating (void)
     sim_calibrate (&s, &w);
     cruise (&w);
     sim_run (&s, &w, 10U);
-    CHECK (B4_MOTION_MOVING == s.mout.motion);
+    CHECK (MOTION_CLASS_MOVING == s.mout.motion);
     CHECK (!s.mout.collision);
     CHECK (fabsf (s.mout.yaw_rate_dps) < 0.01f);
 
@@ -295,14 +295,14 @@ static void test_moving_and_accelerating (void)
     sim_step (&s, &w);
     w.accel = 0.0f;
     sim_run (&s, &w, 5U);
-    CHECK (B4_MOTION_MOVING == s.mout.motion);
+    CHECK (MOTION_CLASS_MOVING == s.mout.motion);
 
     /* Sustained acceleration does, and changed is set once. */
     w.accel = 0.5f;
     sim_run (&s, &w, 2U);
-    CHECK (B4_MOTION_MOVING == s.mout.motion);
+    CHECK (MOTION_CLASS_MOVING == s.mout.motion);
     sim_step (&s, &w);
-    CHECK (B4_MOTION_ACCELERATING == s.mout.motion);
+    CHECK (MOTION_CLASS_ACCELERATING == s.mout.motion);
     CHECK (s.mout.changed);
     sim_step (&s, &w);
     CHECK (!s.mout.changed);
@@ -311,7 +311,7 @@ static void test_moving_and_accelerating (void)
     /* Braking counts as accelerating too. */
     w.accel = -0.5f;
     sim_run (&s, &w, 5U);
-    CHECK (B4_MOTION_ACCELERATING == s.mout.motion);
+    CHECK (MOTION_CLASS_ACCELERATING == s.mout.motion);
 }
 
 static void test_encoder_turn (void)
@@ -330,7 +330,7 @@ static void test_encoder_turn (void)
     sim_run (&s, &w, 50U);
     printf ("  expected %.1f dps, encoder %.1f, mag %.1f\n", (double)expect,
             (double)s.mout.enc_yaw_dps, (double)s.mout.mag_yaw_dps);
-    CHECK (B4_MOTION_TURNING == s.mout.motion);
+    CHECK (MOTION_CLASS_TURNING == s.mout.motion);
     CHECK (IMU_YAW_ENCODER == s.mout.yaw_src);
     CHECK (fabsf (s.mout.yaw_rate_dps - expect) < 0.01f);
     CHECK (s.mout.mag_yaw_valid);
@@ -372,7 +372,7 @@ static void test_right_turn_through_north (void)
     CHECK (w.psi_deg > 20.0f);
     CHECK (w.psi_deg < 90.0f);
     CHECK (fabsf (s.mout.enc_yaw_dps - expect) < 0.01f);
-    CHECK (B4_MOTION_TURNING == s.mout.motion);
+    CHECK (MOTION_CLASS_TURNING == s.mout.motion);
 }
 
 static void test_pivot_turn (void)
@@ -387,7 +387,7 @@ static void test_pivot_turn (void)
     w.v_left = -0.05f;
     w.v_right = 0.05f;
     sim_run (&s, &w, 10U);
-    CHECK (B4_MOTION_TURNING == s.mout.motion);
+    CHECK (MOTION_CLASS_TURNING == s.mout.motion);
 }
 
 static void test_tilt_compensation (void)
@@ -441,7 +441,7 @@ static void test_mag_disturbed (void)
     CHECK (!s.mout.heading_valid);
     CHECK (!s.mout.mag_yaw_valid);
     CHECK (IMU_YAW_ENCODER == s.mout.yaw_src);
-    CHECK (B4_MOTION_TURNING == s.mout.motion);
+    CHECK (MOTION_CLASS_TURNING == s.mout.motion);
 }
 
 static void test_wheel_slip (void)
@@ -477,7 +477,7 @@ static void test_mag_fallback (void)
     sim_run (&s, &w, 20U);
     CHECK (!s.mout.enc_yaw_valid);
     CHECK (IMU_YAW_MAG == s.mout.yaw_src);
-    CHECK (B4_MOTION_TURNING == s.mout.motion);
+    CHECK (MOTION_CLASS_TURNING == s.mout.motion);
 
     /* Mag samples stop: invalid after the 0.2 s timeout. */
     w.mag_on = false;
@@ -500,7 +500,7 @@ static void test_stale_motion (void)
     w.motion_valid = false;
     w.mag_on = false;
     sim_run (&s, &w, 20U);
-    CHECK (B4_MOTION_UNKNOWN == s.mout.motion);
+    CHECK (MOTION_CLASS_UNKNOWN == s.mout.motion);
 }
 
 static void test_collision (void)
@@ -530,18 +530,18 @@ static void test_collision (void)
     w.fwd_spike_g = 0.0f;
     CHECK (flagged);
     CHECK (!hump_impact);   /* | |a| - 1 g | alone would miss this hit. */
-    CHECK (B4_MOTION_IMPACT == s.mout.motion);
+    CHECK (MOTION_CLASS_IMPACT == s.mout.motion);
 
     for (i = 0U; i < 30U; i++)
     {
         sim_step (&s, &w);
-        if (B4_MOTION_IMPACT == s.mout.motion)
+        if (MOTION_CLASS_IMPACT == s.mout.motion)
         {
             impact_samples++;
         }
     }
     CHECK (impact_samples >= 9U);
-    CHECK (B4_MOTION_MOVING == s.mout.motion);
+    CHECK (MOTION_CLASS_MOVING == s.mout.motion);
 }
 
 static void test_reported_braking (void)
@@ -567,7 +567,7 @@ static void test_reported_braking (void)
         CHECK (s.mout.heading_valid);
     }
     CHECK (!any_collision);
-    CHECK (B4_MOTION_IMPACT != s.mout.motion);
+    CHECK (MOTION_CLASS_IMPACT != s.mout.motion);
 }
 
 static void test_hump_classes (void)
@@ -602,14 +602,14 @@ static void test_hump_classes (void)
             /* Level. */
         }
         sim_step (&s, &w);
-        saw_climb = saw_climb || (B4_MOTION_CLIMBING == s.mout.motion);
-        saw_descend = saw_descend || (B4_MOTION_DESCENDING == s.mout.motion);
+        saw_climb = saw_climb || (MOTION_CLASS_CLIMBING == s.mout.motion);
+        saw_descend = saw_descend || (MOTION_CLASS_DESCENDING == s.mout.motion);
         any_collision = any_collision || s.mout.collision;
     }
     CHECK (saw_climb);
     CHECK (saw_descend);
     CHECK (!any_collision);
-    CHECK (B4_MOTION_MOVING == s.mout.motion);
+    CHECK (MOTION_CLASS_MOVING == s.mout.motion);
 }
 
 int main (void)

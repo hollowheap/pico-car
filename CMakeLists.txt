@@ -278,14 +278,9 @@ target_sources(mtk3smp PRIVATE
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
 # Compile the executable
-add_library(sys STATIC
-    src/sys/gpio_irq.c
-)
-target_include_directories(sys PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(sys PUBLIC mtk3smp)
-
 add_library(platform STATIC
     src/platform/faults.c
+    src/platform/isr.c
 )
 target_include_directories(platform PUBLIC include)
 target_link_libraries(platform PUBLIC mtk3smp)
@@ -324,13 +319,14 @@ add_library(motion_service STATIC
     src/motion/quadrature.c
 )
 target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
+target_link_libraries(motion_service PUBLIC platform motion_core mtk3smp)
 
-add_library(ir_service STATIC
-    src/ir/ir_capture.c
+add_library(track STATIC
+    src/track/ir_capture.c
+    src/track/barcode_task.c
 )
-target_include_directories(ir_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(ir_service PUBLIC sys mtk3smp)
+target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(track PUBLIC platform barcode mtk3smp)
 
 add_library(barcode STATIC
     src/barcode/parser.c
@@ -346,9 +342,8 @@ target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
     target_link_libraries(${app_target} PRIVATE
-        sys
         motion_service
-        ir_service
+        track
         platform
         telemetry
         barcode
@@ -418,7 +413,7 @@ add_library(obstacle STATIC
 )
 target_include_directories(obstacle PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(obstacle PUBLIC sys mtk3smp)
+target_link_libraries(obstacle PUBLIC platform mtk3smp)
 target_compile_options(obstacle PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
 
@@ -427,7 +422,7 @@ add_executable(obstacle_bench
 )
 target_include_directories(obstacle_bench PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(obstacle_bench PRIVATE obstacle sys mtk3smp)
+target_link_libraries(obstacle_bench PRIVATE obstacle platform mtk3smp)
 target_compile_options(obstacle_bench PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
 target_link_options(obstacle_bench PRIVATE
@@ -445,12 +440,12 @@ add_library(obstacle_nav STATIC
 )
 target_include_directories(obstacle_nav PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(obstacle_nav PUBLIC obstacle motion_service sys mtk3smp)
+target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3smp)
 target_compile_options(obstacle_nav PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_nav)
 
 # Buddy 4: IMU, terrain detection, and bring-up targets
-include(${CMAKE_CURRENT_LIST_DIR}/cmake/buddy4.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/physics.cmake)
 
-target_link_libraries(main PRIVATE buddy4_physics)
+target_link_libraries(main PRIVATE physics)

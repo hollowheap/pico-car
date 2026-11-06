@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Summarise a buddy4_imu_check console capture for the car-day checks.
+"""Summarise a physics_check console capture for the car-day checks.
 
 Usage:
-    python3 tools/b4_log_summary.py LOGFILE [--from S] [--to S]
+    python3 tools/physics_log_summary.py LOGFILE [--from S] [--to S]
 
 LOGFILE is the raw console capture. Only lines starting with "B4," (CSV
-rows) and "B4S," (5 s counters) are used, so other text is ignored.
+rows) and "PHYS_S," (5 s counters) are used, so other text is ignored.
 --from / --to limit the rows to that many seconds after the first row.
 
 Standard library only. Column order must match log_header() in
-src/b4_task.c.
+src/physics_task.c.
 """
 
 import argparse
@@ -47,7 +47,7 @@ def parse(path):
                 except ValueError:
                     continue
                 rows.append(row)
-            elif line.startswith("B4S,"):
+            elif line.startswith("PHYS_S,"):
                 stats.append(line)
     return rows, stats
 

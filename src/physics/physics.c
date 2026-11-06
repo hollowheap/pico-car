@@ -8,41 +8,41 @@
 #include <stdint.h>
 #include <tk/tkernel.h>
 
-#include "b4_b2_glue.h"
-#include "b4_task.h"
+#include "motion_glue.h"
+#include "physics_task.h"
 #include "hump_msg.h"
 #include "physics/physics.h"
 
 ER physics_init (ID task_id)
 {
-    b4_task_config_t cfg;
+    physics_task_config_t cfg;
 
-    b4_task_default_config(&cfg);
-    cfg.read_b2 = b4_read_b2_motion_service;
+    physics_task_default_config(&cfg);
+    cfg.read_b2 = motion_read_b2;
 
-    return (b4_task_init(&cfg, task_id));
+    return (physics_task_init(&cfg, task_id));
 }
 
 void physics_run (void)
 {
-    b4_task_run();
+    physics_task_run();
 }
 
 ER physics_snapshot (physics_status_t * p_status)
 {
-    b4_task_stats_t  stats;
-    b4_hump_fields_t fields;
+    physics_task_stats_t  stats;
+    hump_fields_t fields;
     ER               result = E_PAR;
 
     if (NULL != p_status)
     {
-        b4_task_get_stats(&stats);
+        physics_task_get_stats(&stats);
 
         p_status->cycles   = stats.cycles;
         p_status->overruns = stats.overruns;
         p_status->dropped  = stats.nav_dropped + stats.telem_dropped;
         p_status->ready    = (stats.cycles > 0U) &&
-                             b4_hump_unpack(stats.last_word, &fields);
+                             hump_unpack(stats.last_word, &fields);
 
         if (p_status->ready)
         {
@@ -79,12 +79,12 @@ ER physics_snapshot (physics_status_t * p_status)
 
 void physics_request_new_run (void)
 {
-    b4_task_request_new_run();
+    physics_task_request_new_run();
 }
 
 void physics_request_clear_fault (void)
 {
-    b4_task_request_clear_fault();
+    physics_task_request_clear_fault();
 }
 
 /*** end of file ***/
