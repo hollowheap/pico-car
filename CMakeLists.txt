@@ -8,7 +8,7 @@ project(pico-car C CXX ASM)
 
 # Telemetry broker endpoint and credentials.  Override with -D on the
 # configure line; the defaults target a LAN Mosquitto instance.
-set(PICO_CAR_MQTT_HOST "mosquitto" CACHE STRING "MQTT broker host or IP")
+set(PICO_CAR_MQTT_HOST "$ENV{PICO_CAR_MQTT_HOST}" CACHE STRING "MQTT broker host or IP")
 set(PICO_CAR_MQTT_PORT "1883" CACHE STRING "MQTT broker TCP port")
 set(PICO_CAR_MQTT_USERNAME "" CACHE STRING "MQTT username (empty for anonymous)")
 set(PICO_CAR_MQTT_PASSWORD "" CACHE STRING "MQTT password (empty for anonymous)")
@@ -19,20 +19,33 @@ if (NOT PICO_CAR_MQTT_PORT MATCHES "^[0-9]+$")
     message(FATAL_ERROR "PICO_CAR_MQTT_PORT must be numeric")
 endif()
 
+if (NOT PICO_CAR_MQTT_HOST)
+    set(PICO_CAR_MQTT_HOST "mosquitto" CACHE STRING "MQTT broker host or IP" FORCE)
+endif()
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/telemetry_config.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/generated/telemetry_config.h
     @ONLY
 )
 
-# Wi-Fi join. Empty SSID or password keeps TM_WIFI_JOIN=0. The generated
-# credentials header lives in build/ and is never committed.
-set(PICO_CAR_WIFI_SSID "" CACHE STRING "Wi-Fi SSID (empty disables the join)")
-set(PICO_CAR_WIFI_PASSWORD "" CACHE STRING "Wi-Fi password (empty disables the join)")
-set(PICO_CAR_WIFI_AUTH "CYW43_AUTH_WPA2_AES_PSK" CACHE STRING
+# Wi-Fi join. Empty SSID keeps TM_WIFI_JOIN=0. An open network needs
+# CYW43_AUTH_OPEN and an empty password. The generated credentials header
+# lives in build/ and is never committed.
+set(PICO_CAR_WIFI_SSID "$ENV{PICO_CAR_WIFI_SSID}" CACHE STRING
+    "Wi-Fi SSID (empty disables the join)")
+set(PICO_CAR_WIFI_PASSWORD "$ENV{PICO_CAR_WIFI_PASSWORD}" CACHE STRING
+    "Wi-Fi password (empty allows an open network)")
+set(PICO_CAR_WIFI_AUTH "$ENV{PICO_CAR_WIFI_AUTH}" CACHE STRING
     "CYW43 auth constant for the join")
 
-if (PICO_CAR_WIFI_SSID AND PICO_CAR_WIFI_PASSWORD)
+if (NOT PICO_CAR_WIFI_AUTH)
+    set(PICO_CAR_WIFI_AUTH "CYW43_AUTH_WPA2_AES_PSK" CACHE STRING
+        "CYW43 auth constant for the join" FORCE)
+endif()
+
+if (PICO_CAR_WIFI_SSID AND
+    (PICO_CAR_WIFI_PASSWORD OR PICO_CAR_WIFI_AUTH STREQUAL "CYW43_AUTH_OPEN"))
     set(PICO_CAR_WIFI_JOIN 1)
     string(REPLACE "\\" "\\\\" PICO_CAR_WIFI_SSID_ESC "${PICO_CAR_WIFI_SSID}")
     string(REPLACE "\"" "\\\"" PICO_CAR_WIFI_SSID_ESC "${PICO_CAR_WIFI_SSID_ESC}")
@@ -125,7 +138,7 @@ target_include_directories(mtk3smp PUBLIC
     ${MTK3SMP_PATH}/device
     ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
     ${MTK3SMP_PATH}/lib/libnet/lwip/include
     ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
   PRIVATE
@@ -246,31 +259,31 @@ target_sources(mtk3smp PRIVATE
     ${PICO_SDK_PATH}/src/rp2_common/hardware_pio/pio.c
     ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cyw43_bus_pio_spi.c
 
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/init.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/def.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/dns.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/inet_chksum.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ip.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/mem.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/memp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/netif.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/pbuf.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/raw.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/stats.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/sys.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/tcp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/tcp_in.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/tcp_out.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/timeouts.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/udp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/acd.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/dhcp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/etharp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/icmp.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/ip4.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/ip4_addr.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/core/ipv4/ip4_frag.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/lwip/src/netif/ethernet.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/init.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/def.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/dns.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/inet_chksum.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ip.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/mem.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/memp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/netif.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/pbuf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/raw.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/stats.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/sys.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/tcp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/tcp_in.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/tcp_out.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/timeouts.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/udp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/acd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/dhcp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/etharp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/icmp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4_addr.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4_frag.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/netif/ethernet.c
     ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk.c
     ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk_ipv4.c
 )
