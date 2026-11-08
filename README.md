@@ -6,10 +6,20 @@ Run these commands:
 nix develop     # Enter devshell with build tools and pico SDK installed
 ./configure.sh  # Init submodules + configure CMake
 ./build.sh      # Compile and link
+./flash.sh      # Load main.uf2 over USB
 ```
 
 The final binary is hardlinked inside the base directory as `main.uf2`.
 Disassembly and other files can be found in the `build/` folder.
+
+Hold BOOTSEL while plugging the Pico W. If it mounts as `RPI-RP2`,
+`flash.sh` copies the UF2 directly, with no sudo. Otherwise it falls back to
+`picotool`. Pass an optional image for the bring-up builds:
+
+```sh
+./flash.sh build/physics_check.uf2
+./flash.sh build/obstacle_bench.uf2
+```
 
 When developing, `configure.sh` should be run before the first build or
 whenever `CMakeLists.txt` changes. It is unnecessary to run it otherwise;
@@ -72,10 +82,19 @@ initialises it. Set the Wi-Fi credentials on the configure line:
   -DPICO_CAR_WIFI_PASSWORD=your-password
 ```
 
+`configure.sh` detects the active Wi-Fi and the host's private address. It
+fills the credentials and broker host automatically for WPA2-PSK and open
+networks. Enterprise (`wpa-eap`) networks are not supported by the CYW43, so
+the join stays off and the script warns. Override with
+`-DPICO_CAR_WIFI_SSID`, `-DPICO_CAR_WIFI_PASSWORD` and
+`-DPICO_CAR_MQTT_HOST`.
+
 The generated credentials header stays in `build/` and is never committed.
-An empty SSID or password keeps `TM_WIFI_JOIN=0`.
+An empty SSID keeps `TM_WIFI_JOIN=0`.
 
 ## Tests
+
+The hardware smoke test plan is in [`docs/smoke-test.md`](docs/smoke-test.md).
 
 Host tests build out of tree:
 

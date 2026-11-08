@@ -8,8 +8,19 @@ through the dashboard backend (D41).
 
 ```sh
 python3 host/cli/cli.py --help
-python3 host/cli/cli.py monitor --host 192.168.1.10
-python3 host/cli/cli.py command stop --host 192.168.1.10 --run-id 1
+python3 host/cli/cli.py --host 192.168.1.10 monitor
+python3 host/cli/cli.py --host 192.168.1.10 command start --run-id 0
+```
+
+`--host` and the other broker options are global, so they go before the
+subcommand. The firmware starts with run ID 0; the CLI default is already 0.
+
+Dependencies:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install paho-mqtt pyyaml
+.venv/bin/python host/cli/cli.py --host localhost monitor
 ```
 
 Defaults: broker `localhost:1883`, topic prefix `car/SE01`, keepalive 30 s.
