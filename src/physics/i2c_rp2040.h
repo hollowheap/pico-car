@@ -2,7 +2,7 @@
  *
  * @brief Polled RP2040 I2C1 master on GP2 (SDA) / GP3 (SCL), 400 kHz.
  *
- * Target-only. Register-level, like Buddy 2's PWM and encoder code, because
+ * Target-only. Register-level, like the motion subsystem's PWM and encoder code, because
  * the team's trimmed pico-sdk has no hardware_i2c, and the kernel's "iic"
  * driver puts I2C1 on GP6/GP7 (Buddy 3's IR pins) with a 1000 ms timeout.
  *

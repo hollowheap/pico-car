@@ -1,6 +1,7 @@
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { LinkPacket } from '../../lib/link';
+import { bitLabels, enumLabel } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
 import { Panel } from './Panel';
 
@@ -17,6 +18,13 @@ function valueOr(value: number | undefined, unit: string): string {
   return value === undefined ? '--' : `${value} ${unit}`;
 }
 
+function faultSummary(names: string[] | null): string {
+  if (names === null) {
+    return '--';
+  }
+  return names.length === 0 ? 'none' : names.join(', ');
+}
+
 export function SystemPanel({ system, style }: Props) {
   const theme = useTheme();
   const values = system?.values;
@@ -31,45 +39,50 @@ export function SystemPanel({ system, style }: Props) {
   ]
     .filter(Boolean)
     .join(', ');
+  const obstacleFaults =
+    values?.obstacle_faults === undefined
+      ? null
+      : bitLabels('obstacleFaults', values.obstacle_faults);
+  const physicsFaults =
+    values?.physics_faults === undefined
+      ? null
+      : bitLabels('physicsFaults', values.physics_faults);
 
   return (
     <Panel
       style={style}
       title="Onboard state"
-      right={
-        <Text style={[theme.typography.label, { color: theme.colors.muted }]}>
-          B4 / B5
-        </Text>
-      }
     >
       <View style={styles.rows}>
         <Text
           style={[theme.typography.body, { color: theme.colors.text }]}
           testID="system-obstacle"
         >
-          obstacle: state {values?.obstacle_state ?? '--'}, distance{' '}
-          {valueOr(values?.obstacle_dist_mm, 'mm')}
+          obstacle: {enumLabel('obstacleState', values?.obstacle_state)}, distance{' '}
+          {valueOr(values?.obstacle_dist_mm, 'mm')}, cause{' '}
+          {enumLabel('obstacleCause', values?.obstacle_cause)}, req{' '}
+          {values?.obstacle_req_id ?? '--'}
         </Text>
         <Text
           style={[theme.typography.body, { color: theme.colors.text }]}
           testID="system-echo"
         >
-          echo class {values?.echo_class ?? '--'}, faults{' '}
-          {values?.obstacle_faults ?? 0}, seq {values?.obstacle_seq ?? '--'}
+          echo {enumLabel('echoClass', values?.echo_class)}, faults{' '}
+          {faultSummary(obstacleFaults)}, seq {values?.obstacle_seq ?? '--'}
         </Text>
         <Text
           style={[theme.typography.body, { color: theme.colors.text }]}
           testID="system-hump"
         >
-          hump: state {values?.physics_state ?? '--'}, motion{' '}
-          {values?.physics_motion ?? '--'}, peak{' '}
+          hump: {enumLabel('physicsState', values?.physics_state)}, motion{' '}
+          {enumLabel('physicsMotion', values?.physics_motion)}, peak{' '}
           {valueOr(values?.hump_peak_mm, 'mm')}
         </Text>
         <Text
           style={[theme.typography.body, { color: theme.colors.text }]}
           testID="system-attitude"
         >
-          pitch {pitch}, faults {values?.physics_faults ?? 0}
+          pitch {pitch}, faults {faultSummary(physicsFaults)}
         </Text>
         <Text
           style={[theme.typography.body, { color: theme.colors.muted }]}

@@ -40,7 +40,7 @@
 #include "../../usb_console_compat.h"
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 
 /* Bench buttons, active low with pull-ups. */
 #define BTN_NEXT_PIN (20U)
@@ -187,7 +187,7 @@ INT usermain (void)
 }
 
 /*!
- * @brief Pretend Buddy 2 emergency stop.
+ * @brief Pretend the motion service emergency stop.
  *
  * @return E_OK.
  */
@@ -200,7 +200,7 @@ static ER sim_stop (void)
 }
 
 /*!
- * @brief Pretend Buddy 2 odometer.
+ * @brief Pretend the motion service odometer.
  *
  * @param[out] p_distance_mm Distance travelled.
  *

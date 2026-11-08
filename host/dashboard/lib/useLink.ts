@@ -10,6 +10,7 @@ const initial: LinkSnapshot = {
   status: 'disconnected',
   lastPacketAt: null,
   lastPacket: null,
+  bridge: { mqtt: 'unknown', packets: 0, lastPacketAt: null },
 };
 
 const MAX_PACKETS = 120;
@@ -33,6 +34,7 @@ export function useLink(url: string | undefined): LinkState {
     const client = new LinkClient({
       url,
       createSocket: (target) => new WebSocket(target) as unknown as SocketLike,
+      idleTimeoutMs: 8000,
     });
     const unsubscribeState = client.onState(setSnapshot);
     const unsubscribePacket = client.onPacket((packet) => {

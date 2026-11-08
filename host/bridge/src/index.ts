@@ -1,16 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { loadConfig } from "./config.js";
-import { encodeCommand, parseCommandRequest } from "./command.js";
+import { encodeCommand, parseCommandRequest, type CommandRequest } from "./command.js";
 import { createHistoryStore } from "./history.js";
-import { createLiveServer, type LivePacket } from "./live.js";
+import { createLiveServer } from "./live.js";
 import { createMqttIngest } from "./mqtt.js";
 import { loadProtocolSchema } from "./schema.js";
 
 const config = loadConfig();
 const schema = loadProtocolSchema(config.schemaPath);
 const history = createHistoryStore(config.historyPath, config.historyMaxRecords);
-let live: { broadcast: (packet: LivePacket) => void; close: () => void } | null =
-  null;
+let live: ReturnType<typeof createLiveServer> | null = null;
 const ingest = createMqttIngest(config, schema, (packet, topic) => {
   const timestamp = Date.now();
   history.append({
@@ -22,6 +21,9 @@ const ingest = createMqttIngest(config, schema, (packet, topic) => {
   live?.broadcast({ timestamp, packet: packet.name, values: packet.values });
   console.log(`${packet.name}: ${JSON.stringify(packet.values)}`);
 });
+
+ingest.client.on("connect", () => live?.broadcastStatus());
+ingest.client.on("close", () => live?.broadcastStatus());
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
@@ -64,25 +66,37 @@ async function handleCommand(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
+  let command: CommandRequest;
   try {
     const raw = await readBody(request);
-    const command = parseCommandRequest(JSON.parse(raw) as unknown, schema);
-    if (!ingest.client.connected) {
-      sendJson(response, 503, { error: "mqtt disconnected" });
-      return;
-    }
-    const frame = encodeCommand(schema, command);
-    const topic = `${config.topicPrefix}/${schema.topics.command}`;
-
-    ingest.client.publish(topic, frame, { qos: 1 }, (error) => {
-      if (error) {
-        console.error(`command publish failed: ${error.message}`);
-      }
-    });
-    sendJson(response, 202, { ok: true });
+    command = parseCommandRequest(JSON.parse(raw) as unknown, schema);
   } catch (error) {
     sendJson(response, 400, { error: (error as Error).message });
+    return;
   }
+  if (!ingest.client.connected) {
+    sendJson(response, 503, { error: "mqtt disconnected" });
+    return;
+  }
+  const frame = encodeCommand(schema, command);
+  const topic = `${config.topicPrefix}/${schema.topics.command}`;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ingest.client.publish(topic, frame, { qos: 1 }, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  } catch (error) {
+    console.error(`command publish failed: ${(error as Error).message}`);
+    sendJson(response, 502, { error: "mqtt publish failed" });
+    return;
+  }
+  sendJson(response, 202, { ok: true });
 }
 
 const server = createServer((request, response) => {
@@ -118,7 +132,11 @@ const server = createServer((request, response) => {
   sendJson(response, 404, {});
 });
 
-live = createLiveServer(server);
+live = createLiveServer(server, () => ({
+  mqtt: ingest.client.connected ? "connected" : "disconnected",
+  packets: ingest.stats.packets,
+  lastPacketAt: ingest.stats.lastPacketAt,
+}));
 
 server.listen(config.httpPort, () => {
   console.log(`bridge on http://127.0.0.1:${config.httpPort}`);

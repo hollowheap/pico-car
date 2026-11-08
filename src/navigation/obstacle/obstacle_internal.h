@@ -1,6 +1,6 @@
-/** @file obstacle.h
+/** @file obstacle_internal.h
  *
- * @brief Buddy 5 private interface. Never include this from outside
+ * @brief Obstacle private interface. Never include this from outside
  *        src/navigation/obstacle/; use navigation/obstacle.h instead.
  *
  * The public facade is included here so every implementation file gets the
@@ -15,9 +15,9 @@
 
 #include "navigation/obstacle.h"
 
-/* Bits of Buddy 5's event flag. Navigation waits on the two NAV bits
+/* Bits of the obstacle task's event flag. Navigation waits on the two NAV bits
  * through obstacle_flag_id(). */
-#define OBSTACLE_FLG_ECHO      (0x01U) /* Echo ISR to the Buddy 5 task.      */
+#define OBSTACLE_FLG_ECHO      (0x01U) /* Echo ISR to the obstacle task.      */
 #define OBSTACLE_FLG_CMD       (0x02U) /* A command is waiting in the queue. */
 #define OBSTACLE_FLG_STOP      (0x04U) /* STOP command; it is never queued.  */
 #define OBSTACLE_FLG_NAV_EVT   (0x08U) /* An event waits for Navigation.     */

@@ -1,6 +1,8 @@
-import { PACKETS } from './schema.generated';
+import { BIT_FIELDS, ENUMS, PACKETS } from './schema.generated';
 
 export type PacketName = keyof typeof PACKETS;
+export type EnumName = keyof typeof ENUMS;
+export type BitFieldName = keyof typeof BIT_FIELDS;
 export type StatusPacket = {
   speedMms: number;
   distMm: number;
@@ -70,6 +72,35 @@ export function decodeHeartbeat(payload: Uint8Array): HeartbeatPacket {
     drops: view.getUint8(offset('heartbeat', 'drops')),
     wifiRssi: view.getInt8(offset('heartbeat', 'wifi_rssi')),
   };
+}
+
+function labelName(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toUpperCase();
+}
+
+export function enumLabel(name: EnumName, value: number | undefined): string {
+  if (value === undefined) {
+    return '--';
+  }
+  const found = Object.entries(ENUMS[name]).find(([, code]) => code === value);
+  if (found === undefined) {
+    return `UNKNOWN ${value}`;
+  }
+  return labelName(found[0]);
+}
+
+export function bitLabels(
+  name: BitFieldName,
+  mask: number | undefined,
+): string[] {
+  if (mask === undefined || mask === 0) {
+    return [];
+  }
+  return Object.entries(BIT_FIELDS[name])
+    .filter(([, bit]) => (mask & (1 << bit)) !== 0)
+    .map(([label]) => labelName(label));
 }
 
 export function heartbeatAgeMs(nowMs: number, lastHeartbeatMs: number): number | null {

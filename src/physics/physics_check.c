@@ -2,9 +2,9 @@
  *
  * @brief Buddy 4 bring-up and CSV logger (stages 1 and 2).
  *
- * Standalone application with its own usermain(), like Buddy 2's checks.
+ * Standalone application with its own usermain(), like the other bring-up checks.
  * Holds the motor bridge inputs low (brake) and never drives the wheels.
- * Starts only the Hump task, with Buddy 2's motion service not running, so
+ * Starts only the Hump task, with the motion service not running, so
  * speed data is invalid and only static tilt and hand-tilt tests make sense.
  *
  * Output over the USB console:
@@ -26,7 +26,7 @@
 
 #define STATS_PERIOD_MS (5000)
 
-/* Robo Pico motor inputs GP8-GP11 (buddy2_pins.h). The kernel's boot-time
+/* Robo Pico motor inputs GP8-GP11 (motion/motion_pins.h). The kernel's boot-time
  * I2C0 init routes GP8/GP9 to I2C with pull-ups, so force them low. */
 static void hold_motors (void)
 {
@@ -66,7 +66,7 @@ EXPORT INT usermain (void)
 
     physics_task_default_config (&cfg);
     cfg.log_every = 1U;
-    cfg.read_b2 = NULL;
+    cfg.read_motion = NULL;
     ctsk.itskpri = cfg.priority;
     ctsk.assprc = cfg.processor;
 

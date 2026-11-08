@@ -23,6 +23,7 @@
             coreutils
             gcc-arm-embedded
             gnutar
+            mosquitto
             picotool
             python3
           ];

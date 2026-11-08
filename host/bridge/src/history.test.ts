@@ -15,7 +15,7 @@ function store(maxRecords = 2) {
 function record(packet: string, value: number): HistoryRecord {
   return {
     timestamp: value,
-    topic: `car/SE01/${packet}`,
+    topic: `car/PICO-CAR/${packet}`,
     packet,
     values: { value },
   };

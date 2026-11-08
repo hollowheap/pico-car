@@ -20,6 +20,8 @@ export function KinematicsPanel({ status, packets, style }: Props) {
     .reverse()
     .map((packet) => packet.values.speed_mms)
     .filter((value): value is number => typeof value === 'number');
+  const latestSpeed = speeds[speeds.length - 1];
+  const chartLabel = `Speed history, ${speeds.length} samples, latest ${latestSpeed ?? '--'} mm/s`;
 
   return (
     <Panel style={style} title="Vehicle dynamics">
@@ -68,7 +70,11 @@ export function KinematicsPanel({ status, packets, style }: Props) {
             last {speeds.length} status frames
           </Text>
         </View>
-        <Sparkline values={speeds} color={theme.colors.accent} />
+        <Sparkline
+          values={speeds}
+          color={theme.colors.accent}
+          label={chartLabel}
+        />
       </View>
     </Panel>
   );

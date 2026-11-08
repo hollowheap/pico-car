@@ -1,12 +1,19 @@
 import type { LinkPacket } from '../../lib/link';
+import { enumLabel } from '../../lib/schema';
 
-export const MISSION_STATES = ['INIT', 'READY', 'RUNNING', 'STOPPED'] as const;
+export const MOTION_STATES = [
+  'IDLE',
+  'RUNNING',
+  'REVERSING',
+  'STOPPED',
+  'FAULT',
+] as const;
 
-export function missionName(state: number | undefined): string {
-  if (state === undefined || state < 0 || state >= MISSION_STATES.length) {
+export function motionName(state: number | undefined): string {
+  if (state === undefined || state < 0 || state >= MOTION_STATES.length) {
     return '--';
   }
-  return MISSION_STATES[state] ?? '--';
+  return MOTION_STATES[state] ?? '--';
 }
 
 export function faultHex(mask: number | undefined): string {
@@ -42,6 +49,14 @@ export function packetSummary(packet: LinkPacket): string {
   }
   if (packet.packet === 'heartbeat') {
     return `up ${values.uptime_s ?? '--'}s  drops ${values.drops ?? '--'}  rssi ${values.wifi_rssi ?? '--'} dBm`;
+  }
+  if (packet.packet === 'system') {
+    const obstacle = enumLabel('obstacleState', values.obstacle_state);
+    const hump = enumLabel('physicsState', values.physics_state);
+    return (
+      `obstacle ${obstacle}  dist ${values.obstacle_dist_mm ?? '--'} mm  ` +
+      `hump ${hump}  pitch ${values.pitch_cdeg ?? '--'} cdg`
+    );
   }
   return packet.packet;
 }

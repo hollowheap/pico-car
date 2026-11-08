@@ -3,9 +3,9 @@ import { fetchHistory, type HistoryRecord } from '../../lib/history';
 import { summarizeHistory } from './history';
 
 const records: HistoryRecord[] = [
-  { timestamp: 3, topic: 'car/SE01/h', packet: 'heartbeat', values: { uptime_s: 10 } },
-  { timestamp: 2, topic: 'car/SE01/s', packet: 'status', values: { speed_mms: 150 } },
-  { timestamp: 1, topic: 'car/SE01/s', packet: 'status', values: { speed_mms: 100 } },
+  { timestamp: 3, topic: 'car/PICO-CAR/h', packet: 'heartbeat', values: { uptime_s: 10 } },
+  { timestamp: 2, topic: 'car/PICO-CAR/s', packet: 'status', values: { speed_mms: 150 } },
+  { timestamp: 1, topic: 'car/PICO-CAR/s', packet: 'status', values: { speed_mms: 100 } },
 ];
 
 describe('history view', () => {
@@ -14,6 +14,7 @@ describe('history view', () => {
     expect(summary.total).toBe(3);
     expect(summary.counts).toEqual({ heartbeat: 1, status: 2 });
     expect(summary.rows).toHaveLength(2);
+    expect(summary.rows[0]?.timestamp).toBe(3);
     expect(summary.rows[0]?.packet).toBe('heartbeat');
     expect(summary.rows[1]?.detail).toBe('speed_mms=150');
   });

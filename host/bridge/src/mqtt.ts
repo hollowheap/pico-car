@@ -35,6 +35,10 @@ export function createMqttIngest(
     client.subscribe(`${config.topicPrefix}/#`, { qos: 0 });
   });
 
+  client.on("error", (error) => {
+    console.error(`mqtt: ${error.message}`);
+  });
+
   client.on("message", (topic, payload) => {
     const name = packetNameForTopic(schema, topic);
     if (!name) {

@@ -1,7 +1,8 @@
 # Smoke test plan
 
-Run the stages in order. Stop at the first failed stage and record the serial
-log. Wheels stay off the floor through Stage 5.
+Run the stages in order. Stages 1 and 2 are optional bring-up checks; the
+normal smoke test is Stage 3 onward with `main.uf2`. Wheels stay off the floor
+through Stage 5.
 
 ## Safety
 
@@ -16,8 +17,8 @@ log. Wheels stay off the floor through Stage 5.
 | Image | Purpose | Build | Flash |
 |---|---|---|---|
 | `main.uf2` | full stack | `./build.sh` | `./flash.sh` |
-| `physics_check.uf2` | Buddy 4 only | `make physics_check` | `./flash.sh build/physics_check.uf2` |
-| `obstacle_bench.uf2` | Buddy 5 only | `make obstacle_bench` | `./flash.sh build/obstacle_bench.uf2` |
+| `physics_check.uf2` | IMU/hump only (optional) | `make physics_check` | `./flash.sh build/physics_check.uf2` |
+| `obstacle_bench.uf2` | obstacle only (optional) | `make obstacle_bench` | `./flash.sh build/obstacle_bench.uf2` |
 
 The bring-up targets build inside `build/`:
 
@@ -28,27 +29,65 @@ nix develop -c bash -lc 'cd build && make physics_check obstacle_bench'
 ```
 
 Open the console with `picocom -b 115200 /dev/ttyACM0` (or `screen`). The
-kernel USB CDC ignores the baud rate.
+kernel USB CDC ignores the baud rate. If your user is not in `dialout`, run it
+through sudo with the current PATH:
+
+```sh
+sudo env "PATH=$PATH" picocom -b 115200 /dev/ttyACM0
+```
 
 ## Stage 0 — host checks
+
+`configure.sh` detects the active Wi-Fi, its auth type, and the host's private
+IPv4. It writes the credentials and broker host into `build/generated/`:
 
 ```sh
 nix develop -c ./configure.sh
 nix develop -c ./build.sh
+```
+
+Expect output like:
+
+```text
+configure: Wi-Fi '<ssid>' (WPA2-PSK)
+configure: MQTT broker host default <host-ip>
+```
+
+`wpa-eap` and `sae` networks are not supported by the CYW43. The script warns
+and leaves the Wi-Fi join off; use a WPA2-PSK hotspot or pass the `-D` flags.
+
+Check the generated values:
+
+```sh
+rg 'UTK_WIFI_SSID|UTK_WIFI_AUTH' build/generated/wifi_credentials.h
+rg 'TELEMETRY_BROKER_HOST|TELEMETRY_TOPIC_PREFIX' build/generated/telemetry_config.h
+```
+
+The broker host must be the host's current Wi-Fi IPv4. If the address changes,
+re-run `./configure.sh`, rebuild, and reflash.
+
+Run the host tests:
+
+```sh
 cmake -S tests -B tests/build
 cmake --build tests/build
 ctest --test-dir tests/build
+npm --prefix host/dashboard test
+npm --prefix host/bridge test
 npm --prefix host/dashboard run typecheck
 npm --prefix host/bridge run typecheck
+python3 -m venv .venv
+.venv/bin/pip install paho-mqtt pyyaml
 ```
 
-Pass: firmware builds, 8 host tests pass, both typechecks pass.
+Pass: firmware builds, firmware host tests, dashboard tests, bridge tests, and
+both typechecks pass.
 
-## Stage 1 — Buddy 4 bring-up (`physics_check`)
+## Stage 1 — IMU/hump bring-up (`physics_check`, optional)
 
 Wheels up. Flash `build/physics_check.uf2`.
 
-- Expect `PHYS_H,b4_task_init=0` and `PHYS_S` counters.
+- Expect the `PHYS_H` init line and `PHYS_S` counters.
 - The IMU initialises (`lsm303_init=0`); the CSV rows show pitch and word.
 - Keep the board still for the first second (calibration).
 - Tilt the board: pitch changes with the correct sign.
@@ -56,7 +95,7 @@ Wheels up. Flash `build/physics_check.uf2`.
 
 Pass: no fault at rest, pitch tracks the board, I2C fault is reported.
 
-## Stage 2 — Buddy 5 bench (`obstacle_bench`)
+## Stage 2 — obstacle bench (`obstacle_bench`, optional)
 
 Wheels up. Flash `build/obstacle_bench.uf2`.
 
@@ -78,7 +117,8 @@ Wheels up. Flash `main.uf2`.
 - Expect `[init]` lines without `startup failed`.
 - `physics_init -> 0` and `obstacle_line_init -> 0`.
 - The blink task runs.
-- With Wi-Fi configured, `[conn]` reports `join=0 dhcp=0` and reaches ready.
+- With the auto-detected Wi-Fi, `[conn]` reports `join=0 dhcp=0` and reaches
+  ready.
 - No `MOTION FAULT`.
 
 Pass: every task starts, no fault.
@@ -87,9 +127,10 @@ Pass: every task starts, no fault.
 
 - Line sensors: pass a black card under the left, then the right sensor; the
   line bits change.
-- Barcode: present a known Code 39 marker; expect `[barcode] X` and a
-  telemetry event on topic `e`.
-- System packet: the dashboard shows the B4 and B5 values from topic `t`.
+- Barcode: present a known Code 39 marker; expect `[barcode] X` and a telemetry
+  event on topic `e`.
+- System packet: the dashboard shows the physics and obstacle values from
+  topic `t`.
 
 Pass: line bits, barcode character and system fields are correct.
 
@@ -134,34 +175,77 @@ Pass: uniform clearance, complete U-turn, line reacquisition, safe stop.
 
 ## Stage 8 — telemetry and dashboard
 
-Build with credentials and a reachable broker:
+Configure, build, and flash with the detected host:
 
 ```sh
-./configure.sh \
-  -DPICO_CAR_MQTT_HOST=192.168.1.10 \
-  -DPICO_CAR_WIFI_SSID=your-ssid \
-  -DPICO_CAR_WIFI_PASSWORD=your-password
+./configure.sh
 ./build.sh
+./flash.sh
 ```
 
-- Broker: `mosquitto_sub -h 192.168.1.10 -t 'car/SE01/#' -v`.
+`configure.sh` detects the active Wi-Fi and the host's private IPv4. Check the
+generated broker host and topic before flashing:
+
+```sh
+rg 'TELEMETRY_BROKER_HOST|TELEMETRY_TOPIC_PREFIX' build/generated/telemetry_config.h
+```
+
+If the host IP changes, rebuild and reflash; the firmware cannot follow a new
+DHCP address on its own.
+
+Start the host stack:
+
+```sh
+./dev.sh
+```
+
+It starts the broker, the bridge, and the dashboard, prints their addresses,
+and restarts a child that exits. Logs are under `logs/`:
+`broker.log`, `bridge.log`, `expo.log`, `supervisor.log`, and
+`state/history.jsonl`. Use `EXPO_CLEAR=1 ./dev.sh` for a clean Metro cache.
+
+The current host address can also be read directly:
+
+```sh
+HOST_IP=$(ip -4 route get 1.1.1.1 2>/dev/null |
+  awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
+```
+
+Or copy the broker line printed by `./dev.sh`.
+
+- Broker check: `mosquitto_sub -h "$HOST_IP" -t 'car/PICO-CAR/#' -v`.
   Expect `s` at 5 Hz, `t` at 2 Hz, `h` at 1 Hz, `e` for events.
-- Bridge: `MQTT_URL=mqtt://192.168.1.10:1883 npm --prefix host/bridge start`.
-- Dashboard: `npm --prefix host/dashboard run web` with
-  `EXPO_PUBLIC_LINK_URL=ws://localhost:8080`,
-  `EXPO_PUBLIC_SERVICE_URL=http://localhost:8080`.
+- Open the printed dashboard URL (`http://$HOST_IP:8083`) on the host or
+  phone. The script sets `EXPO_PUBLIC_ALLOW_INSECURE=1` for the LAN.
 - Check live state, the onboard system panel, and the history page.
 - Send STOP/START/RESET from the dashboard; STOP sets bit 9 and disables
   Reset.
-- CLI: `python3 host/cli/cli.py --host 192.168.1.10 monitor`.
-- Outage: stop the broker or AP for 30 s; the connection reconnects.
+- CLI: `.venv/bin/python host/cli/cli.py --host "$HOST_IP" monitor`.
+- Allow TCP `1883`, `8090`, and `8083` on `wlan0` in the host firewall. The
+  `dev.sh` start prints the same note.
 
-Pass: packets, dashboard, commands and reconnect work.
+### Telemetry reconnect
+
+- The bridge is the WebSocket; `LINK OPEN` means the dashboard reached it.
+- `BRIDGE UP` means the bridge reached the broker.
+- `HEALTH STALE` means no fresh car status; the car link is down.
+- The broker log is `logs/broker.log`; the bridge log is `logs/bridge.log`;
+  `curl http://127.0.0.1:8090/health` shows the bridge MQTT state and packet
+  count.
+- The car prints `[conn] state=...` on state changes and
+  `[conn] transport open failed` once. The TCP retry loop is silent, so watch
+  the serial and the broker log for `pico-car`.
+- On the serial, expect the Wi-Fi join, DHCP, and `[conn]` ready state.
+- Outage: stop the broker or AP for 30 s. The car retries the TCP/MQTT session;
+  the broker log shows a new `pico-car` client when it recovers. The dashboard
+  reconnects its WebSocket and shows the bridge state.
+
+Pass: packets, dashboard, commands, serial reconnect and broker reconnect work.
 
 ## Stage 9 — failure modes
 
 - Sonar covered: `NO_ECHO`; ECHO held high: `ECHO_STUCK`.
-- IMU unplugged: I2C fault in the B4 word.
+- IMU unplugged: I2C fault in the physics word.
 - Scan blocked: no settled slot for 3 s → `SCAN_TIMEOUT`.
 - Full event queue: check the drop counters.
 - Barcode edge overflow: check `ir_barcode_drops`.
@@ -171,5 +255,6 @@ Pass: each fault is reported and the car stops safely.
 ## Sign-off
 
 Save the serial log, MQTT capture and dashboard screenshots under
-`artifacts/logs/smoke-YYYYMMDD/`. Record the pass/fail per stage and file any
-failure with the file and line.
+`artifacts/logs/smoke-YYYYMMDD/`. Keep the `logs/` dev-stack logs alongside
+the capture. Record the pass/fail per stage and file any failure with the file
+and line.

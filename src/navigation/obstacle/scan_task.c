@@ -19,7 +19,7 @@
 #include "statechart.h"
 #include "obstacle_pack.h"
 #include "planner.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 #include "scan_algo.h"
 #include "scan_hw.h"
 #include "scan_task.h"

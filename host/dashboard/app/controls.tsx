@@ -18,6 +18,11 @@ export default function ControlsScreen() {
   const lastStatus = packets.find((packet) => packet.packet === 'status');
   const emergencyLatched =
     ((lastStatus?.values.faults ?? 0) & (1 << 9)) !== 0;
+  const commandsDisabled = snapshot.status !== 'open' || serviceUrl === null;
+  const disabledReason =
+    serviceUrl === null
+      ? SERVICE_CONFIG_ERROR
+      : 'Link offline. Commands are disabled.';
 
   return (
     <View style={[styles.page, { backgroundColor: theme.colors.canvas, paddingTop: insets.top + 16 }]}>
@@ -41,7 +46,8 @@ export default function ControlsScreen() {
       </Text>
       <ControlsPanel
         emergencyLatched={emergencyLatched}
-        disabled={snapshot.status !== 'open'}
+        disabled={commandsDisabled}
+        disabledReason={disabledReason}
         feedback={feedback}
         feedbackError={feedbackError}
         onAction={send}

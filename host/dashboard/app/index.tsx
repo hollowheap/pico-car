@@ -27,6 +27,11 @@ export default function LiveScreen() {
   const lastSystem = packets.find((packet) => packet.packet === 'system');
   const emergencyLatched =
     ((lastStatus?.values.faults ?? 0) & (1 << 9)) !== 0;
+  const commandsDisabled = snapshot.status !== 'open' || serviceUrl === null;
+  const disabledReason =
+    serviceUrl === null
+      ? SERVICE_CONFIG_ERROR
+      : 'Link offline. Commands are disabled.';
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -60,7 +65,8 @@ export default function LiveScreen() {
       />
       <ControlsPanel
         title="Mission commands"
-        disabled={snapshot.status !== 'open'}
+        disabled={commandsDisabled}
+        disabledReason={disabledReason}
         emergencyLatched={emergencyLatched}
         feedback={feedback}
         feedbackError={feedbackError}

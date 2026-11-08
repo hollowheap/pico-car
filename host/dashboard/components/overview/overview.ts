@@ -6,7 +6,7 @@ export type OverviewHealth = 'healthy' | 'fault' | 'stale' | 'offline';
 export type Overview = {
   status: LinkStatus;
   health: OverviewHealth;
-  heartbeatAgeMs: number | null;
+  statusAgeMs: number | null;
   faults: string[];
   speedMms: number | null;
   headingDeg: number | null;
@@ -30,16 +30,16 @@ export function buildOverview(
   nowMs: number,
   staleAfterMs = 1500,
 ): Overview {
-  const lastStatus =
-    snapshot.lastStatus ??
-    (snapshot.lastPacket?.packet === 'status' ? snapshot.lastPacket : null);
-  const statusAt = lastStatus?.timestamp ?? snapshot.lastPacketAt;
-  const age = statusAt === null ? null : Math.max(0, nowMs - statusAt);
+  const lastStatus = snapshot.lastStatus ?? null;
+  const age =
+    lastStatus === null ? null : Math.max(0, nowMs - lastStatus.timestamp);
   const statusPacket = lastStatus?.values ?? null;
   const faults = statusPacket === null ? [] : faultNames(statusPacket.faults ?? 0);
 
   let health: OverviewHealth = 'healthy';
   if (snapshot.status !== 'open') {
+    health = 'offline';
+  } else if (snapshot.bridge?.mqtt === 'disconnected') {
     health = 'offline';
   } else if (age === null || age > staleAfterMs) {
     health = 'stale';
@@ -50,7 +50,7 @@ export function buildOverview(
   return {
     status: snapshot.status,
     health,
-    heartbeatAgeMs: age,
+    statusAgeMs: age,
     faults,
     speedMms: statusPacket?.speed_mms ?? null,
     headingDeg: statusPacket?.heading_deg ?? null,

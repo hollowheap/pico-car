@@ -17,3 +17,9 @@ __pycache__/
 
 # local Python virtualenv
 .venv/
+
+# local opal UI review configuration
+.opal/
+
+# local dev-stack logs
+logs/

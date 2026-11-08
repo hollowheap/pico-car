@@ -61,6 +61,18 @@ task and starts one startup task that initialises the shared hardware.
 The opt-in bring-up targets build with `make physics_check` or
 `make obstacle_bench` inside `build/`.
 
+## Ground station
+
+`./dev.sh` starts the local MQTT broker, the bridge, and the dashboard. It
+prints the broker, bridge, and dashboard addresses. The broker config is
+`host/broker/mosquitto.conf`. Logs are under `logs/`. The supervisor
+restarts the broker, bridge, or dashboard if one exits. Set
+`EXPO_CLEAR=1` to clear Metro's cache on start.
+
+The services listen on the host's private address so the car and phone can
+reach them on the hotspot. Allow TCP `1883`, `8090`, and `8083` on the Wi-Fi
+interface in the host firewall.
+
 ## Telemetry
 
 The firmware publishes the status, system, heartbeat and event packets on

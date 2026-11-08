@@ -1,5 +1,5 @@
 /** @file motion_pins.h
- * @brief Buddy 2 wiring verified on the assembled car.
+ * @brief Motion wiring verified on the assembled car.
  */
 #ifndef MOTION_PINS_H
 #define MOTION_PINS_H

@@ -3,13 +3,14 @@ import Svg, { Line, Polyline } from 'react-native-svg';
 type Props = {
   values: number[];
   color: string;
+  label: string;
   height?: number;
 };
 
 const WIDTH = 100;
 const VIEW_HEIGHT = 40;
 
-export function Sparkline({ values, color, height = 64 }: Props) {
+export function Sparkline({ values, color, label, height = 64 }: Props) {
   const points =
     values.length < 2
       ? `0,${VIEW_HEIGHT / 2} ${WIDTH},${VIEW_HEIGHT / 2}`
@@ -29,6 +30,8 @@ export function Sparkline({ values, color, height = 64 }: Props) {
 
   return (
     <Svg
+      accessibilityLabel={label}
+      accessibilityRole="image"
       height={height}
       preserveAspectRatio="none"
       viewBox={`0 0 ${WIDTH} ${VIEW_HEIGHT}`}

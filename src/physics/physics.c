@@ -1,6 +1,6 @@
 /** @file physics.c
  *
- * @brief Buddy 4 facade: start the task and publish a telemetry-ready
+ * @brief Physics facade: start the task and publish a telemetry-ready
  *        snapshot. The packed hump word stays private.
  */
 
@@ -18,7 +18,7 @@ ER physics_init (ID task_id)
     physics_task_config_t cfg;
 
     physics_task_default_config(&cfg);
-    cfg.read_b2 = motion_read_b2;
+    cfg.read_motion = motion_glue_read;
 
     return (physics_task_init(&cfg, task_id));
 }

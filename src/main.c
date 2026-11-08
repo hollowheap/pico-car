@@ -125,7 +125,7 @@ LOCAL void startup_task (INT stacd, void * exinf)
     }
     if (E_OK == result)
     {
-        /* Buddy 5 obstacle avoidance. If it fails, line following still
+        /* Obstacle avoidance. If it fails, line following still
          * runs, but this build stops instead of driving blind. */
         result = obstacle_line_init();
     }
@@ -204,7 +204,7 @@ LOCAL void line_task (INT stacd, void * exinf)
 
         if (obstacle_line_step(state.left, state.right))
         {
-            /* Buddy 5 is holding the car or driving round an obstacle. */
+            /* obstacle is holding the car or driving round an obstacle. */
         }
         else if (state.left && state.right)
         {
@@ -420,10 +420,10 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
 }
 
 /*!
- * @brief Join telemetry commands to motion and Buddy 5.
+ * @brief Join telemetry commands to motion and obstacle.
  *
  * NOTE: STOP uses the direct motion emergency latch (fault bit 9) and also
- * stops Buddy 5. D75: the latch needs a reboot; the dashboard disables
+ * stops obstacle. D75: the latch needs a reboot; the dashboard disables
  * Reset while bit 9 is set.
  */
 LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)

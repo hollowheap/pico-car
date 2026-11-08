@@ -54,7 +54,7 @@ function ThemedButton({
     minWidth: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: compact ? theme.spacing.sm : theme.spacing.xl,
+    paddingHorizontal: compact ? theme.spacing.md : theme.spacing.xl,
     borderRadius: theme.radii.button,
     borderWidth: variant === 'secondary' ? 1 : 0,
     borderColor: theme.colors.border,

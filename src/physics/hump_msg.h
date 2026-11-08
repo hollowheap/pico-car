@@ -52,7 +52,7 @@ typedef uint32_t packed_hump_t;
 
 /* Fault bits within the 3-bit message field. */
 #define PHYSICS_FAULT_I2C        (0x1U)  /* I2C NACK/timeout after 3 retries.  */
-#define PHYSICS_FAULT_STALE      (0x2U)  /* Buddy 2 motion data stale/invalid. */
+#define PHYSICS_FAULT_STALE      (0x2U)  /* motion data stale/invalid. */
 #define PHYSICS_FAULT_TILT       (0x4U)  /* Pitch outside the packed range.    */
 #define PHYSICS_FAULT_ALL        (0x7U)
 

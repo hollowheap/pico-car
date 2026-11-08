@@ -13,7 +13,9 @@ export type HistorySummary = {
 };
 
 function detail(record: HistoryRecord): string {
-  const parts = Object.entries(record.values).map(([key, value]) => `${key}=${value}`);
+  const parts = Object.entries(record.values).map(
+    ([key, value]) => `${key}=${value}`,
+  );
   return parts.length === 0 ? record.topic : parts.join(' ');
 }
 

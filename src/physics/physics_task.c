@@ -24,7 +24,7 @@
 
 static physics_task_config_t g_cfg;
 static pipeline_t    g_pipe;
-static motion_adapter_t  g_b2;
+static motion_adapter_t  g_motion;
 static lsm303_t         g_imu;
 static i2c_bus_t     g_bus;
 static ID               g_task_id = 0;
@@ -120,7 +120,7 @@ static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
 static void log_header (void)
 {
     tm_printf ((UB *)"PHYS_H,t_us,ax_mg,ay_mg,az_mg,mx_raw,my_raw,mz_raw,mag_new,"
-               "b2_valid,vl_mm_s,vr_mm_s,ds_um,acc_mm_s2,pitch_cdeg,state,"
+               "motion_valid,vl_mm_s,vr_mm_s,ds_um,acc_mm_s2,pitch_cdeg,state,"
                "motion,yaw_ddps,cal,theta0_cdeg,word\n");
     tm_printf ((UB *)"PHYS_H,mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
 }
@@ -150,7 +150,7 @@ void physics_task_run (void)
         motion_input_t motion;
         pipeline_step_t step;
         hump_fields_t fields;
-        bool have_b2 = false;
+        bool have_motion = false;
         bool acc_ok = false;
         bool mag_ok = false;
         uint32_t now_us;
@@ -216,11 +216,11 @@ void physics_task_run (void)
             }
         }
 
-        if (NULL != g_cfg.read_b2)
+        if (NULL != g_cfg.read_motion)
         {
-            have_b2 = g_cfg.read_b2 (&reading);
+            have_motion = g_cfg.read_motion (&reading);
         }
-        (void)motion_adapter_convert (&g_b2, have_b2 ? &reading : NULL, now_us,
+        (void)motion_adapter_convert (&g_motion, have_motion ? &reading : NULL, now_us,
                              &motion);
 
         (void)pipeline_step (&g_pipe, acc_ok ? acc.value : NULL,
@@ -275,8 +275,8 @@ void physics_task_default_config (physics_task_config_t * p_cfg)
         p_cfg->telem_every = 10U;       /* 5 Hz periodic Telemetry.  */
         p_cfg->log_every = 0U;
         p_cfg->i2c_attempts = 4U;       /* First try + 3 retries.    */
-        p_cfg->b2_accel_alpha = 0.3f;
-        p_cfg->read_b2 = NULL;
+        p_cfg->motion_accel_alpha = 0.3f;
+        p_cfg->read_motion = NULL;
         p_cfg->publish_faults = NULL;
         hump_default_config (&p_cfg->hump);
         imu_motion_default_config (&p_cfg->motion);
@@ -304,7 +304,7 @@ ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id)
     g_cfg = *p_cfg;
     if (!pipeline_init (&g_pipe, &g_cfg.hump, &g_cfg.motion,
                            g_cfg.telem_every)
-        || !motion_adapter_init (&g_b2, g_cfg.b2_accel_alpha))
+        || !motion_adapter_init (&g_motion, g_cfg.motion_accel_alpha))
     {
         return E_PAR;
     }
