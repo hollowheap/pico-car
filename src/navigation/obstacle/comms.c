@@ -1,12 +1,12 @@
 /** @file comms.c
  *
- * @brief Buddy 5 communications: the command queue, the event outbox, the
+ * @brief the obstacle task communications: the command queue, the event outbox, the
  *        published copies that other tasks read without ever blocking
- *        Buddy 5, and the links to Buddy 2.
+ *        the obstacle task, and the links to the motion service.
  *
  * Sharing rules:
  *   - Status word and steering word: one 32-bit store, one 32-bit load.
- *   - Fault byte and drop counter: the Buddy 5 task is the only writer.
+ *   - Fault byte and drop counter: the the obstacle task task is the only writer.
  *   - Profile: a sequence lock. The writer never waits; a reader retries
  *     once and then gets E_BUSY.
  *   - Command queue and outbox: many callers, so each is guarded by a
@@ -31,7 +31,7 @@
 #include "comms.h"
 #include "statechart.h"
 #include "obstacle_pack.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 
 /* A reader of the profile tries this many times before giving up. */
 #define PROFILE_TRIES (2U)
@@ -104,7 +104,7 @@ static void publish_profile (obstacle_statechart_t const * p_fsm);
 /*!
  * @brief Store the links, set up the locks and create the event flag.
  *
- * @param[in] p_links Links to Buddy 2 and Navigation; NULL means none.
+ * @param[in] p_links Links to the motion service and Navigation; NULL means none.
  *
  * @return E_OK, or the error from tk_cre_flg().
  */
@@ -158,7 +158,7 @@ void obstacle_comms_set_init_failed (void)
 }
 
 /*!
- * @brief Buddy 5's event flag.
+ * @brief the obstacle task's event flag.
  *
  * @return The flag id, or 0 before obstacle_comms_init().
  */
@@ -275,7 +275,7 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
 }
 
 /*!
- * @brief Distance travelled, from Buddy 2 if possible.
+ * @brief Distance travelled, from the motion service if possible.
  *
  * NOTE: Without a reading, the distance is estimated from time at the
  * configured bypass speed, so the distance limits still work (safely
@@ -307,7 +307,7 @@ uint32_t obstacle_comms_odometer_mm (uint32_t now_ms)
 }
 
 /*!
- * @brief Take the next event from Buddy 5's own outbox.
+ * @brief Take the next event from the obstacle task's own outbox.
  *
  * @param[out] p_evt The event.
  * @param[in]  tmout How long to wait (TMO_POL, TMO_FEVR or ms).

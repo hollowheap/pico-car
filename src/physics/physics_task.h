@@ -1,11 +1,11 @@
 /** @file physics_task.h
  *
- * @brief Buddy 4 Hump task for micro T-Kernel 3.0 (target only).
+ * @brief Physics Hump task for micro T-Kernel 3.0 (target only).
  *
  * Every 20 ms (cyclic handler wake-up):
  *   1. Read the accelerometer (and the magnetometer every mag_every cycles)
  *      over I2C1 GP2/GP3.
- *   2. Read Buddy 2's motion status through the optional read_b2 callback.
+ *   2. Read the motion status through the optional read_motion callback.
  *   3. Run pipeline_step and send the packed 4-byte message to the Nav
  *      and Telemetry message buffers (TMO_POL, never blocks).
  *   4. Optionally print one CSV row over the USB console.
@@ -40,10 +40,10 @@ typedef struct
     uint32_t telem_every;        /* Periodic Telemetry message, cycles.    */
     uint32_t log_every;          /* CSV row every N cycles; 0 = off.       */
     uint8_t  i2c_attempts;       /* Attempts per I2C transaction.          */
-    float    b2_accel_alpha;     /* dv/dt smoothing, see motion_adapter.h.  */
-    /* Fill *p_reading from Buddy 2. NULL = Buddy 2 not used (bring-up). */
-    bool   (*read_b2) (motion_reading_t * p_reading);
-    /* Called with the 3 Buddy 4 fault bits whenever they change, so the
+    float    motion_accel_alpha;     /* dv/dt smoothing, see motion_adapter.h.  */
+    /* Fill *p_reading from the motion service. NULL = the motion service is not used (bring-up). */
+    bool   (*read_motion) (motion_reading_t * p_reading);
+    /* Called with the 3 physics fault bits whenever they change, so the
      * integrator can update the shared fault word. NULL = not used. */
     void   (*publish_faults) (uint8_t physics_faults);
     hump_config_t       hump;

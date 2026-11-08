@@ -8,9 +8,12 @@ through the dashboard backend (D41).
 
 ```sh
 python3 host/cli/cli.py --help
-python3 host/cli/cli.py --host 192.168.1.10 monitor
-python3 host/cli/cli.py --host 192.168.1.10 command start --run-id 0
+python3 host/cli/cli.py monitor
+python3 host/cli/cli.py command start --run-id 0
 ```
+
+The default broker host is this host's default-route IPv4. Use
+`--host <broker-ip>` when the broker runs elsewhere.
 
 `--host` and the other broker options are global, so they go before the
 subcommand. The firmware starts with run ID 0; the CLI default is already 0.
@@ -20,11 +23,11 @@ Dependencies:
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install paho-mqtt pyyaml
-.venv/bin/python host/cli/cli.py --host localhost monitor
+.venv/bin/python host/cli/cli.py monitor
 ```
 
-Defaults: broker `localhost:1883`, topic prefix `car/SE01`, keepalive 30 s.
-Override `--username` / `--password` for authenticated brokers.
+Defaults: broker `<this host>:1883`, topic prefix `car/PICO-CAR`, keepalive
+30 s. Override `--username` / `--password` for authenticated brokers.
 
 `monitor` reconnects every second after a loss and prints decoded frames:
 

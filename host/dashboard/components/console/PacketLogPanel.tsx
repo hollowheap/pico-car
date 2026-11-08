@@ -7,13 +7,14 @@ import { Button } from '../ui/button';
 import { formatTime, packetSummary } from './format';
 import { Panel } from './Panel';
 
-type Filter = 'ALL' | 'STATUS' | 'EVENT' | 'HEARTBEAT';
+type Filter = 'ALL' | 'STATUS' | 'EVENT' | 'HEARTBEAT' | 'SYSTEM';
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'ALL', label: 'ALL' },
   { key: 'STATUS', label: 'STAT' },
   { key: 'EVENT', label: 'EVT' },
   { key: 'HEARTBEAT', label: 'HB' },
+  { key: 'SYSTEM', label: 'SYS' },
 ];
 
 type Props = {
@@ -38,18 +39,12 @@ export function PacketLogPanel({ packets, connected, style }: Props) {
         {FILTERS.map((item) => (
           <Button
             key={item.key}
+            accessibilityState={{ selected: filter === item.key }}
             compact
-            variant="secondary"
+            variant={filter === item.key ? 'primary' : 'secondary'}
             onPress={() => setFilter(item.key)}
           >
-            <Button.Text
-              style={{
-                color:
-                  filter === item.key
-                    ? theme.colors.accent
-                    : theme.colors.text,
-              }}
-            >
+            <Button.Text style={theme.typography.label}>
               {item.label}
             </Button.Text>
           </Button>

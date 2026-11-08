@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { decodeEvent, decodeHeartbeat, decodeStatus, heartbeatAgeMs } from './schema';
+import {
+  bitLabels,
+  decodeEvent,
+  decodeHeartbeat,
+  decodeStatus,
+  enumLabel,
+  heartbeatAgeMs,
+} from './schema';
 
 const bytes = (...values: number[]) => Uint8Array.from(values);
 
@@ -43,5 +50,18 @@ describe('wire schema', () => {
   it('reports non-negative heartbeat age and rejects clock rollback', () => {
     expect(heartbeatAgeMs(1200, 1000)).toBe(200);
     expect(heartbeatAgeMs(900, 1000)).toBeNull();
+  });
+
+  it('maps system codes to protocol enum names', () => {
+    expect(enumLabel('obstacleState', 3)).toBe('SCANNING');
+    expect(enumLabel('obstacleCause', 10)).toBe('PLAN REJECTED');
+    expect(enumLabel('echoClass', 2)).toBe('UNKNOWN');
+    expect(enumLabel('physicsState', undefined)).toBe('--');
+    expect(enumLabel('physicsMotion', 9)).toBe('UNKNOWN 9');
+    expect(bitLabels('obstacleFaults', 0b1001)).toEqual([
+      'NO ECHO',
+      'NO SAFE PATH',
+    ]);
+    expect(bitLabels('physicsFaults', 0)).toEqual([]);
   });
 });

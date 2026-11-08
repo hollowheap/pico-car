@@ -1,8 +1,8 @@
 /** @file obstacle.h
  *
- * @brief Buddy 5 public facade.
+ * @brief Obstacle public facade.
  *
- * This is the only Buddy 5 header another subsystem may include. The
+ * This is the only obstacle header another subsystem may include. The
  * packed status word, the echo flags, the scan profile layout and the
  * statechart are private to src/navigation/obstacle/.
  *
@@ -32,8 +32,8 @@ typedef ER (*obstacle_stop_fn_t)(void);
 /* Distance travelled supplied by the motion subsystem, in mm. */
 typedef ER (*obstacle_distance_fn_t)(uint32_t * p_distance_mm);
 
-/* Links handed to Buddy 5 at start-up. Any member may be 0 or NULL.
- * h_nav_mbf 0 means "use Buddy 5's own 4-slot outbox". */
+/* Links handed to obstacle at start-up. Any member may be 0 or NULL.
+ * h_nav_mbf 0 means "use obstacle's own 4-slot outbox". */
 typedef struct
 {
     ID                     h_nav_mbf;
@@ -57,16 +57,16 @@ typedef struct
     uint8_t  dropped_events;/* Events lost to a full queue.             */
 } obstacle_status_t;
 
-/* Start Buddy 5. Call once from the line task, after gpio_irq_init() and
+/* Start obstacle. Call once from the line task, after gpio_irq_init() and
  * motion_service_init(). Uses the default links: motion-service stop and
- * odometer, Buddy 5 outbox. The composition root creates the task and
+ * odometer, obstacle outbox. The composition root creates the task and
  * calls obstacle_run() from it. */
 ER obstacle_line_init (void);
 
 /* Task body. Never returns. */
 void obstacle_run (void);
 
-/* One handshake pass. Call every line-task loop. Returns true when Buddy 5
+/* One handshake pass. Call every line-task loop. Returns true when obstacle
  * owns the motors this pass, so the line follower must send no speed. */
 bool obstacle_line_step (bool b_line_left, bool b_line_right);
 
@@ -81,7 +81,7 @@ ER obstacle_snapshot (obstacle_status_t * p_status);
 uint8_t obstacle_get_faults (void);
 
 /* Copy of the scan profile: OBSTACLE_SLOT_COUNT packed slots. Never waits.
- * Returns E_BUSY if Buddy 5 was writing it, E_OBJ before init. */
+ * Returns E_BUSY if obstacle was writing it, E_OBJ before init. */
 ER obstacle_copy_profile (uint16_t * p_profile);
 
 /* Event flag for NAV_EVT and NAV_STEER waits. E_OBJ before init. */

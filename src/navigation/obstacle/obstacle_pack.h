@@ -1,6 +1,6 @@
 /** @file obstacle_pack.h
  *
- * @brief Buddy 5 codes and packed-word layouts. Every shared or stored
+ * @brief the obstacle task codes and packed-word layouts. Every shared or stored
  *        field is packed with explicit masks and shifts (no C bit-fields
  *        across task/ISR boundaries). See the bit table in
  *        docs/obstacle.md.
@@ -36,7 +36,7 @@
 #define OBSTACLE_STATE_BYPASS    (5U) /* escape: bend away, servo ahead      */
 #define OBSTACLE_STATE_REACQUIRE (6U) /* hug with servo at 45 deg, find line */
 
-/* Why Buddy 5 is STOPPED, 4 bits. */
+/* Why the obstacle task is STOPPED, 4 bits. */
 #define OBSTACLE_CAUSE_NONE          (0U)
 #define OBSTACLE_CAUSE_BOOT          (1U)
 #define OBSTACLE_CAUSE_EXTERNAL      (2U) /* STOP command                     */
@@ -52,7 +52,7 @@
 #define OBSTACLE_CAUSE_LINE_TIMEOUT  (12U)
 #define OBSTACLE_CAUSE_INIT_FAIL     (13U)
 
-/* Fault byte: Buddy 5's task is its only writer. */
+/* Fault byte: the obstacle task's task is its only writer. */
 #define OBSTACLE_FAULT_NO_ECHO      (1U << 0U)
 #define OBSTACLE_FAULT_ECHO_STUCK   (1U << 1U)
 #define OBSTACLE_FAULT_SCAN_TIMEOUT (1U << 2U)
@@ -75,7 +75,7 @@
 #define OBSTACLE_EVT_FAULT       (2U)
 #define OBSTACLE_EVT_STEER       (3U)
 
-/* Steering, 2 bits. Same order as Buddy 2's motion_drive_action_t. */
+/* Steering, 2 bits. Same order as the motion drive action. */
 #define OBSTACLE_STEER_STRAIGHT (0U)
 #define OBSTACLE_STEER_LEFT     (1U)
 #define OBSTACLE_STEER_RIGHT    (2U)

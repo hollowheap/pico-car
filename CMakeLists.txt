@@ -12,7 +12,7 @@ set(PICO_CAR_MQTT_HOST "$ENV{PICO_CAR_MQTT_HOST}" CACHE STRING "MQTT broker host
 set(PICO_CAR_MQTT_PORT "1883" CACHE STRING "MQTT broker TCP port")
 set(PICO_CAR_MQTT_USERNAME "" CACHE STRING "MQTT username (empty for anonymous)")
 set(PICO_CAR_MQTT_PASSWORD "" CACHE STRING "MQTT password (empty for anonymous)")
-set(PICO_CAR_TOPIC_PREFIX "car/SE01" CACHE STRING "MQTT topic prefix")
+set(PICO_CAR_TOPIC_PREFIX "car/PICO-CAR" CACHE STRING "MQTT topic prefix")
 set(PICO_CAR_CLIENT_ID "pico-car" CACHE STRING "MQTT client identifier")
 
 if (NOT PICO_CAR_MQTT_PORT MATCHES "^[0-9]+$")

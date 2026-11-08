@@ -72,7 +72,7 @@
 #include "obstacle_nav.h"
 #include "obstacle_pack.h"
 #include "planner.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 #include "scan_algo.h"
 
 /* Micrometres per millimetre. */

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -31,6 +32,16 @@ DEFAULT_SCHEMA = Path(__file__).resolve().parents[2] / "protocol" / "telemetry.y
 
 def _topic_prefix(value: str) -> str:
     return value.rstrip("/")
+
+
+def local_host() -> str:
+    """Best-effort IPv4 address of this host's default route."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("1.1.1.1", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return "localhost"
 
 
 def cmd_monitor(args, schema) -> int:
@@ -141,11 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="pico-car ground-station CLI (direct MQTT)"
     )
-    parser.add_argument("--host", default="localhost", help="broker host")
+    parser.add_argument(
+        "--host", default=None, help="broker host (default: this host)"
+    )
     parser.add_argument("--port", type=int, default=1883, help="broker port")
     parser.add_argument("--username", default=None)
     parser.add_argument("--password", default=None)
-    parser.add_argument("--prefix", default="car/SE01", help="topic prefix")
+    parser.add_argument("--prefix", default="car/PICO-CAR", help="topic prefix")
     parser.add_argument("--keepalive", type=int, default=30)
     parser.add_argument(
         "--schema",
@@ -171,6 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.host is None:
+        args.host = local_host()
     schema = load_schema(args.schema)
 
     if args.action == "monitor":

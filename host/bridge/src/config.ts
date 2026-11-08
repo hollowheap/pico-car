@@ -10,16 +10,11 @@ export type BridgeConfig = {
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
-  const mqttUrl = env.MQTT_URL;
-  if (!mqttUrl) {
-    throw new Error("MQTT_URL is required");
-  }
-
   return {
-    mqttUrl,
+    mqttUrl: env.MQTT_URL || "mqtt://localhost:1883",
     username: env.MQTT_USERNAME,
     password: env.MQTT_PASSWORD,
-    topicPrefix: env.MQTT_TOPIC_PREFIX ?? "car/SE01",
+    topicPrefix: env.MQTT_TOPIC_PREFIX ?? "car/PICO-CAR",
     httpPort: Number(env.BRIDGE_HTTP_PORT ?? "8080"),
     schemaPath: env.PROTOCOL_SCHEMA ?? "../../protocol/telemetry.yaml",
     historyPath: env.BRIDGE_HISTORY_PATH ?? "history.jsonl",

@@ -1,9 +1,10 @@
 import { StyleSheet, Text, View } from 'react-native';
 
 import type { LinkPacket, LinkSnapshot } from '../../lib/link';
+import { heartbeatAgeMs } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
 import type { Overview } from '../overview/overview';
-import { faultHex, formatAge, missionName } from './format';
+import { faultHex, formatAge, motionName } from './format';
 
 type Props = {
   snapshot: LinkSnapshot;
@@ -38,7 +39,9 @@ export function StatusRail({ snapshot, overview, packets, nowMs }: Props) {
   const lastStatus = packets.find((packet) => packet.packet === 'status');
   const lastHeartbeat = packets.find((packet) => packet.packet === 'heartbeat');
   const heartbeatAge =
-    lastHeartbeat === undefined ? null : nowMs - lastHeartbeat.timestamp;
+    lastHeartbeat === undefined
+      ? null
+      : heartbeatAgeMs(nowMs, lastHeartbeat.timestamp);
   const packetAge =
     snapshot.lastPacketAt === null ? null : nowMs - snapshot.lastPacketAt;
   const healthColor =
@@ -48,7 +51,20 @@ export function StatusRail({ snapshot, overview, packets, nowMs }: Props) {
         ? theme.colors.text
         : theme.colors.muted;
   const linkColor =
-    snapshot.status === 'open' ? theme.colors.accent : theme.colors.muted;
+    snapshot.status === 'open' ? theme.colors.text : theme.colors.muted;
+  const bridge = snapshot.bridge;
+  const bridgeValue =
+    bridge?.mqtt === 'connected'
+      ? 'UP'
+      : bridge?.mqtt === 'disconnected'
+        ? 'DOWN'
+        : '--';
+  const bridgeColor =
+    bridge?.mqtt === 'connected'
+      ? theme.colors.text
+      : bridge?.mqtt === 'disconnected'
+        ? theme.colors.danger
+        : theme.colors.muted;
 
   return (
     <View
@@ -62,6 +78,7 @@ export function StatusRail({ snapshot, overview, packets, nowMs }: Props) {
     >
       <View style={styles.metrics}>
         <Metric label="LINK" value={snapshot.status.toUpperCase()} color={linkColor} />
+        <Metric label="BRIDGE" value={bridgeValue} color={bridgeColor} />
         <Metric
           label="HEALTH"
           value={overview.health.toUpperCase()}
@@ -79,7 +96,7 @@ export function StatusRail({ snapshot, overview, packets, nowMs }: Props) {
         />
         <Metric
           label="STATE"
-          value={missionName(lastStatus?.values.state)}
+          value={motionName(lastStatus?.values.state)}
           color={theme.colors.text}
         />
         <Metric

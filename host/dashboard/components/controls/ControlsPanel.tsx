@@ -10,6 +10,7 @@ type Props = {
   onAction: (action: ControlAction) => void;
   title?: string;
   disabled?: boolean;
+  disabledReason?: string;
   feedback?: string | null;
   feedbackError?: boolean;
 };
@@ -19,6 +20,7 @@ export function ControlsPanel({
   onAction,
   title = 'Controls',
   disabled = false,
+  disabledReason = 'Link offline. Commands are disabled.',
   feedback = null,
   feedbackError = false,
 }: Props) {
@@ -63,7 +65,7 @@ export function ControlsPanel({
       </Text>
       {disabled ? (
         <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
-          Link offline. Commands are disabled.
+          {disabledReason}
         </Text>
       ) : null}
       {emergencyLatched ? (
@@ -130,20 +132,28 @@ export function ControlsPanel({
           </Button>
         </View>
       ) : (
-        <View style={styles.row}>
-          <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+        <View style={styles.confirmRow}>
+          <View style={styles.confirmActions}>
+            <Button
+              disabled={disabled}
+              variant="secondary"
+              onPress={() => setPending(null)}
+            >
+              <Button.Text>Cancel</Button.Text>
+            </Button>
+            <Button disabled={disabled} onPress={confirm}>
+              <Button.Text>Confirm</Button.Text>
+            </Button>
+          </View>
+          <Text
+            style={[
+              theme.typography.body,
+              styles.confirmText,
+              { color: theme.colors.text },
+            ]}
+          >
             Confirm {pending}?
           </Text>
-          <Button disabled={disabled} onPress={confirm}>
-            <Button.Text>Confirm</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled}
-            variant="secondary"
-            onPress={() => setPending(null)}
-          >
-            <Button.Text>Cancel</Button.Text>
-          </Button>
         </View>
       )}
     </View>
@@ -153,4 +163,19 @@ export function ControlsPanel({
 const styles = StyleSheet.create({
   card: { gap: 8, borderWidth: 1 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  confirmRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  confirmText: {
+    flexShrink: 1,
+    marginLeft: 'auto',
+    textAlign: 'right',
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
 });

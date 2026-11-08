@@ -78,3 +78,71 @@ export const FAULT_BITS = {
   sonarNoEcho: 8,
   estopLatched: 9,
 } as const;
+
+export const ENUMS = {
+  obstacleState: {
+    stopped: 0,
+    monitor: 1,
+    waitStop: 2,
+    scanning: 3,
+    plan: 4,
+    bypass: 5,
+    reacquire: 6,
+  },
+  obstacleCause: {
+    none: 0,
+    boot: 1,
+    external: 2,
+    noEcho: 3,
+    echoStuck: 4,
+    scanTimeout: 5,
+    noSafePath: 6,
+    collision: 7,
+    handover: 8,
+    planTimeout: 9,
+    planRejected: 10,
+    bypassLimit: 11,
+    lineTimeout: 12,
+    initFail: 13,
+  },
+  echoClass: {
+    valid: 0,
+    open: 1,
+    unknown: 2,
+    stuck: 3,
+  },
+  physicsState: {
+    flat: 0,
+    climb: 1,
+    crest: 2,
+    descend: 3,
+  },
+  physicsMotion: {
+    unknown: 0,
+    stationary: 1,
+    moving: 2,
+    accelerating: 3,
+    turning: 4,
+    climbing: 5,
+    descending: 6,
+    impact: 7,
+  },
+} as const;
+
+export const BIT_FIELDS = {
+  obstacleFaults: {
+    noEcho: 0,
+    echoStuck: 1,
+    scanTimeout: 2,
+    noSafePath: 3,
+    collision: 4,
+    handover: 5,
+    bypassLimit: 6,
+    lineTimeout: 7,
+  },
+  physicsFaults: {
+    i2c: 0,
+    stale: 1,
+    tilt: 2,
+  },
+} as const;

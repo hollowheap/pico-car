@@ -5,10 +5,10 @@ const schema = loadProtocolSchema(new URL("../../../protocol/telemetry.yaml", im
 
 describe("protocol schema", () => {
   it("maps topic suffixes to packet names", () => {
-    expect(packetNameForTopic(schema, "car/SE01/s")).toBe("status");
-    expect(packetNameForTopic(schema, "car/SE01/e")).toBe("event");
-    expect(packetNameForTopic(schema, "car/SE01/h")).toBe("heartbeat");
-    expect(packetNameForTopic(schema, "car/SE01/c")).toBeUndefined();
+    expect(packetNameForTopic(schema, "car/PICO-CAR/s")).toBe("status");
+    expect(packetNameForTopic(schema, "car/PICO-CAR/e")).toBe("event");
+    expect(packetNameForTopic(schema, "car/PICO-CAR/h")).toBe("heartbeat");
+    expect(packetNameForTopic(schema, "car/PICO-CAR/c")).toBeUndefined();
   });
 
   it("decodes a status frame", () => {

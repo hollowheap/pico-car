@@ -24,16 +24,16 @@ packets:
   system:
     wire_size: 16
     fields:
-      - { name: obstacle_state, offset: 0, type: uint8 }
-      - { name: obstacle_cause, offset: 1, type: uint8 }
-      - { name: obstacle_faults, offset: 2, type: uint8 }
-      - { name: echo_class, offset: 3, type: uint8 }
+      - { name: obstacle_state, offset: 0, type: uint8, enum: obstacle_state }
+      - { name: obstacle_cause, offset: 1, type: uint8, enum: obstacle_cause }
+      - { name: obstacle_faults, offset: 2, type: uint8, enum: obstacle_faults }
+      - { name: echo_class, offset: 3, type: uint8, enum: echo_class }
       - { name: obstacle_dist_mm, offset: 4, type: uint16 }
       - { name: obstacle_seq, offset: 6, type: uint8 }
       - { name: obstacle_req_id, offset: 7, type: uint8 }
-      - { name: physics_state, offset: 8, type: uint8 }
-      - { name: physics_motion, offset: 9, type: uint8 }
-      - { name: physics_faults, offset: 10, type: uint8 }
+      - { name: physics_state, offset: 8, type: uint8, enum: physics_state }
+      - { name: physics_motion, offset: 9, type: uint8, enum: physics_motion }
+      - { name: physics_faults, offset: 10, type: uint8, enum: physics_faults }
       - { name: physics_flags, offset: 11, type: uint8 }
       - { name: pitch_cdeg, offset: 12, type: int16 }
       - { name: hump_peak_mm, offset: 14, type: uint16 }
@@ -59,6 +59,73 @@ commands:
 
 # Event IDs are defined with the command/event schema in T04.
 events: {}
+
+# Named codes for the fields that carry enumerations. Values match the
+# firmware constants in src/navigation/obstacle/obstacle_pack.h and
+# src/physics/hump_msg.h and imu_motion.h.
+enums:
+  obstacle_state:
+    values:
+      stopped: 0
+      monitor: 1
+      wait_stop: 2
+      scanning: 3
+      plan: 4
+      bypass: 5
+      reacquire: 6
+  obstacle_cause:
+    values:
+      none: 0
+      boot: 1
+      external: 2
+      no_echo: 3
+      echo_stuck: 4
+      scan_timeout: 5
+      no_safe_path: 6
+      collision: 7
+      handover: 8
+      plan_timeout: 9
+      plan_rejected: 10
+      bypass_limit: 11
+      line_timeout: 12
+      init_fail: 13
+  echo_class:
+    values:
+      valid: 0
+      open: 1
+      unknown: 2
+      stuck: 3
+  obstacle_faults:
+    bits:
+      no_echo: 0
+      echo_stuck: 1
+      scan_timeout: 2
+      no_safe_path: 3
+      collision: 4
+      handover: 5
+      bypass_limit: 6
+      line_timeout: 7
+  physics_state:
+    values:
+      flat: 0
+      climb: 1
+      crest: 2
+      descend: 3
+  physics_motion:
+    values:
+      unknown: 0
+      stationary: 1
+      moving: 2
+      accelerating: 3
+      turning: 4
+      climbing: 5
+      descending: 6
+      impact: 7
+  physics_faults:
+    bits:
+      i2c: 0
+      stale: 1
+      tilt: 2
 
 fault_bits:
   - { name: wifi_disconn, bit: 0 }

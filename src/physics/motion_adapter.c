@@ -1,6 +1,6 @@
 /** @file motion_adapter.c
  *
- * @brief Convert Buddy 2's motion status into Buddy 4's SI inputs.
+ * @brief Convert the motion service status into physics's SI inputs.
  */
 
 #include <math.h>
@@ -88,7 +88,7 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
         p_ad->have_disp = false;
     }
 
-    /* dv/dt between Buddy 2 samples. */
+    /* dv/dt between the motion service samples. */
     if (speeds_ok)
     {
         if (p_ad->have_speed && (p_reading->timestamp_us != p_ad->prev_ts_us))

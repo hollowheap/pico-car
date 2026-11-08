@@ -14,7 +14,7 @@
 
 #include "obstacle_config.h"
 #include "comms.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 #include "obstacle_pack.h"
 #include "scan_hw.h"
 #include "scan_task.h"

@@ -1,8 +1,8 @@
 /** @file comms.h
  *
- * @brief Buddy 5 private communications: the command queue, the event
- *        outbox, the copies other tasks read without blocking Buddy 5, and
- *        the links to Buddy 2. Only obstacle.c and scan_task.c use it.
+ * @brief the obstacle task private communications: the command queue, the event
+ *        outbox, the copies other tasks read without blocking the obstacle task, and
+ *        the links to the motion service. Only obstacle.c and scan_task.c use it.
  */
 
 #ifndef OBSTACLE_COMMS_H
@@ -13,7 +13,7 @@
 #include <tk/tkernel.h>
 
 #include "statechart.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 
 ER   obstacle_comms_init (obstacle_links_t const * p_links);
 void obstacle_comms_set_init_failed (void);

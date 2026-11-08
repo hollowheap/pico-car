@@ -33,7 +33,7 @@
 #include "platform/isr.h"
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
-#include "obstacle.h"
+#include "obstacle_internal.h"
 #include "scan_hw.h"
 
 /* GPIO pad control bits. NOTE: These are unsigned copies of the port's

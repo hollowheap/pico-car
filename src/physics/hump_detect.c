@@ -341,7 +341,7 @@ bool hump_update (hump_ctx_t * p_ctx,
 
     if (!p_ctx->calibrated)
     {
-        /* Moving if Buddy 2 reports speed. Without fresh motion data the
+        /* Moving if the motion service reports speed. Without fresh motion data the
          * accelerometer checks alone decide. */
         bool moving = motion_fresh
                       && (fabsf (p_sample->speed_mps) >= p_cfg->min_speed_mps)

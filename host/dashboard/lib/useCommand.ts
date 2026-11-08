@@ -32,11 +32,11 @@ export function useCommand(
     const request = {
       action,
       cmdId: Date.now() & 0xffff,
-      runId: 1,
+      runId: 0,
       sentMs,
     };
     void postCommand(serviceUrl, request)
-      .then(() => setFeedback(`${action} accepted.`))
+      .then(() => setFeedback(`${action} sent to bridge.`))
       .catch((reason: Error) => {
         setFeedback(reason.message);
         setFeedbackError(true);

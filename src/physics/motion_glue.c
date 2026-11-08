@@ -1,8 +1,8 @@
 /** @file motion_glue.c
  *
- * @brief Read Buddy 2's motion service into motion_reading_t (target only).
+ * @brief Read the motion service into motion_reading_t (target only).
  *
- * Pass motion_read_b2 as physics_task_config_t.read_b2 once
+ * Pass motion_glue_read as physics_task_config_t.read_motion once
  * motion_service_init() has been called.
  */
 
@@ -16,7 +16,7 @@
 #include "motion_adapter.h"
 #include "motion_glue.h"
 
-bool motion_read_b2 (motion_reading_t * p_reading)
+bool motion_glue_read (motion_reading_t * p_reading)
 {
     motion_feedback_t feedback;
     uint32_t          wheel;

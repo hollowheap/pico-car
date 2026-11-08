@@ -17,10 +17,10 @@ class FakeSocket implements SocketLike {
   }
 }
 
-function linkClient() {
+function linkClient(idleTimeoutMs = 0) {
   const sockets: FakeSocket[] = [];
-  let scheduled: (() => void) | null = null;
-  let cancelled = 0;
+  const scheduled: Array<() => void> = [];
+  const cancelled: unknown[] = [];
   const instance = new LinkClient({
     url: 'ws://link',
     createSocket: () => {
@@ -29,18 +29,20 @@ function linkClient() {
       return socket;
     },
     schedule: (callback) => {
-      scheduled = callback;
-      return 1;
+      scheduled.push(callback);
+      return scheduled.length;
     },
-    cancel: () => {
-      cancelled += 1;
+    cancel: (handle) => {
+      cancelled.push(handle);
     },
     now: () => 5000,
+    idleTimeoutMs,
   });
   return {
     instance,
     sockets,
-    runRetry: () => scheduled?.(),
+    runScheduled: (index = 0) => scheduled[index]?.(),
+    scheduledCount: () => scheduled.length,
     cancelled: () => cancelled,
   };
 }
@@ -70,13 +72,49 @@ describe('link client', () => {
     expect(harness.instance.snapshot().lastPacket?.values.speed_mms).toBe(12);
   });
 
+  it('decodes the bridge status frame', () => {
+    const harness = linkClient();
+    harness.instance.connect();
+    harness.sockets[0]?.onopen?.();
+    harness.sockets[0]?.onmessage?.({
+      data: JSON.stringify({
+        type: 'status',
+        mqtt: 'connected',
+        packets: 4,
+        lastPacketAt: 10,
+      }),
+    });
+
+    expect(harness.instance.snapshot().bridge).toEqual({
+      mqtt: 'connected',
+      packets: 4,
+      lastPacketAt: 10,
+    });
+    expect(harness.instance.snapshot().lastPacket).toBeNull();
+  });
+
   it('reconnects after an unexpected close', () => {
     const harness = linkClient();
     harness.instance.connect();
     harness.sockets[0]?.onclose?.();
 
     expect(harness.instance.snapshot().status).toBe('reconnecting');
-    harness.runRetry();
+    harness.runScheduled(0);
+    expect(harness.sockets).toHaveLength(2);
+    expect(harness.instance.snapshot().status).toBe('connecting');
+  });
+
+  it('closes an idle socket and reconnects', () => {
+    const harness = linkClient(5000);
+    harness.instance.connect();
+    harness.sockets[0]?.onopen?.();
+    expect(harness.scheduledCount()).toBe(1);
+
+    harness.runScheduled(0);
+    expect(harness.instance.snapshot().status).toBe('reconnecting');
+    expect(harness.sockets).toHaveLength(1);
+
+    harness.runScheduled(1);
     expect(harness.sockets).toHaveLength(2);
     expect(harness.instance.snapshot().status).toBe('connecting');
   });
@@ -95,5 +133,6 @@ describe('link client', () => {
     harness.instance.connect();
     harness.sockets[0]?.onmessage?.({ data: '{not json' });
     expect(harness.instance.snapshot().lastPacket).toBeNull();
+    expect(harness.instance.snapshot().bridge?.mqtt).toBe('unknown');
   });
 });

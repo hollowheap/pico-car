@@ -51,9 +51,18 @@ export default function HistoryScreen() {
   return (
     <View style={[styles.page, { backgroundColor: theme.colors.canvas, paddingTop: insets.top + 16 }]}>
       <ConsoleNav active="history" />
-      <Text style={[theme.typography.heading, { color: theme.colors.text }]}>
-        Run history
-      </Text>
+      <View style={styles.headingRow}>
+        <Text style={[theme.typography.heading, { color: theme.colors.text }]}>
+          Run history
+        </Text>
+        <Button
+          variant="secondary"
+          disabled={state.status === 'loading'}
+          onPress={retry}
+        >
+          <Button.Text>Refresh</Button.Text>
+        </Button>
+      </View>
       {state.status === 'loading' ? (
         <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
           Loading history...
@@ -91,5 +100,11 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   page: { flex: 1, gap: 16, padding: 24 },
+  headingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
   error: { borderWidth: 1, borderRadius: 8, gap: 10, padding: 12 },
 });
