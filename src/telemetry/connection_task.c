@@ -19,6 +19,7 @@
 #define CONNECTION_POLL_MS      100U
 #define CONNECTION_LOOP_MS      10U
 #define CONNECTION_HEARTBEAT_MS 1000U
+#define CONNECTION_STATUS_MS    1000U
 
 static const char s_topic_status[]    = TELEMETRY_TOPIC_PREFIX "/s";
 static const char s_topic_event[]     = TELEMETRY_TOPIC_PREFIX "/e";
@@ -210,6 +211,8 @@ connection_run (void)
 {
     connection_state_t previous = CONNECTION_DISCONNECTED;
     uint32_t           last_poll_ms = 0u;
+    uint32_t           last_status_ms = 0u;
+    bool               first_status = true;
 
     for (;;)
     {
@@ -222,13 +225,20 @@ connection_run (void)
             last_poll_ms = now_ms;
             cyw43_utk_get_status(&s_status);
             next = classify(&s_status);
-            if (next != previous)
+            if ((next != previous) || first_status ||
+                ((next != CONNECTION_READY) &&
+                 ((uint32_t) (now_ms - last_status_ms) >= CONNECTION_STATUS_MS)))
             {
                 previous = next;
                 s_state = next;
-                (void) tm_printf((UB *)"[conn] state=%d link=%u join=%d dhcp=%d\n",
-                                 (INT) next, s_status.link_up,
-                                 s_status.join_result, s_status.dhcp_result);
+                first_status = false;
+                last_status_ms = now_ms;
+                (void) tm_printf(
+                    (UB *) "[conn] state=%d link=%u started=%u join=%d "
+                           "dhcp_done=%u dhcp=%d init=%d\n",
+                    (INT) next, s_status.link_up, s_status.join_started,
+                    s_status.join_result, s_status.dhcp_complete,
+                    s_status.dhcp_result, s_status.init_result);
             }
             if (next == CONNECTION_READY)
             {

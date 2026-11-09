@@ -227,6 +227,22 @@ void physics_task_run (void)
                                 mag_ok ? mag.value : NULL, &motion, dt_s,
                                 g_imu.fault || !g_imu.ready, &step);
 
+        local.heading_valid = step.sensors_ok && step.motion.heading_valid;
+        if (local.heading_valid)
+        {
+            uint32_t heading = (uint32_t)(step.motion.heading_deg + 0.5f);
+
+            if (heading >= 360U)
+            {
+                heading -= 360U;
+            }
+            local.heading_deg = (uint8_t)heading;
+        }
+        else
+        {
+            local.heading_deg = 0U;
+        }
+
         if (step.to_nav)
         {
             send (g_nav_mbf, step.word, &local.nav_sent, &local.nav_dropped);

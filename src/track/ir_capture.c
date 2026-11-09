@@ -59,9 +59,9 @@ LOCAL ir_sensors_state_t current_state (void)
     return state;
 }
 
-LOCAL void ir_isr (UINT intno)
+LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
 {
-    (void)intno;
+    (void)p_snapshot;
 
     ir_sensors_state_t old_state = load_state(&g_state);
     mp_memory_barrir();
