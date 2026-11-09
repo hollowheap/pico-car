@@ -3,7 +3,6 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
-#include "demo_tasks.h"
 #include "track/track.h"
 #include "track/line_control.h"
 #include "motion/motion.h"
@@ -263,8 +262,8 @@ static line_turn_t line_take_turn (void)
 #define LINE_WHEEL_COUNT         (2)
 
 /* Each speed lease must outlast one loop pass plus scheduling delay. The
- * motion task (priority 5) shares core 0 with physics (4) and the obstacle
- * task (6), so a 3-pass lease can be stale by the time the controller
+ * motion task (priority 1) shares core 0 with line (3), obstacle (4) and
+ * physics (5), so a 3-pass lease can be stale by the time the controller
  * validates it and latches MOTION_FAULT_COMMAND. Keep the lease below
  * max_command_ttl_us (200 ms). */
 #define LINE_LEASE_PASSES        (10U)
@@ -785,13 +784,6 @@ LOCAL void connection_task (INT stacd, void * exinf)
  *  Task and object definitions
  * ------------------------------------------------------------------ */
 
-LOCAL T_CTSK g_ctsk_blink = {
-    .itskpri = 10, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
-    .task    = blink_task,
-    .tskatr  = TA_HLNG | TA_RNG3,
-};
-
 LOCAL T_CTSK g_ctsk_startup = {
     .itskpri = 1,
     .stksz   = STACK_SZ,
@@ -805,7 +797,7 @@ LOCAL T_CTSK g_ctsk_startup = {
 };
 
 LOCAL T_CTSK g_ctsk_motion = {
-    .itskpri = 5, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
+    .itskpri = 1,
     .stksz   = STACK_SZ,
     .task    = motion_task,
 #if TK_SUPPORT_SMP
@@ -817,7 +809,7 @@ LOCAL T_CTSK g_ctsk_motion = {
 };
 
 LOCAL T_CTSK g_ctsk_physics = {
-    .itskpri = 4, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
+    .itskpri = 5, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = physics_task,
 #if TK_SUPPORT_SMP
@@ -829,7 +821,7 @@ LOCAL T_CTSK g_ctsk_physics = {
 };
 
 LOCAL T_CTSK g_ctsk_obstacle = {
-    .itskpri = 6, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
+    .itskpri = 4, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = obstacle_task,
 #if TK_SUPPORT_SMP
@@ -841,7 +833,7 @@ LOCAL T_CTSK g_ctsk_obstacle = {
 };
 
 LOCAL T_CTSK g_ctsk_line = {
-    .itskpri = 9, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
+    .itskpri = 3, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = line_task,
 #if TK_SUPPORT_SMP
@@ -915,7 +907,6 @@ typedef struct
     ID   physics_tid;
     ID   obstacle_tid;
     ID   line_tid;
-    ID   blink_tid;
     ID   telemetry_tid;
     ID   connection_tid;
     ID   barcode_tid;
@@ -996,12 +987,6 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
         b_ok = false;
     }
 
-    p_tasks->blink_tid = tk_cre_tsk(&g_ctsk_blink);
-    if (!made("tsk(blink)", p_tasks->blink_tid))
-    {
-        b_ok = false;
-    }
-
     if (p_tasks->b_telemetry)
     {
         p_tasks->telemetry_tid = tk_cre_tsk(&g_ctsk_telemetry);
@@ -1050,10 +1035,6 @@ LOCAL bool start_required_tasks (task_set_t const * p_tasks)
         b_ok = false;
     }
     if (!started("tsk(line)", p_tasks->line_tid))
-    {
-        b_ok = false;
-    }
-    if (!started("tsk(blink)", p_tasks->blink_tid))
     {
         b_ok = false;
     }

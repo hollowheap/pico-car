@@ -368,7 +368,6 @@ target_compile_options(barcode PRIVATE ${FIRMWARE_WARNINGS})
 
 add_executable(main
     src/main.c
-    src/demo_tasks.c
 )
 target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
