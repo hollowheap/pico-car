@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "docmd": {
+      "source": "hollowheap/docmd",
+      "sourceType": "github",
+      "skillPath": "skills/docmd/SKILL.md",
+      "computedHash": "0b67774b06677b24f1ceb90e2e946c953b75dca0f5ad3ab3a82646638f874dfa"
+    }
+  }
+}
