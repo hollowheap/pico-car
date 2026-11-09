@@ -121,3 +121,12 @@ foreach(name IN ITEMS queue net_queue worker publisher)
     target_compile_options(test_telemetry_${name} PRIVATE ${TELEMETRY_TEST_FLAGS})
     add_test(NAME telemetry_${name} COMMAND test_telemetry_${name})
 endforeach()
+
+add_executable(test_line_control test_line_control.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+target_include_directories(test_line_control PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_line_control PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_line_control PRIVATE m)
+add_test(NAME line_control COMMAND test_line_control)

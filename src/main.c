@@ -5,6 +5,7 @@
 
 #include "demo_tasks.h"
 #include "track/track.h"
+#include "track/line_control.h"
 #include "motion/motion.h"
 #include "motion/motion_request.h"
 #include "motion/motion_service.h"
@@ -27,24 +28,16 @@
    for a task that makes blocking kernel calls. */
 #define STACK_SZ 4096
 
-/* Line following. 250 mm/s cruise and a 10 ms control period. Steering is a
- * filtered differential mixer: one sensor ramps the steer toward
- * +/-LINE_STEER_MAX_PERMILLE, both/neither decays it. The outer wheel
- * saturates at LINE_MAX_WHEEL_UM_S, so a tight curve reduces the average
- * speed instead of overdriving a wheel. Tune these on the car; the duty cap
- * in setup_motors() must leave headroom for the target. */
-#define LINE_SPEED_UM_S          (250000U)
+/* Line following. The cruise speed, the search limits and the turn speeds
+ * live in track/line_control.h (tune them there on the car). The duty cap in
+ * setup_motors() must leave headroom for them. A one-sensor correction stops
+ * the inner wheel; one-shot turns pivot in place. LINE_POLL_MS is the control
+ * period. */
 #define LINE_POLL_MS             (10U)
 #define LINE_MAX_WHEEL_UM_S      (300000U)
-#define LINE_STEER_MAX_PERMILLE  (1000)
-#define LINE_STEER_SOFT_PERMILLE (250)
-#define LINE_STEER_CONFIRM_TICKS (5U)
-#define LINE_STEER_FILTER_SHIFT  (3U)
-#define LINE_TURN_SPEED_UM_S     (180000)
-#define LINE_TURN_90_MS          (600U)
-#define LINE_TURN_180_MS         (1200U)
-#define LINE_PERMILLE_SCALE      (1000)
-#define LINE_CALIBRATION_WAIT_MS (2000U)
+/* Upper bound on one turn, so a blocked car cannot pivot for ever. Tune on
+ * the car: it must exceed the longest U-turn, including the slow phase. */
+#define LINE_TURN_MAX_MS         (4000U)
 
 /* Startup barrier polling period. */
 #define STARTUP_POLL_MS (10U)
@@ -244,8 +237,6 @@ typedef enum
 
 static T_SPLOCK        g_turn_lock;
 static volatile uint8_t g_turn_request;
-static int32_t         g_line_steer_per_mille;
-static uint8_t         g_line_error_ticks;
 
 static void line_request_turn (line_turn_t turn)
 {
@@ -268,143 +259,189 @@ static line_turn_t line_take_turn (void)
     return turn;
 }
 
-/* One-shot pivot. The controller brakes a wheel that reverses, so the
- * duration includes margin; tune LINE_TURN_90_MS on the car. */
-static void line_execute_turn (line_turn_t turn)
+/* Mean wheel travel divides the sum of both wheels. */
+#define LINE_WHEEL_COUNT         (2)
+
+/* Each speed lease must outlast one loop pass plus scheduling delay. The
+ * motion task (priority 5) shares core 0 with physics (4) and the obstacle
+ * task (6), so a 3-pass lease can be stale by the time the controller
+ * validates it and latches MOTION_FAULT_COMMAND. Keep the lease below
+ * max_command_ttl_us (200 ms). */
+#define LINE_LEASE_PASSES        (10U)
+#define LINE_US_PER_MS           (1000U)
+#define LINE_LEASE_US \
+    (LINE_LEASE_PASSES * LINE_POLL_MS * LINE_US_PER_MS)
+
+static line_follow_t g_line_follow;
+static bool          g_line_lost;
+static int64_t       g_line_travel_um;
+
+/* Kernel time in ms (low 32 bits; line_control handles the wrap). If the
+ * kernel call fails the last good time is reused, so the clock never jumps
+ * back to 0. */
+static uint32_t line_now_ms (void)
 {
-    int32_t  left = 0;
-    int32_t  right = 0;
-    uint32_t duration_ms = 0U;
-    uint32_t elapsed_ms = 0U;
-    uint32_t const lease_us = 10U * LINE_POLL_MS * 1000U;
+    static uint32_t s_last_ms;
+    SYSTIM          tim = {0, 0U};
+
+    if (E_OK == tk_get_otm(&tim))
+    {
+        s_last_ms = tim.lo;
+    }
+
+    return s_last_ms;
+}
+
+/* Set FAULT_LINE_LOST_BIT on entering line lost, clear it on leaving. */
+static void line_update_fault (bool b_lost)
+{
+    if (b_lost && !g_line_lost)
+    {
+        system_fault_set(FAULT_LINE_LOST_BIT);
+    }
+    else if (!b_lost && g_line_lost)
+    {
+        system_fault_clear(FAULT_LINE_LOST_BIT);
+    }
+    else
+    {
+        /* No change. */
+    }
+    g_line_lost = b_lost;
+}
+
+/* Forget the search state, e.g. when the obstacle step took the motors. */
+static void line_follow_reset (void)
+{
+    line_follow_init(&g_line_follow);
+    line_update_fault(false);
+}
+
+/* Map the CLI turn request to the line_control turn kind. */
+static bool line_turn_kind (line_turn_t turn, line_turn_kind_t * p_kind)
+{
+    bool b_valid = true;
 
     switch (turn)
     {
         case LINE_TURN_LEFT:
-            left        = -(int32_t)LINE_TURN_SPEED_UM_S;
-            right       = (int32_t)LINE_TURN_SPEED_UM_S;
-            duration_ms = LINE_TURN_90_MS;
+            *p_kind = LINE_TURN_KIND_LEFT;
             break;
         case LINE_TURN_RIGHT:
-            left        = (int32_t)LINE_TURN_SPEED_UM_S;
-            right       = -(int32_t)LINE_TURN_SPEED_UM_S;
-            duration_ms = LINE_TURN_90_MS;
+            *p_kind = LINE_TURN_KIND_RIGHT;
             break;
         case LINE_TURN_UTURN:
-            left        = (int32_t)LINE_TURN_SPEED_UM_S;
-            right       = -(int32_t)LINE_TURN_SPEED_UM_S;
-            duration_ms = LINE_TURN_180_MS;
+            *p_kind = LINE_TURN_KIND_UTURN;
             break;
         default:
-            return;
+            b_valid = false;
+            break;
     }
 
-    while (elapsed_ms < duration_ms)
-    {
-        if (motion_set_speed(left, right, lease_us) != E_OK)
-        {
-            break;
-        }
-        (void)tk_dly_tsk(LINE_POLL_MS);
-        elapsed_ms += LINE_POLL_MS;
-    }
-    (void)motion_set_speed(0, 0, lease_us);
-    g_line_steer_per_mille = 0;
-    g_line_error_ticks = 0U;
+    return b_valid;
 }
 
-/*!
- * @brief Hold the drive until the hump detector calibrates, or 2 s if the
- *        IMU is unavailable.
- */
-LOCAL void line_wait_calibration (void)
+/* One-shot pivot by encoder heading (D93). Every pass reads the feedback
+ * snapshot and the line sensors, then line_turn_update() decides the wheel
+ * targets. The turn ends on line capture, an abort, or LINE_TURN_MAX_MS. */
+static void line_execute_turn (line_turn_t turn)
 {
-    /* The hump detector needs 50 rest samples (1 s). Hold the drive until
-     * it calibrates, or 2 s if the IMU is unavailable. */
-    uint32_t wait_ms = 0U;
+    line_turn_kind_t   kind = LINE_TURN_KIND_LEFT;
+    line_turn_state_t  state;
+    line_targets_t     targets = {0, 0};
+    motion_feedback_t  feedback;
+    line_turn_status_t status = LINE_TURN_ABORTED;
+    uint32_t           elapsed_ms = 0U;
+    bool               b_snapshot = false;
 
-    while (wait_ms < LINE_CALIBRATION_WAIT_MS)
+    if (!line_turn_kind(turn, &kind))
     {
-        physics_status_t physics;
+        return;
+    }
 
-        if ((E_OK == physics_snapshot(&physics)) && physics.calibrated)
+    b_snapshot = (E_OK == motion_feedback_snapshot(&feedback));
+    if (b_snapshot)
+    {
+        line_turn_start(&state, kind, feedback.left_displacement_um,
+                        feedback.right_displacement_um);
+        status = LINE_TURN_TURNING;
+    }
+
+    while ((LINE_TURN_TURNING == status) && (elapsed_ms < LINE_TURN_MAX_MS))
+    {
+        ir_sensors_state_t const sensors = ir_get_state();
+
+        b_snapshot = (E_OK == motion_feedback_snapshot(&feedback));
+        status = line_turn_update(&state, feedback.left_displacement_um,
+                                feedback.right_displacement_um,
+                                b_snapshot && feedback.fresh, sensors.left,
+                                sensors.right, &targets);
+        if (LINE_TURN_TURNING == status)
         {
-            break;
+            if (E_OK != motion_set_speed(targets.left_um_s, targets.right_um_s,
+                                         LINE_LEASE_US))
+            {
+                status = LINE_TURN_ABORTED;
+            }
+            else
+            {
+                (void)tk_dly_tsk(LINE_POLL_MS);
+                elapsed_ms += LINE_POLL_MS;
+            }
         }
-        (void)tk_dly_tsk(LINE_POLL_MS);
-        wait_ms += LINE_POLL_MS;
+    }
+    (void)motion_set_speed(0, 0, LINE_LEASE_US);
+
+    if (LINE_TURN_DONE == status)
+    {
+        line_follow_set_side(&g_line_follow, line_turn_side(&state));
+        line_update_fault(false);
+    }
+    else
+    {
+        /* Stopped above. The follower holds the car until a sensor sees the
+         * line, and the fault stays set until then. */
+        line_follow_hold_lost(&g_line_follow);
+        line_update_fault(true);
     }
 }
 
 /*!
- * @brief One differential-steering pass of the line follower.
+ * @brief One pass of the line follower (D92). One sensor on the line stops
+ *        the inner wheel and records its side; with neither sensor the
+ *        correction continues toward the recorded side until the search
+ *        limit; both sensors drive straight.
  */
 LOCAL void line_follow_step (ir_sensors_state_t state)
 {
-    const uint32_t speed = LINE_SPEED_UM_S;
-    /* Each speed lease must outlast one loop pass plus scheduling delay.
-     * The motion task (priority 5) shares core 0 with physics (4) and the
-     * obstacle task (6), so a 3-pass lease can be stale by the time the
-     * controller validates it and latches MOTION_FAULT_COMMAND. Keep the
-     * lease below max_command_ttl_us (200 ms). */
-    const uint32_t lease_us = 10U * LINE_POLL_MS * 1000U;
-    int32_t        target = 0;
-    int32_t        delta = 0;
-    int32_t        left = 0;
-    int32_t        right = 0;
-    int32_t        peak = 0;
+    line_targets_t       targets = {0, 0};
+    motion_feedback_t    feedback;
+    line_follow_status_t status = LINE_FOLLOW_FOLLOWING;
 
-    if (state.left != state.right)
+    if (E_OK == motion_feedback_snapshot(&feedback))
     {
-        if (g_line_error_ticks < LINE_STEER_CONFIRM_TICKS)
-        {
-            g_line_error_ticks++;
-        }
+        g_line_travel_um = (feedback.left_displacement_um +
+                            feedback.right_displacement_um) /
+                           LINE_WHEEL_COUNT;
+    }
+
+    status = line_follow_update(&g_line_follow, state.left, state.right,
+                                g_line_travel_um, line_now_ms(), &targets);
+    if (LINE_FOLLOW_LOST == status)
+    {
+        line_update_fault(true);
+    }
+    else if (state.left || state.right)
+    {
+        /* The next sensor hit clears line lost, also after an aborted turn. */
+        line_update_fault(false);
     }
     else
     {
-        g_line_error_ticks = 0U;
+        /* Still searching or driving blind: keep the fault as it is. */
     }
-
-    if (state.left && state.right)
-    {
-        target = 0;
-    }
-    else if (state.left)
-    {
-        target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
-                     ? -LINE_STEER_MAX_PERMILLE
-                     : -LINE_STEER_SOFT_PERMILLE;
-    }
-    else if (state.right)
-    {
-        target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
-                     ? LINE_STEER_MAX_PERMILLE
-                     : LINE_STEER_SOFT_PERMILLE;
-    }
-    else
-    {
-        target = 0;
-    }
-
-    g_line_steer_per_mille +=
-        (target - g_line_steer_per_mille)
-        / (int32_t)(1U << LINE_STEER_FILTER_SHIFT);
-
-    delta = ((int32_t)speed * g_line_steer_per_mille) / LINE_PERMILLE_SCALE;
-    left  = (int32_t)speed + delta;
-    right = (int32_t)speed - delta;
-    peak  = (left < 0) ? -left : left;
-    if (((right < 0) ? -right : right) > peak)
-    {
-        peak = (right < 0) ? -right : right;
-    }
-    if (peak > (int32_t)LINE_MAX_WHEEL_UM_S)
-    {
-        left  = (int32_t)(((int64_t)left * LINE_MAX_WHEEL_UM_S) / peak);
-        right = (int32_t)(((int64_t)right * LINE_MAX_WHEEL_UM_S) / peak);
-    }
-    (void)motion_set_speed(left, right, lease_us);
+    (void)motion_set_speed(targets.left_um_s, targets.right_um_s,
+                           LINE_LEASE_US);
 }
 
 LOCAL void line_task (INT stacd, void * exinf)
@@ -416,8 +453,6 @@ LOCAL void line_task (INT stacd, void * exinf)
     {
         park();
     }
-
-    line_wait_calibration();
 
     for (;;)
     {
@@ -432,9 +467,9 @@ LOCAL void line_task (INT stacd, void * exinf)
 
         if (obstacle_line_step(state.left, state.right))
         {
-            /* obstacle is holding the car or driving round an obstacle. */
-            g_line_steer_per_mille = 0;
-            g_line_error_ticks = 0U;
+            /* obstacle is holding the car or driving round an obstacle. A
+             * search that was running would otherwise time out on return. */
+            line_follow_reset();
         }
         else
         {
