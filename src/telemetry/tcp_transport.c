@@ -31,17 +31,17 @@ typedef struct
     volatile uint16_t tail;
 } byte_ring_t;
 
-static byte_ring_t             s_rx;
-static byte_ring_t             s_tx;
-static struct tcp_pcb *        s_pcb;
-static ip_addr_t               s_resolved;
-static char                    s_host[TCP_TRANSPORT_HOST_MAX];
-static uint16_t                s_port;
-static volatile bool           s_desired;
-static volatile bool           s_resolving;
-static volatile tcp_transport_state_t s_state;
-static uint32_t                s_retry_at_ms;
-static uint32_t                s_connect_started_ms;
+static byte_ring_t             g_rx;
+static byte_ring_t             g_tx;
+static struct tcp_pcb *        gp_pcb;
+static ip_addr_t               g_resolved;
+static char                    g_host[TCP_TRANSPORT_HOST_MAX];
+static uint16_t                g_port;
+static volatile bool           g_desired;
+static volatile bool           g_resolving;
+static volatile tcp_transport_state_t g_state;
+static uint32_t                g_retry_at_ms;
+static uint32_t                g_connect_started_ms;
 
 static void
 memory_barrier (void)
@@ -84,8 +84,8 @@ static uint16_t
 ring_pop (byte_ring_t * ring, uint8_t * data, uint16_t len)
 {
     uint16_t used = ring_used(ring);
-    uint16_t index;
-    uint16_t first;
+    uint16_t index = 0u;
+    uint16_t first = 0u;
 
     if (len > used)
     {
@@ -119,44 +119,44 @@ detach_callbacks (struct tcp_pcb * pcb)
 static void
 fail_attempt (uint32_t now_ms)
 {
-    s_resolving = false;
-    s_state = TCP_TRANSPORT_FAILED;
-    (void) tm_printf((UB *) "[tcp] attempt failed state=%d\n", (INT) s_state);
-    s_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
-    ring_reset(&s_tx);
+    g_resolving = false;
+    g_state = TCP_TRANSPORT_FAILED;
+    (void) tm_printf((UB *) "[tcp] attempt failed state=%d\n", (INT) g_state);
+    g_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
+    ring_reset(&g_tx);
 }
 
 static void
 close_abort (void)
 {
-    struct tcp_pcb * pcb = s_pcb;
+    struct tcp_pcb * pcb = gp_pcb;
 
     if (pcb == 0)
     {
         return;
     }
-    s_pcb = 0;
+    gp_pcb = 0;
     detach_callbacks(pcb);
     tcp_abort(pcb);
-    ring_reset(&s_tx);
+    ring_reset(&g_tx);
 }
 
 static void
 close_graceful (void)
 {
-    struct tcp_pcb * pcb = s_pcb;
+    struct tcp_pcb * pcb = gp_pcb;
 
     if (pcb == 0)
     {
         return;
     }
-    s_pcb = 0;
+    gp_pcb = 0;
     detach_callbacks(pcb);
     if (tcp_close(pcb) != ERR_OK)
     {
         tcp_abort(pcb);
     }
-    ring_reset(&s_tx);
+    ring_reset(&g_tx);
 }
 
 static void drain_tx (void);
@@ -168,14 +168,14 @@ on_connected (void * arg, struct tcp_pcb * pcb, err_t err)
 
     if (err != ERR_OK)
     {
-        s_pcb = 0;
+        gp_pcb = 0;
         fail_attempt((uint32_t) sys_now());
         detach_callbacks(pcb);
         tcp_abort(pcb);
         return ERR_OK;
     }
     tcp_nagle_disable(pcb);
-    s_state = TCP_TRANSPORT_CONNECTED;
+    g_state = TCP_TRANSPORT_CONNECTED;
     (void) tm_printf((UB *) "[tcp] connected\n");
     drain_tx();
     return ERR_OK;
@@ -201,14 +201,14 @@ on_recv (void * arg, struct tcp_pcb * pcb, struct pbuf * p, err_t err)
         fail_attempt((uint32_t) sys_now());
         return ERR_ABRT;
     }
-    if (ring_used(&s_rx) + p->tot_len > TCP_TRANSPORT_RX_CAPACITY)
+    if (ring_used(&g_rx) + p->tot_len > TCP_TRANSPORT_RX_CAPACITY)
     {
         /* Leave the pbuf with lwIP and retry after the application drains. */
         return ERR_MEM;
     }
     while (copied < p->tot_len)
     {
-        uint16_t index = (uint16_t) (s_rx.head &
+        uint16_t index = (uint16_t) (g_rx.head &
                                      (TCP_TRANSPORT_RX_CAPACITY - 1u));
         uint16_t chunk = (uint16_t) (TCP_TRANSPORT_RX_CAPACITY - index);
 
@@ -216,9 +216,9 @@ on_recv (void * arg, struct tcp_pcb * pcb, struct pbuf * p, err_t err)
         {
             chunk = (uint16_t) (p->tot_len - copied);
         }
-        (void) pbuf_copy_partial(p, &s_rx.data[index], chunk, copied);
+        (void) pbuf_copy_partial(p, &g_rx.data[index], chunk, copied);
         memory_barrier();
-        s_rx.head = (uint16_t) (s_rx.head + chunk);
+        g_rx.head = (uint16_t) (g_rx.head + chunk);
         copied = (uint16_t) (copied + chunk);
     }
     tcp_recved(pcb, p->tot_len);
@@ -233,44 +233,44 @@ on_error (void * arg, err_t err)
 
     /* lwIP has already freed the pcb when this callback runs. */
     (void) tm_printf((UB *) "[tcp] error %d\n", (INT) err);
-    s_pcb = 0;
+    gp_pcb = 0;
     fail_attempt((uint32_t) sys_now());
 }
 
 static void
 start_connect (void)
 {
-    err_t err;
+    err_t err = ERR_OK;
 
     if (netif_default == 0)
     {
         fail_attempt((uint32_t) sys_now());
         return;
     }
-    s_pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
-    if (s_pcb == 0)
+    gp_pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+    if (gp_pcb == 0)
     {
         fail_attempt((uint32_t) sys_now());
         return;
     }
-    tcp_bind_netif(s_pcb, netif_default);
-    tcp_arg(s_pcb, 0);
-    tcp_recv(s_pcb, on_recv);
-    tcp_err(s_pcb, on_error);
+    tcp_bind_netif(gp_pcb, netif_default);
+    tcp_arg(gp_pcb, 0);
+    tcp_recv(gp_pcb, on_recv);
+    tcp_err(gp_pcb, on_error);
 
-    err = tcp_connect(s_pcb, &s_resolved, s_port, on_connected);
+    err = tcp_connect(gp_pcb, &g_resolved, g_port, on_connected);
     if (err != ERR_OK)
     {
-        detach_callbacks(s_pcb);
-        tcp_abort(s_pcb);
-        s_pcb = 0;
+        detach_callbacks(gp_pcb);
+        tcp_abort(gp_pcb);
+        gp_pcb = 0;
         fail_attempt((uint32_t) sys_now());
         return;
     }
-    s_state = TCP_TRANSPORT_CONNECTING;
-    s_connect_started_ms = (uint32_t) sys_now();
-    (void) tm_printf((UB *) "[tcp] connect %s:%u\n", s_host,
-                     (unsigned int) s_port);
+    g_state = TCP_TRANSPORT_CONNECTING;
+    g_connect_started_ms = (uint32_t) sys_now();
+    (void) tm_printf((UB *) "[tcp] connect %s:%u\n", g_host,
+                     (unsigned int) g_port);
 }
 
 static void
@@ -279,8 +279,8 @@ on_resolved (const char * name, const ip_addr_t * address, void * arg)
     (void) name;
     (void) arg;
 
-    s_resolving = false;
-    if (!s_desired)
+    g_resolving = false;
+    if (!g_desired)
     {
         return;
     }
@@ -289,7 +289,7 @@ on_resolved (const char * name, const ip_addr_t * address, void * arg)
         fail_attempt((uint32_t) sys_now());
         return;
     }
-    s_resolved = *address;
+    g_resolved = *address;
     start_connect();
 }
 
@@ -297,24 +297,24 @@ static void
 begin_attempt (uint32_t now_ms)
 {
     ip_addr_t address;
-    err_t err;
+    err_t err = ERR_OK;
 
-    if (ipaddr_aton(s_host, &address))
+    if (ipaddr_aton(g_host, &address))
     {
-        s_resolved = address;
+        g_resolved = address;
         start_connect();
         return;
     }
-    s_state = TCP_TRANSPORT_RESOLVING;
-    err = dns_gethostbyname(s_host, &address, on_resolved, 0);
+    g_state = TCP_TRANSPORT_RESOLVING;
+    err = dns_gethostbyname(g_host, &address, on_resolved, 0);
     if (err == ERR_OK)
     {
-        s_resolved = address;
+        g_resolved = address;
         start_connect();
     }
     else if (err == ERR_INPROGRESS)
     {
-        s_resolving = true;
+        g_resolving = true;
     }
     else
     {
@@ -327,82 +327,82 @@ drain_tx (void)
 {
     bool wrote = false;
 
-    if ((s_pcb == 0) || (s_state != TCP_TRANSPORT_CONNECTED))
+    if ((gp_pcb == 0) || (g_state != TCP_TRANSPORT_CONNECTED))
     {
         return;
     }
-    while (ring_used(&s_tx) > 0u)
+    while (ring_used(&g_tx) > 0u)
     {
-        uint16_t index = (uint16_t) (s_tx.tail &
+        uint16_t index = (uint16_t) (g_tx.tail &
                                      (TCP_TRANSPORT_TX_CAPACITY - 1u));
         uint16_t chunk = (uint16_t) (TCP_TRANSPORT_TX_CAPACITY - index);
-        uint16_t sndbuf = tcp_sndbuf(s_pcb);
+        uint16_t sndbuf = tcp_sndbuf(gp_pcb);
 
         if (sndbuf == 0u)
         {
             break;
         }
-        if (chunk > ring_used(&s_tx))
+        if (chunk > ring_used(&g_tx))
         {
-            chunk = ring_used(&s_tx);
+            chunk = ring_used(&g_tx);
         }
         if (chunk > sndbuf)
         {
             chunk = sndbuf;
         }
-        if (tcp_write(s_pcb, &s_tx.data[index], chunk,
+        if (tcp_write(gp_pcb, &g_tx.data[index], chunk,
                       TCP_WRITE_FLAG_COPY) != ERR_OK)
         {
             break;
         }
         memory_barrier();
-        s_tx.tail = (uint16_t) (s_tx.tail + chunk);
+        g_tx.tail = (uint16_t) (g_tx.tail + chunk);
         wrote = true;
     }
     if (wrote)
     {
-        (void) tcp_output(s_pcb);
+        (void) tcp_output(gp_pcb);
     }
 }
 
 bool
 tcp_transport_open (const char * host, uint16_t port)
 {
-    size_t len;
+    size_t len = 0u;
 
-    if ((host == 0) || (port == 0u) || s_desired)
+    if ((host == 0) || (port == 0u) || g_desired)
     {
         return false;
     }
     len = strlen(host);
-    if ((len == 0u) || (len >= sizeof(s_host)))
+    if ((len == 0u) || (len >= sizeof(g_host)))
     {
         return false;
     }
-    (void) memcpy(s_host, host, len + 1u);
-    s_port = port;
-    ring_reset(&s_rx);
-    ring_reset(&s_tx);
-    s_retry_at_ms = 0u;
-    s_resolving = false;
-    s_state = TCP_TRANSPORT_WAITING;
+    (void) memcpy(g_host, host, len + 1u);
+    g_port = port;
+    ring_reset(&g_rx);
+    ring_reset(&g_tx);
+    g_retry_at_ms = 0u;
+    g_resolving = false;
+    g_state = TCP_TRANSPORT_WAITING;
     memory_barrier();
-    s_desired = true;
+    g_desired = true;
     return true;
 }
 
 void
 tcp_transport_close (void)
 {
-    s_desired = false;
-    s_resolving = false;
-    s_state = TCP_TRANSPORT_CLOSED;
+    g_desired = false;
+    g_resolving = false;
+    g_state = TCP_TRANSPORT_CLOSED;
 }
 
 tcp_transport_state_t
 tcp_transport_state (void)
 {
-    return s_state;
+    return g_state;
 }
 
 uint32_t
@@ -416,15 +416,15 @@ tcp_transport_send (void * context, const uint8_t * data, uint16_t len)
 {
     (void) context;
 
-    if ((data == 0) || (len == 0u) || !s_desired)
+    if ((data == 0) || (len == 0u) || !g_desired)
     {
         return 0;
     }
-    if ((uint16_t) (TCP_TRANSPORT_TX_CAPACITY - ring_used(&s_tx)) < len)
+    if ((uint16_t) (TCP_TRANSPORT_TX_CAPACITY - ring_used(&g_tx)) < len)
     {
         return 0;
     }
-    ring_push(&s_tx, data, len);
+    ring_push(&g_tx, data, len);
     return (int) len;
 }
 
@@ -437,27 +437,27 @@ tcp_transport_recv (void * context, uint8_t * data, uint16_t len)
     {
         return -1;
     }
-    if ((s_state == TCP_TRANSPORT_FAILED) ||
-        (s_state == TCP_TRANSPORT_CLOSED))
+    if ((g_state == TCP_TRANSPORT_FAILED) ||
+        (g_state == TCP_TRANSPORT_CLOSED))
     {
-        ring_reset(&s_rx);
+        ring_reset(&g_rx);
         return -1;
     }
-    return (int) ring_pop(&s_rx, data, len);
+    return (int) ring_pop(&g_rx, data, len);
 }
 
 void
 tcp_transport_poll (void)
 {
     T_CYW43_UTK_STATUS status;
-    uint32_t now_ms;
+    uint32_t now_ms = 0u;
 
-    if (!s_desired)
+    if (!g_desired)
     {
         close_abort();
-        if (s_state != TCP_TRANSPORT_CLOSED)
+        if (g_state != TCP_TRANSPORT_CLOSED)
         {
-            s_state = TCP_TRANSPORT_IDLE;
+            g_state = TCP_TRANSPORT_IDLE;
         }
         return;
     }
@@ -467,14 +467,14 @@ tcp_transport_poll (void)
         (status.dhcp_result != 0))
     {
         close_abort();
-        s_resolving = false;
-        s_state = TCP_TRANSPORT_WAITING;
+        g_resolving = false;
+        g_state = TCP_TRANSPORT_WAITING;
         return;
     }
 
     now_ms = (uint32_t) sys_now();
-    if ((s_pcb != 0) && (s_state == TCP_TRANSPORT_CONNECTING) &&
-        ((uint32_t) (now_ms - s_connect_started_ms) >=
+    if ((gp_pcb != 0) && (g_state == TCP_TRANSPORT_CONNECTING) &&
+        ((uint32_t) (now_ms - g_connect_started_ms) >=
          TCP_TRANSPORT_CONNECT_TIMEOUT_MS))
     {
         close_abort();
@@ -482,8 +482,8 @@ tcp_transport_poll (void)
         return;
     }
 
-    if ((s_pcb == 0) && !s_resolving &&
-        ((int32_t) (now_ms - s_retry_at_ms) >= 0))
+    if ((gp_pcb == 0) && !g_resolving &&
+        ((int32_t) (now_ms - g_retry_at_ms) >= 0))
     {
         begin_attempt(now_ms);
     }

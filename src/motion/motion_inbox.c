@@ -38,7 +38,7 @@ void motion_inbox_stop (motion_inbox_t * p_inbox)
 bool motion_inbox_hold (motion_inbox_t * p_inbox, uint32_t reason, bool held,
                         uint32_t now_us)
 {
-    uint32_t before;
+    uint32_t before = 0U;
 
     if ((p_inbox == NULL) || (reason == 0U) ||
         ((reason & ~MOTION_HOLD_ALL) != 0U) || ((reason & (reason - 1U)) != 0U))

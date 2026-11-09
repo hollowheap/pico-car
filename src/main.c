@@ -43,6 +43,46 @@
 #define LINE_TURN_SPEED_UM_S     (180000)
 #define LINE_TURN_90_MS          (600U)
 #define LINE_TURN_180_MS         (1200U)
+#define LINE_PERMILLE_SCALE      (1000)
+#define LINE_CALIBRATION_WAIT_MS (2000U)
+
+/* Startup barrier polling period. */
+#define STARTUP_POLL_MS (10U)
+
+/* Motor service configuration (setup_motors). */
+#define MOTOR_WHEEL_COUNT            (2U)
+#define MOTOR_WHEEL_TRAVEL_UM        (204204U)
+#define MOTOR_EDGES_PER_REVOLUTION   (2530U)
+#define MOTOR_SAMPLING_INTERVAL_US   (100000U)
+#define MOTOR_PID_KP_Q16             (256U)
+#define MOTOR_PID_KI_Q16             (256U)
+#define MOTOR_PID_KD_Q16             (2U)
+#define MOTOR_PID_INTERVAL_US        (100000U)
+#define MOTOR_PID_SAMPLE_AGE_US      (600000U)
+#define MOTOR_PID_DUTY_PERMILLE      (400U)
+#define MOTOR_COMMAND_TTL_US         (200000U)
+#define MOTOR_CONTROL_GAP_US         (100000U)
+#define MOTOR_FEEDBACK_TIMEOUT_US    (2000000U)
+#define MOTOR_REVERSAL_BRAKE_US      (100000U)
+#define MOTOR_POLL_DELAY_MS          (10U)
+
+/* Telemetry pacing, in 50 ms passes of telemetry_task. */
+#define TELEMETRY_PASS_MS            (50U)
+#define TELEMETRY_STATUS_PASSES      (4U)
+#define TELEMETRY_SYSTEM_PASSES      (10U)
+
+/* Dashboard state values (the dashboard schema owns these). */
+#define TELEMETRY_STATE_RUNNING      (2U)
+#define TELEMETRY_STATE_STOPPED      (3U)
+
+/* Units per millimetre for the status packet. */
+#define TELEMETRY_UM_PER_MM          (1000)
+
+/* physics_flags bits of the system packet. */
+#define TELEMETRY_PHYSICS_ACTIVE     (0x01U)
+#define TELEMETRY_PHYSICS_FINISHED   (0x02U)
+#define TELEMETRY_PHYSICS_HEIGHT_OK  (0x04U)
+#define TELEMETRY_PHYSICS_CALIBRATED (0x08U)
 
 /* Startup barrier. This file creates every task; one startup task owns the
  * shared hardware init and the others wait for it. Subsystems never call
@@ -56,29 +96,33 @@ typedef struct
 
 static startup_state_t g_startup = {false, false, 0};
 
-ER setup_motors (void)
+LOCAL ER setup_motors (void)
 {
     motion_service_config_t config   = {0};
-    config.control.sampling.wheel[0] = (motion_scale_t){204204U, 2530U, -1};
-    config.control.sampling.wheel[1] = (motion_scale_t){204204U, 2530U, 1};
-    config.control.sampling.max_interval_us = 100000U;
-    for (uint8_t wheel = 0U; wheel < 2U; wheel++)
+    config.control.sampling.wheel[0] =
+        (motion_scale_t){MOTOR_WHEEL_TRAVEL_UM, MOTOR_EDGES_PER_REVOLUTION,
+                         -1};
+    config.control.sampling.wheel[1] =
+        (motion_scale_t){MOTOR_WHEEL_TRAVEL_UM, MOTOR_EDGES_PER_REVOLUTION,
+                         1};
+    config.control.sampling.max_interval_us = MOTOR_SAMPLING_INTERVAL_US;
+    for (uint8_t wheel = 0U; wheel < MOTOR_WHEEL_COUNT; wheel++)
     {
         config.control.speed[wheel] = (pid_config_t){
-            .kp_q16            = 256U,
-            .ki_q16            = 256U,
-            .kd_q16            = 2U,
+            .kp_q16            = MOTOR_PID_KP_Q16,
+            .ki_q16            = MOTOR_PID_KI_Q16,
+            .kd_q16            = MOTOR_PID_KD_Q16,
             .max_target_um_s   = LINE_MAX_WHEEL_UM_S,
-            .max_interval_us   = 100000U,
-            .max_sample_age_us = 600000U,
-            .max_duty_permille = 400U,
+            .max_interval_us   = MOTOR_PID_INTERVAL_US,
+            .max_sample_age_us = MOTOR_PID_SAMPLE_AGE_US,
+            .max_duty_permille = MOTOR_PID_DUTY_PERMILLE,
         };
     }
-    config.control.max_command_ttl_us  = 200000U;
-    config.control.max_control_gap_us  = 100000U;
-    config.control.feedback_timeout_us = 2000000U;
-    config.control.reversal_brake_us   = 100000U;
-    config.poll_delay_ms               = 10U;
+    config.control.max_command_ttl_us  = MOTOR_COMMAND_TTL_US;
+    config.control.max_control_gap_us  = MOTOR_CONTROL_GAP_US;
+    config.control.feedback_timeout_us = MOTOR_FEEDBACK_TIMEOUT_US;
+    config.control.reversal_brake_us   = MOTOR_REVERSAL_BRAKE_US;
+    config.poll_delay_ms               = MOTOR_POLL_DELAY_MS;
 
     return motion_service_init(&config);
 }
@@ -95,7 +139,7 @@ LOCAL bool wait_startup (void)
         {
             return false;
         }
-        (void)tk_dly_tsk(10);
+        (void)tk_dly_tsk(STARTUP_POLL_MS);
     }
 
     return true;
@@ -114,12 +158,11 @@ LOCAL void park (void)
 
 LOCAL void startup_task (INT stacd, void * exinf)
 {
-    ER result;
+    ER result = gpio_irq_init();
 
     (void)stacd;
     (void)exinf;
 
-    result = gpio_irq_init();
     if (E_OK == result)
     {
         result = setup_motors();
@@ -206,7 +249,7 @@ static uint8_t         g_line_error_ticks;
 
 static void line_request_turn (line_turn_t turn)
 {
-    UINT saved;
+    UINT saved = 0U;
 
     (void)ISpinLock(&g_turn_lock, &saved);
     g_turn_request = (uint8_t)turn;
@@ -215,8 +258,8 @@ static void line_request_turn (line_turn_t turn)
 
 static line_turn_t line_take_turn (void)
 {
-    UINT        saved;
-    line_turn_t turn;
+    UINT        saved = 0U;
+    line_turn_t turn = LINE_TURN_NONE;
 
     (void)ISpinLock(&g_turn_lock, &saved);
     turn = (line_turn_t)g_turn_request;
@@ -229,9 +272,9 @@ static line_turn_t line_take_turn (void)
  * duration includes margin; tune LINE_TURN_90_MS on the car. */
 static void line_execute_turn (line_turn_t turn)
 {
-    int32_t  left;
-    int32_t  right;
-    uint32_t duration_ms;
+    int32_t  left = 0;
+    int32_t  right = 0;
+    uint32_t duration_ms = 0U;
     uint32_t elapsed_ms = 0U;
     uint32_t const lease_us = 10U * LINE_POLL_MS * 1000U;
 
@@ -270,7 +313,33 @@ static void line_execute_turn (line_turn_t turn)
     g_line_error_ticks = 0U;
 }
 
-LOCAL void line_task (INT stacd, void * exinf)
+/*!
+ * @brief Hold the drive until the hump detector calibrates, or 2 s if the
+ *        IMU is unavailable.
+ */
+LOCAL void line_wait_calibration (void)
+{
+    /* The hump detector needs 50 rest samples (1 s). Hold the drive until
+     * it calibrates, or 2 s if the IMU is unavailable. */
+    uint32_t wait_ms = 0U;
+
+    while (wait_ms < LINE_CALIBRATION_WAIT_MS)
+    {
+        physics_status_t physics;
+
+        if ((E_OK == physics_snapshot(&physics)) && physics.calibrated)
+        {
+            break;
+        }
+        (void)tk_dly_tsk(LINE_POLL_MS);
+        wait_ms += LINE_POLL_MS;
+    }
+}
+
+/*!
+ * @brief One differential-steering pass of the line follower.
+ */
+LOCAL void line_follow_step (ir_sensors_state_t state)
 {
     const uint32_t speed = LINE_SPEED_UM_S;
     /* Each speed lease must outlast one loop pass plus scheduling delay.
@@ -279,7 +348,67 @@ LOCAL void line_task (INT stacd, void * exinf)
      * controller validates it and latches MOTION_FAULT_COMMAND. Keep the
      * lease below max_command_ttl_us (200 ms). */
     const uint32_t lease_us = 10U * LINE_POLL_MS * 1000U;
+    int32_t        target = 0;
+    int32_t        delta = 0;
+    int32_t        left = 0;
+    int32_t        right = 0;
+    int32_t        peak = 0;
 
+    if (state.left != state.right)
+    {
+        if (g_line_error_ticks < LINE_STEER_CONFIRM_TICKS)
+        {
+            g_line_error_ticks++;
+        }
+    }
+    else
+    {
+        g_line_error_ticks = 0U;
+    }
+
+    if (state.left && state.right)
+    {
+        target = 0;
+    }
+    else if (state.left)
+    {
+        target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
+                     ? -LINE_STEER_MAX_PERMILLE
+                     : -LINE_STEER_SOFT_PERMILLE;
+    }
+    else if (state.right)
+    {
+        target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
+                     ? LINE_STEER_MAX_PERMILLE
+                     : LINE_STEER_SOFT_PERMILLE;
+    }
+    else
+    {
+        target = 0;
+    }
+
+    g_line_steer_per_mille +=
+        (target - g_line_steer_per_mille)
+        / (int32_t)(1U << LINE_STEER_FILTER_SHIFT);
+
+    delta = ((int32_t)speed * g_line_steer_per_mille) / LINE_PERMILLE_SCALE;
+    left  = (int32_t)speed + delta;
+    right = (int32_t)speed - delta;
+    peak  = (left < 0) ? -left : left;
+    if (((right < 0) ? -right : right) > peak)
+    {
+        peak = (right < 0) ? -right : right;
+    }
+    if (peak > (int32_t)LINE_MAX_WHEEL_UM_S)
+    {
+        left  = (int32_t)(((int64_t)left * LINE_MAX_WHEEL_UM_S) / peak);
+        right = (int32_t)(((int64_t)right * LINE_MAX_WHEEL_UM_S) / peak);
+    }
+    (void)motion_set_speed(left, right, lease_us);
+}
+
+LOCAL void line_task (INT stacd, void * exinf)
+{
     (void)stacd;
     (void)exinf;
 
@@ -288,23 +417,7 @@ LOCAL void line_task (INT stacd, void * exinf)
         park();
     }
 
-    /* The hump detector needs 50 rest samples (1 s). Hold the drive until
-     * it calibrates, or 2 s if the IMU is unavailable. */
-    {
-        uint32_t wait_ms = 0U;
-
-        while (wait_ms < 2000U)
-        {
-            physics_status_t physics;
-
-            if ((E_OK == physics_snapshot(&physics)) && physics.calibrated)
-            {
-                break;
-            }
-            (void)tk_dly_tsk(LINE_POLL_MS);
-            wait_ms += LINE_POLL_MS;
-        }
-    }
+    line_wait_calibration();
 
     for (;;)
     {
@@ -325,69 +438,13 @@ LOCAL void line_task (INT stacd, void * exinf)
         }
         else
         {
-            int32_t target;
-            int32_t delta;
-            int32_t left;
-            int32_t right;
-            int32_t peak;
-
-            if (state.left != state.right)
-            {
-                if (g_line_error_ticks < LINE_STEER_CONFIRM_TICKS)
-                {
-                    g_line_error_ticks++;
-                }
-            }
-            else
-            {
-                g_line_error_ticks = 0U;
-            }
-
-            if (state.left && state.right)
-            {
-                target = 0;
-            }
-            else if (state.left)
-            {
-                target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
-                             ? -LINE_STEER_MAX_PERMILLE
-                             : -LINE_STEER_SOFT_PERMILLE;
-            }
-            else if (state.right)
-            {
-                target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
-                             ? LINE_STEER_MAX_PERMILLE
-                             : LINE_STEER_SOFT_PERMILLE;
-            }
-            else
-            {
-                target = 0;
-            }
-
-            g_line_steer_per_mille +=
-                (target - g_line_steer_per_mille)
-                / (1 << LINE_STEER_FILTER_SHIFT);
-
-            delta = ((int32_t)speed * g_line_steer_per_mille) / 1000;
-            left  = (int32_t)speed + delta;
-            right = (int32_t)speed - delta;
-            peak  = (left < 0) ? -left : left;
-            if (((right < 0) ? -right : right) > peak)
-            {
-                peak = (right < 0) ? -right : right;
-            }
-            if (peak > (int32_t)LINE_MAX_WHEEL_UM_S)
-            {
-                left  = (int32_t)(((int64_t)left * LINE_MAX_WHEEL_UM_S)
-                                  / peak);
-                right = (int32_t)(((int64_t)right * LINE_MAX_WHEEL_UM_S)
-                                  / peak);
-            }
-            (void)motion_set_speed(left, right, lease_us);
+            line_follow_step(state);
         }
         ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
     }
 }
+
+static uint16_t g_event_id;
 
 /*!
  * @brief Publish one decoded barcode character as a telemetry event.
@@ -395,7 +452,6 @@ LOCAL void line_task (INT stacd, void * exinf)
 LOCAL void barcode_command (uint8_t code)
 {
     uint8_t         event[TELEMETRY_EVENT_WIRE_SIZE];
-    static uint16_t event_id;
 
     switch (code)
     {
@@ -412,9 +468,9 @@ LOCAL void barcode_command (uint8_t code)
             break;
     }
 
-    (void)telemetry_pack_event(event, event_id, (uint8_t)'B', (int16_t)code,
+    (void)telemetry_pack_event(event, g_event_id, (uint8_t)'B', (int16_t)code,
                                0U);
-    event_id++;
+    g_event_id++;
     (void)telemetry_queue_push(event, TELEMETRY_EVENT_WIRE_SIZE,
                                (uint8_t)'e', 1U);
     tm_printf((UB *)"[barcode] %c\n", (INT)(code + (uint8_t)'A'));
@@ -454,12 +510,12 @@ LOCAL uint8_t telemetry_state (motion_status_t const * p_status)
     if ((MOTION_STATE_RUNNING == p_status->state) ||
         (MOTION_STATE_REVERSING == p_status->state))
     {
-        state = 2U;
+        state = TELEMETRY_STATE_RUNNING;
     }
     else if ((MOTION_STATE_STOPPED == p_status->state) ||
              (MOTION_STATE_FAULT == p_status->state))
     {
-        state = 3U;
+        state = TELEMETRY_STATE_STOPPED;
     }
     else
     {
@@ -470,7 +526,122 @@ LOCAL uint8_t telemetry_state (motion_status_t const * p_status)
 }
 
 /*!
- * @brief Build and queue a status packet every four passes.
+ * @brief Build and queue one status packet.
+ */
+LOCAL void telemetry_send_status (void)
+{
+    uint8_t           payload[TELEMETRY_STATUS_WIRE_SIZE];
+    motion_status_t   status;
+    motion_feedback_t feedback;
+    int16_t           speed_mms = 0;
+    uint16_t          distance_mm = 0U;
+    uint16_t          faults = system_fault_get();
+    uint8_t           heading_deg = 0U;
+    uint8_t           state = 0U;
+    physics_status_t  physics;
+
+    if (E_OK == motion_status(&status))
+    {
+        state = telemetry_state(&status);
+
+        if (status.stop_requested)
+        {
+            faults |= (uint16_t)FAULT_ESTOP_LATCHED_BIT;
+        }
+    }
+
+    if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
+    {
+        int32_t const average_um_s =
+            (feedback.left_speed_um_s + feedback.right_speed_um_s) / 2;
+        int64_t const average_um =
+            (feedback.left_displacement_um +
+             feedback.right_displacement_um) / 2;
+        int64_t distance = average_um / TELEMETRY_UM_PER_MM;
+
+        speed_mms = (int16_t)(average_um_s / TELEMETRY_UM_PER_MM);
+        if (distance < 0)
+        {
+            distance = 0;
+        }
+        else if (distance > UINT16_MAX)
+        {
+            distance = UINT16_MAX;
+        }
+        else
+        {
+            /* In range. */
+        }
+        distance_mm = (uint16_t)distance;
+    }
+
+    if ((E_OK == physics_snapshot(&physics)) && physics.heading_valid)
+    {
+        heading_deg = physics.heading_deg;
+    }
+
+    (void)telemetry_pack_status(payload, speed_mms, distance_mm,
+                                heading_deg, state, faults);
+    (void)telemetry_queue_push(payload, TELEMETRY_STATUS_WIRE_SIZE,
+                               (uint8_t)'s', 0U);
+}
+
+/*!
+ * @brief Build and queue one system packet.
+ */
+LOCAL void telemetry_send_system (void)
+{
+    uint8_t            system_payload[TELEMETRY_SYSTEM_WIRE_SIZE];
+    obstacle_status_t  obstacle;
+    physics_status_t   physics;
+    telemetry_system_t system_state = {0};
+
+    if (E_OK == obstacle_snapshot(&obstacle))
+    {
+        system_state.obstacle_state   = obstacle.state;
+        system_state.obstacle_cause   = obstacle.cause;
+        system_state.obstacle_faults  = obstacle.faults;
+        system_state.echo_class       = obstacle.echo_class;
+        system_state.obstacle_dist_mm = obstacle.distance_mm;
+        system_state.obstacle_seq     = obstacle.seq;
+        system_state.obstacle_req_id  = obstacle.req_id;
+    }
+
+    if (E_OK == physics_snapshot(&physics))
+    {
+        system_state.physics_state  = physics.state;
+        system_state.physics_motion = physics.motion;
+        system_state.physics_faults = physics.faults;
+        system_state.pitch_cdeg     = physics.pitch_cdeg;
+        system_state.hump_peak_mm   = physics.hump_peak_mm;
+
+        if (physics.hump_active)
+        {
+            system_state.physics_flags |= TELEMETRY_PHYSICS_ACTIVE;
+        }
+        if (physics.finished)
+        {
+            system_state.physics_flags |= TELEMETRY_PHYSICS_FINISHED;
+        }
+        if (physics.height_valid)
+        {
+            system_state.physics_flags |= TELEMETRY_PHYSICS_HEIGHT_OK;
+        }
+        if (physics.calibrated)
+        {
+            system_state.physics_flags |= TELEMETRY_PHYSICS_CALIBRATED;
+        }
+    }
+
+    (void)telemetry_pack_system(system_payload, &system_state);
+    (void)telemetry_queue_push(system_payload,
+                               TELEMETRY_SYSTEM_WIRE_SIZE,
+                               (uint8_t)'t', 0U);
+}
+
+/*!
+ * @brief Build and queue a status packet every four passes and a system
+ *        packet every ten passes.
  */
 LOCAL void telemetry_task (INT stacd, void * exinf)
 {
@@ -490,119 +661,20 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
         telemetry_worker_run(telemetry_queue_pop, net_sink, TMO_POL);
 
         ticks++;
-        if (ticks >= 4U)
+        if (ticks >= TELEMETRY_STATUS_PASSES)
         {
-            uint8_t           payload[TELEMETRY_STATUS_WIRE_SIZE];
-            motion_status_t   status;
-            motion_feedback_t feedback;
-            int16_t                 speed_mms = 0;
-            uint16_t                distance_mm = 0U;
-            uint16_t                faults = system_fault_get();
-            uint8_t                 heading_deg = 0U;
-            uint8_t                 state = 0U;
-            physics_status_t        physics;
-
             ticks = 0U;
-            if (E_OK == motion_status(&status))
-            {
-                state = telemetry_state(&status);
-
-                if (status.stop_requested)
-                {
-                    faults |= FAULT_ESTOP_LATCHED_BIT;
-                }
-            }
-
-            if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
-            {
-                int32_t const average_um_s =
-                    (feedback.left_speed_um_s + feedback.right_speed_um_s) / 2;
-                int64_t const average_um =
-                    (feedback.left_displacement_um +
-                     feedback.right_displacement_um) / 2;
-                int64_t distance = average_um / 1000;
-
-                speed_mms = (int16_t)(average_um_s / 1000);
-                if (distance < 0)
-                {
-                    distance = 0;
-                }
-                else if (distance > UINT16_MAX)
-                {
-                    distance = UINT16_MAX;
-                }
-                else
-                {
-                    /* In range. */
-                }
-                distance_mm = (uint16_t)distance;
-            }
-
-            if ((E_OK == physics_snapshot(&physics)) && physics.heading_valid)
-            {
-                heading_deg = physics.heading_deg;
-            }
-
-            (void)telemetry_pack_status(payload, speed_mms, distance_mm,
-                                        heading_deg, state, faults);
-            (void)telemetry_queue_push(payload, TELEMETRY_STATUS_WIRE_SIZE,
-                                       (uint8_t)'s', 0U);
+            telemetry_send_status();
         }
 
         system_ticks++;
-        if (system_ticks >= 10U)
+        if (system_ticks >= TELEMETRY_SYSTEM_PASSES)
         {
-            uint8_t           system_payload[TELEMETRY_SYSTEM_WIRE_SIZE];
-            obstacle_status_t obstacle;
-            physics_status_t  physics;
-            telemetry_system_t system_state = {0};
-
             system_ticks = 0U;
-
-            if (E_OK == obstacle_snapshot(&obstacle))
-            {
-                system_state.obstacle_state  = obstacle.state;
-                system_state.obstacle_cause  = obstacle.cause;
-                system_state.obstacle_faults = obstacle.faults;
-                system_state.echo_class      = obstacle.echo_class;
-                system_state.obstacle_dist_mm = obstacle.distance_mm;
-                system_state.obstacle_seq    = obstacle.seq;
-                system_state.obstacle_req_id = obstacle.req_id;
-            }
-
-            if (E_OK == physics_snapshot(&physics))
-            {
-                system_state.physics_state  = physics.state;
-                system_state.physics_motion = physics.motion;
-                system_state.physics_faults = physics.faults;
-                system_state.pitch_cdeg     = physics.pitch_cdeg;
-                system_state.hump_peak_mm   = physics.hump_peak_mm;
-
-                if (physics.hump_active)
-                {
-                    system_state.physics_flags |= 0x01U;
-                }
-                if (physics.finished)
-                {
-                    system_state.physics_flags |= 0x02U;
-                }
-                if (physics.height_valid)
-                {
-                    system_state.physics_flags |= 0x04U;
-                }
-                if (physics.calibrated)
-                {
-                    system_state.physics_flags |= 0x08U;
-                }
-            }
-
-            (void)telemetry_pack_system(system_payload, &system_state);
-            (void)telemetry_queue_push(system_payload,
-                                       TELEMETRY_SYSTEM_WIRE_SIZE,
-                                       (uint8_t)'t', 0U);
+            telemetry_send_system();
         }
 
-        (void)tk_dly_tsk(50);
+        (void)tk_dly_tsk(TELEMETRY_PASS_MS);
     }
 }
 
@@ -678,14 +750,14 @@ LOCAL void connection_task (INT stacd, void * exinf)
  *  Task and object definitions
  * ------------------------------------------------------------------ */
 
-LOCAL T_CTSK ctsk_blink = {
-    .itskpri = 10,
+LOCAL T_CTSK g_ctsk_blink = {
+    .itskpri = 10, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = blink_task,
     .tskatr  = TA_HLNG | TA_RNG3,
 };
 
-LOCAL T_CTSK ctsk_startup = {
+LOCAL T_CTSK g_ctsk_startup = {
     .itskpri = 1,
     .stksz   = STACK_SZ,
     .task    = startup_task,
@@ -697,8 +769,8 @@ LOCAL T_CTSK ctsk_startup = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_motion = {
-    .itskpri = 5,
+LOCAL T_CTSK g_ctsk_motion = {
+    .itskpri = 5, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = motion_task,
 #if TK_SUPPORT_SMP
@@ -709,8 +781,8 @@ LOCAL T_CTSK ctsk_motion = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_physics = {
-    .itskpri = 4,
+LOCAL T_CTSK g_ctsk_physics = {
+    .itskpri = 4, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = physics_task,
 #if TK_SUPPORT_SMP
@@ -721,8 +793,8 @@ LOCAL T_CTSK ctsk_physics = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_obstacle = {
-    .itskpri = 6,
+LOCAL T_CTSK g_ctsk_obstacle = {
+    .itskpri = 6, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = obstacle_task,
 #if TK_SUPPORT_SMP
@@ -733,8 +805,8 @@ LOCAL T_CTSK ctsk_obstacle = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_line = {
-    .itskpri = 9,
+LOCAL T_CTSK g_ctsk_line = {
+    .itskpri = 9, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = line_task,
 #if TK_SUPPORT_SMP
@@ -745,15 +817,15 @@ LOCAL T_CTSK ctsk_line = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_telemetry = {
-    .itskpri = 7,
+LOCAL T_CTSK g_ctsk_telemetry = {
+    .itskpri = 7, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = telemetry_task,
     .tskatr  = TA_HLNG | TA_RNG3,
 };
 
-LOCAL T_CTSK ctsk_connection = {
-    .itskpri = 6,
+LOCAL T_CTSK g_ctsk_connection = {
+    .itskpri = 6, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = connection_task,
 #if TK_SUPPORT_SMP
@@ -764,8 +836,8 @@ LOCAL T_CTSK ctsk_connection = {
 #endif
 };
 
-LOCAL T_CTSK ctsk_barcode = {
-    .itskpri = 7,
+LOCAL T_CTSK g_ctsk_barcode = {
+    .itskpri = 7, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = barcode_task,
     .tskatr  = TA_HLNG | TA_RNG3,
@@ -776,40 +848,61 @@ LOCAL T_CTSK ctsk_barcode = {
  * ------------------------------------------------------------------ */
 
 /* Create an object, or print failure and keep going. */
-LOCAL BOOL made (const char * what, ID id)
+LOCAL bool made (const char * what, ID id)
 {
-    if (id <= E_OK)
+    bool b_made = (id > E_OK);
+
+    if (!b_made)
     {
         tm_printf((UB *)"[init] tk_cre_%s failed, er=%d\n", what, id);
-        return FALSE;
     }
-    return TRUE;
+    return b_made;
 }
 
-EXPORT INT usermain (void)
+/* Start a task, or print failure and keep going. */
+LOCAL bool started (const char * what, ID tid)
 {
-    bool b_ok = true;
-    bool b_telemetry;
-    bool b_connection;
-    ER   result;
+    ER   result = tk_sta_tsk(tid, 0);
+    bool b_started = (E_OK == result);
+
+    if (!b_started)
+    {
+        tm_printf((UB *)"[init] tk_sta_%s failed, er=%d\n", what, result);
+    }
+    return b_started;
+}
+
+/* Task IDs and the optional-service flags shared by the usermain helpers. */
+typedef struct
+{
     ID   startup_tid;
     ID   motion_tid;
     ID   physics_tid;
     ID   obstacle_tid;
     ID   line_tid;
     ID   blink_tid;
-    ID   telemetry_tid = 0;
-    ID   connection_tid = 0;
-    ID   barcode_tid = 0;
+    ID   telemetry_tid;
+    ID   connection_tid;
+    ID   barcode_tid;
+    bool b_telemetry;
+    bool b_connection;
     bool b_barcode;
+} task_set_t;
+
+/*!
+ * @brief Prepare the optional telemetry and connection services.
+ */
+LOCAL void init_services (task_set_t * p_tasks)
+{
+    ER result = E_OK;
 
     /* Telemetry is optional: the car still runs when the queues or the
      * network initialisation fail. */
     result = telemetry_queue_create();
-    b_telemetry = (E_OK == result);
+    p_tasks->b_telemetry = (E_OK == result);
     result = telemetry_net_queue_create();
-    b_telemetry = b_telemetry && (E_OK == result);
-    if (!b_telemetry)
+    p_tasks->b_telemetry = p_tasks->b_telemetry && (E_OK == result);
+    if (!p_tasks->b_telemetry)
     {
         tm_printf((UB *)"[init] telemetry queues failed: %d\n", result);
     }
@@ -818,104 +911,165 @@ EXPORT INT usermain (void)
     barcode_set_handler(barcode_command);
 
     result = connection_init(command_dispatch, NULL);
-    b_connection = (E_OK == result);
-    if (!b_connection)
+    p_tasks->b_connection = (E_OK == result);
+    if (!p_tasks->b_connection)
     {
         tm_printf((UB *)"[init] connection_init failed: %d\n", result);
     }
+}
+
+/*!
+ * @brief Create every task. Returns false when a required task failed.
+ */
+LOCAL bool create_tasks (task_set_t * p_tasks)
+{
+    bool b_ok = true;
 
     /* D62/D70: this composition root creates every task. Subsystems only
      * prepare their resources and expose a task body. */
-    startup_tid = tk_cre_tsk(&ctsk_startup);
-    if (!made("tsk(startup)", startup_tid))
+    p_tasks->startup_tid = tk_cre_tsk(&g_ctsk_startup);
+    if (!made("tsk(startup)", p_tasks->startup_tid))
     {
         b_ok = false;
     }
 
-    motion_tid = tk_cre_tsk(&ctsk_motion);
-    if (!made("tsk(motion)", motion_tid))
+    p_tasks->motion_tid = tk_cre_tsk(&g_ctsk_motion);
+    if (!made("tsk(motion)", p_tasks->motion_tid))
     {
         b_ok = false;
     }
 
-    physics_tid = tk_cre_tsk(&ctsk_physics);
-    if (!made("tsk(physics)", physics_tid))
+    p_tasks->physics_tid = tk_cre_tsk(&g_ctsk_physics);
+    if (!made("tsk(physics)", p_tasks->physics_tid))
     {
         b_ok = false;
     }
     else
     {
-        g_startup.physics_tid = physics_tid;
+        g_startup.physics_tid = p_tasks->physics_tid;
     }
 
-    obstacle_tid = tk_cre_tsk(&ctsk_obstacle);
-    if (!made("tsk(obstacle)", obstacle_tid))
+    p_tasks->obstacle_tid = tk_cre_tsk(&g_ctsk_obstacle);
+    if (!made("tsk(obstacle)", p_tasks->obstacle_tid))
     {
         b_ok = false;
     }
 
-    line_tid = tk_cre_tsk(&ctsk_line);
-    if (!made("tsk(line)", line_tid))
+    p_tasks->line_tid = tk_cre_tsk(&g_ctsk_line);
+    if (!made("tsk(line)", p_tasks->line_tid))
     {
         b_ok = false;
     }
 
-    blink_tid = tk_cre_tsk(&ctsk_blink);
-    if (!made("tsk(blink)", blink_tid))
+    p_tasks->blink_tid = tk_cre_tsk(&g_ctsk_blink);
+    if (!made("tsk(blink)", p_tasks->blink_tid))
     {
         b_ok = false;
     }
 
-    if (b_telemetry)
+    if (p_tasks->b_telemetry)
     {
-        telemetry_tid = tk_cre_tsk(&ctsk_telemetry);
-        if (!made("tsk(telemetry)", telemetry_tid))
+        p_tasks->telemetry_tid = tk_cre_tsk(&g_ctsk_telemetry);
+        if (!made("tsk(telemetry)", p_tasks->telemetry_tid))
         {
-            b_telemetry = false;
+            p_tasks->b_telemetry = false;
         }
     }
 
-    barcode_tid = tk_cre_tsk(&ctsk_barcode);
-    b_barcode   = made("tsk(barcode)", barcode_tid);
+    p_tasks->barcode_tid = tk_cre_tsk(&g_ctsk_barcode);
+    p_tasks->b_barcode   = made("tsk(barcode)", p_tasks->barcode_tid);
 
-    if (b_connection)
+    if (p_tasks->b_connection)
     {
-        connection_tid = tk_cre_tsk(&ctsk_connection);
-        if (!made("tsk(connection)", connection_tid))
+        p_tasks->connection_tid = tk_cre_tsk(&g_ctsk_connection);
+        if (!made("tsk(connection)", p_tasks->connection_tid))
         {
-            b_connection = false;
+            p_tasks->b_connection = false;
         }
     }
 
-    if (!b_ok)
+    return b_ok;
+}
+
+/*!
+ * @brief Start the required tasks. Returns false when one failed to start.
+ */
+LOCAL bool start_required_tasks (task_set_t const * p_tasks)
+{
+    bool b_ok = true;
+
+    if (!started("tsk(startup)", p_tasks->startup_tid))
+    {
+        b_ok = false;
+    }
+    if (!started("tsk(motion)", p_tasks->motion_tid))
+    {
+        b_ok = false;
+    }
+    if (!started("tsk(physics)", p_tasks->physics_tid))
+    {
+        b_ok = false;
+    }
+    if (!started("tsk(obstacle)", p_tasks->obstacle_tid))
+    {
+        b_ok = false;
+    }
+    if (!started("tsk(line)", p_tasks->line_tid))
+    {
+        b_ok = false;
+    }
+    if (!started("tsk(blink)", p_tasks->blink_tid))
+    {
+        b_ok = false;
+    }
+
+    return b_ok;
+}
+
+/*!
+ * @brief Start the optional tasks. A failure is reported and ignored.
+ */
+LOCAL void start_optional_tasks (task_set_t const * p_tasks)
+{
+    if (p_tasks->b_telemetry)
+    {
+        (void)started("tsk(telemetry)", p_tasks->telemetry_tid);
+    }
+    if (p_tasks->b_connection)
+    {
+        (void)started("tsk(connection)", p_tasks->connection_tid);
+    }
+    if (p_tasks->b_barcode)
+    {
+        (void)started("tsk(barcode)", p_tasks->barcode_tid);
+    }
+}
+
+EXPORT INT usermain (void)
+{
+    task_set_t tasks = {0};
+
+    init_services(&tasks);
+
+    if (!create_tasks(&tasks))
     {
         tm_printf((UB *)"[init] task creation failed, system stays stopped\n");
         park();
     }
 
-    tk_sta_tsk(startup_tid, 0);
-    tk_sta_tsk(motion_tid, 0);
-    tk_sta_tsk(physics_tid, 0);
-    tk_sta_tsk(obstacle_tid, 0);
-    tk_sta_tsk(line_tid, 0);
-    tk_sta_tsk(blink_tid, 0);
+    if (!start_required_tasks(&tasks))
+    {
+        /* Tasks that already started wait on the startup barrier. */
+        g_startup.b_failed = true;
+        tm_printf((UB *)"[init] task start failed, system stays stopped\n");
+        park();
+    }
 
-    if (b_telemetry)
-    {
-        tk_sta_tsk(telemetry_tid, 0);
-    }
-    if (b_connection)
-    {
-        tk_sta_tsk(connection_tid, 0);
-    }
-    if (b_barcode)
-    {
-        tk_sta_tsk(barcode_tid, 0);
-    }
+    start_optional_tasks(&tasks);
 
     /* The initial task has nothing left to do.  It must not return: on
        return the kernel shuts the system down. */
-    tk_slp_tsk(TMO_FEVR);
+    (void)tk_slp_tsk(TMO_FEVR);
     return 0;
 }
 

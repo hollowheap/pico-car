@@ -18,17 +18,33 @@
 #define WIDE_BARS_PER_CHARACTER   2
 #define DELIM_CHARACTER           43U
 
-// Assumes minimum 50mm and maximum 400mm for a 3-character barcode.
-// Assumes the first element is narrow.
+/* Assumes minimum 50mm and maximum 400mm for a 3-character barcode. */
+/* Assumes the first element is narrow. */
 #define START_MIN_UM 638U
 #define START_MAX_UM 12765U
-// 16-bit fixed point. 2-bit integer, 14-bit fraction
-#define FP16_OFFSET 14U
-// Limits based on empirical testing
-#define NARROW_MIN_SCALE 9830U  // 0.6
-#define NARROW_MAX_SCALE 24576U // 1.5
-#define WIDE_MIN_SCALE   39321U // 2.4
-#define WIDE_MAX_SCALE   58982U // 3.6
+/* 16-bit fixed point. 2-bit integer, 14-bit fraction */
+#define FP16_OFFSET        14U
+#define NARROW_WIDTH_MASK  0x3FFFU
+/* Limits based on empirical testing */
+#define NARROW_MIN_SCALE 9830U  /* 0.6 */
+#define NARROW_MAX_SCALE 24576U /* 1.5 */
+#define WIDE_MIN_SCALE   39321U /* 2.4 */
+#define WIDE_MAX_SCALE   58982U /* 3.6 */
+
+/* Bar code table: 3 bits per entry, bar indices 0 to 4 */
+#define BAR_CODE_BITS 3U
+#define BAR_LAST_IDX  4U
+/* Space table: index 2 => 0, 3 => 16, 0 => 32, 1 => 48 */
+#define SPACE_LAST_IDX    3U
+#define SPACE_IDX_OFFSET  2U
+#define SPACE_IDX_MASK    0x3U
+#define SPACE_VALUE_SHIFT 4U
+/* Internal encoding: tens in the high nibble, ones (offset by 1) below */
+#define DATA_TENS_SHIFT 4U
+#define DATA_ONES_MASK  0xFU
+#define DATA_ONES_BASE  1U
+#define DATA_ONES_SKIP  10U
+#define DATA_TENS_STEP  10U
 
 typedef enum
 {
@@ -48,18 +64,18 @@ static uint16_t fp16_mul (uint16_t a, uint16_t b)
  */
 static uint8_t decode_bar_value (uint8_t idx, bool is_reverse)
 {
-    // Packing codes together requires at most 4 bytes, which is smaller than
-    // using an array, which requires at least 5 bytes.
-    static const uint8_t  bits = 3U;
-    static const uint8_t  mask = (1U << bits) - 1U;
-    static const uint16_t codes =
-        (1U << 0) | (2U << 3) | (4U << 6) | (7U << 9) | (0U << 12);
+    /* Packing codes together requires at most 4 bytes, which is smaller than
+     * using an array, which requires at least 5 bytes. */
+    static const uint32_t bits = BAR_CODE_BITS;
+    static const uint32_t mask = (1U << BAR_CODE_BITS) - 1U;
+    static const uint32_t codes =
+        (1U << 0U) | (2U << 3U) | (4U << 6U) | (7U << 9U) | (0U << 12U);
 
     if (is_reverse)
     {
-        idx = 4U - idx;
+        idx = (uint8_t)(BAR_LAST_IDX - idx);
     }
-    return (codes >> (idx * bits)) & mask;
+    return (uint8_t)((codes >> ((uint32_t)idx * bits)) & mask);
 }
 
 /**
@@ -68,16 +84,17 @@ static uint8_t decode_bar_value (uint8_t idx, bool is_reverse)
  */
 static uint8_t decode_space_value (uint8_t idx, bool is_reverse)
 {
-    // Mapping for the following:
-    // 2 =>  0
-    // 3 => 16
-    // 0 => 32
-    // 1 => 48
+    /* Mapping for the following:
+     * 2 =>  0
+     * 3 => 16
+     * 0 => 32
+     * 1 => 48 */
     if (is_reverse)
     {
-        idx = 3U - idx;
+        idx = (uint8_t)(SPACE_LAST_IDX - idx);
     }
-    return ((idx - 2U) & 0x3U) << 4U;
+    return (uint8_t)((((uint32_t)idx - SPACE_IDX_OFFSET) & SPACE_IDX_MASK)
+                     << SPACE_VALUE_SHIFT);
 }
 
 static elem_type_t get_elem_type (barcode_parser_t * state,
@@ -105,13 +122,14 @@ static elem_type_t get_elem_type (barcode_parser_t * state,
 /** Converts the internal encoding to 0-25, representing 'A'-'Z'. */
 static uint8_t decode_data (uint8_t data)
 {
-    const uint8_t tens = data >> 4U;
-    uint8_t       ones = (data & 0xF) - 1;
-    if (ones == 10)
+    const uint8_t tens = (uint8_t)(data >> DATA_TENS_SHIFT);
+    uint8_t       ones =
+        (uint8_t)(((uint32_t)data & DATA_ONES_MASK) - DATA_ONES_BASE);
+    if (ones == DATA_ONES_SKIP)
     {
-        ones -= 1;
+        ones = (uint8_t)(ones - 1U);
     }
-    return (uint8_t)((tens * 10U) + ones);
+    return (uint8_t)((tens * DATA_TENS_STEP) + ones);
 }
 
 /**
@@ -145,7 +163,7 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
                 }
                 state->wide_space_count = (uint8_t)(state->wide_space_count + 1U);
                 state->curr_value = (uint8_t)(state->curr_value +
-                    decode_space_value(state->elem_index >> 1,
+                    decode_space_value(state->elem_index >> 1U,
                                        state->is_reverse));
             }
             else
@@ -156,7 +174,7 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
                 }
                 state->wide_bar_count = (uint8_t)(state->wide_bar_count + 1U);
                 state->curr_value = (uint8_t)(state->curr_value +
-                    decode_bar_value(state->elem_index >> 1,
+                    decode_bar_value(state->elem_index >> 1U,
                                      state->is_reverse));
             }
             break;
@@ -176,17 +194,17 @@ static bool handle_end_of_character (barcode_parser_t * state,
     {
         return true;
     }
-    // The element between characters must be a narrow space
+    /* The element between characters must be a narrow space */
     if (!is_elem_space || (elem_type != ELEM_TYPE_NARROW))
     {
         return true;
     }
-    // First character must be the delimiter
+    /* First character must be the delimiter */
     if ((state->char_index == 0) && (state->curr_value != DELIM_CHARACTER))
     {
         return true;
     }
-    // Second character contains the data
+    /* Second character contains the data */
     if (state->char_index == 1)
     {
         state->data_value = state->curr_value;
@@ -199,65 +217,78 @@ static bool handle_end_of_character (barcode_parser_t * state,
     return false;
 }
 
+/** Returns whether the first element is not a valid start element. */
+static bool is_start_invalid (bool is_elem_space, uint16_t elem_width_um)
+{
+    return (is_elem_space || (elem_width_um < START_MIN_UM) ||
+            (elem_width_um > START_MAX_UM));
+}
+
+/**
+ * Checks and records one element, and handles the end of a character.
+ * Returns whether the element is invalid.
+ */
+static bool process_elem (barcode_parser_t * state, bool is_elem_space,
+                          uint16_t elem_width_um)
+{
+    const bool expect_space = (((uint32_t)state->elem_index & 1U) == 1U);
+    const bool is_first_elem =
+        (state->char_index == 0) && (state->elem_index == 0);
+    bool        b_invalid = (expect_space != is_elem_space);
+    elem_type_t elem_type = ELEM_TYPE_INVALID;
+
+    if (!b_invalid && is_first_elem)
+    {
+        b_invalid = is_start_invalid(is_elem_space, elem_width_um);
+        /* First element is assumed to be narrow */
+        state->narrow_width_um =
+            (uint16_t)((uint32_t)elem_width_um & NARROW_WIDTH_MASK);
+    }
+
+    if (!b_invalid)
+    {
+        elem_type = get_elem_type(state, elem_width_um);
+        b_invalid = handle_elem(state, is_elem_space, elem_type);
+    }
+
+    if (!b_invalid && (state->elem_index > CHARACTER_ELEM_COUNT))
+    {
+        b_invalid = handle_end_of_character(state, is_elem_space, elem_type);
+    }
+
+    return b_invalid;
+}
+
 uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
                               uint16_t elem_width_um)
 {
-    const bool expect_space = (state->elem_index & 1) == 1;
-    if (expect_space != is_elem_space)
+    uint8_t    result    = BARCODE_NO_CHAR;
+    bool       b_invalid = process_elem(state, is_elem_space, elem_width_um);
+    const bool b_at_end =
+        !b_invalid && (state->char_index == (BARCODE_CHARACTER_COUNT - 1)) &&
+        (state->elem_index == CHARACTER_ELEM_COUNT);
+
+    if (b_at_end)
     {
-        goto invalid;
+        /* Last character must be the delimiter */
+        b_invalid = (state->curr_value != DELIM_CHARACTER);
     }
 
-    const bool is_first_elem =
-        (state->char_index == 0) && (state->elem_index == 0);
-    if (is_first_elem)
+    if (b_invalid)
     {
-        if (is_elem_space)
-        {
-            goto invalid;
-        }
-        if ((elem_width_um < START_MIN_UM) || (elem_width_um > START_MAX_UM))
-        {
-            goto invalid;
-        }
-        // First element is assumed to be narrow
-        state->narrow_width_um = (uint16_t)(elem_width_um & 0x3FFFU);
+        *state = BARCODE_PARSER_INIT;
+    }
+    else if (b_at_end)
+    {
+        result = decode_data(state->data_value);
+        *state = BARCODE_PARSER_INIT;
+    }
+    else
+    {
+        /* Not at the end of barcode yet */
     }
 
-    const elem_type_t elem_type = get_elem_type(state, elem_width_um);
-    if (handle_elem(state, is_elem_space, elem_type))
-    {
-        goto invalid;
-    }
-
-    if (state->elem_index > CHARACTER_ELEM_COUNT)
-    {
-        if (handle_end_of_character(state, is_elem_space, elem_type))
-        {
-            goto invalid;
-        }
-    }
-
-    // End of barcode
-    if ((state->char_index == (BARCODE_CHARACTER_COUNT - 1)) &&
-        (state->elem_index == CHARACTER_ELEM_COUNT))
-    {
-        // Last character must be the delimiter
-        if (state->curr_value != DELIM_CHARACTER)
-        {
-            goto invalid;
-        }
-        const uint8_t data = decode_data(state->data_value);
-        *state             = BARCODE_PARSER_INIT;
-        return data;
-    }
-
-    // Not at the end of barcode yet
-    return BARCODE_NO_CHAR;
-
-invalid:
-    *state = BARCODE_PARSER_INIT;
-    return BARCODE_NO_CHAR;
+    return result;
 }
 
 /*** end of file ***/

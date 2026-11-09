@@ -13,6 +13,14 @@
 #define MOTOR_ENCODER_RIGHT_A 16U
 #define MOTOR_ENCODER_RIGHT_B 17U
 
+/* GPIO pad control bits: unsigned copies of the kernel's signed GPIO_PUE,
+ * GPIO_PDE, GPIO_IE and GPIO_SHEMITT, which BARR-C 5.3.b forbids in bitwise
+ * expressions. */
+#define MOTION_PAD_PULL_UP       (1UL << 3U)
+#define MOTION_PAD_PULL_DOWN     (1UL << 2U)
+#define MOTION_PAD_INPUT_ENABLE  (1UL << 6U)
+#define MOTION_PAD_SCHMITT       (1UL << 1U)
+
 #endif /* MOTION_PINS_H */
 
 /*** end of file ***/

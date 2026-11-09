@@ -5,25 +5,33 @@
 #include <bsp/libbsp.h>
 #include "encoder.h"
 #include "motion/motion.h"
+#include "motion_pins.h"
 #include "motion_service.h"
 #include "pwm.h"
 
 #define STOP_PIN      21U
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
 
-static T_SPLOCK                service_lock;
-static motion_service_config_t configuration;
-static motion_service_status_t published;
-static motion_inbox_t          inbox;
-static uint32_t                next_id;
+/* Control-gap limits are in microseconds; the poll delay is in milliseconds. */
+#define US_PER_MS 1000U
+
+/* Ages beyond half the 32-bit microsecond range are clock-read ordering
+ * artefacts, not real ages. */
+#define CLOCK_HALF_RANGE (UINT32_MAX / 2U)
+
+static T_SPLOCK                g_service_lock;
+static motion_service_config_t g_configuration;
+static motion_service_status_t g_published;
+static motion_inbox_t          g_inbox;
+static uint32_t                g_next_id;
 /* Startup lifecycle only: published before any producer/reader starts. */
-static bool             start_called;
-static controller_t controller;
+static bool         g_start_called;
+static controller_t g_controller;
 
 static motion_apply_result_t apply_output (void * context, int16_t left,
                                            int16_t right)
 {
-    ER result;
+    ER result = E_OK;
 
     (void)context;
     result = pwm_set_pair(left, right);
@@ -50,7 +58,7 @@ static bool brake_output (void * context, bool latch)
 static bool capture_input (motion_input_t * p_input)
 {
     encoder_sample_t captured;
-    unsigned int             wheel;
+    unsigned int     wheel = 0U;
 
     if (encoder_read(&captured) != E_OK)
     {
@@ -64,111 +72,143 @@ static bool capture_input (motion_input_t * p_input)
     return true;
 }
 
-void motion_service_run (void)
+/* Bring up PWM, the encoder capture, the STOP pin and the controller.
+ * Returns the first failure; the STOP pin is configured regardless. */
+static ER service_start (motion_output_t * p_output, motion_input_t * p_input)
 {
-    motion_output_t output = {NULL, apply_output, brake_output};
-    motion_input_t  input;
-    ER              result;
-    UINT            saved;
-    bool            initial_stop;
+    ER result = pwm_init();
 
-    result = pwm_init();
     if (result == E_OK)
     {
         result = encoder_init();
     }
     (void)gpio_set_pin(STOP_PIN, GPIO_MODE_IN);
-    clr_w(GPIO(STOP_PIN), GPIO_PDE);
-    set_w(GPIO(STOP_PIN), GPIO_PUE | GPIO_SHEMITT);
-    if ((result == E_OK) && !capture_input(&input))
+    clr_w(GPIO(STOP_PIN), MOTION_PAD_PULL_DOWN);
+    set_w(GPIO(STOP_PIN), MOTION_PAD_PULL_UP | MOTION_PAD_SCHMITT);
+    if ((result == E_OK) && !capture_input(p_input))
     {
         result = E_IO;
     }
     if ((result == E_OK) &&
-        !controller_init(&controller, &configuration.control, &input,
-                             &output))
+        !controller_init(&g_controller, &g_configuration.control, p_input,
+                             p_output))
     {
         result = E_SYS;
     }
-    if (result != E_OK)
-    {
-        /* Owner-only latch if initialisation reached it; boot brake is also
-         * asserted because a failed PWM init may not have registered owner. */
-        pwm_boot_brake();
-        (void)pwm_latch_stop();
-        (void)ISpinLock(&service_lock, &saved);
-        published.init_error    = result;
-        published.control.state = MOTION_FAULT;
-        published.control.fault = MOTION_FAULT_OUTPUT;
-        published.ready         = false;
-        (void)ISpinUnlock(&service_lock, saved);
-        for (;;)
-        {
-            (void)tk_slp_tsk(TMO_FEVR);
-        }
-    }
-    (void)ISpinLock(&service_lock, &saved);
-    initial_stop = inbox.stopped;
-    (void)ISpinUnlock(&service_lock, saved);
-    if (initial_stop || gpio_get_val(STOP_PIN) == 0U)
-    {
-        controller_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL, true);
-    }
-    (void)ISpinLock(&service_lock, &saved);
-    if (controller.status.state == MOTION_STOPPED)
-    {
-        motion_inbox_stop(&inbox);
-    }
-    published.stop_requested = inbox.stopped;
-    published.hold_mask      = inbox.hold_mask;
-    published.ready          = !inbox.stopped &&
-                               (controller.status.state != MOTION_STOPPED) &&
-                               (controller.status.state != MOTION_FAULT);
-    published.control        = controller.status;
-    (void)ISpinUnlock(&service_lock, saved);
+    return result;
+}
+
+/* Latch the output and publish the initialisation error. Never returns. */
+static void service_halt (ER result)
+{
+    UINT saved = 0U;
+
+    /* Owner-only latch if initialisation reached it; boot brake is also
+     * asserted because a failed PWM init may not have registered owner. */
+    pwm_boot_brake();
+    (void)pwm_latch_stop();
+    (void)ISpinLock(&g_service_lock, &saved);
+    g_published.init_error    = result;
+    g_published.control.state = MOTION_FAULT;
+    g_published.control.fault = MOTION_FAULT_OUTPUT;
+    g_published.ready         = false;
+    (void)ISpinUnlock(&g_service_lock, saved);
     for (;;)
     {
-        motion_command_t command;
-        bool             received;
-        bool             stop;
-        bool             captured;
+        (void)tk_slp_tsk(TMO_FEVR);
+    }
+}
 
-        (void)tk_dly_tsk((RELTIM)configuration.poll_delay_ms);
-        (void)ISpinLock(&service_lock, &saved);
-        stop = inbox.stopped;
-        (void)ISpinUnlock(&service_lock, saved);
+/* Apply a stop requested before the first cycle, then publish the first
+ * status. */
+static void service_first_status (void)
+{
+    UINT saved        = 0U;
+    bool initial_stop = false;
+
+    (void)ISpinLock(&g_service_lock, &saved);
+    initial_stop = g_inbox.stopped;
+    (void)ISpinUnlock(&g_service_lock, saved);
+    if (initial_stop || gpio_get_val(STOP_PIN) == 0U)
+    {
+        controller_tick(&g_controller, NULL, in_w(TIMER_RAW_LOW), NULL, true);
+    }
+    (void)ISpinLock(&g_service_lock, &saved);
+    if (g_controller.status.state == MOTION_STOPPED)
+    {
+        motion_inbox_stop(&g_inbox);
+    }
+    g_published.stop_requested = g_inbox.stopped;
+    g_published.hold_mask      = g_inbox.hold_mask;
+    g_published.ready =
+        !g_inbox.stopped && (g_controller.status.state != MOTION_STOPPED) &&
+        (g_controller.status.state != MOTION_FAULT);
+    g_published.control        = g_controller.status;
+    (void)ISpinUnlock(&g_service_lock, saved);
+}
+
+/* One control cycle: STOP handling, capture, command intake, the controller
+ * tick, and publication of the result. */
+static void service_cycle (motion_input_t * p_input)
+{
+    UINT             saved    = 0U;
+    motion_command_t command;
+    bool             received = false;
+    bool             stop     = false;
+    bool             captured = false;
+
+    (void)tk_dly_tsk((RELTIM)g_configuration.poll_delay_ms);
+    (void)ISpinLock(&g_service_lock, &saved);
+    stop = g_inbox.stopped;
+    (void)ISpinUnlock(&g_service_lock, saved);
+    stop = stop || gpio_get_val(STOP_PIN) == 0U;
+    if (stop)
+    {
+        /* Do not wait for capture or perform conversion before STOP. */
+        controller_tick(&g_controller, NULL, in_w(TIMER_RAW_LOW), NULL,
+                            true);
+    }
+    else
+    {
+        captured = capture_input(p_input);
+        /* Re-read the priority stop slot after capture, before output. */
+        (void)ISpinLock(&g_service_lock, &saved);
+        received =
+            motion_inbox_take(&g_inbox, in_w(TIMER_RAW_LOW), &command, &stop);
+        (void)ISpinUnlock(&g_service_lock, saved);
         stop = stop || gpio_get_val(STOP_PIN) == 0U;
-        if (stop)
-        {
-            /* Do not wait for capture or perform conversion before STOP. */
-            controller_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL,
-                                true);
-        }
-        else
-        {
-            captured = capture_input(&input);
-            /* Re-read the priority stop slot after capture, before output. */
-            (void)ISpinLock(&service_lock, &saved);
-            received =
-                motion_inbox_take(&inbox, in_w(TIMER_RAW_LOW), &command, &stop);
-            (void)ISpinUnlock(&service_lock, saved);
-            stop = stop || gpio_get_val(STOP_PIN) == 0U;
-            controller_tick(&controller, captured ? &input : NULL,
-                                in_w(TIMER_RAW_LOW), received ? &command : NULL,
-                                stop);
-        }
-        (void)ISpinLock(&service_lock, &saved);
-        if (controller.status.state == MOTION_STOPPED)
-        {
-            motion_inbox_stop(&inbox);
-        }
-        published.control        = controller.status;
-        published.stop_requested = inbox.stopped;
-        published.hold_mask      = inbox.hold_mask;
-        published.ready = !inbox.stopped &&
-                          (controller.status.state != MOTION_STOPPED) &&
-                          (controller.status.state != MOTION_FAULT);
-        (void)ISpinUnlock(&service_lock, saved);
+        controller_tick(&g_controller, captured ? p_input : NULL,
+                            in_w(TIMER_RAW_LOW), received ? &command : NULL,
+                            stop);
+    }
+    (void)ISpinLock(&g_service_lock, &saved);
+    if (g_controller.status.state == MOTION_STOPPED)
+    {
+        motion_inbox_stop(&g_inbox);
+    }
+    g_published.control        = g_controller.status;
+    g_published.stop_requested = g_inbox.stopped;
+    g_published.hold_mask      = g_inbox.hold_mask;
+    g_published.ready = !g_inbox.stopped &&
+                        (g_controller.status.state != MOTION_STOPPED) &&
+                        (g_controller.status.state != MOTION_FAULT);
+    (void)ISpinUnlock(&g_service_lock, saved);
+}
+
+void motion_service_run (void)
+{
+    motion_output_t output = {NULL, apply_output, brake_output};
+    motion_input_t  input;
+    ER              result = service_start(&output, &input);
+
+    if (result != E_OK)
+    {
+        service_halt(result);
+    }
+    service_first_status();
+    for (;;)
+    {
+        service_cycle(&input);
     }
 }
 
@@ -178,7 +218,7 @@ ER motion_service_init (const motion_service_config_t * p_config)
     {
         return E_CTX;
     }
-    if (start_called)
+    if (g_start_called)
     {
         return E_OBJ;
     }
@@ -186,14 +226,15 @@ ER motion_service_init (const motion_service_config_t * p_config)
         !controller_config_valid(&p_config->control) ||
         (p_config->poll_delay_ms == 0U) ||
         (p_config->poll_delay_ms >
-         p_config->control.max_control_gap_us / 1000U))
+         p_config->control.max_control_gap_us / US_PER_MS))
     {
         return E_PAR;
     }
-    configuration = *p_config;
-    (void)motion_inbox_init(&inbox, configuration.control.max_command_ttl_us);
-    (void)InitSpinLock(&service_lock);
-    start_called = true;
+    g_configuration = *p_config;
+    (void)motion_inbox_init(&g_inbox,
+                            g_configuration.control.max_command_ttl_us);
+    (void)InitSpinLock(&g_service_lock);
+    g_start_called = true;
     pwm_boot_brake();
 
     return E_OK;
@@ -201,22 +242,22 @@ ER motion_service_init (const motion_service_config_t * p_config)
 
 static ER post_command (motion_command_t command, bool stamp_now)
 {
-    UINT         saved;
+    UINT         saved  = 0U;
     ER           result = E_OK;
-    unsigned int wheel;
+    unsigned int wheel  = 0U;
 
-    if (!start_called)
+    if (!g_start_called)
     {
         return E_OBJ;
     }
     if ((command.ttl_us == 0U) ||
-        (command.ttl_us > configuration.control.max_command_ttl_us))
+        (command.ttl_us > g_configuration.control.max_command_ttl_us))
     {
         return E_PAR;
     }
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        int64_t limit = configuration.control.speed[wheel].max_target_um_s;
+        int64_t limit = g_configuration.control.speed[wheel].max_target_um_s;
 
         if (((int64_t)command.target_um_s[wheel] > limit) ||
             ((int64_t)command.target_um_s[wheel] < -limit))
@@ -224,17 +265,17 @@ static ER post_command (motion_command_t command, bool stamp_now)
             return E_PAR;
         }
     }
-    (void)ISpinLock(&service_lock, &saved);
-    if (!published.ready || inbox.stopped)
+    (void)ISpinLock(&g_service_lock, &saved);
+    if (!g_published.ready || g_inbox.stopped)
     {
         result = E_OBJ;
     }
     else
     {
-        motion_inbox_result_t admitted;
-        uint32_t              now = in_w(TIMER_RAW_LOW);
+        motion_inbox_result_t admitted = MOTION_INBOX_STALE;
+        uint32_t              now      = in_w(TIMER_RAW_LOW);
 
-        command.id = next_id + 1U;
+        command.id = g_next_id + 1U;
         if (command.id == 0U)
         {
             command.id++;
@@ -243,10 +284,10 @@ static ER post_command (motion_command_t command, bool stamp_now)
         {
             command.issued_us = now;
         }
-        admitted = motion_inbox_post(&inbox, &command, now);
+        admitted = motion_inbox_post(&g_inbox, &command, now);
         if (admitted == MOTION_INBOX_ACCEPTED)
         {
-            next_id = command.id;
+            g_next_id = command.id;
         }
         else
         {
@@ -255,7 +296,7 @@ static ER post_command (motion_command_t command, bool stamp_now)
                          : (admitted == MOTION_INBOX_STALE ? E_TMOUT : E_OBJ);
         }
     }
-    (void)ISpinUnlock(&service_lock, saved);
+    (void)ISpinUnlock(&g_service_lock, saved);
     return result;
 }
 
@@ -270,26 +311,26 @@ ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
 ER motion_service_submit_request (const motion_drive_request_t * p_request)
 {
     motion_command_t command;
-    uint32_t         limits[2];
-    uint32_t         now;
-    UINT             saved;
+    uint32_t         limits[ENCODER_WHEELS];
+    uint32_t         now   = 0U;
+    UINT             saved = 0U;
 
-    if (!start_called)
+    if (!g_start_called)
     {
         return E_OBJ;
     }
-    limits[0] = configuration.control.speed[0].max_target_um_s;
-    limits[1] = configuration.control.speed[1].max_target_um_s;
+    limits[0] = g_configuration.control.speed[0].max_target_um_s;
+    limits[1] = g_configuration.control.speed[1].max_target_um_s;
     now       = in_w(TIMER_RAW_LOW);
     if (!motion_request_plan(p_request, limits,
-                             configuration.control.max_command_ttl_us, now,
+                             g_configuration.control.max_command_ttl_us, now,
                              &command))
     {
         /* Invalid guidance must not leave the old movement queued. This
          * requests a normal brake and cannot clear emergency/hold state. */
-        (void)ISpinLock(&service_lock, &saved);
-        motion_inbox_cancel(&inbox);
-        (void)ISpinUnlock(&service_lock, saved);
+        (void)ISpinLock(&g_service_lock, &saved);
+        motion_inbox_cancel(&g_inbox);
+        (void)ISpinUnlock(&g_service_lock, saved);
         return (p_request != NULL && p_request->valid_for_us > 0U &&
                 (uint32_t)(now - p_request->sensed_us) >=
                     p_request->valid_for_us)
@@ -301,68 +342,68 @@ ER motion_service_submit_request (const motion_drive_request_t * p_request)
 
 ER motion_service_set_hold (uint32_t reason, bool held)
 {
-    UINT saved;
-    ER   result;
+    UINT saved  = 0U;
+    ER   result = E_OK;
 
-    if (!start_called)
+    if (!g_start_called)
     {
         return E_OBJ;
     }
-    (void)ISpinLock(&service_lock, &saved);
-    if (inbox.stopped || published.control.state == MOTION_FAULT)
+    (void)ISpinLock(&g_service_lock, &saved);
+    if (g_inbox.stopped || g_published.control.state == MOTION_FAULT)
     {
         result = E_OBJ;
     }
     else
     {
-        result = motion_inbox_hold(&inbox, reason, held, in_w(TIMER_RAW_LOW))
+        result = motion_inbox_hold(&g_inbox, reason, held, in_w(TIMER_RAW_LOW))
                      ? E_OK
                      : E_PAR;
-        published.hold_mask = inbox.hold_mask;
+        g_published.hold_mask = g_inbox.hold_mask;
     }
-    (void)ISpinUnlock(&service_lock, saved);
+    (void)ISpinUnlock(&g_service_lock, saved);
     return result;
 }
 
 ER motion_service_request_stop (void)
 {
-    UINT saved;
+    UINT saved = 0U;
 
-    if (!start_called)
+    if (!g_start_called)
     {
         return E_OBJ;
     }
-    (void)ISpinLock(&service_lock, &saved);
-    motion_inbox_stop(&inbox);
-    published.ready          = false;
-    published.stop_requested = true;
-    (void)ISpinUnlock(&service_lock, saved);
+    (void)ISpinLock(&g_service_lock, &saved);
+    motion_inbox_stop(&g_inbox);
+    g_published.ready          = false;
+    g_published.stop_requested = true;
+    (void)ISpinUnlock(&g_service_lock, saved);
     return E_OK;
 }
 
 ER motion_service_read_status (motion_service_status_t * p_status)
 {
-    UINT saved;
+    UINT saved = 0U;
 
     if (p_status == NULL)
     {
         return E_PAR;
     }
-    if (!start_called)
+    if (!g_start_called)
     {
         return E_OBJ;
     }
-    (void)ISpinLock(&service_lock, &saved);
-    *p_status = published;
-    (void)ISpinUnlock(&service_lock, saved);
+    (void)ISpinLock(&g_service_lock, &saved);
+    *p_status = g_published;
+    (void)ISpinUnlock(&g_service_lock, saved);
     return E_OK;
 }
 
 ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
 {
     motion_service_status_t status;
-    ER                      result;
-    uint32_t                age_us;
+    ER                      result = E_OK;
+    uint32_t                age_us = 0U;
 
     if (p_feedback == NULL)
     {
@@ -376,7 +417,7 @@ ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
     }
 
     age_us = in_w(TIMER_RAW_LOW) - status.control.sample.timestamp_us;
-    if (age_us > (UINT32_MAX / 2U))
+    if (age_us > CLOCK_HALF_RANGE)
     {
         /* The encoder can be sampled just after this clock read. */
         age_us = 0U;
@@ -406,7 +447,7 @@ ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
 ER motion_status (motion_status_t * p_status)
 {
     motion_service_status_t status;
-    ER                      result;
+    ER                      result = E_OK;
 
     if (p_status == NULL)
     {

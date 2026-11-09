@@ -25,15 +25,23 @@
 #include "physics_task.h"
 
 #define STATS_PERIOD_MS (5000)
+#define MOTOR_PIN_COUNT (4U)
+#define MOTOR_PIN_A     (8U)      /* GP8 to GP11.                          */
+#define MOTOR_PIN_B     (9U)
+#define MOTOR_PIN_C     (10U)
+#define MOTOR_PIN_D     (11U)
+#define CHECK_TASK_PRI  (4)       /* Replaced by cfg.priority below.       */
+#define CHECK_STACK_SZ  (4096U)
 
 /* Robo Pico motor inputs GP8-GP11 (motion/motion_pins.h). The kernel's boot-time
  * I2C0 init routes GP8/GP9 to I2C with pull-ups, so force them low. */
 static void hold_motors (void)
 {
-    static const UINT pins[4] = { 8U, 9U, 10U, 11U };
-    unsigned int i;
+    static const UINT pins[MOTOR_PIN_COUNT] = { MOTOR_PIN_A, MOTOR_PIN_B,
+                                                MOTOR_PIN_C, MOTOR_PIN_D };
+    unsigned int i = 0U;
 
-    for (i = 0U; i < 4U; i++)
+    for (i = 0U; i < MOTOR_PIN_COUNT; i++)
     {
         (void)gpio_set_val (pins[i], 0U);
         (void)gpio_set_pin (pins[i], GPIO_MODE_OUT);
@@ -53,14 +61,14 @@ EXPORT INT usermain (void)
     physics_task_stats_t stats;
     T_CTSK ctsk = {
         .exinf   = NULL,
-        .itskpri = 4,
-        .stksz   = 4096U,
+        .itskpri = CHECK_TASK_PRI,
+        .stksz   = CHECK_STACK_SZ,
         .task    = check_task,
         .tskatr  = TA_HLNG | TA_RNG3 | TA_ASSPRC,
         .assprc  = TP_PRC1,
     };
-    ID tid;
-    ER er;
+    ID tid = 0;
+    ER er = E_OK;
 
     hold_motors ();
 

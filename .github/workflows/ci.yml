@@ -27,3 +27,8 @@ jobs:
 
       - name: Build firmware
         run: nix develop -c ./build.sh
+
+      # BARR-C:2018 clang-tidy gate (D84, D90). Fails on any finding in
+      # src/ or include/; the log is kept under build/lint/.
+      - name: Lint firmware (BARR-C)
+        run: bash tools/lint.sh

@@ -31,6 +31,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define LSM303_AXIS_X        (0U)
+#define LSM303_AXIS_Y        (1U)
+#define LSM303_AXIS_Z        (2U)
+#define LSM303_AXIS_COUNT    (3U)
+
 #define LSM303_ACC_ADDR      (0x19U)
 #define LSM303_MAG_ADDR      (0x1EU)
 
@@ -100,8 +105,8 @@ typedef struct
 /* Raw counts and converted values for one read. */
 typedef struct
 {
-    int16_t raw[3];              /* X, Y, Z in device counts.              */
-    float   value[3];            /* X, Y, Z in g or gauss.                 */
+    int16_t raw[LSM303_AXIS_COUNT];    /* X, Y, Z in device counts.        */
+    float   value[LSM303_AXIS_COUNT];  /* X, Y, Z in g or gauss.           */
 } lsm303_vec_t;
 
 /* Check the identity, write the configuration and read it back.

@@ -11,7 +11,7 @@ bool motion_request_plan (const motion_drive_request_t * p_request,
                           motion_command_t * p_command)
 {
     motion_command_t command = {0};
-    unsigned int     wheel;
+    unsigned int     wheel = 0U;
 
     if ((p_request == NULL) || (limits_um_s == NULL) || (p_command == NULL) ||
         (max_ttl_us == 0U) || (max_ttl_us > (uint32_t)INT32_MAX) ||

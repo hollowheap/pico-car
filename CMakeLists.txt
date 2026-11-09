@@ -290,6 +290,19 @@ target_sources(mtk3smp PRIVATE
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
+# Warning set shared by every application firmware target (BARR-C:2018).
+set(FIRMWARE_WARNINGS
+    -Werror
+    -Wall
+    -Wextra
+    -Wparentheses           # 8.6 suspicious assignment
+    -Wfloat-equal           # 5.4b.iv no float equality tests
+    -Wswitch-default        # 8.3b default required
+    -Wimplicit-fallthrough  # 8.3c commented fall-throughs
+    -Wshadow
+    -Wvla
+)
+
 # Compile the executable
 add_library(platform STATIC
     src/platform/faults.c
@@ -297,6 +310,7 @@ add_library(platform STATIC
 )
 target_include_directories(platform PUBLIC include)
 target_link_libraries(platform PUBLIC mtk3smp)
+target_compile_options(platform PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(telemetry STATIC
     src/telemetry/cmd.c
@@ -312,6 +326,7 @@ add_library(telemetry STATIC
 target_include_directories(telemetry PUBLIC include PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(telemetry PUBLIC platform mtk3smp)
+target_compile_options(telemetry PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(motion_core STATIC
     src/motion/controller.c
@@ -323,6 +338,7 @@ add_library(motion_core STATIC
 )
 target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(motion_core PUBLIC mtk3smp)
+target_compile_options(motion_core PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(motion_service STATIC
     src/motion/motion_service.c
@@ -333,6 +349,7 @@ add_library(motion_service STATIC
 )
 target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(motion_service PUBLIC platform motion_core mtk3smp)
+target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(track STATIC
     src/track/ir_capture.c
@@ -340,11 +357,13 @@ add_library(track STATIC
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(track PUBLIC platform barcode mtk3smp)
+target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(barcode STATIC
     src/barcode/parser.c
 )
 target_include_directories(barcode PUBLIC include)
+target_compile_options(barcode PRIVATE ${FIRMWARE_WARNINGS})
 
 add_executable(main
     src/main.c
@@ -381,18 +400,7 @@ foreach(app_target IN ITEMS main)
     # Create map/bin/hex/uf2 file etc.
     pico_add_extra_outputs(${app_target})
     # Extra compiler flags
-    target_compile_options(${app_target} PRIVATE
-        -Werror
-        -Wall
-        -Wextra
-
-        -Wparentheses           # 8.6 suspicious assignment
-        -Wfloat-equal           # 5.4b.iv no float equality tests
-        -Wswitch-default        # 8.3b default required
-        -Wimplicit-fallthrough  # 8.3c commented fall-throughs
-        -Wshadow
-        -Wvla
-    )
+    target_compile_options(${app_target} PRIVATE ${FIRMWARE_WARNINGS})
 endforeach()
 
 # ---------------------------------------------------------------------------
@@ -403,18 +411,6 @@ endforeach()
 #   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
 #                   Buddy 5 + a pretend Navigation; the motors are never driven.
 # ---------------------------------------------------------------------------
-set(OBSTACLE_WARNINGS
-    -Werror
-    -Wall
-    -Wextra
-    -Wparentheses
-    -Wfloat-equal
-    -Wswitch-default
-    -Wimplicit-fallthrough
-    -Wshadow
-    -Wvla
-)
-
 add_library(obstacle STATIC
     src/navigation/obstacle/scan_algo.c
     src/navigation/obstacle/planner.c
@@ -428,7 +424,7 @@ target_include_directories(obstacle PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(obstacle PUBLIC platform mtk3smp)
 target_compile_options(obstacle PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
+    -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 
 add_executable(obstacle_bench
     src/navigation/obstacle/bench_main.c
@@ -437,7 +433,7 @@ target_include_directories(obstacle_bench PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(obstacle_bench PRIVATE obstacle platform mtk3smp)
 target_compile_options(obstacle_bench PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
+    -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 target_link_options(obstacle_bench PRIVATE
     -nostartfiles
     -Wl,--gc-sections
@@ -455,7 +451,7 @@ target_include_directories(obstacle_nav PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3smp)
 target_compile_options(obstacle_nav PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
+    -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_nav)
 
 # Buddy 4: IMU, terrain detection, and bring-up targets

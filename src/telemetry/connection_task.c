@@ -20,32 +20,37 @@
 #define CONNECTION_LOOP_MS      10U
 #define CONNECTION_HEARTBEAT_MS 1000U
 #define CONNECTION_STATUS_MS    1000U
+#define CONNECTION_MS_PER_S     1000U
+#define CONNECTION_FRAME_MIN    2U
+#define CONNECTION_RSSI_MAX     127
+#define CONNECTION_RSSI_MIN     (-128)
+#define CONNECTION_DROPS_MAX    255U
 
-static const char s_topic_status[]    = TELEMETRY_TOPIC_PREFIX "/s";
-static const char s_topic_event[]     = TELEMETRY_TOPIC_PREFIX "/e";
-static const char s_topic_heartbeat[] = TELEMETRY_TOPIC_PREFIX "/h";
-static const char s_topic_command[]   = TELEMETRY_TOPIC_PREFIX "/c";
-static const char s_topic_system[]    = TELEMETRY_TOPIC_PREFIX "/t";
+static const char g_topic_status[]    = TELEMETRY_TOPIC_PREFIX "/s";
+static const char g_topic_event[]     = TELEMETRY_TOPIC_PREFIX "/e";
+static const char g_topic_heartbeat[] = TELEMETRY_TOPIC_PREFIX "/h";
+static const char g_topic_command[]   = TELEMETRY_TOPIC_PREFIX "/c";
+static const char g_topic_system[]    = TELEMETRY_TOPIC_PREFIX "/t";
 
-static volatile connection_state_t s_state = CONNECTION_DISCONNECTED;
-static mqtt_client_t               s_mqtt;
-static telemetry_cmd_state_t       s_cmd_state;
-static connection_cmd_dispatch_t   s_dispatch;
-static void *                      s_dispatch_context;
-static bool                        s_mqtt_ready;
-static bool                        s_transport_started;
-static bool                        s_open_failure_logged;
-static uint32_t                    s_heartbeat_ms;
-static T_CYW43_UTK_STATUS          s_status;
+static volatile connection_state_t g_state = CONNECTION_DISCONNECTED;
+static mqtt_client_t               g_mqtt;
+static telemetry_cmd_state_t       g_cmd_state;
+static connection_cmd_dispatch_t   gp_dispatch;
+static void *                      gp_dispatch_context;
+static bool                        g_mqtt_ready;
+static bool                        g_transport_started;
+static bool                        g_open_failure_logged;
+static uint32_t                    g_heartbeat_ms;
+static T_CYW43_UTK_STATUS          g_status;
 
 static void
 dispatch_command (const telemetry_cmd_t * cmd, void * context)
 {
     (void) context;
 
-    if (s_dispatch != 0)
+    if (gp_dispatch != 0)
     {
-        s_dispatch(cmd, s_dispatch_context);
+        gp_dispatch(cmd, gp_dispatch_context);
     }
 }
 
@@ -60,7 +65,7 @@ on_mqtt_command (const uint8_t * payload, uint16_t len, void * context)
     {
         return;
     }
-    (void) telemetry_cmd_accept(&s_cmd_state, &cmd,
+    (void) telemetry_cmd_accept(&g_cmd_state, &cmd,
                                 (uint16_t) tcp_transport_now_ms(),
                                 dispatch_command, 0);
 }
@@ -81,30 +86,30 @@ net_pull (uint8_t * frame, uint16_t * len)
 static int
 publish_frame (const uint8_t * frame, uint16_t len)
 {
-    const char * topic;
+    const char * topic = 0;
 
-    if ((frame == 0) || (len < 2u))
+    if ((frame == 0) || (len < CONNECTION_FRAME_MIN))
     {
         return -1;
     }
     switch (frame[0])
     {
     case (uint8_t) 's':
-        topic = s_topic_status;
+        topic = g_topic_status;
         break;
     case (uint8_t) 'e':
-        topic = s_topic_event;
+        topic = g_topic_event;
         break;
     case (uint8_t) 'h':
-        topic = s_topic_heartbeat;
+        topic = g_topic_heartbeat;
         break;
     case (uint8_t) 't':
-        topic = s_topic_system;
+        topic = g_topic_system;
         break;
     default:
         return -1;
     }
-    if (mqtt_client_publish(&s_mqtt, topic, &frame[1], (uint16_t) (len - 1u),
+    if (mqtt_client_publish(&g_mqtt, topic, &frame[1], (uint16_t) (len - 1u),
                             tcp_transport_now_ms()) != MQTT_OK)
     {
         return -1;
@@ -116,34 +121,35 @@ static void
 publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
 {
     uint8_t  payload[TELEMETRY_HEARTBEAT_WIRE_SIZE];
-    uint32_t drops;
+    uint32_t drops = 0u;
     int32_t  rssi = status->link_rssi;
 
-    if ((uint32_t) (now_ms - s_heartbeat_ms) < CONNECTION_HEARTBEAT_MS)
+    if ((uint32_t) (now_ms - g_heartbeat_ms) < CONNECTION_HEARTBEAT_MS)
     {
         return;
     }
-    s_heartbeat_ms = now_ms;
-    if (rssi > 127)
+    g_heartbeat_ms = now_ms;
+    if (rssi > CONNECTION_RSSI_MAX)
     {
-        rssi = 127;
+        rssi = CONNECTION_RSSI_MAX;
     }
-    else if (rssi < -128)
+    else if (rssi < CONNECTION_RSSI_MIN)
     {
-        rssi = -128;
+        rssi = CONNECTION_RSSI_MIN;
     }
     drops = (uint32_t) telemetry_queue_drop_count() +
             (uint32_t) telemetry_net_queue_drop_count();
-    if (drops > 255u)
+    if (drops > CONNECTION_DROPS_MAX)
     {
-        drops = 255u;
+        drops = CONNECTION_DROPS_MAX;
     }
-    if (telemetry_pack_heartbeat(payload, (uint16_t) (now_ms / 1000u),
-                                 (uint8_t) drops, (int8_t) rssi) == 0u)
+    if (telemetry_pack_heartbeat(
+            payload, (uint16_t) (now_ms / CONNECTION_MS_PER_S),
+            (uint8_t) drops, (int8_t) rssi) == 0u)
     {
         return;
     }
-    (void) mqtt_client_publish(&s_mqtt, s_topic_heartbeat, payload,
+    (void) mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
                                (uint16_t) sizeof(payload), now_ms);
 }
 
@@ -176,13 +182,13 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     mqtt_config_t    config = {0};
     mqtt_transport_t transport = {0};
 
-    if (s_mqtt_ready)
+    if (g_mqtt_ready)
     {
         return E_OK;
     }
 
     config.client_id     = TELEMETRY_CLIENT_ID;
-    config.command_topic = s_topic_command;
+    config.command_topic = g_topic_command;
     config.keepalive_s   = MQTT_DEFAULT_KEEPALIVE_S;
     if (TELEMETRY_MQTT_USERNAME[0] != '\0')
     {
@@ -194,16 +200,33 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     transport.send    = tcp_transport_send;
     transport.recv    = tcp_transport_recv;
 
-    mqtt_client_init(&s_mqtt, &config, &transport, on_mqtt_command, 0);
-    if (!s_mqtt.valid)
+    mqtt_client_init(&g_mqtt, &config, &transport, on_mqtt_command, 0);
+    if (!g_mqtt.valid)
     {
         return E_PAR;
     }
-    telemetry_cmd_state_init(&s_cmd_state, 0u);
-    s_dispatch         = dispatch;
-    s_dispatch_context = context;
-    s_mqtt_ready       = true;
+    telemetry_cmd_state_init(&g_cmd_state, 0u);
+    gp_dispatch         = dispatch;
+    gp_dispatch_context = context;
+    g_mqtt_ready        = true;
     return E_OK;
+}
+
+/* Open the broker socket once the link is ready; log the first failure. */
+static void
+open_transport (void)
+{
+    if (g_transport_started)
+    {
+        return;
+    }
+    g_transport_started = tcp_transport_open(TELEMETRY_BROKER_HOST,
+                                             (uint16_t) TELEMETRY_BROKER_PORT);
+    if (!g_transport_started && !g_open_failure_logged)
+    {
+        g_open_failure_logged = true;
+        (void) tm_printf((UB *) "[conn] transport open failed\n");
+    }
 }
 
 void
@@ -220,54 +243,44 @@ connection_run (void)
 
         if ((uint32_t) (now_ms - last_poll_ms) >= CONNECTION_POLL_MS)
         {
-            connection_state_t next;
+            connection_state_t next = CONNECTION_DISCONNECTED;
 
             last_poll_ms = now_ms;
-            cyw43_utk_get_status(&s_status);
-            next = classify(&s_status);
+            cyw43_utk_get_status(&g_status);
+            next = classify(&g_status);
             if ((next != previous) || first_status ||
                 ((next != CONNECTION_READY) &&
                  ((uint32_t) (now_ms - last_status_ms) >= CONNECTION_STATUS_MS)))
             {
                 previous = next;
-                s_state = next;
+                g_state = next;
                 first_status = false;
                 last_status_ms = now_ms;
                 (void) tm_printf(
                     (UB *) "[conn] state=%d link=%u started=%u join=%d "
                            "dhcp_done=%u dhcp=%d init=%d\n",
-                    (INT) next, s_status.link_up, s_status.join_started,
-                    s_status.join_result, s_status.dhcp_complete,
-                    s_status.dhcp_result, s_status.init_result);
+                    (INT) next, g_status.link_up, g_status.join_started,
+                    g_status.join_result, g_status.dhcp_complete,
+                    g_status.dhcp_result, g_status.init_result);
             }
             if (next == CONNECTION_READY)
             {
-                if (!s_transport_started)
-                {
-                    s_transport_started =
-                        tcp_transport_open(TELEMETRY_BROKER_HOST,
-                                           (uint16_t) TELEMETRY_BROKER_PORT);
-                    if (!s_transport_started && !s_open_failure_logged)
-                    {
-                        s_open_failure_logged = true;
-                        (void) tm_printf((UB *)"[conn] transport open failed\n");
-                    }
-                }
+                open_transport();
             }
             else if (next == CONNECTION_FAULT)
             {
                 tcp_transport_close();
-                s_transport_started = false;
+                g_transport_started = false;
             }
         }
 
-        if (s_mqtt_ready)
+        if (g_mqtt_ready)
         {
-            (void) mqtt_client_poll(&s_mqtt, now_ms);
-            if (mqtt_client_state(&s_mqtt) == MQTT_STATE_CONNECTED)
+            (void) mqtt_client_poll(&g_mqtt, now_ms);
+            if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
             {
                 telemetry_publisher_run(net_pull, publish_frame);
-                publish_heartbeat(now_ms, &s_status);
+                publish_heartbeat(now_ms, &g_status);
             }
         }
 
@@ -278,5 +291,5 @@ connection_run (void)
 connection_state_t
 connection_state (void)
 {
-    return s_state;
+    return g_state;
 }
