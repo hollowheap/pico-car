@@ -376,6 +376,11 @@ ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
     }
 
     age_us = in_w(TIMER_RAW_LOW) - status.control.sample.timestamp_us;
+    if (age_us > (UINT32_MAX / 2U))
+    {
+        /* The encoder can be sampled just after this clock read. */
+        age_us = 0U;
+    }
     p_feedback->left_speed_um_s  = status.control.sample.wheel[ENCODER_LEFT].velocity_um_s;
     p_feedback->right_speed_um_s = status.control.sample.wheel[ENCODER_RIGHT].velocity_um_s;
     p_feedback->left_displacement_um =

@@ -8,21 +8,25 @@ import { Panel } from './Panel';
 
 type Props = {
   status: LinkPacket | undefined;
+  system: LinkPacket | undefined;
   style?: StyleProp<ViewStyle>;
 };
 
-export function AttitudePanel({ status, style }: Props) {
+export function AttitudePanel({ status, system, style }: Props) {
   const theme = useTheme();
   const heading = status?.values.heading_deg ?? 0;
   const hasHeading = status?.values.heading_deg !== undefined;
+  const pitchCdeg = system?.values.pitch_cdeg;
+  const pitch =
+    pitchCdeg === undefined ? '--' : (pitchCdeg / 100).toFixed(2);
 
   return (
     <Panel
       style={style}
-      title="Heading and compass"
+      title="Attitude"
       right={
         <Text style={[theme.typography.label, { color: theme.colors.muted }]}>
-          MAGNETIC
+          IMU
         </Text>
       }
     >
@@ -31,7 +35,7 @@ export function AttitudePanel({ status, style }: Props) {
           {hasHeading ? heading.toFixed(1) : '--'}
           <Text style={[theme.typography.subheading, { color: theme.colors.muted }]}>
             {' '}
-            deg
+            deg yaw
           </Text>
         </Text>
         <Text
@@ -45,6 +49,9 @@ export function AttitudePanel({ status, style }: Props) {
           {hasHeading ? bearingName(heading) : 'NO DATA'}
         </Text>
       </View>
+      <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+        pitch {pitch} deg
+      </Text>
       <Compass available={hasHeading} headingDeg={heading} />
     </Panel>
   );

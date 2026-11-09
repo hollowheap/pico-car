@@ -25,6 +25,7 @@
 typedef struct
 {
     bool     ready;          /* The task has produced a message.        */
+    bool     calibrated;     /* Hump detector has its rest reference.   */
     uint8_t  state;          /* Hump state: idle, rising, falling, ...  */
     uint8_t  motion;         /* Motion class from the IMU.              */
     uint8_t  faults;         /* Latched B4 faults.                      */

@@ -1,4 +1,5 @@
 #include <tk/tkernel.h>
+#include <tk/smp.h>
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
@@ -26,14 +27,22 @@
    for a task that makes blocking kernel calls. */
 #define STACK_SZ 4096
 
-/* Line following. 250 mm/s cruise and a 10 ms control period keep the car
- * within 2.5 mm of travel per pass. A one-sensor correction keeps the inner
- * wheel at LINE_TURN_PERMILLE of the cruise speed, so the car steers
- * proportionally instead of stopping a wheel at speed. Tune these on the
- * car; the duty cap in setup_motors() must leave headroom for the target. */
-#define LINE_SPEED_UM_S    (250000U)
-#define LINE_POLL_MS       (10U)
-#define LINE_TURN_PERMILLE (450U)
+/* Line following. 250 mm/s cruise and a 10 ms control period. Steering is a
+ * filtered differential mixer: one sensor ramps the steer toward
+ * +/-LINE_STEER_MAX_PERMILLE, both/neither decays it. The outer wheel
+ * saturates at LINE_MAX_WHEEL_UM_S, so a tight curve reduces the average
+ * speed instead of overdriving a wheel. Tune these on the car; the duty cap
+ * in setup_motors() must leave headroom for the target. */
+#define LINE_SPEED_UM_S          (250000U)
+#define LINE_POLL_MS             (10U)
+#define LINE_MAX_WHEEL_UM_S      (300000U)
+#define LINE_STEER_MAX_PERMILLE  (1000)
+#define LINE_STEER_SOFT_PERMILLE (250)
+#define LINE_STEER_CONFIRM_TICKS (5U)
+#define LINE_STEER_FILTER_SHIFT  (3U)
+#define LINE_TURN_SPEED_UM_S     (180000)
+#define LINE_TURN_90_MS          (600U)
+#define LINE_TURN_180_MS         (1200U)
 
 /* Startup barrier. This file creates every task; one startup task owns the
  * shared hardware init and the others wait for it. Subsystems never call
@@ -59,7 +68,7 @@ ER setup_motors (void)
             .kp_q16            = 256U,
             .ki_q16            = 256U,
             .kd_q16            = 2U,
-            .max_target_um_s   = 300000U,
+            .max_target_um_s   = LINE_MAX_WHEEL_UM_S,
             .max_interval_us   = 100000U,
             .max_sample_age_us = 600000U,
             .max_duty_permille = 400U,
@@ -182,10 +191,88 @@ LOCAL void obstacle_task (INT stacd, void * exinf)
     obstacle_run();
 }
 
+typedef enum
+{
+    LINE_TURN_NONE = 0,
+    LINE_TURN_LEFT,
+    LINE_TURN_RIGHT,
+    LINE_TURN_UTURN
+} line_turn_t;
+
+static T_SPLOCK        g_turn_lock;
+static volatile uint8_t g_turn_request;
+static int32_t         g_line_steer_per_mille;
+static uint8_t         g_line_error_ticks;
+
+static void line_request_turn (line_turn_t turn)
+{
+    UINT saved;
+
+    (void)ISpinLock(&g_turn_lock, &saved);
+    g_turn_request = (uint8_t)turn;
+    (void)ISpinUnlock(&g_turn_lock, saved);
+}
+
+static line_turn_t line_take_turn (void)
+{
+    UINT        saved;
+    line_turn_t turn;
+
+    (void)ISpinLock(&g_turn_lock, &saved);
+    turn = (line_turn_t)g_turn_request;
+    g_turn_request = (uint8_t)LINE_TURN_NONE;
+    (void)ISpinUnlock(&g_turn_lock, saved);
+    return turn;
+}
+
+/* One-shot pivot. The controller brakes a wheel that reverses, so the
+ * duration includes margin; tune LINE_TURN_90_MS on the car. */
+static void line_execute_turn (line_turn_t turn)
+{
+    int32_t  left;
+    int32_t  right;
+    uint32_t duration_ms;
+    uint32_t elapsed_ms = 0U;
+    uint32_t const lease_us = 10U * LINE_POLL_MS * 1000U;
+
+    switch (turn)
+    {
+        case LINE_TURN_LEFT:
+            left        = -(int32_t)LINE_TURN_SPEED_UM_S;
+            right       = (int32_t)LINE_TURN_SPEED_UM_S;
+            duration_ms = LINE_TURN_90_MS;
+            break;
+        case LINE_TURN_RIGHT:
+            left        = (int32_t)LINE_TURN_SPEED_UM_S;
+            right       = -(int32_t)LINE_TURN_SPEED_UM_S;
+            duration_ms = LINE_TURN_90_MS;
+            break;
+        case LINE_TURN_UTURN:
+            left        = (int32_t)LINE_TURN_SPEED_UM_S;
+            right       = -(int32_t)LINE_TURN_SPEED_UM_S;
+            duration_ms = LINE_TURN_180_MS;
+            break;
+        default:
+            return;
+    }
+
+    while (elapsed_ms < duration_ms)
+    {
+        if (motion_set_speed(left, right, lease_us) != E_OK)
+        {
+            break;
+        }
+        (void)tk_dly_tsk(LINE_POLL_MS);
+        elapsed_ms += LINE_POLL_MS;
+    }
+    (void)motion_set_speed(0, 0, lease_us);
+    g_line_steer_per_mille = 0;
+    g_line_error_ticks = 0U;
+}
+
 LOCAL void line_task (INT stacd, void * exinf)
 {
-    const uint32_t speed      = LINE_SPEED_UM_S;
-    const uint32_t turn_speed = (LINE_SPEED_UM_S * LINE_TURN_PERMILLE) / 1000U;
+    const uint32_t speed = LINE_SPEED_UM_S;
     /* Each speed lease must outlast one loop pass plus scheduling delay.
      * The motion task (priority 5) shares core 0 with physics (4) and the
      * obstacle task (6), so a 3-pass lease can be stale by the time the
@@ -201,30 +288,102 @@ LOCAL void line_task (INT stacd, void * exinf)
         park();
     }
 
-    while (true)
+    /* The hump detector needs 50 rest samples (1 s). Hold the drive until
+     * it calibrates, or 2 s if the IMU is unavailable. */
+    {
+        uint32_t wait_ms = 0U;
+
+        while (wait_ms < 2000U)
+        {
+            physics_status_t physics;
+
+            if ((E_OK == physics_snapshot(&physics)) && physics.calibrated)
+            {
+                break;
+            }
+            (void)tk_dly_tsk(LINE_POLL_MS);
+            wait_ms += LINE_POLL_MS;
+        }
+    }
+
+    for (;;)
     {
         const ir_sensors_state_t state = ir_get_state();
+        line_turn_t const turn = line_take_turn();
+
+        if (LINE_TURN_NONE != turn)
+        {
+            line_execute_turn(turn);
+            continue;
+        }
 
         if (obstacle_line_step(state.left, state.right))
         {
             /* obstacle is holding the car or driving round an obstacle. */
-        }
-        else if (state.left && state.right)
-        {
-            // TODO: run command at junction
-            motion_set_speed(speed, speed, lease_us);
-        }
-        else if (state.left)
-        {
-            motion_set_speed(turn_speed, speed, lease_us);
-        }
-        else if (state.right)
-        {
-            motion_set_speed(speed, turn_speed, lease_us);
+            g_line_steer_per_mille = 0;
+            g_line_error_ticks = 0U;
         }
         else
         {
-            motion_set_speed(speed, speed, lease_us);
+            int32_t target;
+            int32_t delta;
+            int32_t left;
+            int32_t right;
+            int32_t peak;
+
+            if (state.left != state.right)
+            {
+                if (g_line_error_ticks < LINE_STEER_CONFIRM_TICKS)
+                {
+                    g_line_error_ticks++;
+                }
+            }
+            else
+            {
+                g_line_error_ticks = 0U;
+            }
+
+            if (state.left && state.right)
+            {
+                target = 0;
+            }
+            else if (state.left)
+            {
+                target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
+                             ? -LINE_STEER_MAX_PERMILLE
+                             : -LINE_STEER_SOFT_PERMILLE;
+            }
+            else if (state.right)
+            {
+                target = (g_line_error_ticks >= LINE_STEER_CONFIRM_TICKS)
+                             ? LINE_STEER_MAX_PERMILLE
+                             : LINE_STEER_SOFT_PERMILLE;
+            }
+            else
+            {
+                target = 0;
+            }
+
+            g_line_steer_per_mille +=
+                (target - g_line_steer_per_mille)
+                / (1 << LINE_STEER_FILTER_SHIFT);
+
+            delta = ((int32_t)speed * g_line_steer_per_mille) / 1000;
+            left  = (int32_t)speed + delta;
+            right = (int32_t)speed - delta;
+            peak  = (left < 0) ? -left : left;
+            if (((right < 0) ? -right : right) > peak)
+            {
+                peak = (right < 0) ? -right : right;
+            }
+            if (peak > (int32_t)LINE_MAX_WHEEL_UM_S)
+            {
+                left  = (int32_t)(((int64_t)left * LINE_MAX_WHEEL_UM_S)
+                                  / peak);
+                right = (int32_t)(((int64_t)right * LINE_MAX_WHEEL_UM_S)
+                                  / peak);
+            }
+            (void)motion_set_speed(left, right, lease_us);
         }
         ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
     }
@@ -237,6 +396,21 @@ LOCAL void barcode_command (uint8_t code)
 {
     uint8_t         event[TELEMETRY_EVENT_WIRE_SIZE];
     static uint16_t event_id;
+
+    switch (code)
+    {
+        case ('L' - 'A'):
+            line_request_turn(LINE_TURN_LEFT);
+            break;
+        case ('R' - 'A'):
+            line_request_turn(LINE_TURN_RIGHT);
+            break;
+        case ('U' - 'A'):
+            line_request_turn(LINE_TURN_UTURN);
+            break;
+        default:
+            break;
+    }
 
     (void)telemetry_pack_event(event, event_id, (uint8_t)'B', (int16_t)code,
                                0U);
@@ -416,6 +590,10 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
                 {
                     system_state.physics_flags |= 0x04U;
                 }
+                if (physics.calibrated)
+                {
+                    system_state.physics_flags |= 0x08U;
+                }
             }
 
             (void)telemetry_pack_system(system_payload, &system_state);
@@ -432,8 +610,9 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
  * @brief Join telemetry commands to motion and obstacle.
  *
  * NOTE: STOP uses the direct motion emergency latch (fault bit 9) and also
- * stops obstacle. D75: the latch needs a reboot; the dashboard disables
- * Reset while bit 9 is set.
+ * NOTE: STOP is a normal operator hold and can be released. ESTOP uses the
+ * direct emergency latch (fault bit 9) and also stops obstacle. D75: the
+ * latch needs a reboot; the dashboard disables Reset while bit 9 is set.
  */
 LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
 {
@@ -442,18 +621,38 @@ LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
     switch (cmd->opcode)
     {
         case (uint8_t)TELEMETRY_CMD_STOP:
+            line_request_turn(LINE_TURN_NONE);
+            (void)motion_set_hold(MOTION_HOLD_OPERATOR, true);
+            (void)obstacle_post_cmd(OBSTACLE_CMD_STOP);
+        break;
+
+        case (uint8_t)TELEMETRY_CMD_ESTOP:
+            line_request_turn(LINE_TURN_NONE);
             (void)motion_request_stop();
             (void)obstacle_post_cmd(OBSTACLE_CMD_STOP);
         break;
 
         case (uint8_t)TELEMETRY_CMD_START:
             (void)motion_set_hold(MOTION_HOLD_OPERATOR, false);
+            (void)obstacle_post_cmd(OBSTACLE_CMD_RESET);
             (void)obstacle_post_cmd(OBSTACLE_CMD_START);
         break;
 
         case (uint8_t)TELEMETRY_CMD_RESET:
             (void)motion_set_hold(MOTION_HOLD_OPERATOR, false);
             (void)obstacle_post_cmd(OBSTACLE_CMD_RESET);
+        break;
+
+        case (uint8_t)TELEMETRY_CMD_LEFT:
+            line_request_turn(LINE_TURN_LEFT);
+        break;
+
+        case (uint8_t)TELEMETRY_CMD_RIGHT:
+            line_request_turn(LINE_TURN_RIGHT);
+        break;
+
+        case (uint8_t)TELEMETRY_CMD_UTURN:
+            line_request_turn(LINE_TURN_UTURN);
         break;
 
         default:
@@ -615,6 +814,7 @@ EXPORT INT usermain (void)
         tm_printf((UB *)"[init] telemetry queues failed: %d\n", result);
     }
 
+    (void)InitSpinLock(&g_turn_lock);
     barcode_set_handler(barcode_command);
 
     result = connection_init(command_dispatch, NULL);

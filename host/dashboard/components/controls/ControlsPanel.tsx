@@ -124,11 +124,39 @@ export function ControlsPanel({
             <Button.Text>Stop</Button.Text>
           </Button>
           <Button
+            disabled={disabled}
+            variant="secondary"
+            onPress={() => request('estop')}
+          >
+            <Button.Text>E-stop</Button.Text>
+          </Button>
+          <Button
             disabled={disabled || emergencyLatched}
             variant="secondary"
             onPress={() => request('reset')}
           >
             <Button.Text>Reset</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled || emergencyLatched}
+            variant="secondary"
+            onPress={() => request('left')}
+          >
+            <Button.Text>Left 90°</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled || emergencyLatched}
+            variant="secondary"
+            onPress={() => request('right')}
+          >
+            <Button.Text>Right 90°</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled || emergencyLatched}
+            variant="secondary"
+            onPress={() => request('uturn')}
+          >
+            <Button.Text>U-turn</Button.Text>
           </Button>
         </View>
       ) : (

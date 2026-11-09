@@ -1,6 +1,7 @@
 import type { LinkPacket } from './link';
+import { COMMANDS } from './schema.generated';
 
-export type CommandAction = 'start' | 'stop' | 'reset';
+export type CommandAction = keyof typeof COMMANDS;
 
 export type CommandRequest = {
   action: string;

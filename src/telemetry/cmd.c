@@ -40,7 +40,7 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
     cmd->sent_ms  = read_u16(&src[4]);
     cmd->opcode   = src[6];
 
-    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_RESET)
+    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_ESTOP)
     {
         return TELEMETRY_CMD_BAD_OPCODE;
     }

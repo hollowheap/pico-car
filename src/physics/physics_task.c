@@ -228,6 +228,7 @@ void physics_task_run (void)
                                 g_imu.fault || !g_imu.ready, &step);
 
         local.heading_valid = step.sensors_ok && step.motion.heading_valid;
+        local.calibrated    = step.hump.calibrated;
         if (local.heading_valid)
         {
             uint32_t heading = (uint32_t)(step.motion.heading_deg + 0.5f);

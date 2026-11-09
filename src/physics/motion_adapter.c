@@ -53,6 +53,12 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     }
 
     age_us = now_us - p_reading->timestamp_us;   /* Wrap-safe. */
+    if (age_us > FUTURE_LIMIT)
+    {
+        /* The motion task can sample a few microseconds after this cycle's
+         * clock read. Treat that as fresh, not as a 71-minute-old sample. */
+        age_us = 0U;
+    }
     speeds_ok = p_reading->speed_valid[PHYSICS_WHEEL_LEFT]
                 && p_reading->speed_valid[PHYSICS_WHEEL_RIGHT];
     odo_ok = p_reading->odometry_valid[PHYSICS_WHEEL_LEFT]

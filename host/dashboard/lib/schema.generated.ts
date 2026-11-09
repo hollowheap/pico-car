@@ -64,6 +64,10 @@ export const COMMANDS = {
   stop: 0,
   start: 1,
   reset: 2,
+  left: 3,
+  right: 4,
+  uturn: 5,
+  estop: 6,
 } as const;
 
 export const FAULT_BITS = {
