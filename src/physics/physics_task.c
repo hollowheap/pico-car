@@ -21,6 +21,23 @@
 
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
 #define SLEEP_TIMEOUT_MS   (200)    /* Wake-up missing for 10 periods.   */
+#define SCALE_LIMIT        (2.0e9f) /* Keeps the int32_t cast defined.   */
+#define SCALE_DECI         (10.0f)
+#define SCALE_MILLI        (1000.0f)
+#define SCALE_MICRO        (1.0e6f)
+#define FAULTS_UNSET       (0xFFU)  /* Matches no real fault word.       */
+#define US_TO_S            (1.0e-6f)
+#define MS_TO_S            (1.0e-3f)
+#define ROUND_HALF         (0.5f)
+#define HEADING_WRAP_DEG   (360U)
+
+/* physics_task_default_config values. */
+#define DEFAULT_TASK_PRIORITY (4)
+#define DEFAULT_PERIOD_MS     (20U)
+#define DEFAULT_MAG_EVERY     (3U)
+#define DEFAULT_TELEM_EVERY   (10U)
+#define DEFAULT_I2C_ATTEMPTS  (4U)
+#define DEFAULT_ACCEL_ALPHA   (0.3f)
 
 static physics_task_config_t g_cfg;
 static pipeline_t    g_pipe;
@@ -48,7 +65,7 @@ static void cyclic_wakeup (void * p_exinf)
 
 static void stats_update (const physics_task_stats_t * p_local)
 {
-    UINT saved;
+    UINT saved = 0U;
 
     (void)ISpinLock (&g_stats_lock, &saved);
     g_stats = *p_local;
@@ -74,13 +91,13 @@ static int32_t scaled (float value, float scale)
 {
     float x = value * scale;
 
-    if (x > 2.0e9f)
+    if (x > SCALE_LIMIT)
     {
-        x = 2.0e9f;
+        x = SCALE_LIMIT;
     }
-    if (x < -2.0e9f)
+    if (x < -SCALE_LIMIT)
     {
-        x = -2.0e9f;
+        x = -SCALE_LIMIT;
     }
     return (int32_t)x;
 }
@@ -93,23 +110,23 @@ static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
 {
     tm_printf ((UB *)"B4,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%08x\n",
                (unsigned int)t_us,
-               acc_ok ? (int)p_acc->raw[0] : 0,
-               acc_ok ? (int)p_acc->raw[1] : 0,
-               acc_ok ? (int)p_acc->raw[2] : 0,
-               mag_ok ? (int)p_mag->raw[0] : 0,
-               mag_ok ? (int)p_mag->raw[1] : 0,
-               mag_ok ? (int)p_mag->raw[2] : 0,
+               acc_ok ? (int)p_acc->raw[LSM303_AXIS_X] : 0,
+               acc_ok ? (int)p_acc->raw[LSM303_AXIS_Y] : 0,
+               acc_ok ? (int)p_acc->raw[LSM303_AXIS_Z] : 0,
+               mag_ok ? (int)p_mag->raw[LSM303_AXIS_X] : 0,
+               mag_ok ? (int)p_mag->raw[LSM303_AXIS_Y] : 0,
+               mag_ok ? (int)p_mag->raw[LSM303_AXIS_Z] : 0,
                mag_ok ? 1 : 0,
                p_mot->valid ? 1 : 0,
-               (int)scaled (p_mot->v_left_mps, 1000.0f),
-               (int)scaled (p_mot->v_right_mps, 1000.0f),
-               (int)scaled (p_mot->ds_m, 1.0e6f),
-               (int)scaled (p_mot->accel_mps2, 1000.0f),
+               (int)scaled (p_mot->v_left_mps, SCALE_MILLI),
+               (int)scaled (p_mot->v_right_mps, SCALE_MILLI),
+               (int)scaled (p_mot->ds_m, SCALE_MICRO),
+               (int)scaled (p_mot->accel_mps2, SCALE_MILLI),
                p_step->sensors_ok ? (int)scaled (p_step->hump.pitch_deg, 100.0f)
                                   : 0,
                p_step->sensors_ok ? (int)p_step->hump.state : -1,
                (int)p_step->motion.motion,
-               p_step->sensors_ok ? (int)scaled (p_step->motion.yaw_rate_dps, 10.0f)
+               p_step->sensors_ok ? (int)scaled (p_step->motion.yaw_rate_dps, SCALE_DECI)
                                   : 0,
                (p_step->sensors_ok && p_step->hump.calibrated) ? 1 : 0,
                p_step->sensors_ok ? (int)scaled (p_step->hump.theta0_deg, 100.0f)
@@ -125,14 +142,119 @@ static void log_header (void)
     tm_printf ((UB *)"PHYS_H,mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
 }
 
+/* Sleep until the next period and count missed wake-ups. */
+static void wait_cycle (physics_task_stats_t * p_local)
+{
+    INT queued = 0;
+    ER er = E_OK;
+
+    er = tk_slp_tsk (SLEEP_TIMEOUT_MS);
+    queued = tk_can_wup (TSK_SELF);
+    if ((E_OK == er) && (queued > 0))
+    {
+        p_local->overruns += (uint32_t)queued;
+    }
+    else if (E_TMOUT == er)
+    {
+        p_local->overruns++;
+    }
+    else
+    {
+        /* Normal wake-up. */
+    }
+}
+
+/* Bring the sensor up if it was missing or failed to configure. */
+static void retry_sensor_init (physics_task_stats_t * p_local,
+                               uint32_t * p_retry_count)
+{
+    if (!g_imu.ready)
+    {
+        (*p_retry_count)++;
+        if (*p_retry_count >= INIT_RETRY_CYCLES)
+        {
+            *p_retry_count = 0U;
+            p_local->sensor_inits++;
+            p_local->last_init = lsm303_init (&g_imu, &g_bus,
+                                              g_cfg.i2c_attempts);
+        }
+    }
+}
+
+/* Read the accelerometer every cycle and the magnetometer every mag_every. */
+static void read_sensors (const physics_task_stats_t * p_local,
+                          lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
+                          bool * p_acc_ok, bool * p_mag_ok)
+{
+    if (g_imu.ready)
+    {
+        *p_acc_ok = (LSM303_OK == lsm303_read_accel (&g_imu, p_acc));
+        if ((0U == (p_local->cycles % g_cfg.mag_every))
+            && g_cfg.motion.mag_enabled)
+        {
+            *p_mag_ok = (LSM303_OK == lsm303_read_mag (&g_imu, p_mag));
+        }
+    }
+}
+
+/* Heading and calibration state for the stats; heading is whole degrees
+ * wrapped into 0..359. */
+static void update_heading (physics_task_stats_t * p_local,
+                            const pipeline_step_t * p_step)
+{
+    p_local->heading_valid = p_step->sensors_ok && p_step->motion.heading_valid;
+    p_local->calibrated = p_step->hump.calibrated;
+    if (p_local->heading_valid)
+    {
+        uint32_t heading = (uint32_t)(p_step->motion.heading_deg + ROUND_HALF);
+
+        if (heading >= HEADING_WRAP_DEG)
+        {
+            heading -= HEADING_WRAP_DEG;
+        }
+        p_local->heading_deg = (uint8_t)heading;
+    }
+    else
+    {
+        p_local->heading_deg = 0U;
+    }
+}
+
+/* Send the word to the receivers the step selected, then report a change in
+ * the physics fault bits. */
+static void dispatch_step (physics_task_stats_t * p_local,
+                           const pipeline_step_t * p_step,
+                           uint8_t * p_last_faults)
+{
+    hump_fields_t fields;
+
+    if (p_step->to_nav)
+    {
+        send (g_nav_mbf, p_step->word, &p_local->nav_sent,
+              &p_local->nav_dropped);
+    }
+    if (p_step->to_telem)
+    {
+        send (g_telem_mbf, p_step->word, &p_local->telem_sent,
+              &p_local->telem_dropped);
+    }
+
+    (void)hump_unpack (p_step->word, &fields);
+    if ((fields.faults != *p_last_faults) && (NULL != g_cfg.publish_faults))
+    {
+        g_cfg.publish_faults (fields.faults);
+    }
+    *p_last_faults = fields.faults;
+}
+
 void physics_task_run (void)
 {
     physics_task_stats_t local = { 0 };
     lsm303_vec_t acc = { 0 };
     lsm303_vec_t mag = { 0 };
-    uint32_t prev_us;
+    uint32_t prev_us = 0U;
     uint32_t retry_count = 0U;
-    uint8_t last_faults = 0xFFU;
+    uint8_t last_faults = FAULTS_UNSET;
 
     i2c_rp2040_init (&g_bus);
     local.sensor_inits = 1U;
@@ -149,37 +271,21 @@ void physics_task_run (void)
         motion_reading_t reading = { 0 };
         motion_input_t motion;
         pipeline_step_t step;
-        hump_fields_t fields;
         bool have_motion = false;
         bool acc_ok = false;
         bool mag_ok = false;
-        uint32_t now_us;
-        uint32_t work_us;
-        float dt_s;
-        INT queued;
-        ER er;
+        uint32_t now_us = 0U;
+        uint32_t work_us = 0U;
+        float dt_s = 0.0f;
 
-        er = tk_slp_tsk (SLEEP_TIMEOUT_MS);
-        queued = tk_can_wup (TSK_SELF);
-        if ((E_OK == er) && (queued > 0))
-        {
-            local.overruns += (uint32_t)queued;
-        }
-        else if (E_TMOUT == er)
-        {
-            local.overruns++;
-        }
-        else
-        {
-            /* Normal wake-up. */
-        }
+        wait_cycle (&local);
 
         now_us = physics_time_us ();
-        dt_s = (float)(now_us - prev_us) * 1.0e-6f;
+        dt_s = (float)(now_us - prev_us) * US_TO_S;
         prev_us = now_us;
         if (dt_s <= 0.0f)
         {
-            dt_s = (float)g_cfg.period_ms * 1.0e-3f;
+            dt_s = (float)g_cfg.period_ms * MS_TO_S;
         }
 
         if (g_req_clear_fault)
@@ -193,28 +299,8 @@ void physics_task_run (void)
             pipeline_new_run (&g_pipe);
         }
 
-        /* Bring the sensor up if it was missing or failed to configure. */
-        if (!g_imu.ready)
-        {
-            retry_count++;
-            if (retry_count >= INIT_RETRY_CYCLES)
-            {
-                retry_count = 0U;
-                local.sensor_inits++;
-                local.last_init = lsm303_init (&g_imu, &g_bus,
-                                               g_cfg.i2c_attempts);
-            }
-        }
-
-        if (g_imu.ready)
-        {
-            acc_ok = (LSM303_OK == lsm303_read_accel (&g_imu, &acc));
-            if ((0U == (local.cycles % g_cfg.mag_every))
-                && g_cfg.motion.mag_enabled)
-            {
-                mag_ok = (LSM303_OK == lsm303_read_mag (&g_imu, &mag));
-            }
-        }
+        retry_sensor_init (&local, &retry_count);
+        read_sensors (&local, &acc, &mag, &acc_ok, &mag_ok);
 
         if (NULL != g_cfg.read_motion)
         {
@@ -227,39 +313,8 @@ void physics_task_run (void)
                                 mag_ok ? mag.value : NULL, &motion, dt_s,
                                 g_imu.fault || !g_imu.ready, &step);
 
-        local.heading_valid = step.sensors_ok && step.motion.heading_valid;
-        local.calibrated    = step.hump.calibrated;
-        if (local.heading_valid)
-        {
-            uint32_t heading = (uint32_t)(step.motion.heading_deg + 0.5f);
-
-            if (heading >= 360U)
-            {
-                heading -= 360U;
-            }
-            local.heading_deg = (uint8_t)heading;
-        }
-        else
-        {
-            local.heading_deg = 0U;
-        }
-
-        if (step.to_nav)
-        {
-            send (g_nav_mbf, step.word, &local.nav_sent, &local.nav_dropped);
-        }
-        if (step.to_telem)
-        {
-            send (g_telem_mbf, step.word, &local.telem_sent,
-                  &local.telem_dropped);
-        }
-
-        (void)hump_unpack (step.word, &fields);
-        if ((fields.faults != last_faults) && (NULL != g_cfg.publish_faults))
-        {
-            g_cfg.publish_faults (fields.faults);
-        }
-        last_faults = fields.faults;
+        update_heading (&local, &step);
+        dispatch_step (&local, &step, &last_faults);
 
         if ((g_cfg.log_every > 0U) && (0U == (local.cycles % g_cfg.log_every)))
         {
@@ -285,14 +340,14 @@ void physics_task_default_config (physics_task_config_t * p_cfg)
         static const physics_task_config_t zero_cfg = { 0 };
 
         *p_cfg = zero_cfg;
-        p_cfg->priority = 4;
+        p_cfg->priority = DEFAULT_TASK_PRIORITY;
         p_cfg->processor = TP_PRC2;
-        p_cfg->period_ms = 20U;
-        p_cfg->mag_every = 3U;
-        p_cfg->telem_every = 10U;       /* 5 Hz periodic Telemetry.  */
+        p_cfg->period_ms = DEFAULT_PERIOD_MS;
+        p_cfg->mag_every = DEFAULT_MAG_EVERY;
+        p_cfg->telem_every = DEFAULT_TELEM_EVERY;   /* 5 Hz periodic Telemetry. */
         p_cfg->log_every = 0U;
-        p_cfg->i2c_attempts = 4U;       /* First try + 3 retries.    */
-        p_cfg->motion_accel_alpha = 0.3f;
+        p_cfg->i2c_attempts = DEFAULT_I2C_ATTEMPTS;  /* First try + 3 retries. */
+        p_cfg->motion_accel_alpha = DEFAULT_ACCEL_ALPHA;
         p_cfg->read_motion = NULL;
         p_cfg->publish_faults = NULL;
         hump_default_config (&p_cfg->hump);
@@ -305,7 +360,7 @@ ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id)
     static const physics_task_stats_t zero_stats = { 0 };
     T_CMBF cmbf = { 0 };
     T_CCYC ccyc = { 0 };
-    ID id;
+    ID id = 0;
 
     if (g_started)
     {
@@ -371,7 +426,7 @@ ID physics_task_telem_mbf (void)
 
 void physics_task_get_stats (physics_task_stats_t * p_stats)
 {
-    UINT saved;
+    UINT saved = 0U;
 
     if (NULL != p_stats)
     {

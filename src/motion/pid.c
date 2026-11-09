@@ -7,6 +7,9 @@
 
 #define PID_Q16 INT64_C(65536)
 
+/* Upper bound accepted for the duty limit, in permille of full scale. */
+#define PID_DUTY_PERMILLE_FULL 1000U
+
 static bool multiply (int64_t value, uint32_t factor, int64_t * p_result)
 {
     if ((factor != 0U) && ((value > INT64_MAX / (int64_t)factor) ||
@@ -44,7 +47,7 @@ bool pid_init (pid_t * p_pid, const pid_config_t * p_config)
         (p_config->max_sample_age_us == 0U) ||
         (p_config->max_sample_age_us > (uint32_t)INT32_MAX) ||
         (p_config->max_duty_permille == 0U) ||
-        (p_config->max_duty_permille > 1000U))
+        (p_config->max_duty_permille > PID_DUTY_PERMILLE_FULL))
     {
         return false;
     }
@@ -70,15 +73,15 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
                        uint32_t now_us, int16_t * p_duty)
 {
     pid_t                   next;
-    const motion_wheel_sample_t * p_feedback;
-    uint32_t                      interval;
-    int64_t                       error;
-    int64_t                       proportional;
-    int64_t                       integral_delta;
-    int64_t                       integral;
-    int64_t                       derivative = 0;
-    int64_t                       limit;
-    int64_t                       sum;
+    const motion_wheel_sample_t * p_feedback    = NULL;
+    uint32_t                      interval       = 0U;
+    int64_t                       error          = 0;
+    int64_t                       proportional   = 0;
+    int64_t                       integral_delta = 0;
+    int64_t                       integral       = 0;
+    int64_t                       derivative     = 0;
+    int64_t                       limit          = 0;
+    int64_t                       sum            = 0;
 
     if (p_duty != NULL)
     {

@@ -12,18 +12,62 @@
 #define MQTT_PINGRESP     0xD0u
 #define MQTT_RECONNECT_MS 1000u
 
+/* Byte and field geometry. */
+#define MQTT_BYTE_BITS            8U
+#define MQTT_U16_SIZE             2U
+#define MQTT_MS_PER_S             1000U
+#define MQTT_TYPE_SHIFT           4U
+
+/* Remaining-length encoding (at most two bytes are supported). */
+#define MQTT_RL_MAX_BYTES         2U
+#define MQTT_RL_RADIX             128U
+#define MQTT_RL_CONT_FLAG         0x80U
+#define MQTT_RL_VALUE_MASK        0x7FU
+#define MQTT_RL_SHIFT             7U
+#define MQTT_RL_BYTE2_OFFSET      2U
+#define MQTT_MIN_PACKET_1B_RL     2U
+#define MQTT_MIN_PACKET_2B_RL     3U
+#define MQTT_RX_MIN_HEADER        2U
+#define MQTT_HEADER_LEN_1B_RL     2U
+#define MQTT_HEADER_LEN_2B_RL     3U
+#define MQTT_RL_INDEX_2B          2U
+
+/* CONNECT variable header. */
+#define MQTT_PROTO_NAME_LEN       0x04U
+#define MQTT_PROTO_LEVEL          0x04U
+#define MQTT_CONN_FLAG_CLEAN      0x02U
+#define MQTT_CONN_FLAG_USERPASS   0xC0U
+#define MQTT_CONN_FLAGS_USERPASS \
+    (MQTT_CONN_FLAG_CLEAN | MQTT_CONN_FLAG_USERPASS)
+
+/* SUBSCRIBE body. */
+#define MQTT_SUBSCRIBE_BODY_MAX   64U
+
+/* PUBLISH fixed-header flags and offsets. */
+#define MQTT_PUBLISH_FLAGS_MASK   0x0FU
+#define MQTT_PUBLISH_QOS_SHIFT    1U
+#define MQTT_PUBLISH_QOS_MASK     0x03U
+#define MQTT_PUBLISH_QOS_INVALID  3U
+#define MQTT_PUBLISH_MIN_LEN      4U
+#define MQTT_PUBLISH_TOPIC_LEN_AT 2U
+#define MQTT_PUBLISH_TOPIC_AT     4U
+
+/* CONNACK. */
+#define MQTT_CONNACK_REMAINING    2U
+
 static uint16_t
 read_u16 (const uint8_t * data)
 {
-    return (uint16_t) (((uint16_t) data[0] << 8U) | (uint16_t) data[1]);
+    return (uint16_t) (((uint32_t) data[0] << MQTT_BYTE_BITS) |
+                       (uint32_t) data[1]);
 }
 
 static uint16_t
 put_u16 (uint8_t * data, uint16_t value)
 {
-    data[0] = (uint8_t) (value >> 8U);
+    data[0] = (uint8_t) (value >> MQTT_BYTE_BITS);
     data[1] = (uint8_t) value;
-    return 2u;
+    return MQTT_U16_SIZE;
 }
 
 static bool
@@ -32,28 +76,28 @@ put_string (uint8_t * data, uint16_t capacity, uint16_t * index,
 {
     uint16_t len = (uint16_t) strlen(text);
 
-    if ((uint32_t) *index + 2u + len > capacity)
+    if ((uint32_t) *index + MQTT_U16_SIZE + len > capacity)
     {
         return false;
     }
     (void) put_u16(&data[*index], len);
-    (void) memcpy(&data[*index + 2u], text, len);
-    *index = (uint16_t) (*index + len + 2u);
+    (void) memcpy(&data[*index + MQTT_U16_SIZE], text, len);
+    *index = (uint16_t) (*index + len + MQTT_U16_SIZE);
     return true;
 }
 
 static uint16_t
-remaining_length (uint16_t len, uint8_t out[2])
+remaining_length (uint16_t len, uint8_t out[MQTT_RL_MAX_BYTES])
 {
     uint16_t count = 0u;
 
     do
     {
-        uint8_t byte = (uint8_t) (len % 128u);
-        len = (uint16_t) (len / 128u);
+        uint8_t byte = (uint8_t) (len % MQTT_RL_RADIX);
+        len = (uint16_t) (len / MQTT_RL_RADIX);
         if (len > 0u)
         {
-            byte = (uint8_t) (byte | 0x80u);
+            byte = (uint8_t) (byte | MQTT_RL_CONT_FLAG);
         }
         out[count] = byte;
         count++;
@@ -66,10 +110,10 @@ static mqtt_result_t
 send_packet (mqtt_client_t * client, uint8_t header, const uint8_t * body,
              uint16_t body_len, uint32_t now_ms)
 {
-    uint8_t  rem[2];
+    uint8_t  rem[MQTT_RL_MAX_BYTES];
     uint16_t rem_len = remaining_length(body_len, rem);
     uint16_t index = 0u;
-    int      sent;
+    int      sent = 0;
 
     if ((uint16_t) (1u + rem_len + body_len) > MQTT_TX_BUFFER_SIZE)
     {
@@ -101,18 +145,18 @@ send_connect (mqtt_client_t * client, uint32_t now_ms)
 {
     uint8_t  body[MQTT_TX_BUFFER_SIZE];
     uint16_t index = 0u;
-    uint8_t  flags = 0x02u;
+    uint8_t  flags = MQTT_CONN_FLAG_CLEAN;
 
     body[index++] = 0x00u;
-    body[index++] = 0x04u;
+    body[index++] = MQTT_PROTO_NAME_LEN;
     body[index++] = (uint8_t) 'M';
     body[index++] = (uint8_t) 'Q';
     body[index++] = (uint8_t) 'T';
     body[index++] = (uint8_t) 'T';
-    body[index++] = 0x04u;
+    body[index++] = MQTT_PROTO_LEVEL;
     if ((client->config.username != 0) && (client->config.password != 0))
     {
-        flags = (uint8_t) (flags | 0xC0u);
+        flags = (uint8_t) (flags | MQTT_CONN_FLAG_USERPASS);
     }
     body[index++] = flags;
     index = (uint16_t) (index + put_u16(&body[index],
@@ -121,7 +165,7 @@ send_connect (mqtt_client_t * client, uint32_t now_ms)
     {
         return MQTT_ERR_ARG;
     }
-    if (flags == 0xC2u)
+    if (flags == MQTT_CONN_FLAGS_USERPASS)
     {
         if (!put_string(body, sizeof(body), &index, client->config.username) ||
             !put_string(body, sizeof(body), &index, client->config.password))
@@ -136,7 +180,7 @@ send_connect (mqtt_client_t * client, uint32_t now_ms)
 static mqtt_result_t
 send_subscribe (mqtt_client_t * client, uint32_t now_ms)
 {
-    uint8_t  body[64];
+    uint8_t  body[MQTT_SUBSCRIBE_BODY_MAX];
     uint16_t index = 0u;
 
     index = (uint16_t) (index + put_u16(&body[index], 1u));
@@ -164,45 +208,47 @@ disconnect (mqtt_client_t * client, uint32_t now_ms)
 static mqtt_result_t
 send_puback (mqtt_client_t * client, uint16_t packet_id, uint32_t now_ms)
 {
-    uint8_t body[2];
+    uint8_t body[MQTT_U16_SIZE];
 
     (void) put_u16(body, packet_id);
-    return send_packet(client, MQTT_PUBACK, body, 2u, now_ms);
+    return send_packet(client, MQTT_PUBACK, body, MQTT_U16_SIZE, now_ms);
 }
 
 static mqtt_result_t
 handle_publish (mqtt_client_t * client, const uint8_t * packet,
                 uint16_t packet_len, uint32_t now_ms)
 {
-    uint8_t  flags = (uint8_t) (packet[0] & 0x0Fu);
-    uint8_t  qos = (uint8_t) ((flags >> 1U) & 0x03u);
-    uint32_t index;
-    uint16_t topic_len;
+    uint8_t  flags = (uint8_t) (packet[0] & MQTT_PUBLISH_FLAGS_MASK);
+    uint8_t  qos = (uint8_t) (((uint32_t) flags >> MQTT_PUBLISH_QOS_SHIFT) &
+                              MQTT_PUBLISH_QOS_MASK);
+    uint32_t index = 0u;
+    uint16_t topic_len = 0u;
     uint16_t packet_id = 0u;
-    const uint8_t * topic;
-    const uint8_t * payload;
-    uint16_t payload_len;
+    const uint8_t * topic = 0;
+    const uint8_t * payload = 0;
+    uint16_t payload_len = 0u;
 
-    if ((qos == 3u) || (packet_len < 4u))
+    if ((qos == MQTT_PUBLISH_QOS_INVALID) ||
+        (packet_len < MQTT_PUBLISH_MIN_LEN))
     {
         return MQTT_ERR_PROTOCOL;
     }
 
-    topic_len = read_u16(&packet[2]);
-    if (topic_len > (uint16_t) (packet_len - 4u))
+    topic_len = read_u16(&packet[MQTT_PUBLISH_TOPIC_LEN_AT]);
+    if (topic_len > (uint16_t) (packet_len - MQTT_PUBLISH_MIN_LEN))
     {
         return MQTT_ERR_PROTOCOL;
     }
-    topic = &packet[4];
-    index = 4u + topic_len;
+    topic = &packet[MQTT_PUBLISH_TOPIC_AT];
+    index = MQTT_PUBLISH_TOPIC_AT + topic_len;
     if (qos > 0u)
     {
-        if ((index + 2u) > packet_len)
+        if ((index + MQTT_U16_SIZE) > packet_len)
         {
             return MQTT_ERR_PROTOCOL;
         }
         packet_id = read_u16(&packet[index]);
-        index += 2u;
+        index += MQTT_U16_SIZE;
     }
     payload = &packet[index];
     payload_len = (uint16_t) (packet_len - index);
@@ -218,10 +264,10 @@ handle_publish (mqtt_client_t * client, const uint8_t * packet,
 
     if ((topic_len == strlen(client->config.command_topic)) &&
         (memcmp(topic, client->config.command_topic, topic_len) == 0) &&
-        (payload_len >= 2u))
+        (payload_len >= MQTT_U16_SIZE))
     {
         uint16_t cmd_id = read_u16(payload);
-        int16_t  delta;
+        int16_t  delta = 0;
 
         if (client->has_last_cmd)
         {
@@ -247,33 +293,35 @@ static mqtt_result_t
 handle_packet (mqtt_client_t * client, const uint8_t * packet,
                uint16_t packet_len, uint32_t now_ms)
 {
-    uint8_t  type = (uint8_t) (packet[0] >> 4U);
-    uint16_t remaining;
+    uint8_t  type = (uint8_t) (packet[0] >> MQTT_TYPE_SHIFT);
+    uint16_t remaining = 0u;
     uint16_t index = 1u;
 
-    if (packet_len < 2u)
+    if (packet_len < MQTT_MIN_PACKET_1B_RL)
     {
         return MQTT_ERR_PROTOCOL;
     }
     remaining = packet[1];
-    if ((remaining & 0x80u) != 0u)
+    if ((remaining & MQTT_RL_CONT_FLAG) != 0u)
     {
-        if (packet_len < 3u)
+        if (packet_len < MQTT_MIN_PACKET_2B_RL)
         {
             return MQTT_ERR_PROTOCOL;
         }
-        remaining = (uint16_t) ((remaining & 0x7Fu) |
-                                ((uint16_t) packet[2] << 7U));
-        index = 2u;
+        remaining = (uint16_t) ((remaining & MQTT_RL_VALUE_MASK) |
+                                ((uint32_t) packet[MQTT_RL_BYTE2_OFFSET]
+                                 << MQTT_RL_SHIFT));
+        index = MQTT_RL_INDEX_2B;
     }
     if ((uint16_t) (index + 1u + remaining) != packet_len)
     {
         return MQTT_ERR_PROTOCOL;
     }
 
-    if ((type == (MQTT_CONNACK >> 4U)) && (client->state == MQTT_STATE_WAIT_CONNACK))
+    if ((type == (MQTT_CONNACK >> MQTT_TYPE_SHIFT)) &&
+        (client->state == MQTT_STATE_WAIT_CONNACK))
     {
-        if ((remaining != 2u) || (packet[index + 1u] != 0u))
+        if ((remaining != MQTT_CONNACK_REMAINING) || (packet[index + 1u] != 0u))
         {
             disconnect(client, now_ms);
             return MQTT_ERR_PROTOCOL;
@@ -281,17 +329,19 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
         client->state = MQTT_STATE_WAIT_SUBACK;
         return send_subscribe(client, now_ms);
     }
-    if ((type == (MQTT_SUBACK >> 4U)) && (client->state == MQTT_STATE_WAIT_SUBACK))
+    if ((type == (MQTT_SUBACK >> MQTT_TYPE_SHIFT)) &&
+        (client->state == MQTT_STATE_WAIT_SUBACK))
     {
         client->state = MQTT_STATE_CONNECTED;
         client->last_tx_ms = now_ms;
         return MQTT_OK;
     }
-    if ((type == (MQTT_PUBLISH >> 4U)) && (client->state == MQTT_STATE_CONNECTED))
+    if ((type == (MQTT_PUBLISH >> MQTT_TYPE_SHIFT)) &&
+        (client->state == MQTT_STATE_CONNECTED))
     {
         return handle_publish(client, packet, packet_len, now_ms);
     }
-    if (type == (MQTT_PINGRESP >> 4U))
+    if (type == (MQTT_PINGRESP >> MQTT_TYPE_SHIFT))
     {
         return MQTT_OK;
     }
@@ -302,7 +352,7 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
 static mqtt_result_t
 receive_packets (mqtt_client_t * client, uint32_t now_ms)
 {
-    int got;
+    int got = 0;
 
     if (client->rx_len < MQTT_RX_BUFFER_SIZE)
     {
@@ -321,21 +371,23 @@ receive_packets (mqtt_client_t * client, uint32_t now_ms)
         }
     }
 
-    while (client->rx_len >= 2u)
+    while (client->rx_len >= MQTT_RX_MIN_HEADER)
     {
         uint16_t rem = client->rx_buffer[1];
-        uint16_t header_len = 2u;
-        uint16_t total_len;
+        uint16_t header_len = MQTT_HEADER_LEN_1B_RL;
+        uint16_t total_len = 0u;
 
-        if ((rem & 0x80u) != 0u)
+        if ((rem & MQTT_RL_CONT_FLAG) != 0u)
         {
-            if (client->rx_len < 3u)
+            if (client->rx_len < MQTT_MIN_PACKET_2B_RL)
             {
                 break;
             }
-            rem = (uint16_t) ((rem & 0x7Fu) |
-                              ((uint16_t) client->rx_buffer[2] << 7U));
-            header_len = 3u;
+            rem = (uint16_t) (
+                (rem & MQTT_RL_VALUE_MASK) |
+                ((uint32_t) client->rx_buffer[MQTT_RL_BYTE2_OFFSET]
+                 << MQTT_RL_SHIFT));
+            header_len = MQTT_HEADER_LEN_2B_RL;
         }
         total_len = (uint16_t) (header_len + rem);
         if (client->rx_len < total_len)
@@ -363,7 +415,7 @@ receive_packets (mqtt_client_t * client, uint32_t now_ms)
 
 void
 mqtt_client_init (mqtt_client_t * client, const mqtt_config_t * config,
-                  const mqtt_transport_t * transport, mqtt_command_fn handler,
+                  const mqtt_transport_t * transport, mqtt_command_fn_t handler,
                   void * context)
 {
     if (client == 0)
@@ -393,7 +445,7 @@ mqtt_client_init (mqtt_client_t * client, const mqtt_config_t * config,
 mqtt_result_t
 mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
 {
-    mqtt_result_t result;
+    mqtt_result_t result = MQTT_OK;
 
     if ((client == 0) || !client->valid)
     {
@@ -429,7 +481,7 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
     if ((client->state == MQTT_STATE_CONNECTED) &&
         (client->config.keepalive_s > 0u) &&
         ((now_ms - client->last_tx_ms) >=
-         ((uint32_t) client->config.keepalive_s * 1000u)))
+         ((uint32_t) client->config.keepalive_s * MQTT_MS_PER_S)))
     {
         result = send_packet(client, MQTT_PINGREQ, 0, 0u, now_ms);
         if (result != MQTT_OK)
@@ -448,8 +500,8 @@ mqtt_client_publish (mqtt_client_t * client, const char * topic,
 {
     uint8_t  body[MQTT_TX_BUFFER_SIZE];
     uint16_t index = 0u;
-    uint16_t topic_len;
-    mqtt_result_t result;
+    uint16_t topic_len = 0u;
+    mqtt_result_t result = MQTT_OK;
 
     if ((client == 0) || !client->valid || (topic == 0) || (payload == 0))
     {
@@ -461,7 +513,7 @@ mqtt_client_publish (mqtt_client_t * client, const char * topic,
     }
 
     topic_len = (uint16_t) strlen(topic);
-    if ((uint32_t) 2u + topic_len + len > MQTT_TX_BUFFER_SIZE)
+    if ((uint32_t) MQTT_U16_SIZE + topic_len + len > MQTT_TX_BUFFER_SIZE)
     {
         return MQTT_ERR_PROTOCOL;
     }

@@ -15,6 +15,7 @@
 #define UM_TO_M        (1.0e-6f)
 #define US_TO_S        (1.0e-6f)
 #define FUTURE_LIMIT   (0x80000000UL)   /* now - ts beyond this: future. */
+#define WHEEL_MEAN_WEIGHT (0.5f)        /* Mean of the two wheels.       */
 
 bool motion_adapter_init (motion_adapter_t * p_ad, float accel_alpha)
 {
@@ -32,10 +33,10 @@ bool motion_adapter_init (motion_adapter_t * p_ad, float accel_alpha)
 bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p_reading,
                     uint32_t now_us, motion_input_t * p_out)
 {
-    uint32_t age_us;
-    bool speeds_ok;
-    bool odo_ok;
-    float speed;
+    uint32_t age_us = 0U;
+    bool speeds_ok = false;
+    bool odo_ok = false;
+    float speed = 0.0f;
 
     if ((NULL == p_ad) || (NULL == p_out))
     {
@@ -68,7 +69,7 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     p_out->v_right_mps = (float)p_reading->velocity_um_s[PHYSICS_WHEEL_RIGHT]
                          * UM_TO_M;
     p_out->wheels_valid = speeds_ok;
-    speed = 0.5f * (p_out->v_left_mps + p_out->v_right_mps);
+    speed = WHEEL_MEAN_WEIGHT * (p_out->v_left_mps + p_out->v_right_mps);
     p_out->speed_mps = speed;
     p_out->age_s = (float)age_us * US_TO_S;
 
@@ -82,7 +83,7 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
             int64_t dr = p_reading->displacement_um[PHYSICS_WHEEL_RIGHT]
                          - p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT];
 
-            p_out->ds_m = 0.5f * ((float)dl + (float)dr) * UM_TO_M;
+            p_out->ds_m = WHEEL_MEAN_WEIGHT * ((float)dl + (float)dr) * UM_TO_M;
         }
         p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT] = p_reading->displacement_um[PHYSICS_WHEEL_LEFT];
         p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT] =

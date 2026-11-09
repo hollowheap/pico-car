@@ -20,16 +20,16 @@
 #include <stdint.h>
 
 /* Fault bits.  Each argument to the accessors below is one of these masks. */
-#define FAULT_WIFI_DISCONN_BIT    (1U << 0)
-#define FAULT_MQTT_NACK_BIT       (1U << 1)
-#define FAULT_MOTOR_STALL_BIT     (1U << 2)
-#define FAULT_ENCODER_DEAD_BIT    (1U << 3)
-#define FAULT_LINE_LOST_BIT       (1U << 4)
-#define FAULT_IMU_NACK_BIT        (1U << 5)
-#define FAULT_STALE_SPEED_BIT     (1U << 6)
-#define FAULT_INVALID_TILT_BIT    (1U << 7)
-#define FAULT_SONAR_NO_ECHO_BIT   (1U << 8)
-#define FAULT_ESTOP_LATCHED_BIT  (1U << 9)
+#define FAULT_WIFI_DISCONN_BIT    (1U << 0U)
+#define FAULT_MQTT_NACK_BIT       (1U << 1U)
+#define FAULT_MOTOR_STALL_BIT     (1U << 2U)
+#define FAULT_ENCODER_DEAD_BIT    (1U << 3U)
+#define FAULT_LINE_LOST_BIT       (1U << 4U)
+#define FAULT_IMU_NACK_BIT        (1U << 5U)
+#define FAULT_STALE_SPEED_BIT     (1U << 6U)
+#define FAULT_INVALID_TILT_BIT    (1U << 7U)
+#define FAULT_SONAR_NO_ECHO_BIT   (1U << 8U)
+#define FAULT_ESTOP_LATCHED_BIT  (1U << 9U)
 
 /* Every defined fault bit.  Bits outside this mask are ignored by the accessors. */
 #define FAULT_ALL_MASK            (0x03FFU)

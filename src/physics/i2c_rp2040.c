@@ -95,6 +95,8 @@
 #define SCL_MASK            (1UL << I2C_SCL_PIN)
 #define RECOVER_HALF_US     (5U)        /* 100 kHz bit-banged clock.   */
 #define ABORT_WAIT_US       (1000U)
+#define RECOVER_PULSES      (9U)        /* I2C spec 3.1.16 bus clear.  */
+#define DATA_BYTE_MASK      (0xFFUL)    /* IC_DATA_CMD bits 7:0.       */
 
 uint32_t physics_time_us (void)
 {
@@ -143,7 +145,7 @@ static void abort_transfer (void)
  * output low, toggled by output-enable, external/internal pull-ups high. */
 static void recover (void * p_ctx)
 {
-    uint32_t pulse;
+    uint32_t pulse = 0U;
 
     (void)p_ctx;
     out_w (IC_ENABLE, 0UL);
@@ -152,7 +154,8 @@ static void recover (void * p_ctx)
     pins_to (FUNCSEL_SIO);
     wait_us (RECOVER_HALF_US);
 
-    for (pulse = 0U; (pulse < 9U) && ((in_w (SIO_GPIO_IN) & SDA_MASK) == 0UL);
+    for (pulse = 0U; (pulse < RECOVER_PULSES)
+                     && ((in_w (SIO_GPIO_IN) & SDA_MASK) == 0UL);
          pulse++)
     {
         out_w (SIO_GPIO_OE_SET, SCL_MASK);      /* SCL low.  */
@@ -199,25 +202,14 @@ static bool wait_stop (uint32_t start_us)
     return true;
 }
 
-static i2c_bus_result_t write_read (void * p_ctx, uint8_t addr7,
-                                   const uint8_t * p_wr, uint32_t wr_len,
-                                   uint8_t * p_rd, uint32_t rd_len)
+/* Write phase of write_read: send wr_len bytes. STOP goes on the last byte
+ * only when no read follows. */
+static i2c_bus_result_t write_phase (uint32_t start, const uint8_t * p_wr,
+                                     uint32_t wr_len, uint32_t rd_len)
 {
-    uint32_t start = physics_time_us ();
-    uint32_t i;
-    uint32_t source;
+    uint32_t i = 0U;
+    uint32_t source = 0UL;
     i2c_bus_result_t result = I2C_BUS_OK;
-
-    (void)p_ctx;
-    if (((wr_len > 0U) && (NULL == p_wr)) || ((rd_len > 0U) && (NULL == p_rd))
-        || ((0U == wr_len) && (0U == rd_len)))
-    {
-        return I2C_BUS_ERROR;
-    }
-
-    out_w (IC_ENABLE, 0UL);
-    out_w (IC_TAR, (uint32_t)addr7);
-    out_w (IC_ENABLE, ENABLE_ENABLE);
 
     for (i = 0U; (i < wr_len) && (I2C_BUS_OK == result); i++)
     {
@@ -260,6 +252,18 @@ static i2c_bus_result_t write_read (void * p_ctx, uint8_t addr7,
             }
         }
     }
+
+    return result;
+}
+
+/* Read phase of write_read: runs while result stays I2C_BUS_OK, so a failed
+ * write phase skips it. Returns the updated result. */
+static i2c_bus_result_t read_phase (uint32_t start, uint32_t wr_len,
+                                    uint8_t * p_rd, uint32_t rd_len,
+                                    i2c_bus_result_t result)
+{
+    uint32_t i = 0U;
+    uint32_t source = 0UL;
 
     for (i = 0U; (i < rd_len) && (I2C_BUS_OK == result); i++)
     {
@@ -306,9 +310,33 @@ static i2c_bus_result_t write_read (void * p_ctx, uint8_t addr7,
         }
         if (I2C_BUS_OK == result)
         {
-            p_rd[i] = (uint8_t)(in_w (IC_DATA_CMD) & 0xFFUL);
+            p_rd[i] = (uint8_t)(in_w (IC_DATA_CMD) & DATA_BYTE_MASK);
         }
     }
+
+    return result;
+}
+
+static i2c_bus_result_t write_read (void * p_ctx, uint8_t addr7,
+                                   const uint8_t * p_wr, uint32_t wr_len,
+                                   uint8_t * p_rd, uint32_t rd_len)
+{
+    uint32_t start = physics_time_us ();
+    i2c_bus_result_t result = I2C_BUS_OK;
+
+    (void)p_ctx;
+    if (((wr_len > 0U) && (NULL == p_wr)) || ((rd_len > 0U) && (NULL == p_rd))
+        || ((0U == wr_len) && (0U == rd_len)))
+    {
+        return I2C_BUS_ERROR;
+    }
+
+    out_w (IC_ENABLE, 0UL);
+    out_w (IC_TAR, (uint32_t)addr7);
+    out_w (IC_ENABLE, ENABLE_ENABLE);
+
+    result = write_phase (start, p_wr, wr_len, rd_len);
+    result = read_phase (start, wr_len, p_rd, rd_len, result);
 
     if ((I2C_BUS_OK == result) && (rd_len > 0U) && !wait_stop (start))
     {

@@ -19,7 +19,7 @@
 bool motion_glue_read (motion_reading_t * p_reading)
 {
     motion_feedback_t feedback;
-    uint32_t          wheel;
+    uint32_t          wheel = 0U;
 
     if ((NULL == p_reading) || (E_OK != motion_feedback_snapshot(&feedback)))
     {
@@ -32,7 +32,7 @@ bool motion_glue_read (motion_reading_t * p_reading)
     p_reading->velocity_um_s[1] = feedback.right_speed_um_s;
     p_reading->displacement_um[0] = feedback.left_displacement_um;
     p_reading->displacement_um[1] = feedback.right_displacement_um;
-    for (wheel = 0U; wheel < 2U; wheel++)
+    for (wheel = 0U; wheel < PHYSICS_WHEEL_COUNT; wheel++)
     {
         p_reading->speed_valid[wheel]    = feedback.speed_valid[wheel];
         p_reading->odometry_valid[wheel] = feedback.odometry_valid[wheel];

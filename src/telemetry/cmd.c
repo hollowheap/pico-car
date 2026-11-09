@@ -1,9 +1,17 @@
 #include "telemetry/cmd.h"
 
+#define CMD_BYTE_BITS     8U
+#define CMD_OFFSET_CMD_ID 0U
+#define CMD_OFFSET_RUN_ID 2U
+#define CMD_OFFSET_SENT   4U
+#define CMD_OFFSET_OPCODE 6U
+#define CMD_OFFSET_RSVD   7U
+
 static uint16_t
 read_u16 (const uint8_t * src)
 {
-    return (uint16_t) (((uint16_t) src[0] << 8U) | (uint16_t) src[1]);
+    return (uint16_t) (((uint32_t) src[0] << CMD_BYTE_BITS) |
+                       (uint32_t) src[1]);
 }
 
 void
@@ -30,15 +38,15 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
     {
         return TELEMETRY_CMD_BAD_LENGTH;
     }
-    if (src[7] != 0u)
+    if (src[CMD_OFFSET_RSVD] != 0u)
     {
         return TELEMETRY_CMD_BAD_RESERVED;
     }
 
-    cmd->cmd_id   = read_u16(&src[0]);
-    cmd->run_id   = read_u16(&src[2]);
-    cmd->sent_ms  = read_u16(&src[4]);
-    cmd->opcode   = src[6];
+    cmd->cmd_id   = read_u16(&src[CMD_OFFSET_CMD_ID]);
+    cmd->run_id   = read_u16(&src[CMD_OFFSET_RUN_ID]);
+    cmd->sent_ms  = read_u16(&src[CMD_OFFSET_SENT]);
+    cmd->opcode   = src[CMD_OFFSET_OPCODE];
 
     if (cmd->opcode > (uint8_t) TELEMETRY_CMD_ESTOP)
     {
@@ -50,11 +58,11 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
 
 telemetry_cmd_result_t
 telemetry_cmd_accept (telemetry_cmd_state_t * state, const telemetry_cmd_t * cmd,
-                      uint16_t now_ms, telemetry_cmd_dispatch_fn dispatch,
-                      void * context)
+                      uint16_t now_ms,
+                      telemetry_cmd_dispatch_fn_t dispatch, void * context)
 {
-    uint16_t age;
-    int16_t  delta;
+    uint16_t age   = 0u;
+    int16_t  delta = 0;
 
     if ((state == 0) || (cmd == 0))
     {

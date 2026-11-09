@@ -23,7 +23,8 @@
 IMPORT UW          tm_usb_state (void);      /* >= 2 once enumerated */
 IMPORT INT         tm_usb_diag_level (void); /* bring-up level, 0..8 */
 IMPORT UW          tm_usb_pending (void);    /* bytes still queued   */
-IMPORT volatile UW tm_usb_dropped;           /* bytes lost to overrun*/
+/* NOLINTNEXTLINE(readability-identifier-naming): kernel symbol */
+IMPORT volatile UW tm_usb_dropped; /* bytes lost to overrun */
 
 Inline UW tm_usb_dropped_bytes (void)
 {

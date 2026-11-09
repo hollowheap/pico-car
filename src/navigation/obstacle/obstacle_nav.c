@@ -78,6 +78,9 @@
 /* Micrometres per millimetre. */
 #define UM_PER_MM (1000)
 
+/* Full scale of a per-mille value. */
+#define PERMILLE_FULL (1000U)
+
 /* Deci-degrees per degree. */
 #define DECI_PER_DEG (10)
 
@@ -848,7 +851,7 @@ static void drive_reacquire (uint32_t status)
         intent = (OBSTACLE_HUG_AWAY == hug.dir) ? INTENT_AWAY
                  : ((OBSTACLE_HUG_TOWARD == hug.dir) ? INTENT_TOWARD
                                                      : INTENT_STRAIGHT);
-        inside = (outside * (uint32_t)hug.inside_permille) / 1000U;
+        inside = (outside * (uint32_t)hug.inside_permille) / PERMILLE_FULL;
 
         if (latest_reading() < OBSTACLE_HUG_NEAR_MM)
         {

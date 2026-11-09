@@ -38,6 +38,11 @@
 #define AXES          (2)
 #define ISQRT_TOP_BIT (1UL << 30U)
 #define ISQRT_STEP    (2U)
+#define PERMILLE_FULL (1000U)
+#define HALF_DIVISOR  (2U)
+/* 22/7 approximates pi without libm. */
+#define PI_APPROX_NUM (22U)
+#define PI_APPROX_DEN (7U)
 
 /* round(16384 * sin(deg)) for deg = 0..90. */
 static uint16_t const g_sine_table[SIN_TABLE_MAX + 1] = {
@@ -339,7 +344,7 @@ void obstacle_plan_hug_ctrl (uint8_t cls, uint16_t reading_mm,
     uint32_t       err    = 0U;
 
     p_cmd->dir             = OBSTACLE_HUG_STRAIGHT;
-    p_cmd->inside_permille = 1000U;
+    p_cmd->inside_permille = PERMILLE_FULL;
 
     if ((OBSTACLE_CLASS_UNKNOWN == cls) || (OBSTACLE_CLASS_STUCK == cls))
     {
@@ -375,7 +380,7 @@ void obstacle_plan_hug_ctrl (uint8_t cls, uint16_t reading_mm,
                 err = span;
             }
 
-            p_cmd->inside_permille = (uint16_t)(1000U -
+            p_cmd->inside_permille = (uint16_t)(PERMILLE_FULL -
                 ((OBSTACLE_HUG_TURN_PERMILLE * err) / span));
         }
     }
@@ -397,7 +402,7 @@ uint32_t obstacle_plan_hug_limit_mm (obstacle_plan_result_t const * p_result,
                                      obstacle_plan_cfg_t const * p_cfg)
 {
     uint32_t radius = (uint32_t)p_result->closest_mm +
-                      ((uint32_t)p_result->width_mm / 2U) +
+                      ((uint32_t)p_result->width_mm / HALF_DIVISOR) +
                       (uint32_t)p_cfg->side_margin_mm +
                       (uint32_t)p_cfg->half_width_mm;
     uint32_t need   = p_result->need_mm[p_result->side];
@@ -408,8 +413,8 @@ uint32_t obstacle_plan_hug_limit_mm (obstacle_plan_result_t const * p_result,
         need = 0U;
     }
 
-    /* 22/7 approximates pi without libm. */
-    limit = need + ((radius * 22U) / 7U) + OBSTACLE_HUG_EXTRA_MM;
+    limit = need + ((radius * PI_APPROX_NUM) / PI_APPROX_DEN) +
+            OBSTACLE_HUG_EXTRA_MM;
 
     if (limit < OBSTACLE_HUG_MIN_MM)
     {

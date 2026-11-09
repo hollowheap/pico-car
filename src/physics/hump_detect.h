@@ -51,6 +51,7 @@ typedef enum
 #define HUMP_AXIS_X (0U)
 #define HUMP_AXIS_Y (1U)
 #define HUMP_AXIS_Z (2U)
+#define HUMP_AXIS_COUNT (3U)
 
 /* Largest supported median window (odd). */
 #define HUMP_MEDIAN_MAX (5U)
@@ -119,7 +120,7 @@ typedef struct
     /* Calibration. */
     bool     calibrated;
     uint16_t cal_count;
-    float    cal_sum[3];
+    float    cal_sum[HUMP_AXIS_COUNT];
     float    cal_min_deg;
     float    cal_max_deg;
     float    theta0_deg;

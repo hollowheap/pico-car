@@ -31,7 +31,10 @@ ir_sensors_state_t ir_get_state (void);
 /** Wait for a change in the IR sensors of the given type. */
 ER ir_wait_change (uint8_t type, TMO tmout);
 
-/** Pop one barcode edge. Returns false when the ring is empty. */
+/**
+ * Pop one barcode edge. Returns false when the ring is empty. The timestamp
+ * has 2 us resolution (bit 0 is always 0).
+ */
 bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level);
 
 /** Barcode edges dropped because the ISR ring was full. */

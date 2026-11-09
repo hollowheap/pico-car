@@ -8,7 +8,7 @@
 #define TELEMETRY_QUEUE_MAX_MSG 17u
 
 /* Created by the composition root before producers or the consumer run. */
-extern ID mbf_telem_id;
+extern ID g_mbf_telem_id;
 
 ER telemetry_queue_create(void);
 

@@ -27,22 +27,22 @@
  * a volatile pointer (smp_lock.c atomic_bitset), so the compiler cannot cache it.
  */
 /* Kernel atomics operate on 32-bit words; the public API masks to 16 bits. */
-static UW s_fault_reg = 0U;
+static UW g_fault_reg = 0U;
 
 void system_fault_set(uint16_t fault_bit)
 {
-    (void)atomic_bitset(&s_fault_reg, (UW)(fault_bit & FAULT_ALL_MASK));
+    (void)atomic_bitset(&g_fault_reg, (UW)(fault_bit & FAULT_ALL_MASK));
 }
 
 void system_fault_clear(uint16_t fault_bit)
 {
-    (void)atomic_bitclr(&s_fault_reg, (UW)(fault_bit & FAULT_ALL_MASK));
+    (void)atomic_bitclr(&g_fault_reg, (UW)(fault_bit & FAULT_ALL_MASK));
 }
 
 uint16_t system_fault_get(void)
 {
     /* Setting no bits returns the current word under the same lock. */
-    UW value = atomic_bitset(&s_fault_reg, 0U);
+    UW value = atomic_bitset(&g_fault_reg, 0U);
 
     return (uint16_t)value;
 }

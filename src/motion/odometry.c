@@ -18,7 +18,7 @@ static bool displacement (int64_t edges, const motion_scale_t * p_scale,
     uint64_t fraction =
         ((count % p_scale->edges_per_revolution) * p_scale->wheel_travel_um) /
         p_scale->edges_per_revolution;
-    uint64_t distance;
+    uint64_t distance = UINT64_C(0);
 
     if (whole > ((uint64_t)INT64_MAX / p_scale->wheel_travel_um))
     {
@@ -39,7 +39,7 @@ bool odometry_init (odometry_t *      p_sampler,
                           const motion_input_t *  p_baseline)
 {
     odometry_t initial = {0};
-    unsigned int     wheel;
+    unsigned int     wheel = 0U;
 
     if ((p_sampler == NULL) || (p_config == NULL) || (p_baseline == NULL) ||
         (p_config->max_interval_us == 0U) ||
@@ -72,7 +72,7 @@ bool odometry_update (odometry_t *     p_sampler,
 {
     odometry_t next;
     motion_sample_t  output = {0};
-    unsigned int     wheel;
+    unsigned int     wheel = 0U;
 
     if ((p_sampler == NULL) || (p_input == NULL) || (p_output == NULL) ||
         !p_sampler->initialised)
@@ -98,7 +98,7 @@ bool odometry_update (odometry_t *     p_sampler,
             encoder_math_count_delta(p_before->negative, p_after->negative);
         int64_t delta =
             ((int64_t)positive - (int64_t)negative) * p_scale->forward_sign;
-        uint32_t speed;
+        uint32_t speed = 0U;
 
         if (((delta > 0) && (next.net_edges[wheel] > INT64_MAX - delta)) ||
             ((delta < 0) && (next.net_edges[wheel] < INT64_MIN - delta)))

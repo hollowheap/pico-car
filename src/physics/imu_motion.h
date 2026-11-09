@@ -54,6 +54,12 @@ typedef enum
 
 #define MOTION_CLASS_COUNT (8U)
 
+/* Board axes of the 3-vectors in this module. */
+#define IMU_AXIS_X     (0U)
+#define IMU_AXIS_Y     (1U)
+#define IMU_AXIS_Z     (2U)
+#define IMU_AXIS_COUNT (3U)
+
 typedef enum
 {
     IMU_YAW_NONE = 0,
@@ -77,7 +83,7 @@ typedef struct
 
     /* Magnetometer turn rate. */
     bool     mag_enabled;
-    float    mag_offset_g[3];    /* Hard-iron offset per board axis.       */
+    float    mag_offset_g[IMU_AXIS_COUNT]; /* Hard-iron offset per board axis. */
     int8_t   mag_yaw_sign;       /* +1, or -1 if the board frame is mirrored. */
     float    mag_min_gauss;      /* Accept |m| inside this band.           */
     float    mag_max_gauss;

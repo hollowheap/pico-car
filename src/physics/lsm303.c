@@ -14,6 +14,27 @@
 #define MAG_Z_LSB_PER_G    (980.0f)
 #define MAX_ATTEMPTS_LIMIT (8U)
 
+#define BYTE_SHIFT         (8U)       /* Bits per byte.                   */
+#define ACC_LEFT_JUSTIFY   (4U)       /* 12-bit value in the top of 16.   */
+#define ACC_BITS           (12U)
+#define MAG_BITS           (16U)
+#define WRITE_REG_LEN      (2U)       /* Register address + value.        */
+#define ACC_REG_COUNT      (2U)
+#define MAG_REG_COUNT      (3U)
+#define MAG_ID_LEN         (3U)       /* IRA, IRB, IRC.                   */
+#define MAG_ID_IRA         (0x48U)    /* 'H'                              */
+#define MAG_ID_IRB         (0x34U)    /* '4'                              */
+#define MAG_ID_IRC         (0x33U)    /* '3'                              */
+#define MAG_ID_IRC_INDEX   (2U)       /* Third identity byte.             */
+#define BURST_LEN          (6U)       /* Three axes, two bytes each.      */
+#define BYTES_PER_AXIS     (2U)
+#define MAG_BUF_X_HI       (0U)       /* Register order is X, Z, Y.       */
+#define MAG_BUF_X_LO       (1U)
+#define MAG_BUF_Z_HI       (2U)
+#define MAG_BUF_Z_LO       (3U)
+#define MAG_BUF_Y_HI       (4U)
+#define MAG_BUF_Y_LO       (5U)
+
 /* Two's complement from an unsigned pattern without bitwise operations on
  * signed values (BARR-C:2018 rule 5.3). */
 static int16_t to_signed (uint32_t pattern, uint32_t bits)
@@ -23,7 +44,7 @@ static int16_t to_signed (uint32_t pattern, uint32_t bits)
 
     if (pattern >= half)
     {
-        value -= (int32_t)(half * 2U);
+        value -= (int32_t)(half << 1U);   /* half * 2 = 2^bits. */
     }
     return (int16_t)value;
 }
@@ -31,14 +52,15 @@ static int16_t to_signed (uint32_t pattern, uint32_t bits)
 int16_t lsm303_accel_counts (uint8_t lo, uint8_t hi)
 {
     /* 12-bit value, left-justified in 16 bits. */
-    uint32_t pattern = (((uint32_t)hi << 8U) | (uint32_t)lo) >> 4U;
+    uint32_t pattern = (((uint32_t)hi << BYTE_SHIFT) | (uint32_t)lo)
+                       >> ACC_LEFT_JUSTIFY;
 
-    return to_signed (pattern, 12U);
+    return to_signed (pattern, ACC_BITS);
 }
 
 int16_t lsm303_mag_counts (uint8_t hi, uint8_t lo)
 {
-    return to_signed (((uint32_t)hi << 8U) | (uint32_t)lo, 16U);
+    return to_signed (((uint32_t)hi << BYTE_SHIFT) | (uint32_t)lo, MAG_BITS);
 }
 
 /* One transaction with retries. Latches the fault after the last attempt. */
@@ -46,14 +68,14 @@ static bool transfer (lsm303_t * p_dev, uint8_t addr7,
                       const uint8_t * p_wr, uint32_t wr_len,
                       uint8_t * p_rd, uint32_t rd_len)
 {
-    uint8_t attempt;
+    uint8_t attempt = 0U;
     bool ok = false;
 
     p_dev->stats.transactions++;
 
     for (attempt = 0U; (attempt < p_dev->max_attempts) && !ok; attempt++)
     {
-        i2c_bus_result_t result;
+        i2c_bus_result_t result = I2C_BUS_OK;
 
         if (attempt > 0U)
         {
@@ -100,11 +122,11 @@ static bool transfer (lsm303_t * p_dev, uint8_t addr7,
 static bool write_reg (lsm303_t * p_dev, uint8_t addr7, uint8_t reg,
                        uint8_t value)
 {
-    uint8_t buf[2];
+    uint8_t buf[WRITE_REG_LEN];
 
     buf[0] = reg;
     buf[1] = value;
-    return transfer (p_dev, addr7, buf, 2U, NULL, 0U);
+    return transfer (p_dev, addr7, buf, WRITE_REG_LEN, NULL, 0U);
 }
 
 static bool read_regs (lsm303_t * p_dev, uint8_t addr7, uint8_t reg,
@@ -116,16 +138,16 @@ static bool read_regs (lsm303_t * p_dev, uint8_t addr7, uint8_t reg,
 lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
                              uint8_t max_attempts)
 {
-    static const uint8_t acc_regs[2] = { LSM303_CTRL_REG1_A,
-                                         LSM303_CTRL_REG4_A };
-    static const uint8_t acc_vals[2] = { LSM303_CTRL_REG1_A_VAL,
-                                         LSM303_CTRL_REG4_A_VAL };
-    static const uint8_t mag_vals[3] = { LSM303_CRA_REG_M_VAL,
-                                         LSM303_CRB_REG_M_VAL,
-                                         LSM303_MR_REG_M_VAL };
-    uint8_t id[3];
-    uint8_t back[3];
-    uint8_t i;
+    static const uint8_t acc_regs[ACC_REG_COUNT] = { LSM303_CTRL_REG1_A,
+                                                     LSM303_CTRL_REG4_A };
+    static const uint8_t acc_vals[ACC_REG_COUNT] = { LSM303_CTRL_REG1_A_VAL,
+                                                     LSM303_CTRL_REG4_A_VAL };
+    static const uint8_t mag_vals[MAG_REG_COUNT] = { LSM303_CRA_REG_M_VAL,
+                                                     LSM303_CRB_REG_M_VAL,
+                                                     LSM303_MR_REG_M_VAL };
+    uint8_t id[MAG_ID_LEN];
+    uint8_t back[MAG_REG_COUNT];
+    uint8_t i = 0U;
 
     if ((NULL == p_dev) || (NULL == p_bus) || (NULL == p_bus->write_read)
         || (max_attempts < 1U) || (max_attempts > MAX_ATTEMPTS_LIMIT))
@@ -146,23 +168,25 @@ lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
 
     /* Identity. The registers are consecutive and the magnetometer
      * auto-increments without a flag bit. */
-    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_IRA_REG_M, id, 3U))
+    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_IRA_REG_M, id,
+                    MAG_ID_LEN))
     {
         return LSM303_BUS_FAULT;
     }
-    if ((0x48U != id[0]) || (0x34U != id[1]) || (0x33U != id[2]))
+    if ((MAG_ID_IRA != id[0]) || (MAG_ID_IRB != id[1])
+        || (MAG_ID_IRC != id[MAG_ID_IRC_INDEX]))
     {
         return LSM303_BAD_ID;
     }
 
-    for (i = 0U; i < 2U; i++)
+    for (i = 0U; i < ACC_REG_COUNT; i++)
     {
         if (!write_reg (p_dev, LSM303_ACC_ADDR, acc_regs[i], acc_vals[i]))
         {
             return LSM303_BUS_FAULT;
         }
     }
-    for (i = 0U; i < 3U; i++)
+    for (i = 0U; i < MAG_REG_COUNT; i++)
     {
         if (!write_reg (p_dev, LSM303_MAG_ADDR,
                         (uint8_t)(LSM303_CRA_REG_M + i), mag_vals[i]))
@@ -173,7 +197,7 @@ lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
 
     /* Read back: confirms the accelerometer is really there and that both
      * parts took the settings. */
-    for (i = 0U; i < 2U; i++)
+    for (i = 0U; i < ACC_REG_COUNT; i++)
     {
         if (!read_regs (p_dev, LSM303_ACC_ADDR, acc_regs[i], &back[i], 1U))
         {
@@ -184,11 +208,12 @@ lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
             return LSM303_CONFIG_MISMATCH;
         }
     }
-    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_CRA_REG_M, back, 3U))
+    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_CRA_REG_M, back,
+                    MAG_REG_COUNT))
     {
         return LSM303_BUS_FAULT;
     }
-    for (i = 0U; i < 3U; i++)
+    for (i = 0U; i < MAG_REG_COUNT; i++)
     {
         if (back[i] != mag_vals[i])
         {
@@ -202,24 +227,26 @@ lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
 
 lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
 {
-    uint8_t buf[6];
-    uint8_t axis;
+    uint8_t buf[BURST_LEN];
+    uint8_t axis = 0U;
 
     if ((NULL == p_dev) || (NULL == p_out) || !p_dev->ready)
     {
         return LSM303_BAD_ARG;
     }
     if (!read_regs (p_dev, LSM303_ACC_ADDR,
-                    (uint8_t)(LSM303_OUT_X_L_A | LSM303_AUTO_INC_A), buf, 6U))
+                    (uint8_t)(LSM303_OUT_X_L_A | LSM303_AUTO_INC_A), buf,
+                    BURST_LEN))
     {
         return LSM303_BUS_FAULT;
     }
 
     /* X, Y, Z; low byte first (BLE = 0). */
-    for (axis = 0U; axis < 3U; axis++)
+    for (axis = 0U; axis < LSM303_AXIS_COUNT; axis++)
     {
-        p_out->raw[axis] = lsm303_accel_counts (buf[2U * axis],
-                                                buf[(2U * axis) + 1U]);
+        p_out->raw[axis] = lsm303_accel_counts (buf[BYTES_PER_AXIS * axis],
+                                                buf[(BYTES_PER_AXIS * axis)
+                                                    + 1U]);
         p_out->value[axis] = (float)p_out->raw[axis] * ACC_MG_PER_LSB;
     }
 
@@ -228,24 +255,30 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
 
 lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out)
 {
-    uint8_t buf[6];
+    uint8_t buf[BURST_LEN];
 
     if ((NULL == p_dev) || (NULL == p_out) || !p_dev->ready)
     {
         return LSM303_BAD_ARG;
     }
-    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_OUT_X_H_M, buf, 6U))
+    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_OUT_X_H_M, buf, BURST_LEN))
     {
         return LSM303_BUS_FAULT;
     }
 
     /* Register order is X, Z, Y, high byte first. */
-    p_out->raw[0] = lsm303_mag_counts (buf[0], buf[1]);
-    p_out->raw[2] = lsm303_mag_counts (buf[2], buf[3]);
-    p_out->raw[1] = lsm303_mag_counts (buf[4], buf[5]);
-    p_out->value[0] = (float)p_out->raw[0] / MAG_XY_LSB_PER_G;
-    p_out->value[1] = (float)p_out->raw[1] / MAG_XY_LSB_PER_G;
-    p_out->value[2] = (float)p_out->raw[2] / MAG_Z_LSB_PER_G;
+    p_out->raw[LSM303_AXIS_X] = lsm303_mag_counts (buf[MAG_BUF_X_HI],
+                                                   buf[MAG_BUF_X_LO]);
+    p_out->raw[LSM303_AXIS_Z] = lsm303_mag_counts (buf[MAG_BUF_Z_HI],
+                                                   buf[MAG_BUF_Z_LO]);
+    p_out->raw[LSM303_AXIS_Y] = lsm303_mag_counts (buf[MAG_BUF_Y_HI],
+                                                   buf[MAG_BUF_Y_LO]);
+    p_out->value[LSM303_AXIS_X] = (float)p_out->raw[LSM303_AXIS_X]
+                                  / MAG_XY_LSB_PER_G;
+    p_out->value[LSM303_AXIS_Y] = (float)p_out->raw[LSM303_AXIS_Y]
+                                  / MAG_XY_LSB_PER_G;
+    p_out->value[LSM303_AXIS_Z] = (float)p_out->raw[LSM303_AXIS_Z]
+                                  / MAG_Z_LSB_PER_G;
 
     return LSM303_OK;
 }

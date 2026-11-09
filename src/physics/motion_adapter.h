@@ -29,22 +29,23 @@
 
 #define PHYSICS_WHEEL_LEFT  (0U)   /* Same as the motion service's ENCODER_LEFT.  */
 #define PHYSICS_WHEEL_RIGHT (1U)   /* Same as the motion service's ENCODER_RIGHT. */
+#define PHYSICS_WHEEL_COUNT (2U)
 
 typedef struct
 {
     bool     available;          /* the motion service has published a sample.        */
     uint32_t timestamp_us;
-    int32_t  velocity_um_s[2];   /* Signed, positive car-forward.          */
-    int64_t  displacement_um[2]; /* Signed, since the motion service's sampler init.  */
-    bool     speed_valid[2];
-    bool     odometry_valid[2];
+    int32_t  velocity_um_s[PHYSICS_WHEEL_COUNT]; /* Signed, positive car-forward.          */
+    int64_t  displacement_um[PHYSICS_WHEEL_COUNT]; /* Signed, since the motion service's sampler init.  */
+    bool     speed_valid[PHYSICS_WHEEL_COUNT];
+    bool     odometry_valid[PHYSICS_WHEEL_COUNT];
 } motion_reading_t;
 
 typedef struct
 {
     float    accel_alpha;        /* EMA weight of a new dv/dt value.       */
     bool     have_disp;
-    int64_t  prev_disp_um[2];
+    int64_t  prev_disp_um[PHYSICS_WHEEL_COUNT];
     bool     have_speed;
     uint32_t prev_ts_us;
     float    prev_speed_mps;
