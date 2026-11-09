@@ -11,7 +11,11 @@ typedef enum
 {
     TELEMETRY_CMD_STOP  = 0u,
     TELEMETRY_CMD_START = 1u,
-    TELEMETRY_CMD_RESET = 2u
+    TELEMETRY_CMD_RESET = 2u,
+    TELEMETRY_CMD_LEFT  = 3u,
+    TELEMETRY_CMD_RIGHT = 4u,
+    TELEMETRY_CMD_UTURN = 5u,
+    TELEMETRY_CMD_ESTOP = 6u
 } telemetry_cmd_opcode_t;
 
 typedef enum

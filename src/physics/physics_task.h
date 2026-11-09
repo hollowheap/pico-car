@@ -65,6 +65,7 @@ typedef struct
     packed_hump_t last_word;
     uint8_t  heading_deg;        /* 0..359, tilt-compensated.              */
     bool     heading_valid;      /* heading_deg is fresh and usable.       */
+    bool     calibrated;         /* Hump detector has its rest reference.  */
 } physics_task_stats_t;
 
 void physics_task_default_config (physics_task_config_t * p_cfg);

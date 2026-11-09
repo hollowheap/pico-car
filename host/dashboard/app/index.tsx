@@ -80,6 +80,7 @@ export default function LiveScreen() {
         />
         <AttitudePanel
           status={lastStatus}
+          system={lastSystem}
           style={wide ? styles.narrowPanel : styles.fullPanel}
         />
         <DiagnosticsPanel

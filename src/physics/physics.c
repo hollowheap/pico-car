@@ -50,6 +50,7 @@ ER physics_snapshot (physics_status_t * p_status)
         p_status->dropped  = stats.nav_dropped + stats.telem_dropped;
         p_status->ready    = (stats.cycles > 0U) &&
                              hump_unpack(stats.last_word, &fields);
+        p_status->calibrated = stats.calibrated;
 
         if (p_status->ready)
         {
@@ -73,6 +74,7 @@ ER physics_snapshot (physics_status_t * p_status)
             p_status->state        = 0U;
             p_status->motion       = 0U;
             p_status->faults       = 0U;
+            p_status->calibrated   = false;
             p_status->pitch_cdeg   = 0;
             p_status->heading_deg  = 0U;
             p_status->heading_valid = false;
