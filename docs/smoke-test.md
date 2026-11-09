@@ -53,8 +53,11 @@ configure: Wi-Fi '<ssid>' (WPA2-PSK)
 configure: MQTT broker host default <host-ip>
 ```
 
-`wpa-eap` and `sae` networks are not supported by the CYW43. The script warns
-and leaves the Wi-Fi join off; use a WPA2-PSK hotspot or pass the `-D` flags.
+`wpa-eap` and `sae` networks are not supported by the CYW43. The CYW43439
+is also 2.4 GHz only. When the active BSS is 5/6 GHz and the same SSID is not
+visible on 2.4 GHz, the script warns, lists the 2.4 GHz SSIDs in range, and
+leaves the Wi-Fi join off. Connect the host to the router's 2.4 GHz SSID, or
+pass the `-D` flags with a 2.4 GHz SSID and password.
 
 Check the generated values:
 

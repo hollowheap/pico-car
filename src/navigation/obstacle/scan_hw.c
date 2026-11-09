@@ -106,7 +106,7 @@ static bool is_pwm_out_of_reset (void);
 static ER   servo_pwm_init (void);
 static void echo_rise (uint32_t mbx, uint32_t now_us);
 static void echo_fall (uint32_t mbx, uint32_t now_us);
-static void echo_isr (UINT intno);
+static void echo_isr (const gpio_edge_snapshot_t * p_snapshot);
 
 /*!
  * @brief Set up the sensor pins, the servo PWM and the ECHO ISR.
@@ -418,15 +418,15 @@ static void echo_fall (uint32_t mbx, uint32_t now_us)
  * function, so it must not be marked as an interrupt.
  * Short on purpose: a few register reads and one kernel call.
  *
- * @param[in] intno Interrupt number (unused).
+ * @param[in] p_snapshot Edge snapshot from the dispatcher (unused).
  */
-static void echo_isr (UINT intno)
+static void echo_isr (const gpio_edge_snapshot_t * p_snapshot)
 {
     uint32_t const now_us = in_w(TIMER_TIMERAWL);
     uint32_t const mbx    = g_echo.mbx;
     bool const     b_high = scan_hw_is_echo_high();
 
-    (void)intno;
+    (void)p_snapshot;
     if (0U != (mbx & OBSTACLE_MBX_DONE))
     {
         /* This ping is finished; later edges wait for the next re-arm. */

@@ -12,10 +12,12 @@
 /* RP2040 IO_BANK0 offsets, matching the pinned SDK's hardware/regs/io_bank0.h.
  * Use kernel MMIO accessors, not SDK IRQ registration: the kernel owns VTOR.
  */
-#define BANK_INTR     (IO_BANK0_BASE + 0xF0U)
-#define CORE0_INTS    (IO_BANK0_BASE + 0x120U)
-#define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
-#define EDGE_FLAGS    12U
+#define BANK_INTR      (IO_BANK0_BASE + 0xF0U)
+#define CORE0_INTS     (IO_BANK0_BASE + 0x120U)
+#define TIMER_RAW_LOW  (TIMER_BASE + 0x28U)
+#define EDGE_LOW_FLAG  0x4U
+#define EDGE_HIGH_FLAG 0x8U
+#define EDGE_FLAGS     (EDGE_LOW_FLAG | EDGE_HIGH_FLAG)
 
 static const unsigned int g_encoder_pins[ENCODER_WHEELS][2] = {
     {MOTOR_ENCODER_LEFT_A, MOTOR_ENCODER_LEFT_B},
@@ -49,34 +51,37 @@ static void ack_encoder_gpio ()
     }
 }
 
-static void encoder_isr (UINT intno)
+/* Edge flags of one pin, in the layout of an IO_BANK0 INTS slot. */
+static uint32_t pin_edge_flags (const gpio_edge_snapshot_t * p_snapshot,
+                                unsigned int                 pin)
 {
-    uint32_t     pending[ENCODER_WHEELS];
+    uint32_t flags = 0U;
+    if (((p_snapshot->fall_mask >> pin) & 1U) != 0U)
+    {
+        flags |= EDGE_LOW_FLAG;
+    }
+    if (((p_snapshot->rise_mask >> pin) & 1U) != 0U)
+    {
+        flags |= EDGE_HIGH_FLAG;
+    }
+    return flags;
+}
+
+static void encoder_isr (const gpio_edge_snapshot_t * p_snapshot)
+{
     unsigned int wheel;
     UINT         saved;
 
-    (void)intno;
-    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
-    {
-        unsigned int bank = g_encoder_pins[wheel][0] / 8U;
-        uint32_t     mask = edge_mask(g_encoder_pins[wheel][0]) |
-                            edge_mask(g_encoder_pins[wheel][1]);
-        pending[wheel]    = in_w(CORE0_INTS + (bank * 4U)) & mask;
-    }
-
-    /* Edges after the acknowledgement remain pending for the next entry. */
+    /* The dispatcher has already acknowledged the edges in the snapshot.
+     * Edges after that remain pending for the next entry. */
     uint32_t gpio = in_w(GPIO_IN);
     (void)ISpinLock(&g_capture_lock, &saved);
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        if (pending[wheel] != 0U)
+        uint32_t a = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][0]);
+        uint32_t b = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][1]);
+        if ((a | b) != 0U)
         {
-            uint32_t a =
-                (pending[wheel] >> ((g_encoder_pins[wheel][0] % 8U) * 4U)) &
-                EDGE_FLAGS;
-            uint32_t b =
-                (pending[wheel] >> ((g_encoder_pins[wheel][1] % 8U) * 4U)) &
-                EDGE_FLAGS;
             /* Both channels changed, or both polarities on one pin: the
              * sequence is ambiguous. Record loss instead of guessing. */
             (void)quadrature_update(

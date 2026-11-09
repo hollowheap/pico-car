@@ -186,9 +186,12 @@ LOCAL void line_task (INT stacd, void * exinf)
 {
     const uint32_t speed      = LINE_SPEED_UM_S;
     const uint32_t turn_speed = (LINE_SPEED_UM_S * LINE_TURN_PERMILLE) / 1000U;
-    /* Each speed lease must outlast one loop pass (up to LINE_POLL_MS plus
-     * processing); an expired active lease latches MOTION_FAULT_EXPIRED. */
-    const uint32_t lease_us = 3U * LINE_POLL_MS * 1000U;
+    /* Each speed lease must outlast one loop pass plus scheduling delay.
+     * The motion task (priority 5) shares core 0 with physics (4) and the
+     * obstacle task (6), so a 3-pass lease can be stale by the time the
+     * controller validates it and latches MOTION_FAULT_COMMAND. Keep the
+     * lease below max_command_ttl_us (200 ms). */
+    const uint32_t lease_us = 10U * LINE_POLL_MS * 1000U;
 
     (void)stacd;
     (void)exinf;
@@ -323,6 +326,7 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
             uint16_t                faults = system_fault_get();
             uint8_t                 heading_deg = 0U;
             uint8_t                 state = 0U;
+            physics_status_t        physics;
 
             ticks = 0U;
             if (E_OK == motion_status(&status))
@@ -358,6 +362,11 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
                     /* In range. */
                 }
                 distance_mm = (uint16_t)distance;
+            }
+
+            if ((E_OK == physics_snapshot(&physics)) && physics.heading_valid)
+            {
+                heading_deg = physics.heading_deg;
             }
 
             (void)telemetry_pack_status(payload, speed_mms, distance_mm,

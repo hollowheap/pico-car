@@ -1,4 +1,5 @@
 #include <string.h>
+#include <tm/tmonitor.h>
 
 #include "lwip/dns.h"
 #include "lwip/ip_addr.h"
@@ -120,6 +121,7 @@ fail_attempt (uint32_t now_ms)
 {
     s_resolving = false;
     s_state = TCP_TRANSPORT_FAILED;
+    (void) tm_printf((UB *) "[tcp] attempt failed state=%d\n", (INT) s_state);
     s_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
     ring_reset(&s_tx);
 }
@@ -174,6 +176,7 @@ on_connected (void * arg, struct tcp_pcb * pcb, err_t err)
     }
     tcp_nagle_disable(pcb);
     s_state = TCP_TRANSPORT_CONNECTED;
+    (void) tm_printf((UB *) "[tcp] connected\n");
     drain_tx();
     return ERR_OK;
 }
@@ -227,9 +230,9 @@ static void
 on_error (void * arg, err_t err)
 {
     (void) arg;
-    (void) err;
 
     /* lwIP has already freed the pcb when this callback runs. */
+    (void) tm_printf((UB *) "[tcp] error %d\n", (INT) err);
     s_pcb = 0;
     fail_attempt((uint32_t) sys_now());
 }
@@ -266,6 +269,8 @@ start_connect (void)
     }
     s_state = TCP_TRANSPORT_CONNECTING;
     s_connect_started_ms = (uint32_t) sys_now();
+    (void) tm_printf((UB *) "[tcp] connect %s:%u\n", s_host,
+                     (unsigned int) s_port);
 }
 
 static void

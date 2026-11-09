@@ -9,11 +9,19 @@
 #define ALL_GPIO_MASK  ((1U << GPIO_IRQ_COUNT) - 1U)
 
 #define INT_REG_COUNT 4U
+#define TIMER_RAWL    (TIMER_BASE + 0x28U)
 #define INTR          (IO_BANK0_BASE + 0xF0U)
 #define PROC1_INTE    (IO_BANK0_BASE + 0x100U)
 #define PROC1_INTS    (IO_BANK0_BASE + 0x120U)
 #define PROC2_INTE    (IO_BANK0_BASE + 0x130U)
 #define PROC2_INTS    (IO_BANK0_BASE + 0x150U)
+
+/* Per GPIO, INTR and INTS hold LEVEL_LOW, LEVEL_HIGH, EDGE_LOW, EDGE_HIGH in
+ * bits 0..3 of a 4-bit slot. EDGE_LOW is a falling edge, EDGE_HIGH a rising
+ * edge. Only the edge bits are write-1-to-clear in INTR. */
+#define EDGE_LOW_BITS  0x44444444U
+#define EDGE_HIGH_BITS 0x88888888U
+#define EDGE_BITS      (EDGE_LOW_BITS | EDGE_HIGH_BITS)
 
 #if TK_SUPPORT_SMP
 #   include <tk/smp.h>
@@ -41,7 +49,7 @@ LOCAL volatile uint8_t g_handler_count = 0;
  * Selects every 4th bit in a number and returns the result as a 4-bit int.
  * Example: 0b0000 1000 1000 0111 => 0b0110
  */
-LOCAL uint8_t inline unspread4(const uint16_t x)
+LOCAL inline uint8_t unspread4(const uint16_t x)
 {
     // x = 0b 1xxx 2xxx 3xxx 4xxx
 
@@ -87,22 +95,40 @@ LOCAL void get_edge_masks (const uint32_t gpio_mask,
     }
 }
 
-LOCAL uint32_t get_edge_status (const UW proc)
+/**
+ * Packs the bit 3 of every 4-bit slot of `w` into one GPIO bit per slot, so
+ * bit n of the result is slot n of the register word.
+ */
+LOCAL uint32_t gather_slots (const uint32_t w)
+{
+    const uint32_t lo = unspread4((uint16_t)w);
+    const uint32_t hi = unspread4((uint16_t)(w >> 16U));
+    return (hi << 4U) | lo;
+}
+
+/**
+ * Reads the interrupt status of `proc` once. `edge_words` receives the EDGE
+ * bits that are set, in INTR layout. `rise_mask` and `fall_mask` receive one
+ * bit per GPIO for the rising and falling edges.
+ */
+LOCAL void read_edges (const UW proc, uint32_t edge_words[INT_REG_COUNT],
+                       uint32_t * const p_rise_mask,
+                       uint32_t * const p_fall_mask)
 {
     const UW status_base = (proc == TP_PRC1) ? PROC1_INTS : PROC2_INTS;
-    uint32_t status      = 0;
+    uint32_t rise        = 0;
+    uint32_t fall        = 0;
     for (uint8_t idx = 0; idx < INT_REG_COUNT; idx++)
     {
-        uint32_t status_w = in_w(status_base + (idx * sizeof(UW)));
-        // Combine every 3rd and 4th bits, so that the EDGE_LOW and EDGE_HIGH
-        // bits occupy a single bit.
-        status_w |= status_w << 1U;
-        const uint32_t lo   = unspread4((uint16_t)status_w);
-        const uint32_t hi   = unspread4((uint16_t)(status_w >> 16U));
-        const uint32_t byte = (hi << 4U) | lo;
-        status |= byte << (idx * 8U);
+        const uint32_t status_w = in_w(status_base + (idx * sizeof(UW)));
+        edge_words[idx]         = status_w & EDGE_BITS;
+        // EDGE_LOW is bit 2 of a slot; shift it up to bit 3 to share the
+        // gather with EDGE_HIGH.
+        rise |= gather_slots(status_w & EDGE_HIGH_BITS) << (idx * 8U);
+        fall |= gather_slots((status_w & EDGE_LOW_BITS) << 1U) << (idx * 8U);
     }
-    return status;
+    *p_rise_mask = rise;
+    *p_fall_mask = fall;
 }
 
 LOCAL ER enable_pin_interrupts (const UW       proc,
@@ -126,31 +152,54 @@ LOCAL ER enable_pin_interrupts (const UW       proc,
     return E_OK;
 }
 
-LOCAL void ack_gpio_irqs (const uint32_t ack_masks[INT_REG_COUNT])
+LOCAL void ack_gpio_irqs (const uint32_t ack_words[INT_REG_COUNT])
 {
     for (uint8_t idx = 0; idx < INT_REG_COUNT; idx++)
     {
-        out_w(INTR + (idx * sizeof(UW)), ack_masks[idx]);
+        out_w(INTR + (idx * sizeof(UW)), ack_words[idx]);
     }
 }
 
+/**
+ * Takes one snapshot of the timer and the edge status, acknowledges exactly
+ * the edges in it, and only then calls the handlers. An edge that arrives
+ * during a handler is not in the snapshot and was not acknowledged, so it stays
+ * pending and enters this ISR again.
+ */
 LOCAL void gpio_isr (UINT intno)
 {
-    uint32_t status       = get_edge_status(THIS_PRC());
-    uint32_t handled_mask = 0;
-    for (uint8_t idx = 0; idx < g_handler_count; idx++)
+    uint32_t edge_words[INT_REG_COUNT];
+    uint32_t rise_mask;
+    uint32_t fall_mask;
+
+    (void)intno;
+    read_edges(THIS_PRC(), edge_words, &rise_mask, &fall_mask);
+    if ((rise_mask | fall_mask) == 0U)
     {
-        const uint32_t status_mask = status & g_handlers[idx].mask;
-        if (status_mask != 0)
-        {
-            g_handlers[idx].handler(intno);
-            handled_mask |= status_mask;
-        }
+        return;
     }
 
-    uint32_t handled_edge_masks[INT_REG_COUNT];
-    get_edge_masks(handled_mask, handled_edge_masks);
-    ack_gpio_irqs(handled_edge_masks);
+    // Acknowledge right after the status read to keep the window short in
+    // which a repeat of an observed edge would be cleared unseen.
+    ack_gpio_irqs(edge_words);
+
+    // Read after the status, so the timestamp is not earlier than any edge in
+    // the snapshot.
+    const uint32_t timestamp_us = in_w(TIMER_RAWL);
+
+    for (uint8_t idx = 0; idx < g_handler_count; idx++)
+    {
+        const uint32_t mask = g_handlers[idx].mask;
+        const gpio_edge_snapshot_t snapshot = {
+            .timestamp_us = timestamp_us,
+            .rise_mask    = rise_mask & mask,
+            .fall_mask    = fall_mask & mask,
+        };
+        if ((snapshot.rise_mask | snapshot.fall_mask) != 0U)
+        {
+            g_handlers[idx].handler(&snapshot);
+        }
+    }
 }
 
 // TODO: set interrupt on both cores

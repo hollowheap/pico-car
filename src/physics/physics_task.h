@@ -63,6 +63,8 @@ typedef struct
     lsm303_result_t last_init;
     lsm303_stats_t  i2c;
     packed_hump_t last_word;
+    uint8_t  heading_deg;        /* 0..359, tilt-compensated.              */
+    bool     heading_valid;      /* heading_deg is fresh and usable.       */
 } physics_task_stats_t;
 
 void physics_task_default_config (physics_task_config_t * p_cfg);
