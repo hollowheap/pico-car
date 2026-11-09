@@ -22,9 +22,9 @@
  *   TURNED  d = heading turned (deci-degrees), e = planned angle (deg)
  *   MFAULT  a = wheel, b = speed_valid, c = odometry_valid, d = bad
  *           encoder steps, e = speed (mm/s), f = sample interval (us)
- *   PHASE   a = bypass phase (0 TURN, 1 OUT, 2 HUG), d =
- * side offset (mm), e = distance along the line (mm), f = heading
- *           (deci-degrees, positive = away from the obstacle side)
+ *   PHASE   a = bypass phase (0 TURN, 1 OUT, 2 HUG, 3 ALIGN), d =
+ *           side offset (mm), e = distance along the line (mm), f =
+ *           heading (deci-degrees, positive = away from the obstacle side)
  *   GUARD   a = 1 guard on / 0 off, b = bypass phase, d = filtered 45
  *           degree reading (mm), f = heading (deci-degrees, positive =
  *           away from the obstacle side)
@@ -57,7 +57,7 @@
 #define FIELD2_NAMES (4U)
 #define MOTION_NAMES (8U)
 #define CMD_NAMES    (8U)
-#define PHASE_NAMES  (3U)
+#define PHASE_NAMES  (4U)
 
 /* Slots printed per profile line. */
 #define SLOTS_PER_LINE (5U)
@@ -134,7 +134,7 @@ static char const * const g_cmd_name[CMD_NAMES] = {
     "NONE",       "SCAN_REQ", "ACCEPT", "REJECT",
     "LINE_FOUND", "STOP",     "RESET",  "START"};
 
-static char const * const g_phase_name[PHASE_NAMES] = {"TURN", "OUT", "HUG"};
+static char const * const g_phase_name[PHASE_NAMES] = {"TURN", "OUT", "HUG", "ALIGN"};
 
 static uint32_t now_ms (void);
 static void     print_profile (uint32_t index, uint32_t t_ms);

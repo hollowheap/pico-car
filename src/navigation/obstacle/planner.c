@@ -40,6 +40,9 @@
 #define ISQRT_STEP    (2U)
 #define PERMILLE_FULL (1000U)
 #define HALF_DIVISOR  (2U)
+#define LOOK_AHEAD_MASK (OBSTACLE_LOOK_AHEAD_EVERY - 1U)
+#define TRIM_CDECI_PER_DECI (100)
+#define HUG_FULL_TURN_PERMILLE (PERMILLE_FULL - OBSTACLE_HUG_TURN_PERMILLE)
 /* 22/7 approximates pi without libm. */
 #define PI_APPROX_NUM (22U)
 #define PI_APPROX_DEN (7U)
@@ -71,6 +74,17 @@ static uint16_t const g_tangent_table[TAN_TABLE_MAX + 1] = {
 
 static int32_t  table_lookup (uint16_t const * p_table, int32_t table_max,
                               int32_t abs_deci);
+static uint32_t wall_distance_mm (uint32_t reading_mm, int32_t head_deci);
+static void     set_turn (obstacle_hug_cmd_t * p_cmd, uint8_t dir, uint32_t err,
+                          uint32_t span);
+static void     seek_heading (int32_t head_deci, int32_t want_deci,
+                              obstacle_hug_cmd_t * p_cmd);
+static int32_t  wall_heading (uint8_t cls, uint32_t dist_mm);
+static void     hug_band (uint32_t dist, obstacle_hug_cmd_t * p_cmd);
+static void     cap_heading (obstacle_hug_in_t const * p_in, obstacle_hug_cmd_t * p_cmd);
+static int32_t  pivot_deci (bool b_wall, uint8_t start_deg);
+static uint8_t  steer_for (uint8_t side, uint8_t dir);
+static void     fill_drive (obstacle_drive_in_t const * p_in, obstacle_drive_out_t * p_out);
 static int32_t  abs_deci_of (int32_t deci);
 static int32_t  side_sign (uint8_t side);
 static int32_t  mul_q14 (uint32_t range_mm, int32_t q14);
@@ -78,7 +92,10 @@ static bool     slot_blocks (scan_algo_ctx_t const * p_scan, int32_t slot,
                              int32_t sign, int32_t band_x, int32_t band_y);
 static bool     corridor_blocked (scan_algo_ctx_t const * p_scan,
                                   obstacle_plan_cfg_t const * p_cfg, uint8_t side,
-                                  uint32_t need_mm);
+                                  uint32_t need_mm, int32_t first_slot);
+static void     plan_wall_left (scan_algo_ctx_t const * p_scan,
+                                obstacle_plan_cfg_t const * p_cfg,
+                                obstacle_plan_result_t * p_res);
 static void     plan_side (scan_algo_ctx_t const * p_scan,
                            obstacle_plan_cfg_t const * p_cfg, uint8_t side,
                            int32_t p_mid_xy[AXES], obstacle_plan_result_t * p_res);
@@ -248,6 +265,7 @@ void obstacle_plan_build (scan_algo_ctx_t const * p_scan, obstacle_plan_cfg_t co
     p_result->width_mm               = 0U;
     p_result->start_deg              = 0U;
     p_result->closest_mm             = p_scan->closest_mm;
+    p_result->b_wall                 = false;
     p_result->need_mm[OBSTACLE_SIDE_LEFT]  = OBSTACLE_PLAN_SIDE_BLOCKED;
     p_result->need_mm[OBSTACLE_SIDE_RIGHT] = OBSTACLE_PLAN_SIDE_BLOCKED;
 
@@ -261,6 +279,7 @@ void obstacle_plan_build (scan_algo_ctx_t const * p_scan, obstacle_plan_cfg_t co
 
         plan_side(p_scan, p_cfg, SCAN_ALGO_LEFT, left_xy, p_result);
         plan_side(p_scan, p_cfg, SCAN_ALGO_RIGHT, right_xy, p_result);
+        plan_wall_left(p_scan, p_cfg, p_result);
         p_result->width_mm = chord_width(p_scan, left_xy, right_xy);
 
         if (p_result->need_mm[OBSTACLE_SIDE_LEFT] <= p_result->need_mm[OBSTACLE_SIDE_RIGHT])
@@ -319,71 +338,597 @@ bool obstacle_plan_is_escape_clear (uint8_t cls, uint16_t dist_mm,
 }
 
 /*!
- * @brief Proportional clearance controller for the HUG loop.
+ * @brief Proportional clearance controller for the HUG loop (the only hug
+ *        law; the STEER-word law of the first version is gone).
  *
- * The look-ray reading is compared with OBSTACLE_HUG_TARGET_MM. Outside
- * the deadband the car steers back towards the target, and the inner wheel
- * slows in proportion to the error, so the path is a gentle correction
- * instead of a switch between two fixed arcs.
+ * Box mode: the look-ray reading is compared with OBSTACLE_HUG_TARGET_MM.
+ * Outside the deadband the car steers back towards the target, and the
+ * inner wheel slows in proportion to the error. OPEN means nothing was
+ * heard, so the car steers towards the obstacle to reacquire it. UNKNOWN
+ * and STUCK steer straight (the health counters stop the car if the sensor
+ * stays bad). One close ping (under OBSTACLE_HUG_NEAR_MM) wins over the
+ * median. The heading is capped both ways: no turn away beyond
+ * OBSTACLE_HUG_AWAY_MAX_DECI and no turn towards beyond
+ * -OBSTACLE_HUG_TOWARD_MAX_DECI.
  *
- * OPEN means nothing was heard, so the car steers towards the obstacle to
- * reacquire it. UNKNOWN and STUCK steer straight: the health counters in
- * the statechart stop the car if the sensor stays bad.
+ * Wall mode: the reading is first turned into the distance to the wall
+ * (wall_distance_mm). The distance error does not steer the wheels
+ * directly, because the reading is old by the time the car has turned (the
+ * servo spends about 0.4 s of every 0.65 s looking ahead). It sets a wanted
+ * heading instead (wall_heading), and the wheels follow the heading error,
+ * which the dead reckoning measures every 20 ms. An OPEN, blind or very
+ * far reading wants +90 degrees. There is no separate one-ping override as
+ * in box mode: a close wall already wants the full lean, which turns the
+ * wheels at the full rate. The heading stays in +60..+120 degrees.
  *
- * @param[in]  cls        Echo class (OBSTACLE_CLASS_*).
- * @param[in]  reading_mm Filtered look-ray distance in mm.
- * @param[out] p_cmd      Direction and inner wheel speed.
+ * @param[in]  p_in  Readings and heading.
+ * @param[out] p_cmd Direction and inner wheel speed.
  */
-void obstacle_plan_hug_ctrl (uint8_t cls, uint16_t reading_mm,
+void obstacle_plan_hug_ctrl (obstacle_hug_in_t const * p_in,
                              obstacle_hug_cmd_t * p_cmd)
+{
+    p_cmd->dir             = OBSTACLE_HUG_STRAIGHT;
+    p_cmd->inside_permille = PERMILLE_FULL;
+
+    if (p_in->b_wall)
+    {
+        uint32_t const dist = wall_distance_mm(p_in->reading_mm, p_in->head_deci);
+
+        seek_heading(p_in->head_deci, wall_heading(p_in->cls, dist), p_cmd);
+    }
+    else if ((OBSTACLE_CLASS_UNKNOWN == p_in->cls) || (OBSTACLE_CLASS_STUCK == p_in->cls))
+    {
+        /* A blind sensor must not steer the car by distance. */
+    }
+    else if (p_in->latest_mm < OBSTACLE_HUG_NEAR_MM)
+    {
+        /* One close ping wins over the median. */
+        p_cmd->dir             = OBSTACLE_HUG_AWAY;
+        p_cmd->inside_permille = (uint16_t)HUG_FULL_TURN_PERMILLE;
+    }
+    else if (OBSTACLE_CLASS_OPEN == p_in->cls)
+    {
+        /* Nothing heard: treat it as the far edge of the band. */
+        hug_band(OBSTACLE_HUG_TARGET_MM + OBSTACLE_HUG_DEADBAND_MM + OBSTACLE_HUG_SPAN_MM, p_cmd);
+    }
+    else
+    {
+        hug_band(p_in->reading_mm, p_cmd);
+    }
+
+    cap_heading(p_in, p_cmd);
+}
+
+/*!
+ * @brief Distance from the wall to the car, from a reading of the wall ray.
+ *
+ * The ray is OBSTACLE_HUG_SERVO_DECI to the wall side of the heading, so it
+ * meets the wall (which stands across the original line) at the angle
+ * |heading - ray| off the wall normal. The nearest echo in the cone is
+ * OBSTACLE_BEAM_HALF_DECI closer to the normal, hence
+ * distance = reading * cos(angle - beam).
+ *
+ * @param[in] reading_mm Reading; OBSTACLE_SIDE_FAR_MM for no echo.
+ * @param[in] head_deci  Heading from the original line (left positive).
+ *
+ * @return Distance in mm, or OBSTACLE_SIDE_FAR_MM when there is no echo or
+ *         the ray is too slanted to trust.
+ */
+static uint32_t wall_distance_mm (uint32_t reading_mm, int32_t head_deci)
+{
+    int32_t const off_deci = abs_deci_of(head_deci - OBSTACLE_HUG_SERVO_DECI) -
+                             OBSTACLE_BEAM_HALF_DECI;
+    int32_t const eff_deci = (off_deci > 0) ? off_deci : 0;
+    uint32_t       dist    = OBSTACLE_SIDE_FAR_MM;
+
+    if ((reading_mm < OBSTACLE_SIDE_FAR_MM) && (eff_deci <= OBSTACLE_WALL_RAY_MAX_DECI))
+    {
+        /* Cast is safe: cos is 0..16384 and mul_q14 does not go negative. */
+        dist = (uint32_t)mul_q14(reading_mm, obstacle_plan_cos_q14(eff_deci));
+    }
+
+    return (dist);
+}
+
+/*!
+ * @brief Heading a wall-following car wants for a distance to the wall.
+ *
+ * Inside the deadband, or for an OPEN, UNKNOWN, STUCK or very far reading
+ * (beyond target + deadband + span, where the ray may be seeing something
+ * else), the car wants +90 degrees: parallel, neither towards nor away.
+ * Closer than the band it leans away, up to span * gain; a little beyond the
+ * band (a VALID reading, so a real wall) it leans in by the same rule. The
+ * lean is at most 16 degrees, so the heading window +60..+120 is never
+ * reached by this law.
+ *
+ * @param[in] cls     Class of the newest side ping.
+ * @param[in] dist_mm Distance to the wall in mm (OBSTACLE_SIDE_FAR_MM for none).
+ *
+ * @return Wanted heading in deci-degrees.
+ */
+static int32_t wall_heading (uint8_t cls, uint32_t dist_mm)
+{
+    int32_t const near_edge = (int32_t)(OBSTACLE_HUG_TARGET_MM - OBSTACLE_HUG_DEADBAND_MM);
+    int32_t const far_edge  = (int32_t)(OBSTACLE_HUG_TARGET_MM + OBSTACLE_HUG_DEADBAND_MM);
+    int32_t const span      = (int32_t)OBSTACLE_HUG_SPAN_MM;
+    int32_t const dist      = (int32_t)dist_mm;
+    int32_t       want      = OBSTACLE_WALL_PIVOT_DECI;
+    int32_t       err       = 0;
+
+    if (OBSTACLE_CLASS_VALID != cls)
+    {
+        /* OPEN or blind: nothing to steer by. */
+    }
+    else if (dist < near_edge)
+    {
+        err  = ((near_edge - dist) > span) ? span : (near_edge - dist);
+        want = OBSTACLE_WALL_PIVOT_DECI + (err * OBSTACLE_WALL_LEAN_DECI_PER_MM);
+    }
+    else if ((dist > far_edge) && (dist <= (far_edge + span)))
+    {
+        want = OBSTACLE_WALL_PIVOT_DECI - ((dist - far_edge) * OBSTACLE_WALL_LEAN_DECI_PER_MM);
+    }
+    else
+    {
+        /* In the band, or too far to trust: parallel. */
+    }
+
+    return (want);
+}
+
+/*!
+ * @brief Turn the car towards a wanted heading, in proportion to the error.
+ *
+ * Above the wanted heading the car is turned away from the wall, so it
+ * turns back towards it; below, it turns away.
+ *
+ * @param[in]  head_deci Heading from the original line (left positive).
+ * @param[in]  want_deci Wanted heading.
+ * @param[out] p_cmd     Command to fill.
+ */
+static void seek_heading (int32_t head_deci, int32_t want_deci, obstacle_hug_cmd_t * p_cmd)
+{
+    int32_t const err = head_deci - want_deci;
+
+    if (err > OBSTACLE_WALL_HEAD_DEAD_DECI)
+    {
+        set_turn(p_cmd, OBSTACLE_HUG_TOWARD, (uint32_t)err, OBSTACLE_WALL_HEAD_SPAN_DECI);
+    }
+    else if (err < -OBSTACLE_WALL_HEAD_DEAD_DECI)
+    {
+        set_turn(p_cmd, OBSTACLE_HUG_AWAY, (uint32_t)(-err), OBSTACLE_WALL_HEAD_SPAN_DECI);
+    }
+    else
+    {
+        /* Close enough to the wanted heading: straight on. */
+    }
+}
+
+/*!
+ * @brief Set a turn proportional to an error.
+ *
+ * @param[out] p_cmd Command to fill.
+ * @param[in]  dir   OBSTACLE_HUG_AWAY or OBSTACLE_HUG_TOWARD.
+ * @param[in]  err   Error, same unit as span; larger values count as span.
+ * @param[in]  span  Error that gives the full turn.
+ */
+static void set_turn (obstacle_hug_cmd_t * p_cmd, uint8_t dir, uint32_t err,
+                      uint32_t span)
+{
+    uint32_t const used = (err > span) ? span : err;
+
+    p_cmd->dir             = dir;
+    p_cmd->inside_permille =
+        (uint16_t)(PERMILLE_FULL - ((OBSTACLE_HUG_TURN_PERMILLE * used) / span));
+}
+
+/*!
+ * @brief Box mode: compare a distance with the target band and set the turn.
+ *
+ * @param[in]  dist  Distance in mm.
+ * @param[out] p_cmd Command to fill.
+ */
+static void hug_band (uint32_t dist, obstacle_hug_cmd_t * p_cmd)
 {
     uint32_t const target = OBSTACLE_HUG_TARGET_MM;
     uint32_t const dead   = OBSTACLE_HUG_DEADBAND_MM;
     uint32_t const span   = OBSTACLE_HUG_SPAN_MM;
-    uint32_t       dist   = reading_mm;
-    uint32_t       err    = 0U;
 
-    p_cmd->dir             = OBSTACLE_HUG_STRAIGHT;
-    p_cmd->inside_permille = PERMILLE_FULL;
-
-    if ((OBSTACLE_CLASS_UNKNOWN == cls) || (OBSTACLE_CLASS_STUCK == cls))
+    if (dist < (target - dead))
     {
-        /* A blind sensor must not steer the car. */
+        set_turn(p_cmd, OBSTACLE_HUG_AWAY, (target - dead) - dist, span);
+    }
+    else if (dist > (target + dead))
+    {
+        set_turn(p_cmd, OBSTACLE_HUG_TOWARD, dist - (target + dead), span);
     }
     else
     {
-        if (OBSTACLE_CLASS_OPEN == cls)
-        {
-            /* Nothing heard: treat it as the far edge of the band. */
-            dist = target + dead + span;
-        }
+        /* Inside the deadband: hold the target. */
+    }
+}
 
-        if (dist > (target + dead))
+/*!
+ * @brief Stop a turn that has reached its heading cap.
+ *
+ * @param[in]     p_in  Hug inputs (mode and heading).
+ * @param[in,out] p_cmd Command; set to straight when capped.
+ */
+static void cap_heading (obstacle_hug_in_t const * p_in, obstacle_hug_cmd_t * p_cmd)
+{
+    int32_t const hi = p_in->b_wall ? OBSTACLE_WALL_HEAD_MAX_DECI : OBSTACLE_HUG_AWAY_MAX_DECI;
+    int32_t const lo = p_in->b_wall ? OBSTACLE_WALL_HEAD_MIN_DECI : -OBSTACLE_HUG_TOWARD_MAX_DECI;
+
+    if (((OBSTACLE_HUG_AWAY == p_cmd->dir) && (p_in->head_deci >= hi)) ||
+        ((OBSTACLE_HUG_TOWARD == p_cmd->dir) && (p_in->head_deci <= lo)))
+    {
+        p_cmd->dir             = OBSTACLE_HUG_STRAIGHT;
+        p_cmd->inside_permille = PERMILLE_FULL;
+    }
+}
+
+/*!
+ * @brief Angle the escape pivot has to reach.
+ *
+ * @param[in] b_wall    Wall plan.
+ * @param[in] start_deg Planned start angle of a box plan, degrees.
+ *
+ * @return Deci-degrees away from the obstacle.
+ */
+static int32_t pivot_deci (bool b_wall, uint8_t start_deg)
+{
+    return (b_wall ? OBSTACLE_WALL_PIVOT_DECI : ((int32_t)start_deg * DECI_PER_DEG));
+}
+
+/*!
+ * @brief Steering for a hug direction.
+ *
+ * @param[in] side Side the car passes on (OBSTACLE_SIDE_*).
+ * @param[in] dir  OBSTACLE_HUG_*.
+ *
+ * @return OBSTACLE_STEER_STRAIGHT, LEFT or RIGHT.
+ */
+static uint8_t steer_for (uint8_t side, uint8_t dir)
+{
+    uint8_t steer = OBSTACLE_STEER_STRAIGHT;
+
+    if (OBSTACLE_HUG_AWAY == dir)
+    {
+        steer = obstacle_plan_steer_away(side);
+    }
+    else if (OBSTACLE_HUG_TOWARD == dir)
+    {
+        steer = (OBSTACLE_STEER_LEFT == obstacle_plan_steer_away(side)) ? OBSTACLE_STEER_RIGHT
+                                                                        : OBSTACLE_STEER_LEFT;
+    }
+    else
+    {
+        steer = OBSTACLE_STEER_STRAIGHT;
+    }
+
+    return (steer);
+}
+
+/*!
+ * @brief Escape pivot: bend away on the inside wheel until the forward beam
+ *        is clear (the statechart decides that), and report when the planned
+ *        angle is reached.
+ *
+ * The pivot stands still at the heading cap (OBSTACLE_PIVOT_MAX_DECI, or
+ * OBSTACLE_WALL_HEAD_MAX_DECI for a wall) instead of spinning on.
+ *
+ * @param[in]  p_in  Side, plan and heading.
+ * @param[out] p_out Steering and speeds; b_turned is the TURNED condition.
+ */
+void obstacle_plan_pivot (obstacle_drive_in_t const * p_in, obstacle_drive_out_t * p_out)
+{
+    int32_t const cap = p_in->b_wall ? OBSTACLE_WALL_HEAD_MAX_DECI : OBSTACLE_PIVOT_MAX_DECI;
+
+    p_out->phase        = OBSTACLE_PHASE_TURN;
+    p_out->dir          = OBSTACLE_HUG_AWAY;
+    p_out->steer        = obstacle_plan_steer_away(p_in->side);
+    p_out->inside_um_s  = OBSTACLE_NAV_ESCAPE_INSIDE_UM_S;
+    p_out->outside_um_s = (int32_t)OBSTACLE_NAV_SPEED_UM_S;
+    p_out->b_turned     = (p_in->head_deci >= pivot_deci(p_in->b_wall, p_in->start_deg));
+
+    if (p_in->head_deci >= cap)
+    {
+        p_out->steer = OBSTACLE_STEER_HOLD;
+    }
+}
+
+/*!
+ * @brief REACQUIRE driver: advance the bypass phase and choose the wheels.
+ *
+ * Box plan: TURN (until the start angle) -> OUT (straight to the planned
+ * offset) -> ALIGN (turn back to parallel with the original line) -> HUG.
+ * Wall plan: TURN (to +90 degrees) -> HUG. Several changes can happen in
+ * one call.
+ *
+ * @param[in]  p_in  Phase, plan, heading, offset and readings.
+ * @param[out] p_out Phase after this call, steering and speeds.
+ */
+void obstacle_plan_drive (obstacle_drive_in_t const * p_in, obstacle_drive_out_t * p_out)
+{
+    obstacle_drive_in_t in = *p_in;
+
+    obstacle_plan_pivot(p_in, p_out);
+
+    if ((OBSTACLE_PHASE_TURN == in.phase) && (p_out->b_turned))
+    {
+        in.phase = in.b_wall ? OBSTACLE_PHASE_HUG : OBSTACLE_PHASE_OUT;
+    }
+
+    if ((OBSTACLE_PHASE_OUT == in.phase) && (in.lateral_mm >= in.need_mm))
+    {
+        in.phase = OBSTACLE_PHASE_ALIGN;
+    }
+
+    if ((OBSTACLE_PHASE_ALIGN == in.phase) && (in.head_deci <= OBSTACLE_ALIGN_DONE_DECI))
+    {
+        in.phase = OBSTACLE_PHASE_HUG;
+    }
+
+    fill_drive(&in, p_out);
+}
+
+/*!
+ * @brief Wheels for the phase reached by obstacle_plan_drive().
+ *
+ * @param[in]  p_in  Inputs with the new phase.
+ * @param[out] p_out Output; the pivot answer stays for TURN.
+ */
+static void fill_drive (obstacle_drive_in_t const * p_in, obstacle_drive_out_t * p_out)
+{
+    obstacle_hug_cmd_t hug = {OBSTACLE_HUG_STRAIGHT, (uint16_t)PERMILLE_FULL};
+
+    p_out->phase = p_in->phase;
+
+    if (OBSTACLE_PHASE_TURN != p_in->phase)
+    {
+        int32_t const outside = (int32_t)OBSTACLE_NAV_HUG_OUTSIDE_UM_S;
+
+        if (OBSTACLE_PHASE_ALIGN == p_in->phase)
         {
-            p_cmd->dir = OBSTACLE_HUG_TOWARD;
-            err        = dist - (target + dead);
+            hug.dir             = OBSTACLE_HUG_TOWARD;
+            hug.inside_permille = (uint16_t)HUG_FULL_TURN_PERMILLE;
         }
-        else if (dist < (target - dead))
+        else if (OBSTACLE_PHASE_HUG == p_in->phase)
         {
-            p_cmd->dir = OBSTACLE_HUG_AWAY;
-            err        = (target - dead) - dist;
+            obstacle_hug_in_t hug_in;
+
+            hug_in.cls        = p_in->side_cls;
+            hug_in.reading_mm = p_in->median_mm;
+            hug_in.latest_mm  = p_in->latest_mm;
+            hug_in.head_deci  = p_in->head_deci;
+            hug_in.b_wall     = p_in->b_wall;
+            obstacle_plan_hug_ctrl(&hug_in, &hug);
         }
         else
         {
-            /* Inside the deadband: hold the target. */
+            /* OUT: straight on at the planned angle. */
         }
 
-        if (0U != err)
+        p_out->dir          = hug.dir;
+        p_out->steer        = steer_for(p_in->side, hug.dir);
+        p_out->inside_um_s  = (outside * (int32_t)hug.inside_permille) / (int32_t)PERMILLE_FULL;
+        p_out->outside_um_s = outside;
+    }
+}
+
+/*!
+ * @brief Tell whether the ping with this sequence number looks ahead.
+ *
+ * In REACQUIRE every OBSTACLE_LOOK_AHEAD_EVERY-th ping (seq 3, 7, 11 ...)
+ * aims the servo straight ahead; the others aim at the hug ray. The 6-bit
+ * sequence number wraps on a whole cycle.
+ *
+ * @param[in] seq Ping sequence number from the status word (6 bits).
+ *
+ * @return True for a look-ahead ping.
+ */
+bool obstacle_plan_is_look_ahead (uint8_t seq)
+{
+    return (LOOK_AHEAD_MASK == ((uint32_t)seq & LOOK_AHEAD_MASK));
+}
+
+/*!
+ * @brief Start the side filter afresh: forget earlier readings and count
+ *        only pings newer than seq.
+ *
+ * @param[out] p_filt Filter.
+ * @param[in]  seq    Sequence number of the newest ping seen so far.
+ */
+void obstacle_plan_side_reset (obstacle_side_filter_t * p_filt, uint8_t seq)
+{
+    uint32_t slot = 0U;
+
+    for (slot = 0U; slot < OBSTACLE_SIDE_FILTER_LEN; slot++)
+    {
+        p_filt->mm[slot] = (uint16_t)OBSTACLE_SIDE_FAR_MM;
+    }
+
+    p_filt->cls      = OBSTACLE_CLASS_UNKNOWN;
+    p_filt->last_seq = seq;
+    p_filt->count      = 0U;
+    p_filt->next       = 0U;
+    p_filt->b_fresh    = false;
+    p_filt->trim_cdeci = 0;
+}
+
+/*!
+ * @brief Offer the newest ping to the side filter. A ping already seen and
+ *        a look-ahead ping are ignored, so a forward reading never reaches
+ *        the hug law.
+ *
+ * @param[in,out] p_filt  Filter.
+ * @param[in]     seq     Sequence number of the ping (6 bits).
+ * @param[in]     cls     Ping class.
+ * @param[in]     dist_mm Ping distance (VALID only).
+ */
+void obstacle_plan_side_feed (obstacle_side_filter_t * p_filt, uint8_t seq, uint8_t cls,
+                              uint16_t dist_mm)
+{
+    if (seq != p_filt->last_seq)
+    {
+        p_filt->last_seq = seq;
+
+        if (!obstacle_plan_is_look_ahead(seq))
         {
+            p_filt->cls     = cls;
+            p_filt->b_fresh = true;
+            p_filt->mm[p_filt->next] =
+                (uint16_t)((OBSTACLE_CLASS_VALID == cls) ? dist_mm : OBSTACLE_SIDE_FAR_MM);
+            p_filt->next = (uint8_t)((p_filt->next + 1U) % OBSTACLE_SIDE_FILTER_LEN);
+
+            if (p_filt->count < OBSTACLE_SIDE_FILTER_LEN)
+            {
+                p_filt->count = (uint8_t)(p_filt->count + 1U);
+            }
+        }
+    }
+}
+
+/*!
+ * @brief Median of the last three side readings, so one stray echo cannot
+ *        steer the car.
+ *
+ * @param[in] p_filt Filter.
+ *
+ * @return Median in mm; OBSTACLE_SIDE_FAR_MM until three readings arrived
+ *         (OPEN, UNKNOWN and STUCK count as OBSTACLE_SIDE_FAR_MM).
+ */
+uint16_t obstacle_plan_side_median (obstacle_side_filter_t const * p_filt)
+{
+    uint32_t const first  = p_filt->mm[0];
+    uint32_t const second = p_filt->mm[1];
+    uint32_t const third  = p_filt->mm[OBSTACLE_SIDE_FILTER_LEN - 1U];
+    uint32_t       median = OBSTACLE_SIDE_FAR_MM;
+
+    if (OBSTACLE_SIDE_FILTER_LEN == p_filt->count)
+    {
+        median = second;
+
+        if (((first >= second) && (first <= third)) || ((first <= second) && (first >= third)))
+        {
+            median = first;
+        }
+        else if (((third >= first) && (third <= second)) || ((third <= first) && (third >= second)))
+        {
+            median = third;
+        }
+        else
+        {
+            /* The second value is the middle one. */
+        }
+    }
+
+    /* Cast is safe: every value is at most OBSTACLE_SIDE_FAR_MM. */
+    return ((uint16_t)median);
+}
+
+/*!
+ * @brief Newest side reading.
+ *
+ * @param[in] p_filt Filter.
+ *
+ * @return Distance in mm; OBSTACLE_SIDE_FAR_MM before the first reading or
+ *         for OPEN, UNKNOWN and STUCK.
+ */
+uint16_t obstacle_plan_side_latest (obstacle_side_filter_t const * p_filt)
+{
+    uint16_t latest = (uint16_t)OBSTACLE_SIDE_FAR_MM;
+
+    if (p_filt->count > 0U)
+    {
+        latest = p_filt->mm[(p_filt->next + (OBSTACLE_SIDE_FILTER_LEN - 1U)) %
+                            OBSTACLE_SIDE_FILTER_LEN];
+    }
+
+    return (latest);
+}
+
+/*!
+ * @brief Wall mode: heading for the hug law, trimmed by the wall distance.
+ *
+ * Once per new side ping, while tracking, a VALID reading whose distance to
+ * the wall lies within the lean range (not beyond target + deadband + span,
+ * where the ray may see something else) moves the trim by
+ * OBSTACLE_WALL_TRIM_CDECI_PER_MM per mm of error from
+ * OBSTACLE_HUG_TARGET_MM, limited to +-OBSTACLE_HUG_SPAN_MM. The distance
+ * itself is computed with the trimmed heading. OPEN, blind and far readings
+ * leave the trim alone. See OBSTACLE_WALL_TRIM_CDECI_PER_MM.
+ *
+ * @param[in,out] p_filt    Filter holding the trim.
+ * @param[in]     head_deci Dead-reckoned heading from the original line.
+ * @param[in]     b_track   True in the wall-follow phase; false leaves the
+ *                          trim unchanged (it is 0 until tracking starts).
+ *
+ * @return Heading plus trim, deci-degrees.
+ */
+int32_t obstacle_plan_wall_head (obstacle_side_filter_t * p_filt, int32_t head_deci,
+                                 bool b_track)
+{
+    int32_t const span = (int32_t)OBSTACLE_HUG_SPAN_MM;
+    int32_t const trim_max_cdeci = OBSTACLE_WALL_TRIM_MAX_DECI * TRIM_CDECI_PER_DECI;
+
+    if (b_track && p_filt->b_fresh && (OBSTACLE_CLASS_VALID == p_filt->cls) &&
+        (p_filt->count > 0U))
+    {
+        int32_t const eff  = head_deci + (p_filt->trim_cdeci / TRIM_CDECI_PER_DECI);
+        int32_t const dist = (int32_t)wall_distance_mm(obstacle_plan_side_latest(p_filt), eff);
+        int32_t const far_edge =
+            (int32_t)(OBSTACLE_HUG_TARGET_MM + OBSTACLE_HUG_DEADBAND_MM + OBSTACLE_HUG_SPAN_MM);
+
+        if (dist <= far_edge)
+        {
+            int32_t err = dist - (int32_t)OBSTACLE_HUG_TARGET_MM;
+
             if (err > span)
             {
                 err = span;
             }
+            else if (err < -span)
+            {
+                err = -span;
+            }
+            else
+            {
+                /* Inside the span. */
+            }
 
-            p_cmd->inside_permille = (uint16_t)(PERMILLE_FULL -
-                ((OBSTACLE_HUG_TURN_PERMILLE * err) / span));
+            p_filt->trim_cdeci += err * OBSTACLE_WALL_TRIM_CDECI_PER_MM;
+
+            if (p_filt->trim_cdeci > trim_max_cdeci)
+            {
+                p_filt->trim_cdeci = trim_max_cdeci;
+            }
+            else if (p_filt->trim_cdeci < -trim_max_cdeci)
+            {
+                p_filt->trim_cdeci = -trim_max_cdeci;
+            }
+            else
+            {
+                /* Inside the limit. */
+            }
         }
     }
+
+    p_filt->b_fresh = false;
+
+    return (head_deci + (p_filt->trim_cdeci / TRIM_CDECI_PER_DECI));
+}
+
+/*!
+ * @brief Class of the newest side ping.
+ *
+ * @param[in] p_filt Filter.
+ *
+ * @return OBSTACLE_CLASS_*; UNKNOWN before the first side ping.
+ */
+uint8_t obstacle_plan_side_class (obstacle_side_filter_t const * p_filt)
+{
+    return (p_filt->cls);
 }
 
 /*!
@@ -442,61 +987,6 @@ uint32_t obstacle_plan_hug_limit_mm (obstacle_plan_result_t const * p_result,
 uint8_t obstacle_plan_steer_away (uint8_t side)
 {
     return ((OBSTACLE_SIDE_LEFT == side) ? OBSTACLE_STEER_LEFT : OBSTACLE_STEER_RIGHT);
-}
-
-/*!
- * @brief Steering that bends towards the obstacle.
- *
- * @param[in] side Side the car passes on (OBSTACLE_SIDE_*).
- *
- * @return OBSTACLE_STEER_LEFT or OBSTACLE_STEER_RIGHT.
- */
-uint8_t obstacle_plan_steer_toward (uint8_t side)
-{
-    return ((OBSTACLE_SIDE_LEFT == side) ? OBSTACLE_STEER_RIGHT : OBSTACLE_STEER_LEFT);
-}
-
-/*!
- * @brief Hug rule for one ping on the 45 degree look-ray.
- *
- * Under NEAR bends away, NEAR..FAR goes straight, beyond FAR or OPEN bends
- * towards, and UNKNOWN or STUCK keep the last choice (the fault counters
- * handle a dead sensor).
- *
- * @param[in] side       Side the car passes on (OBSTACLE_SIDE_*).
- * @param[in] cls        Ping class.
- * @param[in] dist_mm    Ping distance.
- * @param[in] last_steer Previous steering choice.
- *
- * @return Steering for this ping (OBSTACLE_STEER_*).
- */
-uint8_t obstacle_plan_hug_steer (uint8_t side, uint8_t cls, uint16_t dist_mm,
-                           uint8_t last_steer)
-{
-    uint8_t steer = last_steer;
-
-    if (OBSTACLE_CLASS_OPEN == cls)
-    {
-        steer = obstacle_plan_steer_toward(side);
-    }
-    else if (OBSTACLE_CLASS_VALID != cls)
-    {
-        steer = last_steer;
-    }
-    else if (dist_mm < OBSTACLE_HUG_NEAR_MM)
-    {
-        steer = obstacle_plan_steer_away(side);
-    }
-    else if (dist_mm <= OBSTACLE_HUG_FAR_MM)
-    {
-        steer = OBSTACLE_STEER_STRAIGHT;
-    }
-    else
-    {
-        steer = obstacle_plan_steer_toward(side);
-    }
-
-    return (steer);
 }
 
 /*!
@@ -617,16 +1107,17 @@ static bool slot_blocks (scan_algo_ctx_t const * p_scan, int32_t slot,
  * @brief Tell whether any reading outward of an edge sits inside the swept
  *        band, or cannot be trusted.
  *
- * @param[in] p_scan  Finished scan.
- * @param[in] p_cfg   Car and course numbers.
- * @param[in] side    SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
- * @param[in] need_mm Sideways offset this side needs.
+ * @param[in] p_scan     Finished scan.
+ * @param[in] p_cfg      Car and course numbers.
+ * @param[in] side       SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
+ * @param[in] need_mm    Sideways offset this side needs.
+ * @param[in] first_slot First slot to check, then outward from there.
  *
  * @return True if the side is blocked.
  */
 static bool corridor_blocked (scan_algo_ctx_t const * p_scan,
                               obstacle_plan_cfg_t const * p_cfg, uint8_t side,
-                              uint32_t need_mm)
+                              uint32_t need_mm, int32_t first_slot)
 {
     int32_t const sign = side_sign(side);
 
@@ -634,7 +1125,7 @@ static bool corridor_blocked (scan_algo_ctx_t const * p_scan,
     int32_t const band_x = (int32_t)need_mm + (int32_t)p_cfg->half_width_mm;
     int32_t const band_y = (int32_t)p_scan->closest_mm +
                            (int32_t)p_cfg->depth_mm + (int32_t)p_cfg->rear_mm;
-    int32_t slot      = (int32_t)p_scan->edge_miss[side];
+    int32_t slot      = first_slot;
     bool    b_blocked = false;
 
     while ((!b_blocked) && (slot >= 0) && (slot < (int32_t)OBSTACLE_SLOT_COUNT))
@@ -689,9 +1180,46 @@ static void plan_side (scan_algo_ctx_t const * p_scan,
     if ((SCAN_ALGO_EDGE_BOUNDED == p_scan->edge_state[side]) &&
         ((need_mm + (int32_t)p_cfg->half_width_mm) <=
          (int32_t)p_cfg->free_floor_mm) &&
-        (!corridor_blocked(p_scan, p_cfg, side, (uint32_t)need_mm)))
+        (!corridor_blocked(p_scan, p_cfg, side, (uint32_t)need_mm,
+                           (int32_t)miss_slot)))
     {
         p_res->need_mm[side] = (uint16_t)need_mm;
+    }
+}
+
+/*!
+ * @brief Wall: neither edge ends inside the sweep, so pass on the left with
+ *        a fixed offset.
+ *
+ * The offset is the largest need plan_side would still accept (free floor
+ * minus half the car width), as for a bounded edge that only just fits at
+ * the +60 degree slot. The left corridor is blocked when a reading after
+ * the last confirmed hit (UNKNOWN or STUCK) cannot be trusted. A right
+ * pass needs a bounded edge, so this never touches need_mm[RIGHT].
+ *
+ * @param[in]     p_scan Finished scan.
+ * @param[in]     p_cfg  Car and course numbers.
+ * @param[in,out] p_res  Result; need_mm[LEFT] and b_wall are set for a wall.
+ */
+static void plan_wall_left (scan_algo_ctx_t const * p_scan,
+                            obstacle_plan_cfg_t const * p_cfg,
+                            obstacle_plan_result_t * p_res)
+{
+    if ((SCAN_ALGO_EDGE_UNBOUNDED == p_scan->edge_state[SCAN_ALGO_LEFT]) &&
+        (SCAN_ALGO_EDGE_UNBOUNDED == p_scan->edge_state[SCAN_ALGO_RIGHT]) &&
+        (p_cfg->free_floor_mm > p_cfg->half_width_mm))
+    {
+        /* Cast is safe: the difference is positive and at most 500. */
+        uint32_t const need_mm =
+            (uint32_t)p_cfg->free_floor_mm - (uint32_t)p_cfg->half_width_mm;
+        int32_t const first = (int32_t)p_scan->edge_hit[SCAN_ALGO_LEFT] + 1;
+
+        if (!corridor_blocked(p_scan, p_cfg, SCAN_ALGO_LEFT, need_mm, first))
+        {
+            /* Cast is safe: need_mm is at most the free floor (<= 1023). */
+            p_res->need_mm[SCAN_ALGO_LEFT] = (uint16_t)need_mm;
+            p_res->b_wall                  = true;
+        }
     }
 }
 

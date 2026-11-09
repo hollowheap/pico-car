@@ -68,6 +68,11 @@
 #define OBSTACLE_CMD_ACCEPT     (2U)
 #define OBSTACLE_CMD_REJECT     (3U)
 #define OBSTACLE_CMD_LINE_FOUND (4U)
+/* [Chat] All eight 3-bit opcodes are taken (STOP, RESET and START are in
+ * obstacle_cmd.h), so TURNED reuses LINE_FOUND: in BYPASS it means "the
+ * car has turned the planned start angle", in REACQUIRE "the line is
+ * found". Each state accepts only its own meaning. */
+#define OBSTACLE_CMD_TURNED     (OBSTACLE_CMD_LINE_FOUND)
 
 /* Events to Navigation, 2 bits. */
 #define OBSTACLE_EVT_OBSTACLE    (0U)
@@ -135,7 +140,8 @@
 /* OBSTACLE payload: dist 12. */
 #define OBSTACLE_EV_DIST_SH (7U)
 #define OBSTACLE_EV_DIST_MK (0xFFFU)
-/* SCAN_RESULT payload: status 2 | side 1 | width 10 | start angle 6. */
+/* SCAN_RESULT payload: status 2 | side 1 | width 10 | start angle 6 |
+ * wall 1. */
 #define OBSTACLE_EV_STATUS_SH (7U)
 #define OBSTACLE_EV_STATUS_MK (0x3U)
 #define OBSTACLE_EV_SIDE_SH   (9U)
@@ -144,6 +150,8 @@
 #define OBSTACLE_EV_WIDTH_MK  (0x3FFU)
 #define OBSTACLE_EV_ANGLE_SH  (20U)
 #define OBSTACLE_EV_ANGLE_MK  (0x3FU)
+#define OBSTACLE_EV_WALL_SH   (26U)
+#define OBSTACLE_EV_WALL_MK   (0x1U)
 /* FAULT payload: cause 4 | fault byte 8. */
 #define OBSTACLE_EV_CAUSE_SH  (7U)
 #define OBSTACLE_EV_CAUSE_MK  (0xFU)

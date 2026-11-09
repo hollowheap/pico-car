@@ -201,24 +201,109 @@
 /* [Chat] Guard band on the look-ray (obstacle_nav.c HUG loop). The
  * proportional controller below holds OBSTACLE_HUG_TARGET_MM; NEAR is
  * only the hard override that bends the car away on one close ping.
- * [Default] 250 / 350 mm: in the closed-loop simulation 150 / 250 mm
- * reacted too late (the car curved into 150 and 300 mm deep boxes).
+ * [Default] 250 mm: in the closed-loop simulation 150 mm reacted too late
+ * (the car curved into 150 and 300 mm deep boxes). The old 350 mm "far"
+ * limit belonged to the STEER-word law, which D95 removed.
  * [Chat] Look-ray angle: 60 degrees (the servo limit), raised from 45 for
  * the steeper HUG curve: looking further sideways, the sensor sees the
  * obstacle's side sooner. In the simulation the 13/20 curve hit the box
  * in half the cases at 45 degrees and passed every case at 60. */
 #define OBSTACLE_HUG_NEAR_MM    (250U)
-#define OBSTACLE_HUG_FAR_MM     (350U)
 #define OBSTACLE_HUG_SERVO_DECI (600)
 
 /* [Default] Clearance the HUG loop holds on the look-ray. The inner wheel
- * speed falls from straight (1000) to OBSTACLE_HUG_TURN_PERMILLE as the
+ * speed falls from straight (1000) by up to OBSTACLE_HUG_TURN_PERMILLE (to 200) as the
  * error grows past the deadband, so the car curves smoothly instead of
  * flipping between two thresholds. */
 #define OBSTACLE_HUG_TARGET_MM   (300U)
 #define OBSTACLE_HUG_DEADBAND_MM (20U)
 #define OBSTACLE_HUG_SPAN_MM     (80U)
 #define OBSTACLE_HUG_TURN_PERMILLE (800U)
+
+/* ------------------------------------------------------------------ *
+ * D95: look ahead while the car moves, and follow a wall in parallel.
+ * Every number here is a default chosen so the car works without tuning
+ * (the user cannot tune on the car); each one is pinned by a host test.
+ * ------------------------------------------------------------------ */
+
+/* [Chat] While the car moves round an obstacle (REACQUIRE), every fourth
+ * ping aims the servo straight ahead (the other three at the hug ray). A
+ * VALID forward reading under OBSTACLE_FWD_GUARD_MM stops the car and
+ * starts a new stationary scan. One look cycle is about 0.65 s: three side
+ * pings (60 ms apart) plus two servo moves of about 260 ms each (60 ms
+ * pre-delay and 200 ms settle for 60 degrees), about 90 mm of travel at
+ * 140 mm/s. The number must be a power of two so the 6-bit ping counter
+ * wraps on a whole cycle. */
+#define OBSTACLE_LOOK_AHEAD_EVERY (4U)
+#define OBSTACLE_FWD_GUARD_MM     (300U)
+
+/* [Default] Value used for an OPEN, UNKNOWN or STUCK side reading in the
+ * filter: farther than any echo (12-bit distance maximum). */
+#define OBSTACLE_SIDE_FAR_MM (4095U)
+
+/* [Chat] Wall mode (the plan came from the left-wall fallback): pivot left
+ * to +90 degrees from the original line, then follow the wall on the right
+ * with the heading kept inside +60..+120 degrees. */
+#define OBSTACLE_WALL_PIVOT_DECI    (900)
+#define OBSTACLE_WALL_HEAD_MIN_DECI (600)
+#define OBSTACLE_WALL_HEAD_MAX_DECI (1200)
+
+/* [Default] Wall mode steers by heading. The heading loop runs every 20 ms
+ * from the wheel odometry, so it is not delayed by the slow side readings
+ * (the servo spends about 0.4 s of every 0.65 s looking ahead). No turn
+ * inside +-1 degree of the wanted heading, a full turn
+ * (OBSTACLE_HUG_TURN_PERMILLE) at +-15 degrees or more. */
+#define OBSTACLE_WALL_HEAD_DEAD_DECI (10)
+#define OBSTACLE_WALL_HEAD_SPAN_DECI (150)
+
+/* [Default] The distance to the wall sets the wanted heading: +90 degrees
+ * inside the deadband around OBSTACLE_HUG_TARGET_MM; 0.2 degree per mm of
+ * error beyond it, leaning away when too close and leaning in when a little
+ * too far, at most OBSTACLE_HUG_SPAN_MM (80 mm, so 16 degrees). OPEN,
+ * UNKNOWN, STUCK and readings beyond target + deadband + span want exactly
+ * +90 degrees: a far or missing echo never turns the car into the wall.
+ * Without the lean in, a heading error of 1 degree (2.4 mm/s) would walk
+ * the car 140 mm away from the wall in a minute. */
+#define OBSTACLE_WALL_LEAN_DECI_PER_MM (2)
+
+/* [Default] Wall mode heading trim. The dead-reckoned heading cannot see a
+ * wheel-size or encoder scale error: at 1 % the true heading drifts 0.75
+ * degree per second, 45 degrees in a minute, and the car would leave the
+ * wall (or run into it) although the heading loop looks perfect. So the
+ * wall distance trims the heading: every side ping that reads a wall
+ * within the lean range adds OBSTACLE_WALL_TRIM_CDECI_PER_MM hundredths of
+ * a deci-degree per mm of distance error (too far raises the trim, too
+ * close lowers it), and the trim is added to the heading before the law
+ * and the caps see it. With about 4.6 side pings per second this holds a
+ * 2 % scale error at 30 mm from the target and stays well damped with the
+ * 0.5 s reading delay (host simulation). The trim stops at
+ * +-OBSTACLE_WALL_TRIM_MAX_DECI so a wrong echo cannot wind it up. */
+#define OBSTACLE_WALL_TRIM_CDECI_PER_MM (11)
+#define OBSTACLE_WALL_TRIM_MAX_DECI     (900)
+
+/* [Default] The wall ray (servo at 60 degrees) hits the wall at a slant.
+ * The planner turns its reading into the distance to the wall with the
+ * cosine of the ray angle off the wall normal, less the beam half angle
+ * (the nearest echo in the cone). A ray more than 80 degrees off the
+ * normal is almost parallel to the wall and its reading is not trusted. */
+#define OBSTACLE_WALL_RAY_MAX_DECI (800)
+
+/* [Chat] Box mode heading caps, measured from the original line, positive
+ * away from the obstacle: a turn away stops at +60 degrees (so a long
+ * obstacle cannot turn the car round) and a turn towards stops at -60
+ * degrees (so a far reading cannot spin the car back into the obstacle). */
+#define OBSTACLE_HUG_AWAY_MAX_DECI   (600)
+#define OBSTACLE_HUG_TOWARD_MAX_DECI (600)
+
+/* [Default] Box mode: the out-leg ends with a turn back towards the
+ * obstacle side until the car is within 5 degrees of parallel to the
+ * original line, and only then does HUG start. */
+#define OBSTACLE_ALIGN_DONE_DECI (50)
+
+/* [Default] The escape pivot of a box plan is held at 90 degrees: if the
+ * forward beam is still not clear then, the car stands still and the 10 s
+ * escape limit stops it (a wall plan uses OBSTACLE_WALL_HEAD_MAX_DECI). */
+#define OBSTACLE_PIVOT_MAX_DECI (900)
 
 /* ------------------------------------------------------------------ *
  * Car geometry. FILL: measure with a ruler and replace the values.
@@ -313,11 +398,10 @@
  * radian. */
 #define OBSTACLE_NAV_DECI_PER_RAD (573)
 
-/* [Chat] HUG anti-windup: a turn away stops at this heading from the
- * line, so a long wall cannot turn the car round. The proportional
- * controller holds OBSTACLE_HUG_TARGET_MM; one ping under
- * OBSTACLE_HUG_NEAR_MM still forces the car away. */
-#define OBSTACLE_NAV_GUARD_HEAD_MAX_DECI (600)
+/* HUG anti-windup: the heading caps are OBSTACLE_HUG_AWAY_MAX_DECI and
+ * OBSTACLE_HUG_TOWARD_MAX_DECI above. The proportional controller holds
+ * OBSTACLE_HUG_TARGET_MM; one ping under OBSTACLE_HUG_NEAR_MM still forces
+ * the car away (within the cap). */
 
 /* [Chat] Before any wheel changes direction (end of the escape spin), both
  * wheels stop for this long. While both are at 0 the motion service is
@@ -343,6 +427,14 @@
 
 /* While looking for the line, LINE_FOUND is sent at most this often. */
 #define OBSTACLE_NAV_LINE_REPEAT_MS (100U)
+
+/* [Default] TURNED and LINE_FOUND share one opcode. Navigation repeats
+ * TURNED every OBSTACLE_NAV_LINE_REPEAT_MS while it sees BYPASS, so a copy
+ * can reach the statechart just after it entered REACQUIRE. A LINE_FOUND in
+ * the first OBSTACLE_LINE_GRACE_MS of REACQUIRE is therefore ignored (it is
+ * sent again after OBSTACLE_NAV_LINE_REPEAT_MS if the line is really there).
+ * Two repeat periods plus one scan-task pass. */
+#define OBSTACLE_LINE_GRACE_MS (250U)
 
 /* ------------------------------------------------------------------ *
  * Flight recorder (flight_log.c) [Default].
@@ -441,7 +533,6 @@ OBSTACLE_CT_ASSERT(hit_cnt_fits, OBSTACLE_DETECT_HITS <= OBSTACLE_CNT3_MAX);
 OBSTACLE_CT_ASSERT(coll_cnt_fits, OBSTACLE_COLLISION_HITS <= OBSTACLE_CNT2_MAX);
 OBSTACLE_CT_ASSERT(clear_cnt_fits, OBSTACLE_ESCAPE_CLEAR_PINGS <= OBSTACLE_CNT3_MAX);
 OBSTACLE_CT_ASSERT(hug_band_order, OBSTACLE_COLLISION_MM < OBSTACLE_HUG_NEAR_MM);
-OBSTACLE_CT_ASSERT(hug_band_order2, OBSTACLE_HUG_NEAR_MM < OBSTACLE_HUG_FAR_MM);
 OBSTACLE_CT_ASSERT(hug_target_above_near,
                    OBSTACLE_HUG_NEAR_MM <
                        (OBSTACLE_HUG_TARGET_MM - OBSTACLE_HUG_DEADBAND_MM));
@@ -457,8 +548,36 @@ OBSTACLE_CT_ASSERT(nav_escape_in_range, (OBSTACLE_NAV_ESCAPE_INSIDE_UM_S >= -100
                                       (OBSTACLE_NAV_ESCAPE_INSIDE_UM_S <= 0));
 OBSTACLE_CT_ASSERT(nav_hug_turns, OBSTACLE_NAV_HUG_INSIDE_UM_S < OBSTACLE_NAV_HUG_OUTSIDE_UM_S);
 OBSTACLE_CT_ASSERT(nav_hug_in_range, OBSTACLE_NAV_HUG_OUTSIDE_UM_S <= 200000U);
-OBSTACLE_CT_ASSERT(nav_guard_head, (OBSTACLE_NAV_GUARD_HEAD_MAX_DECI > 0) &&
-                                 (OBSTACLE_NAV_GUARD_HEAD_MAX_DECI <= 900));
+OBSTACLE_CT_ASSERT(hug_head_caps, (OBSTACLE_HUG_AWAY_MAX_DECI > 0) &&
+                                      (OBSTACLE_HUG_AWAY_MAX_DECI <= 900) &&
+                                      (OBSTACLE_HUG_TOWARD_MAX_DECI > 0) &&
+                                      (OBSTACLE_HUG_TOWARD_MAX_DECI <= 900));
+OBSTACLE_CT_ASSERT(look_ahead_pow2, (OBSTACLE_LOOK_AHEAD_EVERY >= 2U) &&
+                                        (0U == (OBSTACLE_LOOK_AHEAD_EVERY &
+                                                (OBSTACLE_LOOK_AHEAD_EVERY - 1U))) &&
+                                        (0U == ((1U << OBSTACLE_SEQ_BITS) %
+                                                OBSTACLE_LOOK_AHEAD_EVERY)));
+OBSTACLE_CT_ASSERT(fwd_guard_above_detect, OBSTACLE_FWD_GUARD_MM > OBSTACLE_DETECT_MM);
+OBSTACLE_CT_ASSERT(fwd_guard_above_collision, OBSTACLE_FWD_GUARD_MM > OBSTACLE_COLLISION_MM);
+OBSTACLE_CT_ASSERT(wall_window_order, (OBSTACLE_WALL_HEAD_MIN_DECI < OBSTACLE_WALL_PIVOT_DECI) &&
+                                          (OBSTACLE_WALL_PIVOT_DECI < OBSTACLE_WALL_HEAD_MAX_DECI) &&
+                                          (OBSTACLE_WALL_HEAD_MAX_DECI <= 1800));
+OBSTACLE_CT_ASSERT(wall_lean_inside_window,
+                   ((OBSTACLE_HUG_SPAN_MM * OBSTACLE_WALL_LEAN_DECI_PER_MM) <
+                    (OBSTACLE_WALL_PIVOT_DECI - OBSTACLE_WALL_HEAD_MIN_DECI)) &&
+                       ((OBSTACLE_HUG_SPAN_MM * OBSTACLE_WALL_LEAN_DECI_PER_MM) <
+                        (OBSTACLE_WALL_HEAD_MAX_DECI - OBSTACLE_WALL_PIVOT_DECI)));
+OBSTACLE_CT_ASSERT(wall_head_band, (OBSTACLE_WALL_HEAD_DEAD_DECI > 0) &&
+                                       (OBSTACLE_WALL_HEAD_DEAD_DECI < OBSTACLE_WALL_HEAD_SPAN_DECI));
+OBSTACLE_CT_ASSERT(line_grace, OBSTACLE_LINE_GRACE_MS > OBSTACLE_NAV_LINE_REPEAT_MS);
+OBSTACLE_CT_ASSERT(wall_trim, (OBSTACLE_WALL_TRIM_CDECI_PER_MM > 0) &&
+                                  (OBSTACLE_WALL_TRIM_MAX_DECI > 0) &&
+                                  (OBSTACLE_WALL_TRIM_MAX_DECI <= 1800));
+OBSTACLE_CT_ASSERT(wall_ray_max, (OBSTACLE_WALL_RAY_MAX_DECI > 0) && (OBSTACLE_WALL_RAY_MAX_DECI < 900));
+OBSTACLE_CT_ASSERT(align_done, (OBSTACLE_ALIGN_DONE_DECI >= 0) &&
+                                   (OBSTACLE_ALIGN_DONE_DECI < OBSTACLE_HUG_AWAY_MAX_DECI));
+OBSTACLE_CT_ASSERT(pivot_max, OBSTACLE_PIVOT_MAX_DECI > ((int32_t)OBSTACLE_ANGLE_MAX * 10));
+OBSTACLE_CT_ASSERT(side_far_fits, OBSTACLE_SIDE_FAR_MM == OBSTACLE_DIST_MAX);
 OBSTACLE_CT_ASSERT(nav_ttl_in_range, OBSTACLE_NAV_TTL_US <= 200000U);
 OBSTACLE_CT_ASSERT(log_pow2, 0U == (OBSTACLE_LOG_RECORDS & (OBSTACLE_LOG_RECORDS - 1U)));
 OBSTACLE_CT_ASSERT(log_fits_16bit, OBSTACLE_LOG_RECORDS <= 65536U);
