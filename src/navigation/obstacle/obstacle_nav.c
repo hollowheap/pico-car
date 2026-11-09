@@ -9,30 +9,30 @@
  *                   side, the start angle and the sideways offset the car
  *                   needs.
  *   - BYPASS        pivot away from the obstacle (inside wheel stopped)
- *                   until Buddy 5 sees the way ahead is clear.
- *   - REACQUIRE     drive the rest of the bypass, in three phases [Chat]:
- *                     TURN   keep pivoting until the planned start angle
- *                            is reached (if the beam cleared first);
- *                     OUT    straight on until the car is the planned
- *                            offset to the side of the line (wheel
- *                            odometry);
- *                     HUG    hold the planned clearance with a
- *                            proportional controller: the look-ray reading
- *                            is compared with OBSTACLE_HUG_TARGET_MM, and
- *                            the wheel next to the obstacle slows in
- *                            proportion to the error, so the car steers
- *                            back to the target instead of flipping
- *                            between two thresholds. UNKNOWN and STUCK
- *                            readings steer straight. One ping closer
- *                            than OBSTACLE_HUG_NEAR_MM still forces the
- *                            car away. The loop ends at the first IR
- *                            line contact, which hands back to line
- *                            following.
- *                   The controller also runs in OUT (straight there) and
- *                   the turn-away clamp applies only in HUG. IR line
- *                   contact counts only in HUG, and only once both IR
- *                   sensors have been off the line since the car reached
- *                   its offset.
+ *                   until Buddy 5 sees the way ahead is clear AND the
+ *                   planned start angle is reached; this task reports the
+ *                   angle with TURNED (same opcode as LINE_FOUND). A box
+ *                   plan turns to its start angle, a wall plan to +90.
+ *   - REACQUIRE     drive the rest of the bypass [Chat]. Every fourth ping
+ *                   looks ahead (statechart.c); the hug law sees only the
+ *                   other three (side filter in planner.c). Phases:
+ *                     TURN   keep pivoting until the planned angle (only
+ *                            if REACQUIRE was entered short of it);
+ *                     OUT    box plan: straight on until the car is the
+ *                            planned offset to the side of the line;
+ *                     ALIGN  box plan: turn back to parallel with the
+ *                            original line;
+ *                     HUG    hold OBSTACLE_HUG_TARGET_MM from the obstacle
+ *                            with the one hug law (obstacle_plan_hug_ctrl):
+ *                            box plan, heading capped both ways; wall plan,
+ *                            parallel to the wall at +60..+120 degrees,
+ *                            never turning into it. The loop ends at the
+ *                            first IR line contact (after both IR sensors
+ *                            have been off the line since HUG began), or,
+ *                            for a wall plan, at OBSTACLE_HUG_MAX_MS.
+ *                   All decisions are made in planner.c; this file gathers
+ *                   the readings and the dead-reckoned pose and applies
+ *                   the wheel speeds that come back.
  *   - FAULT         hold the car; retry RESET + START every 3 s.
  *   - MONITOR       release the hold and let the line follower drive,
  *                   except while Buddy 5's latest reading is a VALID echo
@@ -78,9 +78,6 @@
 /* Micrometres per millimetre. */
 #define UM_PER_MM (1000)
 
-/* Full scale of a per-mille value. */
-#define PERMILLE_FULL (1000U)
-
 /* Deci-degrees per degree. */
 #define DECI_PER_DEG (10)
 
@@ -91,24 +88,6 @@
 #define WHEEL_LEFT  (0U)
 #define WHEEL_RIGHT (1U)
 #define WHEELS      (2U)
-
-/* Inside wheel speed during the escape pivot (0 = stopped). */
-#define NAV_ESCAPE_INSIDE_UM_S (OBSTACLE_NAV_ESCAPE_INSIDE_UM_S)
-
-/* Bypass phases inside REACQUIRE (see the file comment). */
-#define PHASE_TURN (0U)
-#define PHASE_OUT  (1U)
-#define PHASE_HUG  (2U)
-
-/* Steering intent, turned into LEFT / RIGHT by the side being passed. */
-#define INTENT_STRAIGHT (0U)
-#define INTENT_AWAY     (1U)
-#define INTENT_TOWARD   (2U)
-
-/* Guard: readings kept for the median, and the value used for OPEN,
- * UNKNOWN or STUCK readings (farther than any echo). */
-#define GUARD_PINGS  (3U)
-#define GUARD_FAR_MM (4095U)
 
 /* Value that never matches a real state, so the first one is always
  * printed. */
@@ -143,6 +122,7 @@ typedef struct
     bool     b_pausing;
     bool     b_ir_armed;
     bool     b_ir_cleared;
+    bool     b_wall;
     uint8_t  req_id;
     uint8_t  next_id;
     uint8_t  last_state;
@@ -151,10 +131,7 @@ typedef struct
     uint8_t  side;
     uint8_t  phase;
     uint8_t  wait_seq;
-    uint8_t  ping_seq;
-    uint8_t  ping_count;
-    uint8_t  ping_next;
-    uint16_t ping_mm[GUARD_PINGS];
+    obstacle_side_filter_t side_filt;
     uint32_t wait_ms;
     uint32_t pause_ms;
     uint32_t last_drive;
@@ -188,18 +165,17 @@ static nav_state_t g_nav = {
     .b_pausing      = false,
     .b_ir_armed     = false,
     .b_ir_cleared   = false,
+    .b_wall         = false,
     .req_id         = 0U,
     .next_id        = 0U,
     .last_state     = NAV_UNSEEN,
     .hug_dir        = OBSTACLE_HUG_STRAIGHT,
     .start_deg      = 0U,
     .side           = OBSTACLE_SIDE_LEFT,
-    .phase          = PHASE_TURN,
+    .phase          = OBSTACLE_PHASE_TURN,
     .wait_seq       = 0U,
-    .ping_seq       = 0U,
-    .ping_count     = 0U,
-    .ping_next      = 0U,
-    .ping_mm        = {GUARD_FAR_MM, GUARD_FAR_MM, GUARD_FAR_MM},
+    .side_filt      = {{OBSTACLE_SIDE_FAR_MM, OBSTACLE_SIDE_FAR_MM, OBSTACLE_SIDE_FAR_MM},
+                       OBSTACLE_CLASS_UNKNOWN, 0U, 0U, 0U, false, 0},
     .wait_ms        = 0U,
     .pause_ms       = 0U,
     .last_drive     = NAV_DRIVE_UNSEEN,
@@ -232,24 +208,21 @@ static int32_t  lateral_mm (void);
 static int32_t  ahead_mm (void);
 static void     reset_pose (void);
 static void     update_pose (void);
-static bool     is_turn_done (void);
-static uint32_t intent_steer (uint32_t intent);
+static void     note_turned (bool b_turned, uint32_t now);
 static void     drive_steer (uint32_t steer, int32_t inside_um_s,
                              int32_t outside_um_s);
 static bool     is_reverse_pause (int32_t const p_speed[WHEELS]);
 static void     set_phase (uint8_t phase);
+static void     fill_drive_in (obstacle_drive_in_t * p_in, uint8_t phase);
+static void     step_pivot (uint32_t now);
 static void     drive_reacquire (uint32_t status);
 static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now);
-static void reset_guard (uint32_t status);
-static uint32_t median_of_3 (uint32_t first, uint32_t second, uint32_t third);
-static uint32_t guard_reading (uint32_t status);
 static void     report_hug (uint8_t dir, uint16_t reading);
-static uint32_t latest_reading (void);
 static void     update_ir_gate (bool b_line_seen);
 static bool     is_obstacle_close (uint32_t status);
 static bool     is_servo_moving (uint32_t status, uint32_t now);
 static void     report_state (uint32_t status);
-static void     keep_plan (uint32_t angle);
+static void     keep_plan (uint32_t angle, bool b_wall);
 static void     explain_scan (uint16_t const * p_profile);
 static void     handle_event (uint32_t evt, uint32_t now);
 static void     look_for_line (bool b_line_seen, uint32_t now);
@@ -338,7 +311,8 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
             break;
 
             case OBSTACLE_STATE_BYPASS:
-                /* Pivot until Buddy 5 sees the way ahead is clear. NOTE: the
+                /* Pivot until Buddy 5 sees the way ahead is clear and the
+                 * planned angle is reached (TURNED). NOTE: the
                  * side comes from the plan, not from the STEER word: the
                  * status and the STEER word are read at different moments,
                  * and on the pass where Buddy 5 moves on to REACQUIRE the
@@ -353,10 +327,7 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
                 else
                 {
                     hold_car(false);
-                    (void)is_turn_done();
-                    drive_steer(intent_steer(INTENT_AWAY),
-                                (int32_t)NAV_ESCAPE_INSIDE_UM_S,
-                                (int32_t)OBSTACLE_NAV_SPEED_UM_S);
+                    step_pivot(now);
                 }
                 b_in_charge = true;
             break;
@@ -411,7 +382,7 @@ static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
         hold_car(false);
         update_ir_gate(b_line_seen);
         drive_reacquire(status);
-        look_for_line((PHASE_HUG == g_nav.phase) && g_nav.b_ir_cleared &&
+        look_for_line((OBSTACLE_PHASE_HUG == g_nav.phase) && g_nav.b_ir_cleared &&
                           b_line_seen,
                       now);
     }
@@ -586,7 +557,7 @@ static void reset_pose (void)
     g_nav.b_turned              = false;
     g_nav.b_ir_armed            = false;
     g_nav.b_ir_cleared          = false;
-    g_nav.phase                 = PHASE_TURN;
+    g_nav.phase                 = OBSTACLE_PHASE_TURN;
 }
 
 /*!
@@ -610,54 +581,33 @@ static void update_pose (void)
 }
 
 /*!
- * @brief Tell whether the pivot has reached the planned start angle
- *        (always true when the plan has no angle). Logs a TURNED record
- *        the first time it does.
+ * @brief The pivot has reached the planned start angle: log it the first
+ *        time, and tell Buddy 5 (TURNED) every OBSTACLE_NAV_LINE_REPEAT_MS
+ *        until it leaves BYPASS, so a full command queue cannot lose it.
  *
- * @return True once the car has turned at least the planned angle.
+ * @param[in] b_turned The pivot has turned at least the planned angle.
+ * @param[in] now      Current time, ms.
  */
-static bool is_turn_done (void)
+static void note_turned (bool b_turned, uint32_t now)
 {
-    int32_t const turned = side_sign() * heading_deci();
-
-    if ((!g_nav.b_turned) &&
-        (turned >= ((int32_t)g_nav.start_deg * DECI_PER_DEG)))
+    if (b_turned)
     {
-        g_nav.b_turned = true;
-        tm_printf((UB *)"[obstacle-nav] escape turned %d deg (plan %d)\n",
-                  (INT)(turned / DECI_PER_DEG), (INT)g_nav.start_deg);
-        log_rec(OBSTACLE_LOG_TURNED, 0U, 0U, 0U, turned, (int32_t)g_nav.start_deg, 0);
-    }
+        int32_t const turned = side_sign() * heading_deci();
 
-    return (g_nav.b_turned);
-}
+        if (!g_nav.b_turned)
+        {
+            g_nav.b_turned = true;
+            tm_printf((UB *)"[obstacle-nav] escape turned %d deg (plan %d)\n",
+                      (INT)(turned / DECI_PER_DEG), (INT)g_nav.start_deg);
+            log_rec(OBSTACLE_LOG_TURNED, 0U, 0U, 0U, turned, (int32_t)g_nav.start_deg, 0);
+        }
 
-/*!
- * @brief Turn a steering intent into LEFT / RIGHT for the side passed.
- *
- * @param[in] intent INTENT_STRAIGHT, INTENT_AWAY or INTENT_TOWARD.
- *
- * @return OBSTACLE_STEER_*.
- */
-static uint32_t intent_steer (uint32_t intent)
-{
-    bool const b_left = (OBSTACLE_SIDE_LEFT == g_nav.side);
-    uint32_t   steer  = OBSTACLE_STEER_STRAIGHT;
-
-    if (INTENT_AWAY == intent)
-    {
-        steer = b_left ? OBSTACLE_STEER_LEFT : OBSTACLE_STEER_RIGHT;
+        if ((now - g_nav.line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS)
+        {
+            g_nav.line_ms = now;
+            post(OBSTACLE_CMD_TURNED, g_nav.req_id);
+        }
     }
-    else if (INTENT_TOWARD == intent)
-    {
-        steer = b_left ? OBSTACLE_STEER_RIGHT : OBSTACLE_STEER_LEFT;
-    }
-    else
-    {
-        steer = OBSTACLE_STEER_STRAIGHT;
-    }
-
-    return (steer);
 }
 
 /*!
@@ -812,188 +762,82 @@ static void set_phase (uint8_t phase)
 }
 
 /*!
- * @brief REACQUIRE: run the TURN, OUT and HUG phases.
+ * @brief Collect the inputs of the bypass driver: side, plan, phase, the
+ *        dead-reckoned pose and the side readings.
  *
- * @param[in] status Packed Buddy 5 status word (latest 45 degree reading).
+ * @param[out] p_in   Inputs for obstacle_plan_drive() / obstacle_plan_pivot().
+ * @param[in]  phase  Current bypass phase (OBSTACLE_PHASE_*).
+ */
+static void fill_drive_in (obstacle_drive_in_t * p_in, uint8_t phase)
+{
+    p_in->b_wall     = g_nav.b_wall;
+    p_in->side       = g_nav.side;
+    p_in->phase      = phase;
+    p_in->start_deg  = g_nav.start_deg;
+    p_in->head_deci  = obstacle_plan_wall_head(&g_nav.side_filt, side_sign() * heading_deci(),
+                                               g_nav.b_wall && (OBSTACLE_PHASE_HUG == phase));
+    p_in->lateral_mm = lateral_mm();
+    p_in->need_mm    = g_nav.need_mm;
+    p_in->side_cls   = obstacle_plan_side_class(&g_nav.side_filt);
+    p_in->median_mm  = obstacle_plan_side_median(&g_nav.side_filt);
+    p_in->latest_mm  = obstacle_plan_side_latest(&g_nav.side_filt);
+}
+
+/*!
+ * @brief BYPASS: pivot away, and report TURNED once the planned angle is
+ *        reached. The statechart ends BYPASS when the beam is also clear.
+ *
+ * @param[in] now Current time, ms.
+ */
+static void step_pivot (uint32_t now)
+{
+    obstacle_drive_in_t  in;
+    obstacle_drive_out_t out;
+
+    fill_drive_in(&in, OBSTACLE_PHASE_TURN);
+    obstacle_plan_pivot(&in, &out);
+    note_turned(out.b_turned, now);
+    drive_steer(out.steer, out.inside_um_s, out.outside_um_s);
+}
+
+/*!
+ * @brief REACQUIRE: let the planner run the TURN, OUT, ALIGN and HUG
+ *        phases and apply what it asks for.
+ *
+ * @param[in] status Packed Buddy 5 status word (latest ping).
  */
 static void drive_reacquire (uint32_t status)
 {
-    uint32_t const reading = guard_reading(status);
-    uint32_t const cls     = obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH,
-                                               OBSTACLE_ST_CLASS_MK);
-    uint32_t       intent  = INTENT_STRAIGHT;
+    obstacle_drive_in_t  in;
+    obstacle_drive_out_t out;
 
-    if ((PHASE_TURN == g_nav.phase) && (is_turn_done()))
+    /* Casts are safe: the sequence field is 6 bits, the class 2 bits and
+     * the distance 12 bits. */
+    obstacle_plan_side_feed(&g_nav.side_filt,
+                            (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK),
+                            (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH,
+                                                       OBSTACLE_ST_CLASS_MK),
+                            (uint16_t)obstacle_pack_get(status, OBSTACLE_ST_DIST_SH,
+                                                        OBSTACLE_ST_DIST_MK));
+    fill_drive_in(&in, g_nav.phase);
+    obstacle_plan_drive(&in, &out);
+
+    if (out.phase != g_nav.phase)
     {
-        set_phase(PHASE_OUT);
-    }
+        set_phase(out.phase);
 
-    if ((PHASE_OUT == g_nav.phase) && (lateral_mm() >= g_nav.need_mm))
-    {
-        set_phase(PHASE_HUG);
-        g_nav.b_ir_armed = true;
-    }
-
-    if (PHASE_TURN == g_nav.phase)
-    {
-        /* The beam cleared before the planned angle: keep pivoting. */
-        drive_steer(intent_steer(INTENT_AWAY), (int32_t)NAV_ESCAPE_INSIDE_UM_S,
-                    (int32_t)OBSTACLE_NAV_SPEED_UM_S);
-    }
-    else if (PHASE_HUG == g_nav.phase)
-    {
-        obstacle_hug_cmd_t hug;
-        uint32_t const     outside = (uint32_t)OBSTACLE_NAV_HUG_OUTSIDE_UM_S;
-        uint32_t           inside  = outside;
-
-        obstacle_plan_hug_ctrl((uint8_t)cls, (uint16_t)reading, &hug);
-
-        intent = (OBSTACLE_HUG_AWAY == hug.dir) ? INTENT_AWAY
-                 : ((OBSTACLE_HUG_TOWARD == hug.dir) ? INTENT_TOWARD
-                                                     : INTENT_STRAIGHT);
-        inside = (outside * (uint32_t)hug.inside_permille) / PERMILLE_FULL;
-
-        if (latest_reading() < OBSTACLE_HUG_NEAR_MM)
+        if (OBSTACLE_PHASE_HUG == out.phase)
         {
-            /* One close ping wins over the median. */
-            intent = INTENT_AWAY;
-            inside = (uint32_t)OBSTACLE_NAV_HUG_INSIDE_UM_S;
-        }
-        else if ((INTENT_AWAY == intent) &&
-                 ((side_sign() * heading_deci()) >=
-                  OBSTACLE_NAV_GUARD_HEAD_MAX_DECI))
-        {
-            /* Do not wind the car past 60 degrees away from the line. */
-            intent = INTENT_STRAIGHT;
-        }
-        else
-        {
-            /* Normal correction. */
-        }
-
-        report_hug(hug.dir, (uint16_t)reading);
-        drive_steer(intent_steer(intent), (int32_t)inside, (int32_t)outside);
-    }
-    else
-    {
-        /* OUT: straight on at the planned angle. */
-        drive_steer(intent_steer(INTENT_STRAIGHT),
-                    (int32_t)OBSTACLE_NAV_HUG_OUTSIDE_UM_S,
-                    (int32_t)OBSTACLE_NAV_HUG_OUTSIDE_UM_S);
-    }
-}
-
-/*!
- * @brief Start the guard afresh: forget earlier readings and count only
- *        pings newer than the one in this status word.
- *
- * @param[in] status Packed Buddy 5 status word.
- */
-static void reset_guard (uint32_t status)
-{
-    uint32_t slot = 0U;
-
-    for (slot = 0U; slot < GUARD_PINGS; slot++)
-    {
-        g_nav.ping_mm[slot] = (uint16_t)GUARD_FAR_MM;
-    }
-
-    /* Cast is safe: the sequence field is 6 bits. */
-    g_nav.ping_seq   = (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
-    g_nav.ping_count = 0U;
-    g_nav.ping_next  = 0U;
-    g_nav.hug_dir    = OBSTACLE_HUG_STRAIGHT;
-}
-
-/*!
- * @brief Middle value of three.
- *
- * @param[in] first  A value.
- * @param[in] second A value.
- * @param[in] third  A value.
- *
- * @return The median.
- */
-static uint32_t median_of_3 (uint32_t first, uint32_t second, uint32_t third)
-{
-    uint32_t median = second;
-
-    if (((first >= second) && (first <= third)) ||
-        ((first <= second) && (first >= third)))
-    {
-        median = first;
-    }
-    else if (((third >= first) && (third <= second)) ||
-             ((third <= first) && (third >= second)))
-    {
-        median = third;
-    }
-    else
-    {
-        /* The second value is the middle one. */
-    }
-
-    return (median);
-}
-
-/*!
- * @brief Keep the newest 45 degree readings and return their median, so
- *        one stray echo cannot steer the car.
- *
- * @param[in] status Packed Buddy 5 status word (latest reading).
- *
- * @return Median of the last GUARD_PINGS readings in mm (GUARD_FAR_MM
- *         until that many have arrived; OPEN, UNKNOWN and STUCK count as
- *         GUARD_FAR_MM).
- */
-static uint32_t guard_reading (uint32_t status)
-{
-    uint32_t const cls = obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK);
-    uint32_t const dist_mm = obstacle_pack_get(status, OBSTACLE_ST_DIST_SH, OBSTACLE_ST_DIST_MK);
-    uint32_t const seq     = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
-    uint32_t       reading = GUARD_FAR_MM;
-
-    if (seq != g_nav.ping_seq)
-    {
-        /* Casts are safe: the sequence field is 6 bits, the distance 12
-         * bits, ping_next is 0..2 and ping_count stops at 3. */
-        g_nav.ping_seq = (uint8_t)seq;
-        g_nav.ping_mm[g_nav.ping_next] =
-            (uint16_t)((OBSTACLE_CLASS_VALID == cls) ? dist_mm : GUARD_FAR_MM);
-        g_nav.ping_next = (uint8_t)((g_nav.ping_next + 1U) % GUARD_PINGS);
-
-        if (g_nav.ping_count < GUARD_PINGS)
-        {
-            g_nav.ping_count = (uint8_t)(g_nav.ping_count + 1U);
+            g_nav.b_ir_armed = true;
         }
     }
 
-    if (GUARD_PINGS == g_nav.ping_count)
+    if (OBSTACLE_PHASE_HUG == out.phase)
     {
-        reading = median_of_3(g_nav.ping_mm[0], g_nav.ping_mm[1],
-                              g_nav.ping_mm[GUARD_PINGS - 1U]);
+        report_hug(out.dir, in.median_mm);
     }
 
-    return (reading);
-}
-
-/*!
- * @brief Newest 45 degree reading kept by guard_reading().
- *
- * @return Distance in mm (GUARD_FAR_MM before the first reading, or for
- *         OPEN, UNKNOWN and STUCK).
- */
-static uint32_t latest_reading (void)
-{
-    uint32_t reading = GUARD_FAR_MM;
-
-    if (g_nav.ping_count > 0U)
-    {
-        reading =
-            g_nav.ping_mm[(g_nav.ping_next + (GUARD_PINGS - 1U)) % GUARD_PINGS];
-    }
-
-    return (reading);
+    drive_steer(out.steer, out.inside_um_s, out.outside_um_s);
 }
 
 /*!
@@ -1098,9 +942,12 @@ static void report_state (uint32_t status)
 
         if (OBSTACLE_STATE_REACQUIRE == state)
         {
-            /* The servo turns to 45 degrees: older readings were straight
-             * ahead. */
-            reset_guard(status);
+            /* The servo turns to the hug ray: older readings were straight
+             * ahead. Cast is safe: the sequence field is 6 bits. */
+            obstacle_plan_side_reset(&g_nav.side_filt,
+                                     (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH,
+                                                                OBSTACLE_ST_SEQ_MK));
+            g_nav.hug_dir = OBSTACLE_HUG_STRAIGHT;
         }
 
         if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state) ||
@@ -1153,9 +1000,10 @@ static bool is_servo_moving (uint32_t status, uint32_t now)
  *        The closest reading comes from the scan profile, as in
  *        scan_algo.c.
  *
- * @param[in] angle Start angle from SCAN_RESULT, degrees.
+ * @param[in] angle  Start angle from SCAN_RESULT, degrees.
+ * @param[in] b_wall Wall plan flag from SCAN_RESULT.
  */
-static void keep_plan (uint32_t angle)
+static void keep_plan (uint32_t angle, bool b_wall)
 {
     uint16_t profile[OBSTACLE_SLOT_COUNT];
     uint32_t slot    = 0U;
@@ -1182,11 +1030,13 @@ static void keep_plan (uint32_t angle)
 
     /* Casts are safe: angle is 0..60 and closest is 0..4095. */
     g_nav.start_deg = (uint8_t)angle;
+    g_nav.b_wall    = b_wall;
     g_nav.need_mm =
         (closest * obstacle_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE;
     tm_printf((UB *)"[obstacle-nav] plan: obstacle %d mm, start %d deg, side "
-                    "offset %d mm\n",
-              (INT)closest, (INT)angle, (INT)g_nav.need_mm);
+                    "offset %d mm, %s\n",
+              (INT)closest, (INT)angle, (INT)g_nav.need_mm,
+              b_wall ? "wall (follow in parallel)" : "box (out and back)");
 }
 
 /*!
@@ -1330,6 +1180,8 @@ static void handle_event (uint32_t evt, uint32_t now)
         uint32_t const side  = obstacle_pack_get(evt, OBSTACLE_EV_SIDE_SH, OBSTACLE_EV_SIDE_MK);
         uint32_t const width = obstacle_pack_get(evt, OBSTACLE_EV_WIDTH_SH, OBSTACLE_EV_WIDTH_MK);
         uint32_t const angle = obstacle_pack_get(evt, OBSTACLE_EV_ANGLE_SH, OBSTACLE_EV_ANGLE_MK);
+        bool const     b_wall =
+            (0U != obstacle_pack_get(evt, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK));
         uint32_t       index = 0U;
 
         tm_printf((UB *)"[obstacle-nav] SCAN_RESULT status=%d side=%d width=%d mm "
@@ -1349,7 +1201,7 @@ static void handle_event (uint32_t evt, uint32_t now)
         {
             /* Cast is safe: the side field is 1 bit wide. */
             g_nav.side = (uint8_t)side;
-            keep_plan(angle);
+            keep_plan(angle, b_wall);
             post(OBSTACLE_CMD_ACCEPT, g_nav.req_id);
         }
     }

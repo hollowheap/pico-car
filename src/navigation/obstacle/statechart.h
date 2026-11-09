@@ -44,6 +44,7 @@ typedef struct
     uint8_t          steer_seq;
     uint16_t         counters;
     bool             b_reset_ok;
+    bool             b_turned;
     uint32_t         since_ms;
     uint32_t         bypass_mm;
     uint32_t         scan_progress_ms;

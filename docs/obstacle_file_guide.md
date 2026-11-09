@@ -136,9 +136,8 @@ functions, who uses it, and when you would edit it.
   distance budget. All maths is whole numbers: no floating point, no libm.
 - **Main functions:** `obstacle_plan_cfg_default`, `obstacle_plan_build`,
   `obstacle_plan_hug_ctrl`, `obstacle_plan_hug_limit_mm`,
-  `obstacle_plan_hug_steer`, `obstacle_plan_is_escape_clear`,
-  `obstacle_plan_steer_away`,
-  `obstacle_plan_steer_toward`, plus integer trig (`obstacle_plan_sin_q14`,
+  `obstacle_plan_drive`, `obstacle_plan_pivot`, `obstacle_plan_wall_head`,
+  `obstacle_plan_is_escape_clear`, `obstacle_plan_steer_away`, plus integer trig (`obstacle_plan_sin_q14`,
   `obstacle_plan_atan_deci`, `obstacle_plan_isqrt`, …).
 - **Used by:** `statechart.c`, `scan_task.c` (for the default settings),
   `obstacle_nav.c` (hug controller).
@@ -263,7 +262,7 @@ functions, who uses it, and when you would edit it.
 | change the 250 mm detection distance | `obstacle_config.h` → `OBSTACLE_DETECT_MM` |
 | fix the servo pointing slightly off centre | `obstacle_config.h` → `OBSTACLE_SERVO_CENTRE_US` |
 | change how a side is chosen | `planner.c` → `obstacle_plan_build` |
-| change the hug distances (15 / 25 cm) | `obstacle_config.h` → `OBSTACLE_HUG_NEAR_MM`, `OBSTACLE_HUG_FAR_MM` |
+| change the hug distances (15 / 25 cm) | `obstacle_config.h` → `OBSTACLE_HUG_NEAR_MM`, `OBSTACLE_HUG_TARGET_MM` |
 | change a state change or time limit | `statechart.c` (limits are in `obstacle_config.h`) |
 | see how Navigation should call Buddy 5 | `obstacle.h`, then the design doc → Interfaces |
 | change bypass speed or steering strength | `obstacle_config.h` → `OBSTACLE_NAV_SPEED_UM_S`, `OBSTACLE_NAV_INSIDE_PCT` |

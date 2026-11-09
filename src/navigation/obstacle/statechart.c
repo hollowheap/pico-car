@@ -7,8 +7,15 @@
  *   WAIT_STOP --SCAN_REQ(id)--> SCANNING
  *   SCANNING --profile done--> PLAN                      (event SCAN_RESULT)
  *   PLAN --ACCEPT(id)--> BYPASS, or MONITOR if the result was CLEAR
- *   BYPASS --obstacle out of the forward beam + 3 pings--> REACQUIRE
+ *   BYPASS --forward beam clear for 2 pings AND TURNED(id)--> REACQUIRE
+ *   REACQUIRE --forward ping < 300 mm--> WAIT_STOP       (event OBSTACLE)
  *   REACQUIRE --LINE_FOUND(id) after 200 mm--> MONITOR
+ *
+ * D95: in REACQUIRE every fourth ping (obstacle_plan_is_look_ahead) aims
+ * the servo straight ahead and is the only one the forward guard sees; the
+ * other three aim at the hug ray and are the only ones the hug law sees
+ * (obstacle_nav.c). BYPASS keeps the servo ahead for the pivot itself, so
+ * it has no separate guard: its readings decide when the pivot is done.
  *   any state --STOP, fault or time limit--> STOPPED     (event FAULT)
  */
 
@@ -45,6 +52,8 @@ static void    ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls, uint16
                               uint32_t now_ms, obstacle_statechart_out_t * p_out);
 static void    ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                             uint32_t now_ms, obstacle_statechart_out_t * p_out);
+static void    ping_reacquire (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
+                               uint32_t now_ms, obstacle_statechart_out_t * p_out);
 
 /*!
  * @brief Clear an output record before a step.
@@ -100,6 +109,8 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm, obstacle_plan_cfg_
     p_fsm->plan.width_mm               = 0U;
     p_fsm->plan.start_deg              = 0U;
     p_fsm->plan.closest_mm             = 0U;
+    p_fsm->plan.b_wall                 = false;
+    p_fsm->b_turned                    = false;
     p_fsm->plan.need_mm[OBSTACLE_SIDE_LEFT]  = OBSTACLE_PLAN_SIDE_BLOCKED;
     p_fsm->plan.need_mm[OBSTACLE_SIDE_RIGHT] = OBSTACLE_PLAN_SIDE_BLOCKED;
 }
@@ -190,11 +201,29 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd, ui
         break;
 
         case OBSTACLE_CMD_LINE_FOUND:
-            /* Navigation sends it only after the obstacle has been passed
-             * (obstacle_nav.c), so it is accepted at once. */
+            /* Same opcode as OBSTACLE_CMD_TURNED. In REACQUIRE it is the
+             * line: Navigation sends it only after the obstacle has been
+             * passed (obstacle_nav.c), so it is accepted at once. In
+             * BYPASS it is the planned pivot angle being reached, which
+             * the pivot needs besides a clear forward beam. */
             if ((OBSTACLE_STATE_REACQUIRE == state) && b_our_id)
             {
-                enter(p_fsm, OBSTACLE_STATE_MONITOR, now_ms);
+                /* A TURNED sent just before BYPASS ended can arrive here
+                 * (same opcode, same id): it is not the line. The real
+                 * line needs the whole TURN, OUT and ALIGN phases first,
+                 * far longer than OBSTACLE_LINE_GRACE_MS. */
+                if ((now_ms - p_fsm->since_ms) >= OBSTACLE_LINE_GRACE_MS)
+                {
+                    enter(p_fsm, OBSTACLE_STATE_MONITOR, now_ms);
+                }
+            }
+            else if ((OBSTACLE_STATE_BYPASS == state) && b_our_id)
+            {
+                p_fsm->b_turned = true;
+            }
+            else
+            {
+                /* Not valid now: ignore it. */
             }
         break;
 
@@ -242,9 +271,7 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls, uint1
             break;
 
             case OBSTACLE_STATE_REACQUIRE:
-                emit_steer(p_fsm, p_out,
-                           obstacle_plan_hug_steer(p_fsm->plan.side, cls, dist,
-                                             p_fsm->steer));
+                ping_reacquire(p_fsm, cls, dist, now_ms, p_out);
             break;
 
             default:
@@ -302,8 +329,9 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms, u
         break;
 
         case OBSTACLE_STATE_REACQUIRE:
+            /* A wall has no far end: only the time limit stops it. */
             if ((elapsed_ms > OBSTACLE_HUG_MAX_MS) ||
-                (hugged_mm > p_fsm->hug_limit_mm))
+                ((!p_fsm->plan.b_wall) && (hugged_mm > p_fsm->hug_limit_mm)))
             {
                 cause = OBSTACLE_CAUSE_LINE_TIMEOUT;
             }
@@ -342,11 +370,22 @@ int16_t obstacle_statechart_servo_deci (obstacle_statechart_t const * p_fsm)
     }
     else if (OBSTACLE_STATE_REACQUIRE == p_fsm->state)
     {
-        /* Passing on the left puts the obstacle on our right (negative).
-         * Casts are safe: the hug angle is 450. */
-        deci = (OBSTACLE_SIDE_LEFT == p_fsm->plan.side)
-                   ? (int16_t)(-OBSTACLE_HUG_SERVO_DECI)
-                   : (int16_t)OBSTACLE_HUG_SERVO_DECI;
+        /* The next ping has sequence number seq + 1 (6 bits). Every
+         * fourth one looks ahead; the others aim at the hug ray. Passing
+         * on the left puts the obstacle on our right (negative). Casts
+         * are safe: the hug angle is 600. */
+        uint32_t const next = ((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK;
+
+        if (obstacle_plan_is_look_ahead((uint8_t)next))
+        {
+            deci = 0;
+        }
+        else
+        {
+            deci = (OBSTACLE_SIDE_LEFT == p_fsm->plan.side)
+                       ? (int16_t)(-OBSTACLE_HUG_SERVO_DECI)
+                       : (int16_t)OBSTACLE_HUG_SERVO_DECI;
+        }
     }
     else
     {
@@ -656,6 +695,7 @@ static void accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms, uint32_
     else
     {
         p_fsm->bypass_mm    = odo_mm;
+        p_fsm->b_turned     = false;
         p_fsm->hug_limit_mm =
             obstacle_plan_hug_limit_mm(&p_fsm->plan, &p_fsm->cfg);
         enter(p_fsm, OBSTACLE_STATE_BYPASS, now_ms);
@@ -845,6 +885,8 @@ static void ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t 
                           p_fsm->plan.width_mm);
         evt = obstacle_pack_put(evt, OBSTACLE_EV_ANGLE_SH, OBSTACLE_EV_ANGLE_MK,
                           p_fsm->plan.start_deg);
+        evt = obstacle_pack_put(evt, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK,
+                          p_fsm->plan.b_wall ? 1U : 0U);
         emit(p_out, evt);
 
         if (OBSTACLE_RESULT_NO_SAFE_PATH == p_fsm->plan.status)
@@ -860,8 +902,9 @@ static void ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t 
 
 /*!
  * @brief BYPASS: bend away until the forward beam has been clear for
- *        OBSTACLE_ESCAPE_CLEAR_PINGS pings in a row, then start the zig-zag
- *        (driving straight until its first ping).
+ *        OBSTACLE_ESCAPE_CLEAR_PINGS pings in a row AND Navigation has
+ *        reported the planned start angle reached (TURNED), then start the
+ *        zig-zag (driving straight until its first ping).
  *
  * @param[in,out] p_fsm   Statechart.
  * @param[in]     cls     Ping class.
@@ -883,7 +926,7 @@ static void ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t di
         cnt_set(p_fsm, OBSTACLE_CNT_CLEAR_SH, OBSTACLE_CNT_CLEAR_MK, 0U);
     }
 
-    if (clear_count >= OBSTACLE_ESCAPE_CLEAR_PINGS)
+    if ((clear_count >= OBSTACLE_ESCAPE_CLEAR_PINGS) && (p_fsm->b_turned))
     {
         /* Drive straight while the servo swings to the hug angle (about
          * 155 ms), instead of pivoting on blind; the first hug ping then
@@ -894,6 +937,35 @@ static void ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t di
     else
     {
         emit_steer(p_fsm, p_out, obstacle_plan_steer_away(p_fsm->plan.side));
+    }
+}
+
+/*!
+ * @brief REACQUIRE: the forward guard. Only a look-ahead ping is looked at
+ *        here; a VALID reading under OBSTACLE_FWD_GUARD_MM stops the car
+ *        and starts a new stationary scan, the same way a first detection
+ *        does (OBSTACLE event, WAIT_STOP). The other pings belong to the
+ *        hug law in Navigation and are not examined.
+ *
+ * @param[in,out] p_fsm   Statechart.
+ * @param[in]     cls     Ping class.
+ * @param[in]     dist_mm Ping distance.
+ * @param[in]     now_ms  Current time.
+ * @param[out]    p_out   Requests for the task.
+ */
+static void ping_reacquire (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
+                            uint32_t now_ms, obstacle_statechart_out_t * p_out)
+{
+    bool const b_close = (OBSTACLE_CLASS_VALID == cls) && (dist_mm < OBSTACLE_FWD_GUARD_MM);
+
+    if ((obstacle_plan_is_look_ahead(p_fsm->seq)) && b_close)
+    {
+        uint32_t evt = event_base(OBSTACLE_EVT_OBSTACLE, p_fsm->req_id);
+
+        evt = obstacle_pack_put(evt, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK, dist_mm);
+        emit_steer(p_fsm, p_out, OBSTACLE_STEER_HOLD);
+        emit(p_out, evt);
+        enter(p_fsm, OBSTACLE_STATE_WAIT_STOP, now_ms);
     }
 }
 
