@@ -8,6 +8,11 @@
 #define MQTT_RX_BUFFER_SIZE 128u
 #define MQTT_DEFAULT_KEEPALIVE_S 30u
 
+/* Reply timeout and reconnect backoff (D91). */
+#define MQTT_REPLY_TIMEOUT_MS 10000u
+#define MQTT_RECONNECT_MIN_MS 1000u
+#define MQTT_RECONNECT_MAX_MS 30000u
+
 typedef enum
 {
     MQTT_OK = 0,
@@ -53,8 +58,12 @@ typedef struct
     mqtt_state_t      state;
     uint32_t          last_tx_ms;
     uint32_t          next_attempt_ms;
+    uint32_t          reply_deadline_ms;
+    uint32_t          reconnect_delay_ms;
     uint16_t          last_cmd_id;
     bool              has_last_cmd;
+    bool              attempt_pending;
+    bool              reply_pending;
     uint8_t           rx_buffer[MQTT_RX_BUFFER_SIZE];
     uint16_t          rx_len;
     bool              valid;

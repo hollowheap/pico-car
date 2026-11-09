@@ -10,7 +10,6 @@
 #define MQTT_SUBACK       0x90u
 #define MQTT_PINGREQ      0xC0u
 #define MQTT_PINGRESP     0xD0u
-#define MQTT_RECONNECT_MS 1000u
 
 /* Byte and field geometry. */
 #define MQTT_BYTE_BITS            8U
@@ -36,9 +35,8 @@
 #define MQTT_PROTO_NAME_LEN       0x04U
 #define MQTT_PROTO_LEVEL          0x04U
 #define MQTT_CONN_FLAG_CLEAN      0x02U
-#define MQTT_CONN_FLAG_USERPASS   0xC0U
-#define MQTT_CONN_FLAGS_USERPASS \
-    (MQTT_CONN_FLAG_CLEAN | MQTT_CONN_FLAG_USERPASS)
+#define MQTT_CONN_FLAG_USER       0x80U
+#define MQTT_CONN_FLAG_PASS       0x40U
 
 /* SUBSCRIBE body. */
 #define MQTT_SUBSCRIBE_BODY_MAX   64U
@@ -47,13 +45,26 @@
 #define MQTT_PUBLISH_FLAGS_MASK   0x0FU
 #define MQTT_PUBLISH_QOS_SHIFT    1U
 #define MQTT_PUBLISH_QOS_MASK     0x03U
-#define MQTT_PUBLISH_QOS_INVALID  3U
+#define MQTT_PUBLISH_QOS_UNSUPPORTED 2U
 #define MQTT_PUBLISH_MIN_LEN      4U
 #define MQTT_PUBLISH_TOPIC_LEN_AT 2U
 #define MQTT_PUBLISH_TOPIC_AT     4U
 
 /* CONNACK. */
 #define MQTT_CONNACK_REMAINING    2U
+#define MQTT_CONNACK_CODE_AT      2U
+#define MQTT_CONNACK_ACCEPTED     0U
+
+/* SUBACK. */
+#define MQTT_SUBACK_REMAINING     3U
+#define MQTT_SUBACK_CODE_AT       3U
+#define MQTT_SUBACK_FAILURE       0x80U
+
+/* Reconnect delay growth per failed attempt. */
+#define MQTT_RECONNECT_FACTOR    2U
+
+/* Largest body that still encodes a one-byte remaining length. */
+#define MQTT_RL_1B_MAX           127U
 
 static uint16_t
 read_u16 (const uint8_t * data)
@@ -106,6 +117,16 @@ remaining_length (uint16_t len, uint8_t out[MQTT_RL_MAX_BYTES])
     return count;
 }
 
+/* True when a packet with this body length, fixed header included, fits the
+   TX buffer. */
+static bool
+packet_fits (uint32_t body_len)
+{
+    uint32_t rem_len = (body_len > MQTT_RL_1B_MAX) ? MQTT_RL_MAX_BYTES : 1u;
+
+    return (1u + rem_len + body_len) <= MQTT_TX_BUFFER_SIZE;
+}
+
 static mqtt_result_t
 send_packet (mqtt_client_t * client, uint8_t header, const uint8_t * body,
              uint16_t body_len, uint32_t now_ms)
@@ -115,7 +136,7 @@ send_packet (mqtt_client_t * client, uint8_t header, const uint8_t * body,
     uint16_t index = 0u;
     int      sent = 0;
 
-    if ((uint16_t) (1u + rem_len + body_len) > MQTT_TX_BUFFER_SIZE)
+    if (!packet_fits(body_len))
     {
         return MQTT_ERR_PROTOCOL;
     }
@@ -154,9 +175,14 @@ send_connect (mqtt_client_t * client, uint32_t now_ms)
     body[index++] = (uint8_t) 'T';
     body[index++] = (uint8_t) 'T';
     body[index++] = MQTT_PROTO_LEVEL;
-    if ((client->config.username != 0) && (client->config.password != 0))
+    /* 3.1.2.9: the password flag requires the username flag. */
+    if (client->config.username != 0)
     {
-        flags = (uint8_t) (flags | MQTT_CONN_FLAG_USERPASS);
+        flags = (uint8_t) (flags | MQTT_CONN_FLAG_USER);
+        if (client->config.password != 0)
+        {
+            flags = (uint8_t) (flags | MQTT_CONN_FLAG_PASS);
+        }
     }
     body[index++] = flags;
     index = (uint16_t) (index + put_u16(&body[index],
@@ -165,13 +191,15 @@ send_connect (mqtt_client_t * client, uint32_t now_ms)
     {
         return MQTT_ERR_ARG;
     }
-    if (flags == MQTT_CONN_FLAGS_USERPASS)
+    if (((flags & MQTT_CONN_FLAG_USER) != 0u) &&
+        !put_string(body, sizeof(body), &index, client->config.username))
     {
-        if (!put_string(body, sizeof(body), &index, client->config.username) ||
-            !put_string(body, sizeof(body), &index, client->config.password))
-        {
-            return MQTT_ERR_ARG;
-        }
+        return MQTT_ERR_ARG;
+    }
+    if (((flags & MQTT_CONN_FLAG_PASS) != 0u) &&
+        !put_string(body, sizeof(body), &index, client->config.password))
+    {
+        return MQTT_ERR_ARG;
     }
 
     return send_packet(client, MQTT_CONNECT, body, index, now_ms);
@@ -197,12 +225,27 @@ send_subscribe (mqtt_client_t * client, uint32_t now_ms)
     return send_packet(client, MQTT_SUBSCRIBE, body, index, now_ms);
 }
 
+/* Close the session and schedule the next attempt; the delay doubles up to
+   MQTT_RECONNECT_MAX_MS until a SUBACK resets it. */
 static void
 disconnect (mqtt_client_t * client, uint32_t now_ms)
 {
+    uint32_t next_delay = client->reconnect_delay_ms * MQTT_RECONNECT_FACTOR;
+
     client->state = MQTT_STATE_DISCONNECTED;
-    client->next_attempt_ms = now_ms + MQTT_RECONNECT_MS;
+    client->next_attempt_ms = now_ms + client->reconnect_delay_ms;
+    client->reconnect_delay_ms = (next_delay > MQTT_RECONNECT_MAX_MS) ?
+                                     MQTT_RECONNECT_MAX_MS : next_delay;
+    client->attempt_pending = false;
+    client->reply_pending = false;
     client->rx_len = 0u;
+}
+
+static void
+start_reply_timer (mqtt_client_t * client, uint32_t now_ms)
+{
+    client->reply_deadline_ms = now_ms + MQTT_REPLY_TIMEOUT_MS;
+    client->reply_pending = true;
 }
 
 static mqtt_result_t
@@ -228,7 +271,9 @@ handle_publish (mqtt_client_t * client, const uint8_t * packet,
     const uint8_t * payload = 0;
     uint16_t payload_len = 0u;
 
-    if ((qos == MQTT_PUBLISH_QOS_INVALID) ||
+    /* The client subscribes at QoS 1, so QoS 2 (and the invalid QoS 3) is a
+       broker protocol violation. */
+    if ((qos >= MQTT_PUBLISH_QOS_UNSUPPORTED) ||
         (packet_len < MQTT_PUBLISH_MIN_LEN))
     {
         return MQTT_ERR_PROTOCOL;
@@ -296,6 +341,7 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
     uint8_t  type = (uint8_t) (packet[0] >> MQTT_TYPE_SHIFT);
     uint16_t remaining = 0u;
     uint16_t index = 1u;
+    mqtt_result_t result = MQTT_OK;
 
     if (packet_len < MQTT_MIN_PACKET_1B_RL)
     {
@@ -321,19 +367,36 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
     if ((type == (MQTT_CONNACK >> MQTT_TYPE_SHIFT)) &&
         (client->state == MQTT_STATE_WAIT_CONNACK))
     {
-        if ((remaining != MQTT_CONNACK_REMAINING) || (packet[index + 1u] != 0u))
+        /* Byte 3 of the packet is the return code; byte 2 is the
+           session-present flag, which never causes a reject. */
+        if ((remaining != MQTT_CONNACK_REMAINING) ||
+            (packet[index + MQTT_CONNACK_CODE_AT] != MQTT_CONNACK_ACCEPTED))
         {
             disconnect(client, now_ms);
             return MQTT_ERR_PROTOCOL;
         }
         client->state = MQTT_STATE_WAIT_SUBACK;
-        return send_subscribe(client, now_ms);
+        client->reply_pending = false;
+        result = send_subscribe(client, now_ms);
+        if (result == MQTT_OK)
+        {
+            start_reply_timer(client, now_ms);
+        }
+        return result;
     }
     if ((type == (MQTT_SUBACK >> MQTT_TYPE_SHIFT)) &&
         (client->state == MQTT_STATE_WAIT_SUBACK))
     {
+        if ((remaining != MQTT_SUBACK_REMAINING) ||
+            (packet[index + MQTT_SUBACK_CODE_AT] == MQTT_SUBACK_FAILURE))
+        {
+            disconnect(client, now_ms);
+            return MQTT_ERR_PROTOCOL;
+        }
         client->state = MQTT_STATE_CONNECTED;
         client->last_tx_ms = now_ms;
+        client->reply_pending = false;
+        client->reconnect_delay_ms = MQTT_RECONNECT_MIN_MS;
         return MQTT_OK;
     }
     if ((type == (MQTT_PUBLISH >> MQTT_TYPE_SHIFT)) &&
@@ -343,6 +406,10 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
     }
     if (type == (MQTT_PINGRESP >> MQTT_TYPE_SHIFT))
     {
+        if (client->state == MQTT_STATE_CONNECTED)
+        {
+            client->reply_pending = false;
+        }
         return MQTT_OK;
     }
 
@@ -436,6 +503,8 @@ mqtt_client_init (mqtt_client_t * client, const mqtt_config_t * config,
     client->command_context = context;
     client->state = MQTT_STATE_DISCONNECTED;
     client->next_attempt_ms = 0u;
+    client->attempt_pending = true;
+    client->reconnect_delay_ms = MQTT_RECONNECT_MIN_MS;
     if (client->config.keepalive_s == 0u)
     {
         client->config.keepalive_s = MQTT_DEFAULT_KEEPALIVE_S;
@@ -454,10 +523,13 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
 
     if (client->state == MQTT_STATE_DISCONNECTED)
     {
-        if ((int32_t) (now_ms - client->next_attempt_ms) < 0)
+        /* The first attempt is due at once, whatever now_ms is. */
+        if (!client->attempt_pending &&
+            ((int32_t) (now_ms - client->next_attempt_ms) < 0))
         {
             return MQTT_OK;
         }
+        client->attempt_pending = false;
         result = send_connect(client, now_ms);
         if (result != MQTT_OK)
         {
@@ -465,6 +537,7 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
             return result;
         }
         client->state = MQTT_STATE_WAIT_CONNACK;
+        start_reply_timer(client, now_ms);
         return MQTT_OK;
     }
 
@@ -478,6 +551,14 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
         return result;
     }
 
+    /* Replies are processed first, so one arriving at the deadline counts. */
+    if (client->reply_pending &&
+        ((int32_t) (now_ms - client->reply_deadline_ms) >= 0))
+    {
+        disconnect(client, now_ms);
+        return MQTT_ERR_TRANSPORT;
+    }
+
     if ((client->state == MQTT_STATE_CONNECTED) &&
         (client->config.keepalive_s > 0u) &&
         ((now_ms - client->last_tx_ms) >=
@@ -487,6 +568,10 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
         if (result != MQTT_OK)
         {
             disconnect(client, now_ms);
+        }
+        else if (!client->reply_pending)
+        {
+            start_reply_timer(client, now_ms);
         }
         return result;
     }
@@ -513,7 +598,7 @@ mqtt_client_publish (mqtt_client_t * client, const char * topic,
     }
 
     topic_len = (uint16_t) strlen(topic);
-    if ((uint32_t) MQTT_U16_SIZE + topic_len + len > MQTT_TX_BUFFER_SIZE)
+    if (!packet_fits((uint32_t) MQTT_U16_SIZE + topic_len + len))
     {
         return MQTT_ERR_PROTOCOL;
     }

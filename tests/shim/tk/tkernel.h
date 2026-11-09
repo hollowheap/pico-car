@@ -38,6 +38,71 @@ typedef struct
     FP     inthdr;
 } T_DINT;
 
+/* Message buffer API used by src/telemetry/queue.c and net_queue.c. Values
+   match lib/mtk3smp-rp2040/include/tk. The functions are defined by the test,
+   normally through tests/shim/tk/mbf_fake.h. */
+typedef int          ID;
+typedef int32_t      TMO;
+typedef int32_t      SZ;
+typedef unsigned int ATR;
+
+#define E_PAR   (-17)
+#define E_CTX   (-25)
+#define E_ILUSE (-28)
+#define E_ID    (-18)
+#define E_NOMEM (-33)
+#define E_NOEXS (-42)
+#define E_TMOUT (-50)
+
+#define TA_TPRI    0x00000001UL
+#define TA_INHERIT 0x00000002UL
+#define TA_USERBUF 0x00000020UL
+
+#define TMO_POL  (0)
+#define TMO_FEVR (-1)
+
+typedef struct
+{
+    void * exinf;
+    ATR    mbfatr;
+    SZ     bufsz;
+    INT    maxmsz;
+    void * bufptr;
+} T_CMBF;
+
+/* Message buffer state, as in lib/mtk3smp-rp2040/include/tk/syscall.h. */
+typedef struct
+{
+    void * exinf;
+    ID     wtsk;
+    ID     stsk;
+    INT    msgsz;   /* size of the next message to receive, 0 when empty */
+    SZ     frbufsz;
+    INT    maxmsz;
+} T_RMBF;
+
+/* Mutex API used by src/telemetry/queue.c, as in
+   lib/mtk3smp-rp2040/include/tk/syscall.h; defined by
+   tests/shim/tk/mbf_fake.h. */
+typedef int PRI;
+
+typedef struct
+{
+    void * exinf;
+    ATR    mtxatr;
+    PRI    ceilpri;
+} T_CMTX;
+
+extern ID tk_cre_mtx (const T_CMTX * pk_cmtx);
+extern ER tk_del_mtx (ID mtxid);
+extern ER tk_loc_mtx (ID mtxid, TMO tmout);
+extern ER tk_unl_mtx (ID mtxid);
+
+extern ID  tk_cre_mbf (const T_CMBF * pk_cmbf);
+extern ER  tk_snd_mbf (ID mbfid, const void * msg, INT msgsz, TMO tmout);
+extern INT tk_rcv_mbf (ID mbfid, void * msg, TMO tmout);
+extern ER  tk_ref_mbf (ID mbfid, T_RMBF * pk_rmbf);
+
 /** Register hooks, defined by the test. */
 extern uint32_t shim_reg_read (uint32_t addr);
 extern void     shim_reg_write (uint32_t addr, uint32_t value);
