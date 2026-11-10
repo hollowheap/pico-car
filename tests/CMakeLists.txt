@@ -55,6 +55,7 @@ target_compile_options(test_obstacle_scan PRIVATE
 add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
 
 add_executable(test_obstacle_plan test_obstacle_plan.c
+    ${OBSTACLE_SRC}/geometry.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
 target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
@@ -63,6 +64,7 @@ target_compile_options(test_obstacle_plan PRIVATE
 add_test(NAME obstacle_plan COMMAND test_obstacle_plan)
 
 add_executable(test_obstacle_statechart test_obstacle_statechart.c
+    ${OBSTACLE_SRC}/geometry.c
     ${OBSTACLE_SRC}/statechart.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
@@ -72,6 +74,7 @@ target_compile_options(test_obstacle_statechart PRIVATE
 add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
 
 add_executable(test_obstacle_bypass_sim test_obstacle_bypass_sim.c
+    ${OBSTACLE_SRC}/geometry.c
     ${OBSTACLE_SRC}/statechart.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)

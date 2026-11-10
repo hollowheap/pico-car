@@ -1,21 +1,20 @@
 /** @file scan_algo.c
  *
- * @brief Buddy 5 echo classification, ping agreement and the coarse to
- *        fine scan engine. Pure C99 and integer only.
+ * @brief Echo classification, ping agreement and the ±30° servo scan with
+ *        body-pivot windows. Pure C99 and integer only.
  *
- * Scan order (Spec 3a-3d):
- *   1. Coarse: slots 0, 3, ... 24, from right to left.
- *   2. Region: the closest VALID reading within 600 mm, grown over coarse
- *      neighbours that are VALID and within closest + 250 mm. The closest
- *      reading is looked for inside the car's path (+-30 degrees) first,
- *      so clutter off to one side cannot take the place of the obstacle
- *      that stopped the car.
- *   3. Fine, left edge first because the servo is already on the left:
- *      the slots are walked outward until the first real miss (OPEN, or
- *      VALID beyond the last hit on that edge + 250 mm). An UNKNOWN or
- *      STUCK slot proves nothing, so the walk assumes the obstacle goes
- *      on and steps past it. An edge that reaches +-60 degrees without a
- *      miss is UNBOUNDED, so the planner treats that side as unsafe.
+ * Scan order (D96, S40):
+ *   1. Coarse centre window: 10 degree steps over +-30 degrees (slots 12,
+ *      14, ... 24, from right to left).
+ *   2. Region: the closest VALID reading within 600 mm inside the path
+ *      (+-30 degrees), grown over coarse neighbours within closest + 250 mm.
+ *   3. Fine: walk the left edge outward in 5 degree steps, then the right
+ *      edge. If an edge reaches the end of the centre servo window (+-30 deg)
+ *      without a miss, pivot the body toward that side by
+ *      OBSTACLE_SCAN_PIVOT_DECI (+-60 deg) once and continue walking in the
+ *      shifted servo window (+-30 deg around the pivoted body, covering up
+ *      to +-90 deg). All readings merge into the 37-slot profile in the
+ *      original frame.
  */
 
 #include <stdbool.h>
@@ -30,20 +29,29 @@
 #define PHASE_FINE_RIGHT (2U)
 #define PHASE_DONE       (3U)
 
-/* Highest slot number (24); fits easily in uint8_t. */
+/* Coarse stride in slots: 100 deci / 50 deci = 2 slots. */
+#define COARSE_STRIDE ((uint8_t)(OBSTACLE_COARSE_STEP_DECI / OBSTACLE_SLOT_STEP_DECI))
+
+/* Centre window slot bounds (-30 deg = slot 12, +30 deg = slot 24). */
+#define CENTRE_FIRST_SLOT                                                        \
+    ((uint8_t)((-OBSTACLE_SERVO_LIMIT_DECI - OBSTACLE_SLOT_FIRST_DECI) /         \
+               OBSTACLE_SLOT_STEP_DECI))
+#define CENTRE_LAST_SLOT                                                         \
+    ((uint8_t)((OBSTACLE_SERVO_LIMIT_DECI - OBSTACLE_SLOT_FIRST_DECI) /          \
+               OBSTACLE_SLOT_STEP_DECI))
+
+/* Highest slot number (36). */
 #define LAST_SLOT (OBSTACLE_SLOT_COUNT - 1U)
 
 /* Outcome of walking one edge. */
 #define WALK_MEASURE   (0U) /* p_ctx->slot must be measured next */
 #define WALK_BOUNDED   (1U) /* a real miss was found             */
-#define WALK_UNBOUNDED (2U) /* the walk ran past +-60 degrees     */
-
-/* Largest angle of the sweep in deci-degrees (600). */
-#define SWEEP_HALF_DECI (-OBSTACLE_SLOT_FIRST_DECI)
+#define WALK_UNBOUNDED (2U) /* the walk ran past the window      */
 
 static bool    find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
                              uint16_t * p_best_mm);
 static void    finish_coarse (scan_algo_ctx_t * p_ctx);
+static bool    slot_in_servo_window (int16_t body_deci, int32_t slot);
 static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                           uint8_t * p_miss);
 static void    run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first);
@@ -124,18 +132,62 @@ uint8_t scan_algo_classify (uint32_t mbx, bool b_timed_out, bool b_echo_high,
 }
 
 /*!
- * @brief Servo angle of a slot.
+ * @brief Bearing angle of a slot in the scan frame.
  *
- * @param[in] slot Slot number, 0..24.
+ * @param[in] slot Slot number, 0..36.
  *
- * @return Angle in deci-degrees, positive = left. Slot 12 is 0.
+ * @return Angle in deci-degrees, positive = left. Slot 18 is 0.
  */
 int16_t scan_algo_slot_deci (uint8_t slot)
 {
     int32_t const deci =
         OBSTACLE_SLOT_FIRST_DECI + ((int32_t)slot * OBSTACLE_SLOT_STEP_DECI);
 
-    /* Cast is safe: slots 0..24 give -600..+600. */
+    /* Cast is safe: slots 0..36 give -900..+900. */
+    return ((int16_t)deci);
+}
+
+/*!
+ * @brief Body heading offset required for the current scan target, relative
+ *        to the heading when the scan began.
+ *
+ * @param[in] p_ctx Scan engine state.
+ *
+ * @return Body pivot angle in deci-degrees (0, +600, or -600).
+ */
+int16_t scan_algo_body_deci (scan_algo_ctx_t const * p_ctx)
+{
+    return ((PHASE_DONE == p_ctx->phase) ? (int16_t)0 : p_ctx->body_deci);
+}
+
+/*!
+ * @brief Servo angle for the current scan target, clamped to +-30 degrees.
+ *
+ * @param[in] p_ctx Scan engine state.
+ *
+ * @return Servo angle in deci-degrees (-300..+300).
+ */
+int16_t scan_algo_servo_deci (scan_algo_ctx_t const * p_ctx)
+{
+    int32_t deci = 0;
+
+    if (PHASE_DONE != p_ctx->phase)
+    {
+        deci = (int32_t)scan_algo_slot_deci(p_ctx->slot) - (int32_t)p_ctx->body_deci;
+        if (deci > OBSTACLE_SERVO_LIMIT_DECI)
+        {
+            deci = OBSTACLE_SERVO_LIMIT_DECI;
+        }
+        else if (deci < -OBSTACLE_SERVO_LIMIT_DECI)
+        {
+            deci = -OBSTACLE_SERVO_LIMIT_DECI;
+        }
+        else
+        {
+            /* Already within +-30 degrees. */
+        }
+    }
+
     return ((int16_t)deci);
 }
 
@@ -260,7 +312,7 @@ bool scan_algo_is_miss (uint16_t slot_val, uint16_t ref_mm)
 }
 
 /*!
- * @brief Start a new scan.
+ * @brief Start a new scan in the centre servo window (-30..+30 deg).
  *
  * @param[out] p_ctx Scan engine state.
  */
@@ -275,17 +327,19 @@ void scan_algo_start (scan_algo_ctx_t * p_ctx)
 
     scan_algo_agree_reset(&p_ctx->agree);
     p_ctx->phase        = PHASE_COARSE;
-    p_ctx->slot         = 0U;
+    p_ctx->slot         = CENTRE_FIRST_SLOT;
+    p_ctx->body_deci    = 0;
     p_ctx->closest_slot = OBSTACLE_SLOT_CENTRE;
     p_ctx->closest_mm   = 0U;
-    p_ctx->region_lo    = 0U;
-    p_ctx->region_hi    = 0U;
+    p_ctx->region_lo    = CENTRE_FIRST_SLOT;
+    p_ctx->region_hi    = CENTRE_FIRST_SLOT;
 
     for (idx = 0U; idx < SCAN_ALGO_SIDES; idx++)
     {
         p_ctx->edge_state[idx] = SCAN_ALGO_EDGE_NONE;
         p_ctx->edge_hit[idx]   = 0U;
         p_ctx->edge_miss[idx]  = 0U;
+        p_ctx->b_pivoted[idx]  = false;
     }
 }
 
@@ -336,10 +390,9 @@ bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
         switch (p_ctx->phase)
         {
             case PHASE_COARSE:
-                if ((p_ctx->slot + OBSTACLE_COARSE_STRIDE) <= LAST_SLOT)
+                if ((p_ctx->slot + COARSE_STRIDE) <= CENTRE_LAST_SLOT)
                 {
-                    /* Cast is safe: the result is at most 24. */
-                    p_ctx->slot = (uint8_t)(p_ctx->slot + OBSTACLE_COARSE_STRIDE);
+                    p_ctx->slot = (uint8_t)(p_ctx->slot + COARSE_STRIDE);
                 }
                 else
                 {
@@ -356,7 +409,8 @@ bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
             break;
 
             default:
-                p_ctx->phase = PHASE_DONE;
+                p_ctx->phase     = PHASE_DONE;
+                p_ctx->body_deci = 0;
             break;
         }
     }
@@ -380,9 +434,8 @@ static bool find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
     uint32_t slot    = 0U;
     bool     b_found = false;
 
-    for (slot = 0U; slot <= LAST_SLOT; slot += OBSTACLE_COARSE_STRIDE)
+    for (slot = CENTRE_FIRST_SLOT; slot <= CENTRE_LAST_SLOT; slot += COARSE_STRIDE)
     {
-        /* Cast is safe: slot is at most 24. */
         int32_t const  deci     = scan_algo_slot_deci((uint8_t)slot);
         uint16_t const slot_val = p_ctx->profile[slot];
         uint16_t const dist     = obstacle_pack_slot_dist(slot_val);
@@ -392,9 +445,7 @@ static bool find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
             (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(slot_val)) &&
             (dist <= OBSTACLE_REGION_MAX_MM) && ((!b_found) || (dist < *p_best_mm)))
         {
-            *p_best_mm = dist;
-
-            /* Cast is safe: slot is at most 24. */
+            *p_best_mm          = dist;
             p_ctx->closest_slot = (uint8_t)slot;
             b_found             = true;
         }
@@ -416,14 +467,8 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
 
     if (!b_found)
     {
-        /* Nothing in the car's path: fall back to the whole sweep. */
-        b_found = find_closest(p_ctx, SWEEP_HALF_DECI, &best_mm);
-    }
-
-    if (!b_found)
-    {
-        /* Nothing within 600 mm. */
-        p_ctx->phase = PHASE_DONE;
+        p_ctx->phase     = PHASE_DONE;
+        p_ctx->body_deci = 0;
     }
     else
     {
@@ -432,46 +477,61 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
         p_ctx->region_hi  = p_ctx->closest_slot;
 
         while (
-            ((p_ctx->region_hi + OBSTACLE_COARSE_STRIDE) <= LAST_SLOT) &&
+            ((p_ctx->region_hi + COARSE_STRIDE) <= CENTRE_LAST_SLOT) &&
             (scan_algo_is_hit(
-                p_ctx->profile[p_ctx->region_hi + OBSTACLE_COARSE_STRIDE], best_mm)))
+                p_ctx->profile[p_ctx->region_hi + COARSE_STRIDE], best_mm)))
         {
-            /* Cast is safe: the loop test keeps the result <= 24. */
-            p_ctx->region_hi = (uint8_t)(p_ctx->region_hi + OBSTACLE_COARSE_STRIDE);
+            p_ctx->region_hi = (uint8_t)(p_ctx->region_hi + COARSE_STRIDE);
         }
 
         while (
-            (p_ctx->region_lo >= OBSTACLE_COARSE_STRIDE) &&
+            (p_ctx->region_lo >= (CENTRE_FIRST_SLOT + COARSE_STRIDE)) &&
             (scan_algo_is_hit(
-                p_ctx->profile[p_ctx->region_lo - OBSTACLE_COARSE_STRIDE], best_mm)))
+                p_ctx->profile[p_ctx->region_lo - COARSE_STRIDE], best_mm)))
         {
-            /* Cast is safe: the loop test keeps the result >= 0. */
-            p_ctx->region_lo = (uint8_t)(p_ctx->region_lo - OBSTACLE_COARSE_STRIDE);
+            p_ctx->region_lo = (uint8_t)(p_ctx->region_lo - COARSE_STRIDE);
         }
 
         p_ctx->edge_hit[SCAN_ALGO_LEFT] = p_ctx->region_hi;
+        /* Check the 5-degree slot inside the last coarse interval first if
+         * region_hi stopped before CENTRE_LAST_SLOT. */
         run_fine(p_ctx, SCAN_ALGO_LEFT, (int32_t)p_ctx->region_hi + 1);
     }
 }
 
 /*!
- * @brief Walk one edge outward, starting at slot first, over the slots
- *        that are already measured.
+ * @brief Tell whether a slot's bearing is reachable within +-30 degrees of
+ *        the current body heading.
  *
- * A hit moves the edge out and becomes the new reference. An UNKNOWN or
- * STUCK slot proves nothing, so the walk assumes the obstacle goes on and
- * steps past it without moving the edge (edge_hit always names a VALID
- * reading, whose range the planner uses). The walk stops at the first slot
- * not measured yet, at the first real miss, or past +-60 degrees.
+ * @param[in] body_deci Body heading offset in deci-degrees.
+ * @param[in] slot      Slot index.
  *
- * The miss test uses the last hit on this edge, not the closest reading of
- * the whole scan. A surface seen at an angle recedes by only a few tens of
- * millimetres per 5-degree slot, so it does not look like an edge. The old
- * global test declared an edge inside an oblique wall or a curved rock.
+ * @return True if |slot_deci - body_deci| <= OBSTACLE_SERVO_LIMIT_DECI.
+ */
+static bool slot_in_servo_window (int16_t body_deci, int32_t slot)
+{
+    bool b_in = false;
+
+    if ((slot >= 0) && (slot <= (int32_t)LAST_SLOT))
+    {
+        int32_t const diff =
+            (int32_t)scan_algo_slot_deci((uint8_t)slot) - (int32_t)body_deci;
+
+        b_in = (diff >= -OBSTACLE_SERVO_LIMIT_DECI) &&
+               (diff <= OBSTACLE_SERVO_LIMIT_DECI);
+    }
+
+    return (b_in);
+}
+
+/*!
+ * @brief Walk one edge outward, starting at slot first. If the walk reaches
+ *        the end of the centre servo window without a real miss, pivot the
+ *        body once toward that side so the servo window shifts to 30..90 deg.
  *
  * @param[in,out] p_ctx  Scan engine state.
  * @param[in]     side   SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.
- * @param[in]     first  First slot to look at; may be -1 or 25.
+ * @param[in]     first  First slot to look at.
  * @param[out]    p_miss First slot beyond the edge (BOUNDED/UNBOUNDED).
  *
  * @return WALK_MEASURE, WALK_BOUNDED or WALK_UNBOUNDED.
@@ -479,10 +539,10 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
 static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                           uint8_t * p_miss)
 {
-    int32_t const  step   = (SCAN_ALGO_LEFT == side) ? 1 : -1;
-    int32_t        slot   = first;
-    uint8_t        result = WALK_MEASURE;
-    bool           b_more = true;
+    int32_t const  step    = (SCAN_ALGO_LEFT == side) ? 1 : -1;
+    int32_t        slot    = first;
+    uint8_t        result  = WALK_MEASURE;
+    bool           b_more  = true;
     uint16_t const hit_val = p_ctx->profile[p_ctx->edge_hit[side]];
     uint16_t       ref_mm  = obstacle_pack_slot_dist(hit_val);
 
@@ -490,41 +550,55 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
     {
         bool const b_inside = (slot >= 0) && (slot <= (int32_t)LAST_SLOT);
 
-        /* An outside slot reads as empty; it is never used below. */
-        uint16_t const slot_val = b_inside ? p_ctx->profile[slot] : 0U;
-
         if (!b_inside)
         {
-            /* The obstacle reaches the end of the sweep. */
             *p_miss = (SCAN_ALGO_LEFT == side) ? (uint8_t)LAST_SLOT : 0U;
             result  = WALK_UNBOUNDED;
             b_more  = false;
         }
-        else if (!obstacle_pack_slot_is_measured(slot_val))
+        else if (!slot_in_servo_window(p_ctx->body_deci, slot))
         {
-            /* Cast is safe: slot is 0..24 here. */
-            p_ctx->slot = (uint8_t)slot;
-            result      = WALK_MEASURE;
-            b_more      = false;
-        }
-        else if (scan_algo_is_miss(slot_val, ref_mm))
-        {
-            /* Cast is safe: slot is 0..24 here. */
-            *p_miss = (uint8_t)slot;
-            result  = WALK_BOUNDED;
-            b_more  = false;
-        }
-        else if (scan_algo_is_hit(slot_val, p_ctx->closest_mm))
-        {
-            /* Cast is safe: slot is 0..24 here. */
-            p_ctx->edge_hit[side] = (uint8_t)slot;
-            ref_mm                = obstacle_pack_slot_dist(slot_val);
-            slot += step;
+            if (!p_ctx->b_pivoted[side])
+            {
+                p_ctx->b_pivoted[side] = true;
+                p_ctx->body_deci       = (SCAN_ALGO_LEFT == side)
+                                             ? (int16_t)OBSTACLE_SCAN_PIVOT_DECI
+                                             : (int16_t)(-OBSTACLE_SCAN_PIVOT_DECI);
+            }
+            else
+            {
+                *p_miss = (SCAN_ALGO_LEFT == side) ? (uint8_t)LAST_SLOT : 0U;
+                result  = WALK_UNBOUNDED;
+                b_more  = false;
+            }
         }
         else
         {
-            /* UNKNOWN or STUCK: assume the obstacle goes on. */
-            slot += step;
+            uint16_t const slot_val = p_ctx->profile[slot];
+
+            if (!obstacle_pack_slot_is_measured(slot_val))
+            {
+                p_ctx->slot = (uint8_t)slot;
+                result      = WALK_MEASURE;
+                b_more      = false;
+            }
+            else if (scan_algo_is_miss(slot_val, ref_mm))
+            {
+                *p_miss = (uint8_t)slot;
+                result  = WALK_BOUNDED;
+                b_more  = false;
+            }
+            else if (scan_algo_is_hit(slot_val, p_ctx->closest_mm))
+            {
+                p_ctx->edge_hit[side] = (uint8_t)slot;
+                ref_mm                = obstacle_pack_slot_dist(slot_val);
+                slot += step;
+            }
+            else
+            {
+                /* UNKNOWN or STUCK: assume the obstacle goes on. */
+                slot += step;
+            }
         }
     }
 
@@ -566,17 +640,18 @@ static void run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first)
             if (SCAN_ALGO_LEFT == cur_side)
             {
                 cur_side                         = SCAN_ALGO_RIGHT;
+                p_ctx->body_deci                 = 0;
                 p_ctx->edge_hit[SCAN_ALGO_RIGHT] = p_ctx->region_lo;
-                cur_first = (int32_t)p_ctx->region_lo - 1;
+                cur_first                        = (int32_t)p_ctx->region_lo - 1;
             }
             else
             {
-                p_ctx->phase = PHASE_DONE;
-                b_more       = false;
+                p_ctx->phase     = PHASE_DONE;
+                p_ctx->body_deci = 0;
+                b_more           = false;
             }
         }
     }
 }
 
 /*** end of file ***/
-

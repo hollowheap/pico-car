@@ -9,6 +9,7 @@ if(NOT DEFINED ROOT)
 endif()
 
 set(REMOVED_SYMBOLS
+    obstacle_plan_hug_ctrl
     obstacle_plan_hug_steer
     obstacle_plan_steer_toward
     OBSTACLE_HUG_FAR_MM
@@ -34,18 +35,4 @@ endforeach()
 
 if(NOT FOUND STREQUAL "")
     message(FATAL_ERROR "removed hug-law symbols still present:\n${FOUND}")
-endif()
-
-# The survivor must be called outside its own definition and declaration.
-set(CALLERS 0)
-foreach(FILE IN LISTS SOURCES)
-    file(READ "${FILE}" TEXT)
-    string(REGEX MATCHALL "obstacle_plan_hug_ctrl *\\(" HITS "${TEXT}")
-    list(LENGTH HITS HIT_COUNT)
-    math(EXPR CALLERS "${CALLERS} + ${HIT_COUNT}")
-endforeach()
-
-# Declaration + definition + at least one call.
-if(CALLERS LESS 3)
-    message(FATAL_ERROR "obstacle_plan_hug_ctrl has no caller (${CALLERS} mentions)")
 endif()

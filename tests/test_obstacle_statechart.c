@@ -97,7 +97,7 @@ static void test_obstacle_to_scan(void)
     obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 3U), 30U, 0U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_SCANNING);
     CHECK(out.b_profile_changed);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == -600);
+    CHECK(obstacle_statechart_servo_deci(&fsm) == -300);
 
     while ((fsm.state == OBSTACLE_STATE_SCANNING) && (guard < 100U))
     {
@@ -239,7 +239,7 @@ static void test_wall_reaches_bypass(void)
     obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_ACCEPT, 5U), 60U, 1000U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
     CHECK(fsm.hug_limit_mm == obstacle_plan_hug_limit_mm(&fsm.plan, &cfg));
-    CHECK(fsm.hug_limit_mm == 3841U);
+    CHECK(fsm.hug_limit_mm == 3441U);
     CHECK(fsm.steer == obstacle_plan_steer_away(OBSTACLE_SIDE_LEFT));
     CHECK(!out.b_call_stop);
 }
@@ -355,78 +355,38 @@ static void test_servo_schedule(void)
     CHECK(fsm.plan.side == OBSTACLE_SIDE_LEFT);
     for (ping = 0U; ping < 24U; ping++)
     {
-        int16_t const servo    = obstacle_statechart_servo_deci(&fsm);
-        uint32_t      seq_next = ((uint32_t)fsm.seq + 1U) & OBSTACLE_ST_SEQ_MK;
-
-        if (3U == (seq_next % 4U))
-        {
-            CHECK(servo == 0);
-        }
-        else
-        {
-            CHECK(servo == -OBSTACLE_HUG_SERVO_DECI);
-        }
-        /* A far, harmless reading on either ray. */
+        CHECK(obstacle_statechart_servo_deci(&fsm) == 0);
+        /* A far, harmless reading ahead. */
         obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + (ping * 10U), &out);
         CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
     }
-
-    /* Exactly one look ahead in every four pings. */
-    {
-        uint32_t ahead = 0U;
-
-        for (ping = 0U; ping < 16U; ping++)
-        {
-            if (0 == obstacle_statechart_servo_deci(&fsm))
-            {
-                ahead++;
-            }
-            obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 600U + (ping * 10U), &out);
-        }
-        CHECK(ahead == 4U);
-    }
 }
 
-/* Passing on the right puts the obstacle on the car's left: side ray +60. */
+/* Passing on either side keeps the moving sonar forward (0 deg). */
 static void test_servo_schedule_right(void)
 {
     obstacle_statechart_t     fsm;
     obstacle_statechart_out_t out;
     uint32_t                  ping = 0U;
-    uint32_t                  side = 0U;
 
     to_reacquire(&fsm, &out, false);
     fsm.plan.side = OBSTACLE_SIDE_RIGHT;
     for (ping = 0U; ping < 8U; ping++)
     {
-        int16_t const servo = obstacle_statechart_servo_deci(&fsm);
-
-        if (0 != servo)
-        {
-            CHECK(servo == OBSTACLE_HUG_SERVO_DECI);
-            side++;
-        }
+        CHECK(obstacle_statechart_servo_deci(&fsm) == 0);
         obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + (ping * 10U), &out);
     }
-    CHECK(side == 6U);
 }
 
-/* Forward reading under OBSTACLE_FWD_GUARD_MM on a look-ahead ping stops the
- * car and starts a stationary scan the same way a first detection does. */
+/* Forward reading under OBSTACLE_FWD_GUARD_MM stops the car and starts a
+ * stationary scan the same way a first detection does. */
 static void test_forward_guard_stops(void)
 {
     obstacle_statechart_t     fsm;
     obstacle_statechart_out_t out;
-    uint32_t                  ping = 0U;
 
     to_reacquire(&fsm, &out, false);
-
-    /* Run side pings until the next ping is a look-ahead ping. */
-    while (0 != obstacle_statechart_servo_deci(&fsm))
-    {
-        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + ping, &out);
-        ping++;
-    }
+    CHECK(obstacle_statechart_servo_deci(&fsm) == 0);
 
     obstacle_statechart_out_clear(&out);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_FWD_GUARD_MM - 1U, 500U, &out);
@@ -449,45 +409,34 @@ static void test_forward_guard_stops(void)
     obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 9U), 600U, 2000U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_SCANNING);
     CHECK(out.b_profile_changed);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == -600);
+    CHECK(obstacle_statechart_servo_deci(&fsm) == -300);
 }
 
 static void test_forward_guard_limits(void)
 {
     obstacle_statechart_t     fsm;
     obstacle_statechart_out_t out;
-    uint32_t                  ping = 0U;
     uint16_t const            dist[] = {OBSTACLE_FWD_GUARD_MM, OBSTACLE_FWD_GUARD_MM + 1U, 2000U};
     uint32_t                  idx = 0U;
 
-    /* 300 mm and more on a look-ahead ping: no stop. */
+    /* 300 mm and more forward: no stop. */
     for (idx = 0U; idx < 3U; idx++)
     {
         to_reacquire(&fsm, &out, false);
-        while (0 != obstacle_statechart_servo_deci(&fsm))
-        {
-            obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + ping, &out);
-            ping++;
-        }
         obstacle_statechart_out_clear(&out);
         obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, dist[idx], 500U, &out);
         CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
         CHECK(out.evt_count == 0U);
     }
 
-    /* OPEN, UNKNOWN or STUCK on a look-ahead ping never count as close. */
+    /* OPEN, UNKNOWN or STUCK forward never count as close. */
     to_reacquire(&fsm, &out, false);
-    while (0 != obstacle_statechart_servo_deci(&fsm))
-    {
-        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + ping, &out);
-        ping++;
-    }
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 500U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
     CHECK(out.evt_count == 0U);
 }
 
-/* A close reading on a side ping does not feed the forward guard. */
+/* Far forward readings do not trigger the guard. */
 static void test_side_ping_not_guarded(void)
 {
     obstacle_statechart_t     fsm;
@@ -498,24 +447,13 @@ static void test_side_ping_not_guarded(void)
 
     for (ping = 0U; ping < 16U; ping++)
     {
-        bool const b_ahead = (0 == obstacle_statechart_servo_deci(&fsm));
-
         obstacle_statechart_out_clear(&out);
-        if (b_ahead)
-        {
-            obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + (ping * 10U), &out);
-        }
-        else
-        {
-            /* 150..299 mm on the side ray is the normal hug distance. */
-            obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID,
-                                     (uint16_t)(150U + ((ping * 17U) % 150U)),
-                                     300U + (ping * 10U), &out);
-        }
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + (ping * 10U), &out);
         CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
         CHECK(out.evt_count == 0U);
     }
 }
+
 
 /* BYPASS keeps the servo ahead for the pivot: its readings are the pivot's
  * own beam, so a close forward reading there never rescans. */

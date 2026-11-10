@@ -412,6 +412,7 @@ endforeach()
 #                   Buddy 5 + a pretend Navigation; the motors are never driven.
 # ---------------------------------------------------------------------------
 add_library(obstacle STATIC
+    src/navigation/obstacle/geometry.c
     src/navigation/obstacle/scan_algo.c
     src/navigation/obstacle/planner.c
     src/navigation/obstacle/statechart.c
