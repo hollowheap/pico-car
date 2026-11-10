@@ -1,9 +1,8 @@
 /** @file obstacle_pack.h
  *
- * @brief the obstacle task codes and packed-word layouts. Every shared or stored
+ * @brief Obstacle codes and packed-word layouts. Every shared or stored
  *        field is packed with explicit masks and shifts (no C bit-fields
- *        across task/ISR boundaries). See the bit table in
- *        docs/obstacle.md.
+ *        across task/ISR boundaries).
  *
  * This header has no kernel includes.
  */
@@ -33,8 +32,8 @@
 #define OBSTACLE_STATE_WAIT_STOP (2U)
 #define OBSTACLE_STATE_SCANNING  (3U)
 #define OBSTACLE_STATE_PLAN      (4U)
-#define OBSTACLE_STATE_BYPASS    (5U) /* escape: bend away, servo ahead      */
-#define OBSTACLE_STATE_REACQUIRE (6U) /* hug with servo at 45 deg, find line */
+#define OBSTACLE_STATE_BYPASS    (5U) /* round the obstacle: out, along, look */
+#define OBSTACLE_STATE_REACQUIRE (6U) /* passed: back to the line at 45 deg   */
 
 /* Why the obstacle task is STOPPED, 4 bits. */
 #define OBSTACLE_CAUSE_NONE          (0U)
@@ -62,16 +61,12 @@
 #define OBSTACLE_FAULT_BYPASS_LIMIT (1U << 6U)
 #define OBSTACLE_FAULT_LINE_TIMEOUT (1U << 7U)
 
-/* Commands from Navigation, 3 bits. */
+/* Commands, 3 bits. STOP, RESET and START are in obstacle_cmd.h. */
 #define OBSTACLE_CMD_NONE       (0U)
 #define OBSTACLE_CMD_SCAN_REQ   (1U) /* car confirmed stopped, please scan   */
 #define OBSTACLE_CMD_ACCEPT     (2U)
 #define OBSTACLE_CMD_REJECT     (3U)
 #define OBSTACLE_CMD_LINE_FOUND (4U)
-/* [Chat] All eight 3-bit opcodes are taken (STOP, RESET and START are in
- * obstacle_cmd.h), so TURNED reuses LINE_FOUND: in BYPASS it means "the
- * car has turned the planned start angle", in REACQUIRE "the line is
- * found". Each state accepts only its own meaning. */
 #define OBSTACLE_CMD_TURNED     (OBSTACLE_CMD_LINE_FOUND)
 
 /* Events to Navigation, 2 bits. */
@@ -80,15 +75,15 @@
 #define OBSTACLE_EVT_FAULT       (2U)
 #define OBSTACLE_EVT_STEER       (3U)
 
-/* Steering, 2 bits. Same order as the motion drive action. */
+/* Drive shape of a wheel command, 2 bits, for the flight log. */
 #define OBSTACLE_STEER_STRAIGHT (0U)
 #define OBSTACLE_STEER_LEFT     (1U)
 #define OBSTACLE_STEER_RIGHT    (2U)
 #define OBSTACLE_STEER_HOLD     (3U)
 
-/* Scan result status, 2 bits, and bypass side, 1 bit. */
+/* Plan status, and bypass side. */
 #define OBSTACLE_RESULT_OK           (0U)
-#define OBSTACLE_RESULT_CLEAR        (1U) /* nothing within 600 mm, all real */
+#define OBSTACLE_RESULT_CLEAR        (1U) /* nothing within 600 mm in the path */
 #define OBSTACLE_RESULT_NO_SAFE_PATH (2U)
 #define OBSTACLE_RESULT_FAILED       (3U)
 #define OBSTACLE_SIDE_LEFT           (0U) /* pass the obstacle on its left   */
@@ -140,7 +135,7 @@
 /* OBSTACLE payload: dist 12. */
 #define OBSTACLE_EV_DIST_SH (7U)
 #define OBSTACLE_EV_DIST_MK (0xFFFU)
-/* SCAN_RESULT payload: status 2 | side 1 | width 10 | start angle 6 |
+/* SCAN_RESULT payload: status 2 | side 1 | width 10 | start angle 7 |
  * wall 1. */
 #define OBSTACLE_EV_STATUS_SH (7U)
 #define OBSTACLE_EV_STATUS_MK (0x3U)
@@ -149,8 +144,8 @@
 #define OBSTACLE_EV_WIDTH_SH  (10U)
 #define OBSTACLE_EV_WIDTH_MK  (0x3FFU)
 #define OBSTACLE_EV_ANGLE_SH  (20U)
-#define OBSTACLE_EV_ANGLE_MK  (0x3FU)
-#define OBSTACLE_EV_WALL_SH   (26U)
+#define OBSTACLE_EV_ANGLE_MK  (0x7FU)
+#define OBSTACLE_EV_WALL_SH   (27U)
 #define OBSTACLE_EV_WALL_MK   (0x1U)
 /* FAULT payload: cause 4 | fault byte 8. */
 #define OBSTACLE_EV_CAUSE_SH  (7U)
@@ -175,6 +170,20 @@
 #define OBSTACLE_CNT_COLL_MK  (0x3U)
 #define OBSTACLE_CNT_CLEAR_SH (10U)
 #define OBSTACLE_CNT_CLEAR_MK (0x7U)
+
+/* Ping (u32, one store by the scan task): seq 6 | class 2 | dist 12 |
+ * servo 6. The servo field is the servo angle in whole degrees plus 30. */
+#define OBSTACLE_PING_SEQ_SH   (0U)
+#define OBSTACLE_PING_SEQ_MK   (0x3FU)
+#define OBSTACLE_PING_CLASS_SH (6U)
+#define OBSTACLE_PING_CLASS_MK (0x3U)
+#define OBSTACLE_PING_DIST_SH  (8U)
+#define OBSTACLE_PING_DIST_MK  (0xFFFU)
+#define OBSTACLE_PING_SERVO_SH (20U)
+#define OBSTACLE_PING_SERVO_MK (0x3FU)
+
+/* Servo field offset: whole degrees plus 30 (the servo limit). */
+#define OBSTACLE_PING_SERVO_OFFSET (30)
 
 /* ------------------------------------------------------------------ *
  * Helpers. The value is masked before it is placed, so a value that is
@@ -289,6 +298,45 @@ static inline uint8_t obstacle_pack_cmd (uint32_t type, uint32_t req_id)
 
     /* Cast is safe: the two fields use bits 0-7 only. */
     return ((uint8_t)word);
+}
+
+/*!
+ * @brief Pack one finished ping for the brain.
+ *
+ * @param[in] seq        Ping sequence (wraps at 64).
+ * @param[in] cls        Echo class (OBSTACLE_CLASS_*).
+ * @param[in] dist_mm    Distance; 0 unless the class is VALID.
+ * @param[in] servo_deci Servo angle during the ping, -300..300 deci-degrees.
+ *
+ * @return The packed 32-bit ping word.
+ */
+static inline uint32_t obstacle_pack_ping (uint32_t seq, uint32_t cls, uint32_t dist_mm,
+                                           int32_t servo_deci)
+{
+    int32_t const deg    = (servo_deci / OBSTACLE_DECI_PER_DEG) + OBSTACLE_PING_SERVO_OFFSET;
+    uint32_t const field = (deg < 0) ? 0U : (uint32_t)deg;
+    uint32_t       word  = 0U;
+
+    word = obstacle_pack_put(word, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK, seq);
+    word = obstacle_pack_put(word, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK, cls);
+    word = obstacle_pack_put(word, OBSTACLE_PING_DIST_SH, OBSTACLE_PING_DIST_MK, dist_mm);
+    word = obstacle_pack_put(word, OBSTACLE_PING_SERVO_SH, OBSTACLE_PING_SERVO_MK, field);
+
+    return (word);
+}
+
+/*!
+ * @brief Servo angle of a ping word.
+ *
+ * @param[in] word Packed ping word.
+ *
+ * @return Angle in deci-degrees (whole degrees only).
+ */
+static inline int32_t obstacle_pack_ping_servo (uint32_t word)
+{
+    int32_t const deg = (int32_t)obstacle_pack_get(word, OBSTACLE_PING_SERVO_SH, OBSTACLE_PING_SERVO_MK);
+
+    return ((deg - OBSTACLE_PING_SERVO_OFFSET) * OBSTACLE_DECI_PER_DEG);
 }
 
 #endif /* OBSTACLE_PACK_H */

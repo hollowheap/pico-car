@@ -20,21 +20,22 @@ include/navigation/obstacle.h    public facade (the only public header)
 src/main.c                       team file; line_task calls obstacle_line_*()
 
 src/navigation/obstacle/
-├── obstacle_config.h                     settings: pins, timings, FILL values
+├── obstacle_config.h                  settings: pins, timings, FILL values
 ├── obstacle_pack.h                    codes and packed-word layouts
 │
-├── scan_algo.c / .h             echo classing + scan engine        (pure)
-├── planner.c / .h               width, side, angle, hug rules      (pure)
-├── statechart.c / .h                the statechart                     (pure)
+├── geometry.c / .h                    integer trig Q14 and math helpers (pure)
+├── scan_algo.c / .h                   echo classing + scan engine       (pure)
+├── planner.c / .h                     width, side, stop-and-look rules  (pure)
+├── statechart.c / .h                  the statechart                    (pure)
 │
-├── scan_hw.c / .h               sensor pins, servo PWM, echo ISR   (hardware)
-├── scan_task.c / .h             the Buddy 5 task loop              (kernel)
-├── comms.c / .h              queues, outbox, shared copies      (kernel)
-├── obstacle.c / .h              implementation; obstacle.h is private (kernel)
+├── scan_hw.c / .h                     sensor pins, servo PWM, echo ISR  (hardware)
+├── scan_task.c / .h                   the Buddy 5 task loop             (kernel)
+├── comms.c / .h                       queues, outbox, shared copies     (kernel)
+├── obstacle.c / .h                    implementation; obstacle.h is private (kernel)
 │
 ├── obstacle_nav.c / .h                Phase 2 glue used by main.c       (kernel)
-├── flight_log.c / .h                flight recorder, printed over USB  (kernel)
-└── bench_main.c              bench program with a pretend Navigation
+├── flight_log.c / .h                  flight recorder, printed over USB (kernel)
+└── bench_main.c                       bench program with a pretend Navigation
 ```
 
 **Pure** means the file is plain logic with no hardware or kernel calls.
@@ -51,21 +52,28 @@ src/navigation/obstacle/
  └───────┬────────┘
          ▼
  ┌────────────────┐        ┌────────────────┐
- │  comms.c    │◄──────►│  scan_task.c   │  the task: one loop pass =
+ │  comms.c       │◄──────►│  scan_task.c   │  the task: one loop pass =
  │ queues, outbox │ pop    │                │  commands → time limits →
  │ shared copies  │ publish│                │  move servo → ping
  └────────────────┘        └──┬─────────┬───┘
                               │         │
                     feeds     ▼         ▼   drives
                   ┌────────────────┐  ┌────────────────┐
-                  │  statechart.c      │  │  scan_hw.c     │
+                  │  statechart.c  │  │  scan_hw.c     │
                   │  statechart    │  │ TRIG, ECHO ISR,│
                   └──┬─────────┬───┘  │ servo PWM      │
                      ▼         ▼      └────────────────┘
           ┌──────────────┐ ┌──────────────┐
           │ scan_algo.c  │ │  planner.c   │
-          │ scan engine  │ │ plan + hug   │
-          └──────────────┘ └──────────────┘
+          │ scan engine  │ │ plan + drive │
+          └──────┬───────┘ └──────┬───────┘
+                 │                │
+                 └───────┬────────┘
+                         ▼
+                  ┌──────────────┐
+                  │  geometry.c  │
+                  │ integer math │
+                  └──────────────┘
 
  Every file uses obstacle_config.h (settings) and obstacle_pack.h (codes and bit layouts).
 ```
@@ -118,6 +126,12 @@ functions, who uses it, and when you would edit it.
 
 ### 3.2 Logic (pure: no hardware or kernel calls)
 
+#### `geometry.c / .h`
+- **What it does:** provides fixed-point Q14 trigonometry and integer math helpers. Avoids floating point and `libm`.
+- **Main functions:** `geom_sin_q14`, `geom_cos_q14`, `geom_tan_q14`, `geom_atan_deci`, `geom_isqrt`, `geom_abs`, `geom_mul_q14`.
+- **Used by:** `planner.c`, `scan_algo.c`.
+- **Edit it when:** you need new integer math utilities or trigonometry lookup helpers.
+
 #### `scan_algo.c / .h`
 - **What it does:** turns one echo into a class and a distance, makes two
   pings agree before a slot is trusted, and runs the scan: a coarse sweep
@@ -130,18 +144,17 @@ functions, who uses it, and when you would edit it.
   its next slot.
 
 #### `planner.c / .h`
-- **What it does:** after a scan, works out the obstacle width (corrected
-  for the sensor's 15° beam), which side to pass on, and the start angle.
-  During the bypass it gives the proportional hug command and the bypass
-  distance budget. All maths is whole numbers: no floating point, no libm.
+- **What it does:** computes obstacle width and candidate bypass sides after a
+  body-pivot scan. Controls wheel speeds for pivots and straight legs. Calculates
+  side-lean angles and drift trim for stop-and-look bypass legs.
 - **Main functions:** `obstacle_plan_cfg_default`, `obstacle_plan_build`,
-  `obstacle_plan_hug_ctrl`, `obstacle_plan_hug_limit_mm`,
-  `obstacle_plan_drive`, `obstacle_plan_pivot`, `obstacle_plan_wall_head`,
-  `obstacle_plan_is_escape_clear`, `obstacle_plan_steer_away`, plus integer trig (`obstacle_plan_sin_q14`,
-  `obstacle_plan_atan_deci`, `obstacle_plan_isqrt`, …).
-- **Used by:** `statechart.c`, `scan_task.c` (for the default settings),
-  `obstacle_nav.c` (hug controller).
-- **Edit it when:** changing how a side is chosen or how the hug steers.
+  `obstacle_plan_is_escape_clear`, `obstacle_plan_hug_limit_mm`,
+  `obstacle_plan_steer_away`, `obstacle_plan_wheel_pivot`,
+  `obstacle_plan_wheel_straight`, `obstacle_plan_side_lean_deci`,
+  `obstacle_plan_side_trim_deci`.
+- **Used by:** `statechart.c`, `scan_task.c`, `obstacle_nav.c`.
+- **Edit it when:** changing bypass geometry, pivot parameters, side-lean logic,
+  or drift trim calculations.
 
 #### `statechart.c / .h`
 - **What it does:** the statechart from design review 6.2: STOPPED →
@@ -201,18 +214,16 @@ functions, who uses it, and when you would edit it.
 - **Edit it when:** the interface agreed with other buddies changes.
 
 #### `obstacle_nav.c / .h`
-- **What it does:** the Phase 2 glue. It starts Buddy 5 with links to the
-  motion service, and on every line-task pass turns Buddy 5's events into
-  motion commands: hold the car, send SCAN_REQ, ACCEPT and LINE_FOUND,
-  retry after a fault, and drive the bypass (escape pivot, then TURN / OUT
-  / ALONG zig-zag / BACK from wheel-odometry dead reckoning).
+- **What it does:** the Phase 2 glue. Starts Buddy 5 with links to the
+  motion service. Handles line task passes, commands, and events. Drives
+  stop-and-look bypass: turn, out, along with forward sonar check, stop-and-look
+  side pings, extra drive, and return pivot.
 - **Main functions:** `obstacle_nav_init`, `obstacle_nav_step`; private
-  `drive_reacquire`, `along_intent`, `back_intent`, `update_pose`,
-  `keep_plan`, `handle_event`, `nav_stop` (obstacle hold),
-  `nav_distance_mm` (odometer).
+  `drive_reacquire`, `reacquire_look_cycle`, `reacquire_drive_and_return`,
+  `step_pivot`, `step_look_ping`, `drive_wheels`.
 - **Used by:** `line_task` in `src/main.c`.
-- **Edit it when:** the bypass or the handshake with the line follower
-  changes (the numbers are `OBSTACLE_NAV_*` in `obstacle_config.h`).
+- **Edit it when:** changing the bypass sequence, stop-and-look ping timing, or
+  line-follower handshakes.
 
 #### `flight_log.c / .h`
 - **What it does:** the flight recorder. Keeps the last 1024 records
@@ -262,10 +273,12 @@ functions, who uses it, and when you would edit it.
 | change the 250 mm detection distance | `obstacle_config.h` → `OBSTACLE_DETECT_MM` |
 | fix the servo pointing slightly off centre | `obstacle_config.h` → `OBSTACLE_SERVO_CENTRE_US` |
 | change how a side is chosen | `planner.c` → `obstacle_plan_build` |
-| change the hug distances (15 / 25 cm) | `obstacle_config.h` → `OBSTACLE_HUG_NEAR_MM`, `OBSTACLE_HUG_TARGET_MM` |
+| change the wall hold distance (300 mm) | `obstacle_config.h` → `OBSTACLE_WALL_HOLD_MM` |
+| change stop-and-look leg or look angle | `obstacle_config.h` → `OBSTACLE_ALONG_LEG_MM`, `OBSTACLE_LOOK_IN_DECI` |
+| check integer trigonometry helpers | `geometry.c` → `geom_sin_q14`, `geom_atan_deci` |
 | change a state change or time limit | `statechart.c` (limits are in `obstacle_config.h`) |
 | see how Navigation should call Buddy 5 | `obstacle.h`, then the design doc → Interfaces |
-| change bypass speed or steering strength | `obstacle_config.h` → `OBSTACLE_NAV_SPEED_UM_S`, `OBSTACLE_NAV_INSIDE_PCT` |
+| change bypass speed or wheel gains | `obstacle_config.h` → `OBSTACLE_BYPASS_SPEED_MM_S` |
 | see how the line task uses Buddy 5 | `obstacle_nav.c`, and the design doc → Phase 2 |
 | understand a bench log line | `bench_main.c` (`print_*` functions) |
 | add a Buddy 5 source file | the file, plus the "Buddy 5" block in the team `CMakeLists.txt` |

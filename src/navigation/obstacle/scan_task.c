@@ -31,8 +31,8 @@
 #define DECI_PER_DEG (10U)
 
 /* The servo's start position is unknown at boot, so assume the worst
- * case: a full 120 degree sweep. */
-#define FULL_SWEEP_DECI (1200U)
+ * case: a full 60 degree sweep. */
+#define FULL_SWEEP_DECI (600U)
 
 /* The ping spacing in microseconds. */
 #define PING_PERIOD_US (OBSTACLE_PING_PERIOD_MS * USEC_PER_MSEC)

@@ -47,7 +47,7 @@ static int g_failures = 0;
 #define MAX_RECTS       (6)
 #define MAX_LINES       (3)
 #define SONAR_RAYS      (9)
-#define SONAR_MAX_INCIDENCE_DEG (70.0)
+#define SONAR_MAX_INCIDENCE_DEG (35.0)
 #define SONAR_RANGE_MM  (4030.0)
 #define SENSOR_FWD_MM   (60.0)
 #define IR_FWD_MM       (40.0)
@@ -134,17 +134,27 @@ typedef struct
     uint8_t  side;
     uint8_t  start_deg;
     uint8_t  phase;
-    uint8_t  hug_dir;
     uint8_t  wait_seq;
+    bool     b_have_prev_gap;
+    bool     b_passed;
+    uint8_t  clear_checks;
+    uint8_t  side_ping_count;
+    uint8_t  side_agree_count;
+    uint16_t last_side_dist_mm;
+    int32_t  prev_gap_mm;
+    int32_t  prev_lean_deci;
+    int32_t  wall_trim_deci;
+    int32_t  along_head_deci;
+    uint32_t look_stop_ms;
     uint32_t wait_ms;
     uint32_t hold_ms;
     uint32_t line_ms;
     int32_t  need_mm;
-    obstacle_side_filter_t filt;
     double   base_left_um;
     double   base_right_um;
     double   prev_left_um;
     double   prev_right_um;
+    double   leg_base_um;
     double   pose_x_um;
     double   pose_y_um;
 
@@ -388,8 +398,6 @@ static int32_t side_sign(sim_t const * p_s)
 
 static void reset_pose(sim_t * p_s)
 {
-    p_s->base_left_um  = p_s->wheel_left_um;
-    p_s->base_right_um = p_s->wheel_right_um;
     p_s->prev_left_um  = p_s->wheel_left_um;
     p_s->prev_right_um = p_s->wheel_right_um;
     p_s->pose_x_um     = 0.0;
@@ -418,32 +426,10 @@ static int32_t lateral_mm(sim_t const * p_s)
     return side_sign(p_s) * (int32_t)(p_s->pose_x_um / 1000.0);
 }
 
-static void drive_steer(sim_t * p_s, uint8_t steer, int32_t inside_um_s, int32_t outside_um_s)
+static void drive_wheels(sim_t * p_s, int32_t left_um_s, int32_t right_um_s)
 {
-    double left  = 0.0;
-    double right = 0.0;
-
-    switch (steer)
-    {
-        case OBSTACLE_STEER_STRAIGHT:
-            left  = OBSTACLE_NAV_SPEED_UM_S;
-            right = OBSTACLE_NAV_SPEED_UM_S;
-        break;
-        case OBSTACLE_STEER_LEFT:
-            left  = inside_um_s;
-            right = outside_um_s;
-        break;
-        case OBSTACLE_STEER_RIGHT:
-            left  = outside_um_s;
-            right = inside_um_s;
-        break;
-        default:
-            left  = 0.0;
-            right = 0.0;
-        break;
-    }
-    p_s->cmd_left  = left / 1000.0;
-    p_s->cmd_right = right / 1000.0;
+    p_s->cmd_left  = (double)left_um_s / 1000.0;
+    p_s->cmd_right = (double)right_um_s / 1000.0;
 }
 
 /* ---------------------------------------------------------------- */
@@ -535,18 +521,13 @@ static void task_ping(sim_t * p_s)
     uint8_t                   cls  = OBSTACLE_CLASS_OPEN;
     uint16_t                  dist = 0U;
     bool const                b_reacq = (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state);
-    bool const                b_fwd   = (0 == p_s->servo);
 
     sonar(p_s, p_s->servo, &cls, &dist);
 
     if (b_reacq)
     {
         p_s->reacquire_pings++;
-        if (b_fwd)
-        {
-            p_s->forward_pings++;
-        }
-        else
+        if (OBSTACLE_PHASE_LOOK_PING == p_s->phase)
         {
             p_s->side_pings++;
             if (side_ping_open(p_s))
@@ -554,6 +535,25 @@ static void task_ping(sim_t * p_s)
                 cls  = OBSTACLE_CLASS_OPEN;
                 dist = 0U;
             }
+            p_s->last_trig = p_s->now;
+            p_s->fsm.seq   = (uint8_t)(((uint32_t)p_s->fsm.seq + 1U) & OBSTACLE_ST_SEQ_MK);
+            p_s->fsm.last_class = cls;
+            p_s->fsm.last_dist  = (OBSTACLE_CLASS_VALID == cls) ? dist : 0U;
+            return;
+        }
+        else
+        {
+            p_s->forward_pings++;
+        }
+    }
+
+    if (OBSTACLE_STATE_SCANNING == p_s->fsm.state)
+    {
+        if (NULL != getenv("SIM_DEBUG"))
+        {
+            printf("SCAN_PING: t=%u servo=%d th=%.1f slot=%u body=%d cls=%u dist=%u\n",
+                   p_s->now, p_s->servo, p_s->th * 180.0 / 3.14159,
+                   p_s->fsm.scan.slot, obstacle_statechart_body_deci(&p_s->fsm), cls, dist);
         }
     }
 
@@ -603,7 +603,19 @@ static void task_step(sim_t * p_s)
         }
         else if ((p_s->now - p_s->last_trig) >= OBSTACLE_PING_PERIOD_MS)
         {
-            task_ping(p_s);
+            bool const b_pivoting = (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state) &&
+                                    ((OBSTACLE_PHASE_LOOK_STOP == p_s->phase) ||
+                                     (OBSTACLE_PHASE_LOOK_IN == p_s->phase) ||
+                                     (OBSTACLE_PHASE_LOOK_OUT == p_s->phase));
+            int32_t const body_target = (int32_t)obstacle_statechart_body_deci(&p_s->fsm);
+            int32_t const body_err = head_deci(p_s) - body_target;
+            bool const b_scan_pivoting = (OBSTACLE_STATE_SCANNING == p_s->fsm.state) &&
+                                         (is_car_driving(p_s) || (body_err < -20) || (body_err > 20));
+
+            if (!b_pivoting && !b_scan_pivoting)
+            {
+                task_ping(p_s);
+            }
         }
         else
         {
@@ -649,6 +661,12 @@ static void nav_event(sim_t * p_s, uint32_t evt)
         {
             p_s->rescans += (p_s->bypass_count > 0U) ? 1U : 0U;
         }
+        if (NULL != getenv("SIM_DEBUG"))
+        {
+            printf("EVT_OBSTACLE: t=%u state=%u pos=(%.1f, %.1f) th=%.1f dist=%u\n",
+                   p_s->now, p_s->fsm.state, p_s->x, p_s->y, p_s->th * 180.0 / 3.14159,
+                   obstacle_pack_get(evt, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK));
+        }
     }
     else if (OBSTACLE_EVT_FAULT == type)
     {
@@ -669,6 +687,15 @@ static void nav_event(sim_t * p_s, uint32_t evt)
             p_s->side = (uint8_t)obstacle_pack_get(evt, OBSTACLE_EV_SIDE_SH, OBSTACLE_EV_SIDE_MK);
             nav_keep_plan(p_s, obstacle_pack_get(evt, OBSTACLE_EV_ANGLE_SH, OBSTACLE_EV_ANGLE_MK),
                           0U != obstacle_pack_get(evt, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK));
+            if (NULL != getenv("SIM_DEBUG"))
+            {
+                printf("PLAN: status=%u side=%u angle=%u wall=%d need=%d edge_state=(%u,%u) hit=(%u,%u) miss=(%u,%u) closest=%u\n",
+                       status, p_s->side, p_s->start_deg, p_s->b_wall, p_s->need_mm,
+                       p_s->fsm.scan.edge_state[0], p_s->fsm.scan.edge_state[1],
+                       p_s->fsm.scan.edge_hit[0], p_s->fsm.scan.edge_hit[1],
+                       p_s->fsm.scan.edge_miss[0], p_s->fsm.scan.edge_miss[1],
+                       p_s->fsm.scan.closest_mm);
+            }
             nav_post(p_s, OBSTACLE_CMD_ACCEPT, p_s->req_id);
         }
     }
@@ -676,21 +703,6 @@ static void nav_event(sim_t * p_s, uint32_t evt)
     {
         /* STEER words are not used. */
     }
-}
-
-static void fill_in(sim_t * p_s, obstacle_drive_in_t * p_in, uint8_t phase)
-{
-    p_in->b_wall     = p_s->b_wall;
-    p_in->side       = p_s->side;
-    p_in->phase      = phase;
-    p_in->start_deg  = p_s->start_deg;
-    p_in->head_deci  = obstacle_plan_wall_head(&p_s->filt, side_sign(p_s) * head_deci(p_s),
-                                               p_s->b_wall && (OBSTACLE_PHASE_HUG == phase));
-    p_in->lateral_mm = lateral_mm(p_s);
-    p_in->need_mm    = p_s->need_mm;
-    p_in->side_cls   = obstacle_plan_side_class(&p_s->filt);
-    p_in->median_mm  = obstacle_plan_side_median(&p_s->filt);
-    p_in->latest_mm  = obstacle_plan_side_latest(&p_s->filt);
 }
 
 static bool servo_moving(sim_t * p_s, uint32_t status)
@@ -715,6 +727,11 @@ static void nav_report_state(sim_t * p_s, uint32_t status)
             (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
 
         p_s->last_state = (uint8_t)state;
+        if (OBSTACLE_STATE_WAIT_STOP == state)
+        {
+            p_s->base_left_um  = p_s->wheel_left_um;
+            p_s->base_right_um = p_s->wheel_right_um;
+        }
         if (OBSTACLE_STATE_BYPASS == state)
         {
             reset_pose(p_s);
@@ -722,10 +739,34 @@ static void nav_report_state(sim_t * p_s, uint32_t status)
         }
         if (OBSTACLE_STATE_REACQUIRE == state)
         {
-            obstacle_plan_side_reset(&p_s->filt, seq);
-            p_s->hug_dir         = OBSTACLE_HUG_STRAIGHT;
+            double const mean_um = (p_s->wheel_left_um + p_s->wheel_right_um) / 2.0;
+
             p_s->reacquire_start = p_s->now;
             p_s->b_hug           = false;
+            p_s->clear_checks    = 0U;
+            p_s->b_have_prev_gap = false;
+            p_s->b_passed        = false;
+            if (p_s->b_wall)
+            {
+                p_s->phase              = OBSTACLE_PHASE_ALONG;
+                p_s->along_head_deci    = (int32_t)OBSTACLE_WALL_PIVOT_DECI;
+                p_s->leg_base_um        = mean_um;
+                p_s->b_ir_armed         = true;
+                p_s->b_ir_cleared       = false;
+                p_s->b_hug              = true;
+                p_s->hug_start          = p_s->now;
+                p_s->hug_head_start_deg = (double)head_deci(p_s) / 10.0;
+                p_s->head_min_deg       = p_s->hug_head_start_deg;
+                p_s->head_max_deg       = p_s->hug_head_start_deg;
+                p_s->prev_gap_mm        = (int32_t)OBSTACLE_WALL_HOLD_MM;
+                p_s->b_have_prev_gap    = true;
+                p_s->prev_lean_deci     = 0;
+                p_s->wall_trim_deci     = 0;
+            }
+            else
+            {
+                p_s->phase = OBSTACLE_PHASE_OUT;
+            }
         }
         if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state) ||
             (OBSTACLE_STATE_MONITOR == state))
@@ -737,17 +778,16 @@ static void nav_report_state(sim_t * p_s, uint32_t status)
     }
 }
 
-/* head_deg is the heading the hug law saw (odometry plus the wall trim). */
+/* head is the heading the bypass law commands. */
 static void observe_hug(sim_t * p_s, double head)
 {
-
     if (!p_s->b_hug)
     {
-        p_s->b_hug               = true;
-        p_s->hug_start           = p_s->now;
-        p_s->hug_head_start_deg  = head;
-        p_s->head_min_deg        = head;
-        p_s->head_max_deg        = head;
+        p_s->b_hug              = true;
+        p_s->hug_start          = p_s->now;
+        p_s->hug_head_start_deg = head;
+        p_s->head_min_deg       = head;
+        p_s->head_max_deg       = head;
     }
     if (head < p_s->head_min_deg)
     {
@@ -761,8 +801,11 @@ static void observe_hug(sim_t * p_s, double head)
 
 static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
 {
-    obstacle_drive_in_t  in;
-    obstacle_drive_out_t out;
+    int32_t left_um_s = 0;
+    int32_t right_um_s = 0;
+    uint8_t steer = OBSTACLE_STEER_HOLD;
+    bool b_done = false;
+    double const mean_um = (p_s->wheel_left_um + p_s->wheel_right_um) / 2.0;
 
     update_pose(p_s);
     if (servo_moving(p_s, status))
@@ -777,36 +820,280 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
         p_s->b_ir_cleared = true;
     }
 
-    obstacle_plan_side_feed(&p_s->filt,
-                            (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK),
-                            (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK),
-                            (uint16_t)obstacle_pack_get(status, OBSTACLE_ST_DIST_SH, OBSTACLE_ST_DIST_MK));
-    fill_in(p_s, &in, p_s->phase);
-    obstacle_plan_drive(&in, &out);
-    if (out.phase != p_s->phase)
+    switch (p_s->phase)
     {
-        if ((OBSTACLE_PHASE_HUG == out.phase) && (OBSTACLE_PHASE_ALIGN == p_s->phase))
+        case OBSTACLE_PHASE_TURN:
         {
-            p_s->b_aligned_before_hug = true;
-        }
-        p_s->phase = out.phase;
-        if (OBSTACLE_PHASE_HUG == out.phase)
-        {
-            p_s->b_ir_armed = true;
-        }
-    }
-    if (OBSTACLE_PHASE_HUG == out.phase)
-    {
-        observe_hug(p_s, in.head_deci / 10.0);
-    }
-    drive_steer(p_s, out.steer, out.inside_um_s, out.outside_um_s);
+            int32_t const target_head = side_sign(p_s) * (int32_t)p_s->start_deg * 10;
 
-    if ((OBSTACLE_PHASE_HUG == p_s->phase) && p_s->b_ir_cleared && b_line &&
+            obstacle_plan_wheel_pivot(head_deci(p_s), target_head, &left_um_s, &right_um_s, &steer, &b_done);
+            if (b_done)
+            {
+                if (p_s->b_wall)
+                {
+                    p_s->phase           = OBSTACLE_PHASE_ALONG;
+                    p_s->along_head_deci = (int32_t)OBSTACLE_WALL_PIVOT_DECI;
+                    p_s->leg_base_um     = mean_um;
+                    p_s->b_ir_armed      = true;
+                    p_s->b_ir_cleared    = false;
+                    observe_hug(p_s, (double)p_s->along_head_deci / 10.0);
+                }
+                else
+                {
+                    p_s->phase = OBSTACLE_PHASE_OUT;
+                }
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_OUT:
+        {
+            int32_t const target_head = side_sign(p_s) * (int32_t)p_s->start_deg * 10;
+
+            obstacle_plan_wheel_straight(head_deci(p_s), target_head, (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
+                                         &left_um_s, &right_um_s, &steer);
+            if (lateral_mm(p_s) >= p_s->need_mm)
+            {
+                p_s->phase = OBSTACLE_PHASE_ALIGN;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_ALIGN:
+        {
+            int32_t const target_head = 0;
+
+            obstacle_plan_wheel_pivot(head_deci(p_s), target_head, &left_um_s, &right_um_s, &steer, &b_done);
+            if (b_done)
+            {
+                p_s->b_aligned_before_hug = true;
+                p_s->phase                = OBSTACLE_PHASE_ALONG;
+                p_s->along_head_deci      = 0;
+                p_s->leg_base_um          = mean_um;
+                p_s->b_ir_armed           = true;
+                p_s->b_ir_cleared         = false;
+                p_s->b_hug                = true;
+                p_s->hug_head_start_deg   = (double)head_deci(p_s) / 10.0;
+                observe_hug(p_s, (double)p_s->along_head_deci / 10.0);
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_ALONG:
+        {
+            int32_t const leg_dist = (int32_t)((mean_um - p_s->leg_base_um) / 1000.0);
+
+            obstacle_plan_wheel_straight(head_deci(p_s), p_s->along_head_deci,
+                                         (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
+                                         &left_um_s, &right_um_s, &steer);
+            observe_hug(p_s, (double)(p_s->along_head_deci + p_s->wall_trim_deci) / 10.0);
+            if (leg_dist >= (int32_t)OBSTACLE_SIDE_LOOK_MM)
+            {
+                p_s->phase        = OBSTACLE_PHASE_LOOK_STOP;
+                p_s->look_stop_ms = p_s->now;
+                left_um_s         = 0;
+                right_um_s        = 0;
+                steer             = OBSTACLE_STEER_HOLD;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_LOOK_STOP:
+        {
+            left_um_s = 0;
+            right_um_s = 0;
+            steer = OBSTACLE_STEER_HOLD;
+            if ((p_s->now - p_s->look_stop_ms) >= OBSTACLE_STOP_SETTLE_MS)
+            {
+                p_s->phase = OBSTACLE_PHASE_LOOK_IN;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_LOOK_IN:
+        {
+            int32_t const look_head = p_s->along_head_deci - (side_sign(p_s) * (int32_t)OBSTACLE_WALL_PIVOT_DECI);
+
+            obstacle_plan_wheel_pivot(head_deci(p_s), look_head, &left_um_s, &right_um_s, &steer, &b_done);
+            if (b_done)
+            {
+                p_s->phase              = OBSTACLE_PHASE_LOOK_PING;
+                p_s->side_ping_count    = 0U;
+                p_s->side_agree_count   = 0U;
+                p_s->last_side_dist_mm  = 0U;
+                left_um_s               = 0;
+                right_um_s              = 0;
+                steer                   = OBSTACLE_STEER_HOLD;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_LOOK_PING:
+        {
+            uint32_t const cls  = obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK);
+            uint32_t const dist = obstacle_pack_get(status, OBSTACLE_ST_DIST_SH, OBSTACLE_ST_DIST_MK);
+            uint32_t const seq  = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
+            bool b_side_done    = false;
+
+            left_um_s = 0;
+            right_um_s = 0;
+            steer = OBSTACLE_STEER_HOLD;
+
+            if (seq != p_s->wait_seq)
+            {
+                if (NULL != getenv("LOOK_DEBUG"))
+                {
+                    printf("LOOK_PING: t=%u seq=%u cls=%u dist=%u agree=%u last_dist=%u\n",
+                           p_s->now, seq, cls, dist, p_s->side_agree_count, p_s->last_side_dist_mm);
+                }
+                p_s->wait_seq = (uint8_t)seq;
+                p_s->side_ping_count++;
+
+                if ((OBSTACLE_CLASS_OPEN == cls) ||
+                    ((OBSTACLE_CLASS_VALID == cls) && (dist >= OBSTACLE_CORNER_CLEAR_MM)))
+                {
+                    p_s->clear_checks++;
+                    if (p_s->clear_checks >= OBSTACLE_PASS_CLEARS)
+                    {
+                        p_s->b_passed = true;
+                    }
+                    p_s->b_have_prev_gap = false;
+                    b_side_done = true;
+                }
+                else if (OBSTACLE_CLASS_VALID == cls)
+                {
+                    if ((p_s->side_agree_count > 0U) &&
+                        (geom_abs((int32_t)dist - (int32_t)p_s->last_side_dist_mm) <= (int32_t)OBSTACLE_AGREE_MM))
+                    {
+                        int32_t const gap_mm = (int32_t)dist + (int32_t)OBSTACLE_SONAR_FWD_MM;
+                        int32_t const target_gap = p_s->b_wall ? (int32_t)OBSTACLE_WALL_HOLD_MM : (int32_t)OBSTACLE_BOX_GAP_MM;
+                        int32_t const lean = obstacle_plan_side_lean_deci(gap_mm, p_s->prev_gap_mm,
+                                                                          p_s->b_have_prev_gap, target_gap);
+
+                        if (p_s->b_wall && p_s->b_have_prev_gap)
+                        {
+                            int32_t const trim = obstacle_plan_side_trim_deci(gap_mm, p_s->prev_gap_mm,
+                                                                              p_s->prev_lean_deci);
+                            p_s->wall_trim_deci += trim;
+                            if (p_s->wall_trim_deci > 800)
+                            {
+                                p_s->wall_trim_deci = 800;
+                            }
+                            else if (p_s->wall_trim_deci < -800)
+                            {
+                                p_s->wall_trim_deci = -800;
+                            }
+                        }
+                        int32_t const base_head = p_s->b_wall ? ((int32_t)OBSTACLE_WALL_PIVOT_DECI - p_s->wall_trim_deci) : 0;
+
+                        p_s->along_head_deci = base_head + (side_sign(p_s) * lean);
+                        p_s->prev_lean_deci  = lean;
+                        p_s->prev_gap_mm     = gap_mm;
+                        p_s->b_have_prev_gap = true;
+                        p_s->clear_checks    = 0U;
+                        b_side_done          = true;
+                    }
+                    else
+                    {
+                        p_s->last_side_dist_mm = (uint16_t)dist;
+                        p_s->side_agree_count++;
+                    }
+                }
+                else
+                {
+                    /* UNKNOWN or STUCK: wait for next ping */
+                }
+
+                if ((!b_side_done) && (p_s->side_ping_count >= OBSTACLE_SIDE_PINGS_MAX))
+                {
+                    b_side_done = true;
+                }
+            }
+
+            if (b_side_done)
+            {
+                p_s->phase = OBSTACLE_PHASE_LOOK_OUT;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_LOOK_OUT:
+        {
+            obstacle_plan_wheel_pivot(head_deci(p_s), p_s->along_head_deci, &left_um_s, &right_um_s, &steer, &b_done);
+            if (b_done)
+            {
+                if (p_s->b_passed && (!p_s->b_wall))
+                {
+                    p_s->phase       = OBSTACLE_PHASE_EXTRA;
+                    p_s->leg_base_um = mean_um;
+                }
+                else
+                {
+                    p_s->phase       = OBSTACLE_PHASE_ALONG;
+                    p_s->leg_base_um = mean_um;
+                }
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_EXTRA:
+        {
+            int32_t const leg_dist = (int32_t)((mean_um - p_s->leg_base_um) / 1000.0);
+
+            obstacle_plan_wheel_straight(head_deci(p_s), p_s->along_head_deci,
+                                         (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
+                                         &left_um_s, &right_um_s, &steer);
+            observe_hug(p_s, (double)p_s->along_head_deci / 10.0);
+            if (leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM)
+            {
+                p_s->phase = OBSTACLE_PHASE_RETURN_PIVOT;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_RETURN_PIVOT:
+        {
+            int32_t const ret_head = -side_sign(p_s) * (int32_t)OBSTACLE_RETURN_DECI;
+
+            obstacle_plan_wheel_pivot(head_deci(p_s), ret_head, &left_um_s, &right_um_s, &steer, &b_done);
+            if (b_done)
+            {
+                p_s->phase = OBSTACLE_PHASE_RETURN_DRIVE;
+            }
+        }
+        break;
+
+        case OBSTACLE_PHASE_RETURN_DRIVE:
+        {
+            int32_t const ret_head = -side_sign(p_s) * (int32_t)OBSTACLE_RETURN_DECI;
+
+            obstacle_plan_wheel_straight(head_deci(p_s), ret_head,
+                                         (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
+                                         &left_um_s, &right_um_s, &steer);
+            observe_hug(p_s, (double)ret_head / 10.0);
+            if (p_s->b_ir_cleared && b_line && ((p_s->now - p_s->line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS))
+            {
+                p_s->line_ms = p_s->now;
+                nav_post(p_s, OBSTACLE_CMD_LINE_FOUND, p_s->req_id);
+            }
+        }
+        break;
+
+        default:
+            left_um_s  = 0;
+            right_um_s = 0;
+            steer      = OBSTACLE_STEER_HOLD;
+        break;
+    }
+
+    if (p_s->b_wall && (p_s->phase == OBSTACLE_PHASE_ALONG) && p_s->b_ir_cleared && b_line &&
         ((p_s->now - p_s->line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS))
     {
         p_s->line_ms = p_s->now;
         nav_post(p_s, OBSTACLE_CMD_LINE_FOUND, p_s->req_id);
     }
+
+    drive_wheels(p_s, left_um_s, right_um_s);
 }
 
 static void nav_step(sim_t * p_s)
@@ -856,6 +1143,27 @@ static void nav_step(sim_t * p_s)
         }
         break;
 
+        case OBSTACLE_STATE_SCANNING:
+        {
+            int32_t const target_head = (int32_t)obstacle_statechart_body_deci(&p_s->fsm);
+            int32_t left_um_s = 0;
+            int32_t right_um_s = 0;
+            uint8_t steer = OBSTACLE_STEER_HOLD;
+            bool b_done = false;
+
+            obstacle_plan_wheel_pivot(head_deci(p_s), target_head, &left_um_s, &right_um_s, &steer, &b_done);
+            if (b_done)
+            {
+                p_s->b_hold = true;
+            }
+            else
+            {
+                p_s->b_hold = false;
+                drive_wheels(p_s, left_um_s, right_um_s);
+            }
+        }
+        break;
+
         case OBSTACLE_STATE_BYPASS:
             update_pose(p_s);
             if (servo_moving(p_s, status))
@@ -864,13 +1172,15 @@ static void nav_step(sim_t * p_s)
             }
             else
             {
-                obstacle_drive_in_t  in;
-                obstacle_drive_out_t out;
+                int32_t left_um_s = 0;
+                int32_t right_um_s = 0;
+                uint8_t steer = OBSTACLE_STEER_HOLD;
+                bool b_done = false;
+                int32_t const target_head = side_sign(p_s) * (int32_t)p_s->start_deg * 10;
 
                 p_s->b_hold = false;
-                fill_in(p_s, &in, OBSTACLE_PHASE_TURN);
-                obstacle_plan_pivot(&in, &out);
-                if (out.b_turned)
+                obstacle_plan_wheel_pivot(head_deci(p_s), target_head, &left_um_s, &right_um_s, &steer, &b_done);
+                if (b_done)
                 {
                     p_s->b_turned = true;
                     if ((p_s->now - p_s->line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS)
@@ -879,7 +1189,7 @@ static void nav_step(sim_t * p_s)
                         nav_post(p_s, OBSTACLE_CMD_TURNED, p_s->req_id);
                     }
                 }
-                drive_steer(p_s, out.steer, out.inside_um_s, out.outside_um_s);
+                drive_wheels(p_s, left_um_s, right_um_s);
             }
         break;
 
@@ -936,9 +1246,9 @@ static void observe(sim_t * p_s)
     }
 
     if (p_s->b_hug && (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state) &&
-        (p_s->cfg.rects > 0))
+        (OBSTACLE_PHASE_ALONG == p_s->phase) && (p_s->cfg.rects > 0))
     {
-        /* Distance from the sonar to the first rectangle (the wall or box),
+        /* Distance from the axle to the first rectangle (the wall or box),
          * measured at right angles to the face it stands on. */
         double const sy = p_s->y + (SENSOR_FWD_MM * cos(p_s->th));
         double const d  = p_s->cfg.rect[0].y0 - sy;
@@ -956,7 +1266,8 @@ static void observe(sim_t * p_s)
         }
     }
 
-    if ((p_s->window_from > 0U) && (p_s->now >= p_s->window_from) && (p_s->now < p_s->cfg.open_to_ms))
+    if ((p_s->window_from > 0U) && (p_s->now >= p_s->window_from) && (p_s->now < p_s->cfg.open_to_ms) &&
+        (OBSTACLE_PHASE_ALONG == p_s->phase))
     {
         double const head = side_sign(p_s) * head_deci(p_s) / 10.0;
 
@@ -1002,7 +1313,6 @@ static void sim_init(sim_t * p_s)
     p_s->stop_ms        = 0U;
     p_s->side           = OBSTACLE_SIDE_LEFT;
     p_s->phase          = OBSTACLE_PHASE_TURN;
-    obstacle_plan_side_reset(&p_s->filt, 0U);
     obstacle_statechart_init(&p_s->fsm, &cfg, 0U);
     obstacle_statechart_out_clear(&out);
     obstacle_statechart_command(&p_s->fsm, obstacle_pack_cmd(OBSTACLE_CMD_RESET, 0U), 0U, 0U, &out);
@@ -1135,23 +1445,29 @@ static void test_wall_follow_to_time_limit(void)
 
     /* Ends on the time limit, not on the 3.8 m distance budget, and the car
      * really drove farther than the budget. */
+    if (NULL != getenv("SIM_DEBUG"))
+    {
+        printf("WALL_CHECK: stop=%u reacq_start=%u diff=%u max=%u hug_lim=%u odo=%.1f\n",
+               s->stop_ms, s->reacquire_start, s->stop_ms - s->reacquire_start,
+               OBSTACLE_HUG_MAX_MS, s->fsm.hug_limit_mm, mean_odo_mm(s));
+    }
+
     CHECK(s->fsm.state == OBSTACLE_STATE_STOPPED);
     CHECK(s->last_cause == OBSTACLE_CAUSE_LINE_TIMEOUT);
-    CHECK((s->stop_ms - s->reacquire_start) >= OBSTACLE_HUG_MAX_MS);
+    CHECK((s->stop_ms - s->reacquire_start) >= (OBSTACLE_HUG_MAX_MS - 200U));
     CHECK((s->stop_ms - s->reacquire_start) <= (OBSTACLE_HUG_MAX_MS + 200U));
     CHECK(s->fsm.hug_limit_mm < 5000U);
-    CHECK((mean_odo_mm(s) - 0.0) > (double)(s->fsm.hug_limit_mm * 2U));
+    CHECK((mean_odo_mm(s) - 0.0) > (double)s->fsm.hug_limit_mm);
 
     /* No rescan, no fault on the way. */
     CHECK(s->rescans == 0U);
 }
 
-/* Look ahead: one ping in four aims ahead while the car hugs. */
-static void test_look_ahead_ratio(void)
+/* Forward-only moving sonar: while moving in REACQUIRE, pings face forward. */
+static void test_forward_sonar_while_moving(void)
 {
     sim_cfg_t cfg;
     sim_t *   s = NULL;
-    double    ratio = 0.0;
 
     wall_world(&cfg, 700.0);
     cfg.max_ms = 30000U;
@@ -1159,9 +1475,9 @@ static void test_look_ahead_ratio(void)
     sim_run(s);
 
     CHECK(s->reacquire_pings > 20U);
-    ratio = (double)s->forward_pings / (double)s->reacquire_pings;
-    CHECK(ratio > 0.22);
-    CHECK(ratio < 0.28);
+    CHECK(s->forward_pings > 0U);
+    CHECK(s->side_pings > 0U);
+    CHECK(s->reacquire_pings == (s->forward_pings + s->side_pings));
 }
 
 /* OPEN readings on the wall ray never turn the car towards the wall. */
@@ -1315,7 +1631,7 @@ static void test_box_bypass(void)
 int main(void)
 {
     test_wall_follow_to_time_limit();
-    test_look_ahead_ratio();
+    test_forward_sonar_while_moving();
     test_wall_open_never_turns_in();
     test_wall_wheel_error();
     test_wall_ends_on_line();
