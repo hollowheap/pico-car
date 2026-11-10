@@ -26,6 +26,7 @@
    assignment on the calling task's stack -- so 1-2 KiB is no longer enough
    for a task that makes blocking kernel calls. */
 #define STACK_SZ 4096
+#define STACK_ALIGN 8U
 
 /* Line following. The cruise speed, the search limits and the turn speeds
  * live in track/line_control.h (tune them there on the car). The duty cap in
@@ -803,15 +804,25 @@ LOCAL void connection_task (INT stacd, void * exinf)
  *  Task and object definitions
  * ------------------------------------------------------------------ */
 
+static uint8_t g_startup_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_motion_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_physics_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_obstacle_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_line_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_telemetry_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_connection_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_barcode_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+
 LOCAL T_CTSK g_ctsk_startup = {
     .itskpri = 1,
     .stksz   = STACK_SZ,
     .task    = startup_task,
+    .bufptr  = g_startup_stack,
 #if TK_SUPPORT_SMP
-    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
     .assprc = TP_PRC1,
 #else
-    .tskatr = TA_HLNG | TA_RNG3,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF,
 #endif
 };
 
@@ -819,11 +830,12 @@ LOCAL T_CTSK g_ctsk_motion = {
     .itskpri = 1,
     .stksz   = STACK_SZ,
     .task    = motion_task,
+    .bufptr  = g_motion_stack,
 #if TK_SUPPORT_SMP
-    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
     .assprc = TP_PRC1,
 #else
-    .tskatr = TA_HLNG | TA_RNG3,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF,
 #endif
 };
 
@@ -831,11 +843,12 @@ LOCAL T_CTSK g_ctsk_physics = {
     .itskpri = 5, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = physics_task,
+    .bufptr  = g_physics_stack,
 #if TK_SUPPORT_SMP
-    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
     .assprc = TP_PRC1,
 #else
-    .tskatr = TA_HLNG | TA_RNG3,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF,
 #endif
 };
 
@@ -843,11 +856,12 @@ LOCAL T_CTSK g_ctsk_obstacle = {
     .itskpri = 4, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = obstacle_task,
+    .bufptr  = g_obstacle_stack,
 #if TK_SUPPORT_SMP
-    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
     .assprc = TP_PRC1,
 #else
-    .tskatr = TA_HLNG | TA_RNG3,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF,
 #endif
 };
 
@@ -855,11 +869,12 @@ LOCAL T_CTSK g_ctsk_line = {
     .itskpri = 3, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = line_task,
+    .bufptr  = g_line_stack,
 #if TK_SUPPORT_SMP
-    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
     .assprc = TP_PRC1,
 #else
-    .tskatr = TA_HLNG | TA_RNG3,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF,
 #endif
 };
 
@@ -867,18 +882,20 @@ LOCAL T_CTSK g_ctsk_telemetry = {
     .itskpri = 7, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = telemetry_task,
-    .tskatr  = TA_HLNG | TA_RNG3,
+    .tskatr  = TA_HLNG | TA_RNG3 | TA_USERBUF,
+    .bufptr  = g_telemetry_stack,
 };
 
 LOCAL T_CTSK g_ctsk_connection = {
     .itskpri = 6, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = connection_task,
+    .bufptr  = g_connection_stack,
 #if TK_SUPPORT_SMP
-    .tskatr = TA_HLNG | TA_RNG3 | TA_ASSPRC,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
     .assprc = TP_PRC2,
 #else
-    .tskatr = TA_HLNG | TA_RNG3,
+    .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF,
 #endif
 };
 
@@ -886,7 +903,8 @@ LOCAL T_CTSK g_ctsk_barcode = {
     .itskpri = 7, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
     .stksz   = STACK_SZ,
     .task    = barcode_task,
-    .tskatr  = TA_HLNG | TA_RNG3,
+    .tskatr  = TA_HLNG | TA_RNG3 | TA_USERBUF,
+    .bufptr  = g_barcode_stack,
 };
 
 /* ------------------------------------------------------------------ *
