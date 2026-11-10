@@ -25,6 +25,7 @@
 #define CONNECTION_RSSI_MAX     127
 #define CONNECTION_RSSI_MIN     (-128)
 #define CONNECTION_DROPS_MAX    255U
+#define CONNECTION_SLEEP_TIMEOUT_MS 50U
 
 static const char g_topic_status[]    = TELEMETRY_TOPIC_PREFIX "/s";
 static const char g_topic_event[]     = TELEMETRY_TOPIC_PREFIX "/e";
@@ -42,6 +43,29 @@ static bool                        g_transport_started;
 static bool                        g_open_failure_logged;
 static uint32_t                    g_heartbeat_ms;
 static T_CYW43_UTK_STATUS          g_status;
+static ID                          g_conn_task_id;
+static ID                          g_conn_cyc_id;
+static uint32_t                    g_conn_overruns;
+
+static void
+conn_cyclic_wakeup (void * p_exinf)
+{
+    (void) p_exinf;
+    (void) tk_wup_tsk(g_conn_task_id);
+}
+
+static void
+wait_connection_cycle (void)
+{
+    INT queued = 0;
+    ER const er = tk_slp_tsk((TMO) CONNECTION_SLEEP_TIMEOUT_MS);
+
+    queued = tk_can_wup(TSK_SELF);
+    if ((E_OK == er) && (queued > 0))
+    {
+        g_conn_overruns += (uint32_t) queued;
+    }
+}
 
 static void
 dispatch_command (const telemetry_cmd_t * cmd, void * context)
@@ -232,10 +256,19 @@ open_transport (void)
 void
 connection_run (void)
 {
+    T_CCYC             ccyc = {0};
     connection_state_t previous = CONNECTION_DISCONNECTED;
     uint32_t           last_poll_ms = 0u;
     uint32_t           last_status_ms = 0u;
     bool               first_status = true;
+
+    g_conn_task_id = tk_get_tid();
+    ccyc.cycatr    = TA_HLNG | TA_STA | TA_ASSPRC;
+    ccyc.cychdr    = (FP) conn_cyclic_wakeup;
+    ccyc.cyctim    = (RELTIM) CONNECTION_LOOP_MS;
+    ccyc.cycphs    = (RELTIM) CONNECTION_LOOP_MS;
+    ccyc.assprc    = TP_PRC2;
+    g_conn_cyc_id  = tk_cre_cyc(&ccyc);
 
     for (;;)
     {
@@ -284,7 +317,7 @@ connection_run (void)
             }
         }
 
-        (void) tk_dly_tsk(CONNECTION_LOOP_MS);
+        wait_connection_cycle();
     }
 }
 

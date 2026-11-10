@@ -19,6 +19,8 @@
  * artefacts, not real ages. */
 #define CLOCK_HALF_RANGE (UINT32_MAX / 2U)
 
+#define MOTION_SLEEP_TIMEOUT_MS (50U)
+
 static T_SPLOCK                g_service_lock;
 static motion_service_config_t g_configuration;
 static motion_service_status_t g_published;
@@ -27,6 +29,15 @@ static uint32_t                g_next_id;
 /* Startup lifecycle only: published before any producer/reader starts. */
 static bool         g_start_called;
 static controller_t g_controller;
+static ID           g_motion_task_id;
+static ID           g_motion_cyc_id;
+static uint32_t     g_motion_overruns;
+
+static void motion_cyclic_wakeup (void * p_exinf)
+{
+    (void)p_exinf;
+    (void)tk_wup_tsk(g_motion_task_id);
+}
 
 static motion_apply_result_t apply_output (void * context, int16_t left,
                                            int16_t right)
@@ -147,6 +158,23 @@ static void service_first_status (void)
     (void)ISpinUnlock(&g_service_lock, saved);
 }
 
+static void wait_motion_cycle (void)
+{
+    INT queued = 0;
+    ER const er = tk_slp_tsk((TMO)MOTION_SLEEP_TIMEOUT_MS);
+
+    queued = tk_can_wup(TSK_SELF);
+    if ((E_OK == er) && (queued > 0))
+    {
+        g_motion_overruns += (uint32_t)queued;
+    }
+    else if (E_TMOUT == er)
+    {
+        g_motion_overruns++;
+        service_halt(E_TMOUT);
+    }
+}
+
 /* One control cycle: STOP handling, capture, command intake, the controller
  * tick, and publication of the result. */
 static void service_cycle (motion_input_t * p_input)
@@ -157,7 +185,7 @@ static void service_cycle (motion_input_t * p_input)
     bool             stop     = false;
     bool             captured = false;
 
-    (void)tk_dly_tsk((RELTIM)g_configuration.poll_delay_ms);
+    wait_motion_cycle();
     (void)ISpinLock(&g_service_lock, &saved);
     stop = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
@@ -212,8 +240,10 @@ void motion_service_run (void)
     }
 }
 
-ER motion_service_init (const motion_service_config_t * p_config)
+ER motion_service_init (const motion_service_config_t * p_config, ID task_id)
 {
+    T_CCYC ccyc = {0};
+
     if ((tk_get_prc() != TP_PRC1) || (tk_get_tid() <= 0))
     {
         return E_CTX;
@@ -222,7 +252,7 @@ ER motion_service_init (const motion_service_config_t * p_config)
     {
         return E_OBJ;
     }
-    if ((p_config == NULL) ||
+    if ((p_config == NULL) || (task_id <= 0) ||
         !controller_config_valid(&p_config->control) ||
         (p_config->poll_delay_ms == 0U) ||
         (p_config->poll_delay_ms >
@@ -230,7 +260,20 @@ ER motion_service_init (const motion_service_config_t * p_config)
     {
         return E_PAR;
     }
-    g_configuration = *p_config;
+    g_configuration  = *p_config;
+    g_motion_task_id = task_id;
+
+    ccyc.cycatr = TA_HLNG | TA_STA | TA_ASSPRC;
+    ccyc.cychdr = (FP)motion_cyclic_wakeup;
+    ccyc.cyctim = (RELTIM)g_configuration.poll_delay_ms;
+    ccyc.cycphs = (RELTIM)g_configuration.poll_delay_ms;
+    ccyc.assprc = TP_PRC1;
+    g_motion_cyc_id = tk_cre_cyc(&ccyc);
+    if (g_motion_cyc_id < E_OK)
+    {
+        return (ER)g_motion_cyc_id;
+    }
+
     (void)motion_inbox_init(&g_inbox,
                             g_configuration.control.max_command_ttl_us);
     (void)InitSpinLock(&g_service_lock);
