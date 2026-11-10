@@ -32,7 +32,7 @@ typedef struct
  * motion_service_run(). No default gains, boot command, automatic arming or
  * diagnostic button run. Integrator must start only after agreeing
  * pin/IRQ/resource ownership. */
-ER motion_service_init (const motion_service_config_t * p_config);
+ER motion_service_init (const motion_service_config_t * p_config, ID task_id);
 
 /* Task body. The composition root creates the task and calls this; the
  * task owns the motors until reboot. Never returns. */

@@ -11,8 +11,9 @@
 #include "track/barcode.h"
 #include "track/track.h"
 
-#define BARCODE_POLL_MS      10U
+#define US_PER_MS            1000U
 #define BARCODE_GAP_US       500000U
+#define BARCODE_GAP_MS       (BARCODE_GAP_US / US_PER_MS)
 #define BARCODE_LEVEL_SPACE  1U
 
 static barcode_handler_t gp_handler;
@@ -33,6 +34,7 @@ void barcode_task_run (void)
     {
         uint32_t timestamp_us = 0U;
         bool     level        = false;
+        ER       er           = E_OK;
 
         while (ir_barcode_pop(&timestamp_us, &level))
         {
@@ -67,7 +69,12 @@ void barcode_task_run (void)
             have_previous  = true;
         }
 
-        (void)tk_dly_tsk(BARCODE_POLL_MS);
+        er = ir_wait_change(IR_TYPE_BARCODE, (TMO)BARCODE_GAP_MS);
+        if (E_TMOUT == er)
+        {
+            parser        = (barcode_parser_t)BARCODE_PARSER_INIT;
+            have_previous = false;
+        }
     }
 }
 

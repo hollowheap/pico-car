@@ -38,8 +38,9 @@
  * the car: it must exceed the longest U-turn, including the slow phase. */
 #define LINE_TURN_MAX_MS         (4000U)
 
-/* Startup barrier polling period. */
-#define STARTUP_POLL_MS (10U)
+/* Startup barrier event flag bits. */
+#define STARTUP_FLAG_READY           (0x01U)
+#define STARTUP_FLAG_FAILED          (0x02U)
 
 /* Motor service configuration (setup_motors). */
 #define MOTOR_WHEEL_COUNT            (2U)
@@ -62,6 +63,7 @@
 #define TELEMETRY_PASS_MS            (50U)
 #define TELEMETRY_STATUS_PASSES      (4U)
 #define TELEMETRY_SYSTEM_PASSES      (10U)
+#define TELEMETRY_SLEEP_TIMEOUT_MS   (250U)
 
 /* Dashboard state values (the dashboard schema owns these). */
 #define TELEMETRY_STATE_RUNNING      (2U)
@@ -81,14 +83,23 @@
  * tk_cre_tsk() or tk_sta_tsk(). */
 typedef struct
 {
-    bool volatile b_ready;
-    bool volatile b_failed;
-    ID            physics_tid;
+    ID h_flg;
+    ID motion_tid;
+    ID physics_tid;
+    ID telemetry_tid;
 } startup_state_t;
 
-static startup_state_t g_startup = {false, false, 0};
+static startup_state_t g_startup = {0, 0, 0, 0};
+static ID              g_telemetry_cyc_id;
+static uint32_t        g_telemetry_overruns;
 
-LOCAL ER setup_motors (void)
+LOCAL void telemetry_cyclic_wakeup (void * p_exinf)
+{
+    (void)p_exinf;
+    (void)tk_wup_tsk(g_startup.telemetry_tid);
+}
+
+LOCAL ER setup_motors (ID motion_tid)
 {
     motion_service_config_t config   = {0};
     config.control.sampling.wheel[0] =
@@ -116,7 +127,7 @@ LOCAL ER setup_motors (void)
     config.control.reversal_brake_us   = MOTOR_REVERSAL_BRAKE_US;
     config.poll_delay_ms               = MOTOR_POLL_DELAY_MS;
 
-    return motion_service_init(&config);
+    return motion_service_init(&config, motion_tid);
 }
 
 /*!
@@ -125,16 +136,17 @@ LOCAL ER setup_motors (void)
  */
 LOCAL bool wait_startup (void)
 {
-    while (!g_startup.b_ready)
+    UINT flgptn = 0U;
+    ER const er = tk_wai_flg(g_startup.h_flg,
+                             STARTUP_FLAG_READY | STARTUP_FLAG_FAILED,
+                             TWF_ORW, &flgptn, TMO_FEVR);
+
+    if (E_OK != er)
     {
-        if (g_startup.b_failed)
-        {
-            return false;
-        }
-        (void)tk_dly_tsk(STARTUP_POLL_MS);
+        return false;
     }
 
-    return true;
+    return (0U != (flgptn & STARTUP_FLAG_READY));
 }
 
 /*!
@@ -157,7 +169,7 @@ LOCAL void startup_task (INT stacd, void * exinf)
 
     if (E_OK == result)
     {
-        result = setup_motors();
+        result = setup_motors(g_startup.motion_tid);
     }
     if (E_OK == result)
     {
@@ -176,15 +188,15 @@ LOCAL void startup_task (INT stacd, void * exinf)
 
     if (E_OK == result)
     {
-        g_startup.b_ready = true;
+        (void)tk_set_flg(g_startup.h_flg, STARTUP_FLAG_READY);
     }
     else
     {
         tm_printf((UB *)"[init] startup failed: %d\n", result);
-        g_startup.b_failed = true;
+        (void)tk_set_flg(g_startup.h_flg, STARTUP_FLAG_FAILED);
     }
 
-    park();
+    (void)tk_exd_tsk();
 }
 
 LOCAL void motion_task (INT stacd, void * exinf)
@@ -384,7 +396,7 @@ static void line_execute_turn (line_turn_t turn)
             }
             else
             {
-                (void)tk_dly_tsk(LINE_POLL_MS);
+                (void)ir_wait_change(IR_TYPE_LINE, (TMO)LINE_POLL_MS);
                 elapsed_ms += LINE_POLL_MS;
             }
         }
@@ -708,7 +720,14 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
             telemetry_send_system();
         }
 
-        (void)tk_dly_tsk(TELEMETRY_PASS_MS);
+        INT queued = 0;
+        ER const er = tk_slp_tsk((TMO)TELEMETRY_SLEEP_TIMEOUT_MS);
+
+        queued = tk_can_wup(TSK_SELF);
+        if ((E_OK == er) && (queued > 0))
+        {
+            g_telemetry_overruns += (uint32_t)queued;
+        }
     }
 }
 
@@ -964,6 +983,10 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
     {
         b_ok = false;
     }
+    else
+    {
+        g_startup.motion_tid = p_tasks->motion_tid;
+    }
 
     p_tasks->physics_tid = tk_cre_tsk(&g_ctsk_physics);
     if (!made("tsk(physics)", p_tasks->physics_tid))
@@ -993,6 +1016,17 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
         if (!made("tsk(telemetry)", p_tasks->telemetry_tid))
         {
             p_tasks->b_telemetry = false;
+        }
+        else
+        {
+            T_CCYC ccyc = {0};
+
+            g_startup.telemetry_tid = p_tasks->telemetry_tid;
+            ccyc.cycatr = TA_HLNG | TA_STA;
+            ccyc.cychdr = (FP)telemetry_cyclic_wakeup;
+            ccyc.cyctim = (RELTIM)TELEMETRY_PASS_MS;
+            ccyc.cycphs = (RELTIM)TELEMETRY_PASS_MS;
+            g_telemetry_cyc_id = tk_cre_cyc(&ccyc);
         }
     }
 
@@ -1064,6 +1098,11 @@ LOCAL void start_optional_tasks (task_set_t const * p_tasks)
 EXPORT INT usermain (void)
 {
     task_set_t tasks = {0};
+    T_CFLG     cflg  = {0};
+
+    cflg.flgatr     = TA_WMUL | TA_TFIFO;
+    cflg.iflgptn    = 0U;
+    g_startup.h_flg = tk_cre_flg(&cflg);
 
     init_services(&tasks);
 
@@ -1076,7 +1115,7 @@ EXPORT INT usermain (void)
     if (!start_required_tasks(&tasks))
     {
         /* Tasks that already started wait on the startup barrier. */
-        g_startup.b_failed = true;
+        (void)tk_set_flg(g_startup.h_flg, STARTUP_FLAG_FAILED);
         tm_printf((UB *)"[init] task start failed, system stays stopped\n");
         park();
     }
