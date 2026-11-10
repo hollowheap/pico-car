@@ -418,15 +418,14 @@ static void echo_fall (uint32_t mbx, uint32_t now_us)
  * function, so it must not be marked as an interrupt.
  * Short on purpose: a few register reads and one kernel call.
  *
- * @param[in] p_snapshot Edge snapshot from the dispatcher (unused).
+ * @param[in] p_snapshot Edge snapshot from the dispatcher.
  */
 static void echo_isr (const gpio_edge_snapshot_t * p_snapshot)
 {
-    uint32_t const now_us = in_w(TIMER_TIMERAWL);
+    uint32_t const now_us = p_snapshot->timestamp_us;
     uint32_t const mbx    = g_echo.mbx;
     bool const     b_high = scan_hw_is_echo_high();
 
-    (void)p_snapshot;
     if (0U != (mbx & OBSTACLE_MBX_DONE))
     {
         /* This ping is finished; later edges wait for the next re-arm. */
