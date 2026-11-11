@@ -518,8 +518,7 @@ LOCAL void barcode_command (uint8_t code)
     (void)telemetry_pack_event(event, g_event_id, (uint8_t)'B', (int16_t)code,
                                0U);
     g_event_id++;
-    (void)telemetry_queue_push(event, TELEMETRY_EVENT_WIRE_SIZE,
-                               (uint8_t)'e', 1U);
+    (void)telemetry_queue_push(event, TELEMETRY_EVENT_QUEUED_SIZE, 1U);
     tm_printf((UB *)"[barcode] %c\n", (INT)(code + (uint8_t)'A'));
 }
 
@@ -629,8 +628,7 @@ LOCAL void telemetry_send_status (void)
 
     (void)telemetry_pack_status(payload, speed_mms, distance_mm,
                                 heading_deg, state, faults);
-    (void)telemetry_queue_push(payload, TELEMETRY_STATUS_WIRE_SIZE,
-                               (uint8_t)'s', 0U);
+    (void)telemetry_queue_push(payload, TELEMETRY_STATUS_QUEUED_SIZE, 0U);
 }
 
 /*!
@@ -682,8 +680,7 @@ LOCAL void telemetry_send_system (void)
 
     (void)telemetry_pack_system(system_payload, &system_state);
     (void)telemetry_queue_push(system_payload,
-                               TELEMETRY_SYSTEM_WIRE_SIZE,
-                               (uint8_t)'t', 0U);
+                               TELEMETRY_SYSTEM_QUEUED_SIZE, 0U);
 }
 
 /*!

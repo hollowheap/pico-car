@@ -24,20 +24,17 @@ extern ID g_mbf_telem_id;
 
 ER telemetry_queue_create(void);
 
-/* Pushes a wire frame.  topic is 'h' (4 B), 'e' (8 B), 's' (8 B) or 't'
-   (16 B); a topic that does not match len, or an event whose reserved byte 7
-   is not 0, gives E_PAR.  The frame is stored without the topic byte (an
-   event also without byte 7) and the topic is inferred from the stored length.
-   Never blocks on the message buffer (TMO_POL).  Producers serialise on a
+/* Pushes a telemetry frame. The topic is inferred from the queued length
+   (heartbeat 4, event 7, status 8, system 16 B; D87).
+   Never blocks on the message buffer (TMO_POL). Producers serialise on a
    priority-inheritance mutex that is held for a few non-blocking calls, so
-   call it from a task, not from a handler.  A nonzero qos frame is rejected
-   with E_TMOUT on a full queue and nothing is evicted.  A qos 0 frame on a
+   call it from a task, not from a handler. A nonzero qos frame is rejected
+   with E_TMOUT on a full queue and nothing is evicted. A qos 0 frame on a
    full queue evicts the oldest frames while the oldest is a qos 0 frame,
    until it fits; if the oldest is an event, the new frame is rejected with
-   E_TMOUT.  Every frame lost this way (evicted or rejected qos 0) adds one
-   to the drop counter.  Safe to call from several tasks on both cores. */
-ER telemetry_queue_push(const uint8_t *payload, uint16_t len, uint8_t topic,
-                        uint8_t qos);
+   E_TMOUT. Every frame lost this way (evicted or rejected qos 0) adds one
+   to the drop counter. Safe to call from several tasks on both cores. */
+ER telemetry_queue_push(const uint8_t *payload, uint16_t len, uint8_t qos);
 
 /* Writes topic || wire frame (events with byte 7 restored as 0) to payload,
    which must hold TELEMETRY_QUEUE_MAX_MSG bytes.  Returns the message size
