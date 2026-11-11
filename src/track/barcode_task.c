@@ -8,6 +8,7 @@
 #include <tk/tkernel.h>
 
 #include "barcode/parser.h"
+#include "motion/motion.h"
 #include "track/barcode.h"
 #include "track/track.h"
 
@@ -49,24 +50,43 @@ void barcode_task_run (void)
 
             if (have_previous)
             {
-                bool const is_space = (0U != BARCODE_LEVEL_SPACE)
-                                          ? previous_level
-                                          : !previous_level;
-                uint16_t const width_um =
-                    (gap_us > UINT16_MAX) ? (uint16_t)UINT16_MAX
-                                          : (uint16_t)gap_us;
-                uint8_t const code =
-                    barcode_parser_input(&parser, is_space, width_um);
+                motion_feedback_t feedback = {0};
+                uint16_t          width_um = 0U;
+                bool              ok       = false;
 
-                if ((BARCODE_NO_CHAR != code) && (NULL != gp_handler))
+                if (E_OK == motion_feedback_snapshot(&feedback))
                 {
-                    gp_handler(code);
+                    ok = barcode_width_um(gap_us, &feedback, &width_um);
                 }
+
+                if (!ok)
+                {
+                    /* A stale snapshot, zero speed, or reversing speed rejects
+                     * the current character instead of decoding a time-based width. */
+                    parser        = (barcode_parser_t)BARCODE_PARSER_INIT;
+                    have_previous = false;
+                }
+                else
+                {
+                    bool const is_space = (0U != BARCODE_LEVEL_SPACE)
+                                              ? previous_level
+                                              : !previous_level;
+                    uint8_t const code =
+                        barcode_parser_input(&parser, is_space, width_um);
+
+                    if ((BARCODE_NO_CHAR != code) && (NULL != gp_handler))
+                    {
+                        gp_handler(code);
+                    }
+                }
+            }
+            else
+            {
+                have_previous = true;
             }
 
             previous_us    = timestamp_us;
             previous_level = level;
-            have_previous  = true;
         }
 
         er = ir_wait_change(IR_TYPE_BARCODE, (TMO)BARCODE_GAP_MS);

@@ -98,6 +98,14 @@ target_compile_options(test_barcode_parser PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME barcode_parser COMMAND test_barcode_parser)
 
+add_executable(test_barcode_width test_barcode_width.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/barcode_width.c)
+target_include_directories(test_barcode_width PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_barcode_width PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME barcode_width COMMAND test_barcode_width)
+
 # GPIO dispatcher: src/platform/isr.c against a kernel shim (D67).
 add_executable(test_isr_dispatch test_isr_dispatch.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/isr.c)

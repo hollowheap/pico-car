@@ -354,10 +354,11 @@ target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
 add_library(track STATIC
     src/track/ir_capture.c
     src/track/barcode_task.c
+    src/track/barcode_width.c
     src/track/line_control.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(track PUBLIC platform barcode mtk3smp)
+target_link_libraries(track PUBLIC platform barcode motion_service mtk3smp)
 target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(barcode STATIC
