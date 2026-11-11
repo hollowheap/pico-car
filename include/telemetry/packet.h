@@ -25,6 +25,8 @@
 
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 #define TELEMETRY_STATUS_WIRE_SIZE    8u
 #define TELEMETRY_EVENT_WIRE_SIZE     8u
 #define TELEMETRY_HEARTBEAT_WIRE_SIZE 4u
@@ -69,6 +71,8 @@ typedef struct
     int16_t  pitch_cdeg;
     uint16_t hump_peak_mm;
 } telemetry_system_t;
+
+STATIC_ASSERT (sizeof(telemetry_system_t) == 16U, "telemetry_system_t size");
 
 /* System packet: obstacle state/cause/faults/class/dist/seq/req_id,
    physics state/motion/faults/flags, pitch and hump peak. */

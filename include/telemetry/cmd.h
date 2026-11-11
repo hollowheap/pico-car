@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 #define TELEMETRY_CMD_WIRE_SIZE   8u
 #define TELEMETRY_CMD_MAX_AGE_MS  2000u
 
@@ -18,6 +20,9 @@ typedef enum
     TELEMETRY_CMD_ESTOP = 6u
 } telemetry_cmd_opcode_t;
 
+STATIC_ASSERT (sizeof(telemetry_cmd_opcode_t) <= 4U,
+               "telemetry_cmd_opcode_t size");
+
 typedef enum
 {
     TELEMETRY_CMD_OK = 0,
@@ -30,6 +35,9 @@ typedef enum
     TELEMETRY_CMD_RUN_MISMATCH
 } telemetry_cmd_result_t;
 
+STATIC_ASSERT (sizeof(telemetry_cmd_result_t) <= 4U,
+               "telemetry_cmd_result_t size");
+
 typedef struct
 {
     uint16_t cmd_id;
@@ -38,12 +46,17 @@ typedef struct
     uint8_t  opcode;
 } telemetry_cmd_t;
 
+STATIC_ASSERT (sizeof(telemetry_cmd_t) == 8U, "telemetry_cmd_t size");
+
 typedef struct
 {
     uint16_t last_cmd_id;
     uint16_t expected_run_id;
     bool     has_last;
 } telemetry_cmd_state_t;
+
+STATIC_ASSERT (sizeof(telemetry_cmd_state_t) == 6U,
+               "telemetry_cmd_state_t size");
 
 typedef void (*telemetry_cmd_dispatch_fn_t)(const telemetry_cmd_t * cmd,
                                              void * context);

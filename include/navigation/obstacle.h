@@ -25,6 +25,7 @@
 #include <tk/tkernel.h>
 
 #include "navigation/obstacle_cmd.h"
+#include "platform/static_assert.h"
 
 /* Emergency stop supplied by the motion subsystem. */
 typedef ER (*obstacle_stop_fn_t)(void);
@@ -41,21 +42,26 @@ typedef struct
     obstacle_distance_fn_t p_get_distance_mm;
 } obstacle_links_t;
 
+STATIC_ASSERT (sizeof(obstacle_links_t) == (3U * sizeof(void *)),
+               "obstacle_links_t size");
+
 /* Latest state in engineering units. The numeric codes match the wire
  * schema owned by protocol/ and the dashboard decoder; this header does
  * not fix their values. */
 typedef struct
 {
-    bool     ready;         /* Task is running.                         */
+    uint16_t distance_mm;   /* Latest VALID echo, mm.                   */
     uint8_t  state;         /* STOPPED, MONITOR, WAIT_STOP, ...         */
     uint8_t  cause;         /* Why the statechart is stopped, else 0.   */
     uint8_t  faults;        /* Latched OBSTACLE_FAULT_* bits.           */
     uint8_t  echo_class;    /* Latest echo: VALID, OPEN, UNKNOWN, ...   */
-    uint16_t distance_mm;   /* Latest VALID echo, mm.                   */
     uint8_t  req_id;        /* Current request id.                      */
     uint8_t  seq;           /* Ping sequence, wraps at 64.              */
-    uint8_t  dropped_events;/* Events lost to a full queue.             */
+    uint8_t  dropped_events; /* Events lost to a full queue.            */
+    bool     ready;         /* Task is running.                         */
 } obstacle_status_t;
+
+STATIC_ASSERT (sizeof(obstacle_status_t) == 10U, "obstacle_status_t size");
 
 /* Start obstacle. Call once from the line task, after gpio_irq_init() and
  * motion_service_init(). Uses the default links: motion-service stop and
