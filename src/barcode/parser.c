@@ -270,8 +270,10 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
 
     if (b_at_end)
     {
-        /* Last character must be the delimiter */
-        b_invalid = (state->curr_value != DELIM_CHARACTER);
+        /* Last character must be the delimiter with valid parity */
+        b_invalid = (state->curr_value != DELIM_CHARACTER) ||
+                    (state->wide_bar_count != WIDE_BARS_PER_CHARACTER) ||
+                    (state->wide_space_count != WIDE_SPACES_PER_CHARACTER);
     }
 
     if (b_invalid)
