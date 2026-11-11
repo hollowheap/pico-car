@@ -584,6 +584,18 @@ static void test_foreign_length (void)
     CHECK(telemetry_queue_pop(msg, TMO_POL) == E_OBJ);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
     CHECK(queue_empty());
+    /* An unknown length in the queue is evicted and counted. */
+    CHECK(tk_snd_mbf(g_mbf_telem_id, raw, 5, TMO_POL) == E_OK);
+    CHECK(fill_with((uint8_t)'s', CAP_STATUS - 1U) == CAP_STATUS - 1U);
+    drops = telemetry_queue_drop_count();
+    CHECK(push_t((uint8_t)'s', 0U, 0x55U) == E_OK);
+    CHECK(telemetry_queue_drop_count() == drops + 1U);
+    for (unsigned i = 0U; i < CAP_STATUS - 1U; i++)
+    {
+        CHECK(pop_t((uint8_t)'s', (uint8_t)i));
+    }
+    CHECK(pop_t((uint8_t)'s', 0x55U));
+    CHECK(queue_empty());
     pass("foreign_length", before);
 }
 
