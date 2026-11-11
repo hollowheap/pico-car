@@ -10,7 +10,6 @@
    bounds the eviction loop by the number of messages the buffer can hold. */
 #define QUEUE_MIN_COST      8U
 #define QUEUE_EVICT_LIMIT   (TELEMETRY_QUEUE_BYTES / QUEUE_MIN_COST)
-#define QUEUE_EVENT_RESERVED_INDEX (TELEMETRY_EVENT_WIRE_SIZE - 1U)
 
 /* D87: the topic is inferred from the stored length, so the four lengths must
    be distinct and fit the pop buffer (topic byte + frame) and the kernel
@@ -89,25 +88,6 @@ telemetry_queue_create (void)
     (void) tk_del_mtx(g_push_mtx);
     g_push_mtx = 0;
     return result;
-}
-
-/* Wire length of a frame for `topic`, 0 for an unknown topic. */
-static uint16_t
-wire_length_of (uint8_t topic)
-{
-    switch (topic)
-    {
-        case (uint8_t) TELEMETRY_TOPIC_HEARTBEAT:
-            return TELEMETRY_HEARTBEAT_WIRE_SIZE;
-        case (uint8_t) TELEMETRY_TOPIC_EVENT:
-            return TELEMETRY_EVENT_WIRE_SIZE;
-        case (uint8_t) TELEMETRY_TOPIC_STATUS:
-            return TELEMETRY_STATUS_WIRE_SIZE;
-        case (uint8_t) TELEMETRY_TOPIC_SYSTEM:
-            return TELEMETRY_SYSTEM_WIRE_SIZE;
-        default:
-            return 0U;
-    }
 }
 
 /* Topic of a message stored with `queued_len` bytes, 0 if no topic has it. */
@@ -210,34 +190,35 @@ send_evicting (const uint8_t * stored, INT stored_len)
    consumer only ever frees space. The one effect is that a sent-back event
    lands behind the frames queued after it. */
 ER
-telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t topic,
-                      uint8_t qos)
+telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t qos)
 {
-    uint8_t  stored[TELEMETRY_QUEUE_MAX_MSG];
-    uint16_t wire_len = wire_length_of(topic);
-    INT      stored_len = 0;
-    ER       result = E_OK;
+    uint8_t stored[TELEMETRY_QUEUE_MAX_MSG];
+    INT     stored_len = 0;
+    ER      result     = E_OK;
 
-    if ((payload == 0) || (wire_len == 0U) || (len != wire_len))
+    if (payload == 0)
     {
         return E_PAR;
     }
-    if ((topic == (uint8_t) TELEMETRY_TOPIC_EVENT) &&
-        (payload[QUEUE_EVENT_RESERVED_INDEX] != 0U))
+
+    if ((len == TELEMETRY_HEARTBEAT_QUEUED_SIZE) ||
+        (len == TELEMETRY_EVENT_QUEUED_SIZE) ||
+        (len == TELEMETRY_STATUS_QUEUED_SIZE) ||
+        (len == TELEMETRY_SYSTEM_QUEUED_SIZE))
+    {
+        stored_len = (INT) len;
+    }
+    else
     {
         return E_PAR;
     }
+
     if (g_mbf_telem_id <= 0)
     {
         return E_NOEXS;
     }
 
-    /* The topic byte is not stored; an event also loses reserved byte 7. */
-    stored_len = (INT) len;
-    if (topic == (uint8_t) TELEMETRY_TOPIC_EVENT)
-    {
-        stored_len = (INT) TELEMETRY_EVENT_QUEUED_SIZE;
-    }
+    /* The topic byte is not stored; an event has no reserved byte 7. */
     for (INT i = 0; i < stored_len; i++)
     {
         stored[i] = payload[i];
