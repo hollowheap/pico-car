@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 #define MOTION_WHEELS              2U
 #define MOTION_FEEDBACK_MAX_AGE_US 600000U
 
@@ -45,6 +47,8 @@ typedef struct
     bool     fresh;
 } motion_feedback_t;
 
+STATIC_ASSERT (sizeof(motion_feedback_t) == 40U, "motion_feedback_t size");
+
 typedef struct
 {
     uint8_t  state;          /* MOTION_STATE_* */
@@ -54,6 +58,8 @@ typedef struct
     uint32_t hold_mask;      /* MOTION_HOLD_* */
     int      init_error;
 } motion_status_t;
+
+STATIC_ASSERT (sizeof(motion_status_t) == 12U, "motion_status_t size");
 
 int motion_feedback_snapshot (motion_feedback_t * p_feedback);
 int motion_status (motion_status_t * p_status);

@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 #define MQTT_TX_BUFFER_SIZE 256u
 #define MQTT_RX_BUFFER_SIZE 128u
 #define MQTT_DEFAULT_KEEPALIVE_S 30u
@@ -22,6 +24,8 @@ typedef enum
     MQTT_ERR_PROTOCOL
 } mqtt_result_t;
 
+STATIC_ASSERT (sizeof(mqtt_result_t) <= 4U, "mqtt_result_t size");
+
 typedef enum
 {
     MQTT_STATE_DISCONNECTED = 0,
@@ -30,12 +34,17 @@ typedef enum
     MQTT_STATE_CONNECTED
 } mqtt_state_t;
 
+STATIC_ASSERT (sizeof(mqtt_state_t) <= 4U, "mqtt_state_t size");
+
 typedef struct
 {
     void * context;
     int (*send)(void * context, const uint8_t * data, uint16_t len);
     int (*recv)(void * context, uint8_t * data, uint16_t len);
 } mqtt_transport_t;
+
+STATIC_ASSERT (sizeof(mqtt_transport_t) == (3U * sizeof(void *)),
+               "mqtt_transport_t size");
 
 typedef struct
 {
@@ -45,6 +54,9 @@ typedef struct
     const char * command_topic;
     uint16_t     keepalive_s;
 } mqtt_config_t;
+
+STATIC_ASSERT (sizeof(mqtt_config_t) == (5U * sizeof(void *)),
+               "mqtt_config_t size");
 
 typedef void (*mqtt_command_fn_t)(const uint8_t * payload, uint16_t len,
                                   void * context);
@@ -69,6 +81,9 @@ typedef struct
     bool              valid;
     uint8_t           tx_buffer[MQTT_TX_BUFFER_SIZE];
 } mqtt_client_t;
+
+STATIC_ASSERT (sizeof(mqtt_client_t) == (416U + (10U * sizeof(void *))),
+               "mqtt_client_t size");
 
 void mqtt_client_init (mqtt_client_t * client, const mqtt_config_t * config,
                        const mqtt_transport_t * transport,
