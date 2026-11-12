@@ -6,6 +6,8 @@
  *
  * Sharing rules:
  *   - Status word and steering word: one 32-bit store, one 32-bit load.
+ *   - Look angle: written only by Navigation (the line task), read only by
+ *     the Buddy 5 task; one aligned 16-bit store and load.
  *   - Fault byte and drop counter: the Buddy 5 task is the only writer.
  *   - Profile: a sequence lock. The writer never waits; a reader retries
  *     once and then gets E_BUSY.
@@ -67,6 +69,7 @@ static comms_links_t g_links = {0, 0, NULL, NULL};
 
 static uint32_t volatile g_status = 0U;
 static uint32_t volatile g_steer  = 0U;
+static int16_t volatile g_look    = 0;
 static uint8_t volatile g_faults  = 0U;
 static uint8_t volatile g_drops   = 0U;
 
@@ -350,6 +353,26 @@ ER b5_comms_get_event (uint32_t * p_evt, TMO tmout)
 uint32_t b5_comms_steer (void)
 {
     return (g_steer);
+}
+
+/*!
+ * @brief Set the servo angle Navigation wants during REACQUIRE.
+ *
+ * @param[in] deci Angle in deci-degrees, positive = left.
+ */
+void b5_comms_set_look (int16_t deci)
+{
+    g_look = deci;
+}
+
+/*!
+ * @brief Servo angle Navigation wants during REACQUIRE.
+ *
+ * @return Angle in deci-degrees, positive = left.
+ */
+int16_t b5_comms_look (void)
+{
+    return (g_look);
 }
 
 /*!

@@ -33,7 +33,7 @@
 #define B5_STATE_SCANNING  (3U)
 #define B5_STATE_PLAN      (4U)
 #define B5_STATE_BYPASS    (5U) /* escape: bend away, servo ahead      */
-#define B5_STATE_REACQUIRE (6U) /* hug with servo at 45 deg, find line */
+#define B5_STATE_REACQUIRE (6U) /* bypass side scans, find the line    */
 
 /* Why Buddy 5 is STOPPED, 4 bits. */
 #define B5_CAUSE_NONE          (0U)

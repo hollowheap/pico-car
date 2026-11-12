@@ -27,6 +27,8 @@ uint32_t b5_comms_odometer_mm (uint32_t now_ms);
 
 ER       b5_comms_get_event (uint32_t * p_evt, TMO tmout);
 uint32_t b5_comms_steer (void);
+void     b5_comms_set_look (int16_t deci);
+int16_t  b5_comms_look (void);
 uint32_t b5_comms_status (void);
 uint8_t  b5_comms_faults (void);
 uint8_t  b5_comms_drops (void);

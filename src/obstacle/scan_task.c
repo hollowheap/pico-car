@@ -264,7 +264,7 @@ static bool is_car_driving (void)
 static bool move_servo (void)
 {
     bool    b_moved = false;
-    int16_t target  = b5_fsm_servo_deci(&g_fsm);
+    int16_t target  = b5_fsm_servo_deci(&g_fsm, b5_comms_look());
 
     if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
     {
@@ -272,7 +272,7 @@ static bool move_servo (void)
          * swing while a motor drives disturbs the wheel encoders. The
          * target may change meanwhile, so read it again. */
         wait_ms(B5_SERVO_PREDELAY_MS);
-        target = b5_fsm_servo_deci(&g_fsm);
+        target = b5_fsm_servo_deci(&g_fsm, b5_comms_look());
     }
 
     if ((!g_servo.b_known) || (target != g_servo.deci))

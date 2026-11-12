@@ -132,6 +132,33 @@ uint32_t obstacle_get_steer (void)
 }
 
 /*!
+ * @brief Tell Buddy 5 where the servo should point during REACQUIRE
+ *        (Navigation decides, as the bypass needs different angles in
+ *        each part). Clamped to the servo limit.
+ *
+ * @param[in] deci Angle in deci-degrees, positive = left.
+ */
+void obstacle_set_look (int16_t deci)
+{
+    int16_t clamped = deci;
+
+    if (clamped > (int16_t)B5_SERVO_LIMIT_DECI)
+    {
+        clamped = (int16_t)B5_SERVO_LIMIT_DECI;
+    }
+    else if (clamped < (int16_t)(-B5_SERVO_LIMIT_DECI))
+    {
+        clamped = (int16_t)(-B5_SERVO_LIMIT_DECI);
+    }
+    else
+    {
+        /* In range. */
+    }
+
+    b5_comms_set_look(clamped);
+}
+
+/*!
  * @brief Packed status word, read in one 32-bit load.
  *
  * @return The status word.

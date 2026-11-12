@@ -29,6 +29,7 @@
 #define SIN_TABLE_MAX (90)
 #define TAN_TABLE_MAX (70)
 #define DECI_RIGHT    (900)
+#define DECI_STRAIGHT (1800)
 #define DECI_TAN_MAX  (TAN_TABLE_MAX * DECI_PER_DEG)
 #define DECI_ATAN_MAX ((int32_t)B5_ANGLE_MAX * DECI_PER_DEG)
 #define HALF          (2)
@@ -38,6 +39,10 @@
 #define AXES          (2)
 #define ISQRT_TOP_BIT (1UL << 30U)
 #define ISQRT_STEP    (2U)
+
+B5_CT_ASSERT(clear_unbounded_past_limit,
+             B5_PLAN_CLEAR_UNBOUNDED ==
+                 (B5_SERVO_LIMIT_DECI + B5_SLOT_STEP_DECI));
 
 /* round(16384 * sin(deg)) for deg = 0..90. */
 static uint16_t const g_sine_table[SIN_TABLE_MAX + 1] = {
@@ -84,7 +89,8 @@ static uint16_t chord_width (scan_algo_ctx_t const * p_scan,
                              int32_t const           p_right[AXES]);
 
 /*!
- * @brief Sine of an angle.
+ * @brief Sine of an angle (up to 180 degrees either side; beyond that the
+ *        angle is treated as 180).
  *
  * @param[in] deci Angle in deci-degrees.
  *
@@ -92,14 +98,19 @@ static uint16_t chord_width (scan_algo_ctx_t const * p_scan,
  */
 int32_t b5_plan_sin_q14 (int32_t deci)
 {
-    int32_t const value =
-        table_lookup(g_sine_table, SIN_TABLE_MAX, abs_deci_of(deci));
+    int32_t const magnitude = abs_deci_of(deci);
+    int32_t const clamped =
+        (magnitude > DECI_STRAIGHT) ? DECI_STRAIGHT : magnitude;
+    int32_t const folded =
+        (clamped > DECI_RIGHT) ? (DECI_STRAIGHT - clamped) : clamped;
+    int32_t const value = table_lookup(g_sine_table, SIN_TABLE_MAX, folded);
 
     return ((deci < 0) ? -value : value);
 }
 
 /*!
- * @brief Cosine of an angle (0..90 degrees either side).
+ * @brief Cosine of an angle (up to 180 degrees either side; beyond that the
+ *        angle is treated as 180).
  *
  * @param[in] deci Angle in deci-degrees.
  *
@@ -108,9 +119,21 @@ int32_t b5_plan_sin_q14 (int32_t deci)
 int32_t b5_plan_cos_q14 (int32_t deci)
 {
     int32_t const magnitude = abs_deci_of(deci);
-    int32_t const clamped   = (magnitude > DECI_RIGHT) ? DECI_RIGHT : magnitude;
+    int32_t const clamped =
+        (magnitude > DECI_STRAIGHT) ? DECI_STRAIGHT : magnitude;
+    int32_t value = 0;
 
-    return (table_lookup(g_sine_table, SIN_TABLE_MAX, DECI_RIGHT - clamped));
+    if (clamped > DECI_RIGHT)
+    {
+        value =
+            -table_lookup(g_sine_table, SIN_TABLE_MAX, clamped - DECI_RIGHT);
+    }
+    else
+    {
+        value = table_lookup(g_sine_table, SIN_TABLE_MAX, DECI_RIGHT - clamped);
+    }
+
+    return (value);
 }
 
 /*!
@@ -246,6 +269,10 @@ void b5_plan_build (scan_algo_ctx_t const * p_scan, b5_plan_cfg_t const * p_cfg,
     p_result->need_mm[B5_SIDE_LEFT]  = B5_PLAN_SIDE_BLOCKED;
     p_result->need_mm[B5_SIDE_RIGHT] = B5_PLAN_SIDE_BLOCKED;
 
+    /* Cast is safe: B5_PLAN_CLEAR_UNBOUNDED fits in int16_t. */
+    p_result->clear_deci[B5_SIDE_LEFT]  = (int16_t)B5_PLAN_CLEAR_UNBOUNDED;
+    p_result->clear_deci[B5_SIDE_RIGHT] = (int16_t)B5_PLAN_CLEAR_UNBOUNDED;
+
     if (!scan_algo_has_region(p_scan))
     {
         p_result->status = clear_or_unsafe(p_scan, p_cfg);
@@ -338,46 +365,186 @@ uint8_t b5_plan_steer_toward (uint8_t side)
 }
 
 /*!
- * @brief Hug rule for one ping on the 45 degree look-ray.
+ * @brief Revised bypass, before the first pivot: how far to back up so the
+ *        front corner swinging round the stopped wheel keeps
+ *        B5_NAV_CLEAR_MM from the obstacle face.
  *
- * Under NEAR bends away, NEAR..FAR goes straight, beyond FAR or OPEN bends
- * towards, and UNKNOWN or STUCK keep the last choice (the fault counters
- * handle a dead sensor).
+ * Frame for the bypass helpers: the middle of the wheel axle where the
+ * car stopped is the origin, "ahead" runs along the original line and
+ * "side" towards the side being passed.
  *
- * @param[in] side       Side the car passes on (B5_SIDE_*).
- * @param[in] cls        Ping class.
- * @param[in] dist_mm    Ping distance.
- * @param[in] last_steer Previous steering choice.
+ * @param[in] closest_mm Closest scan reading, measured from the sensor.
  *
- * @return Steering for this ping (B5_STEER_*).
+ * @return Distance to reverse, mm (0 when there is room already).
  */
-uint8_t b5_plan_hug_steer (uint8_t side, uint8_t cls, uint16_t dist_mm,
-                           uint8_t last_steer)
+uint32_t b5_plan_backup_mm (uint32_t closest_mm)
 {
-    uint8_t steer = last_steer;
+    uint32_t const needed_mm =
+        (B5_PIVOT_REACH_MM + B5_NAV_CLEAR_MM) - B5_AXLE_TO_SONAR_MM;
 
-    if (B5_CLASS_OPEN == cls)
+    return ((closest_mm >= needed_mm) ? 0U : (needed_mm - closest_mm));
+}
+
+/*!
+ * @brief Revised bypass: A, the room the obstacle takes up on the side
+ *        being passed, from the first scan: B x tan(cleared angle), at
+ *        least 0 and at most B5_ROOM_MAX_MM.
+ *
+ * @param[in] closest_mm B, the closest scan reading (from the sensor).
+ * @param[in] clear_deci Raw cleared angle of that side, positive =
+ *                       outwards (b5_plan_result_t.clear_deci).
+ *
+ * @return A in mm.
+ */
+uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci)
+{
+    int32_t room_mm = 0;
+
+    if (clear_deci > 0)
     {
-        steer = b5_plan_steer_toward(side);
+        room_mm = mul_q14(closest_mm, b5_plan_tan_q14(clear_deci));
     }
-    else if (B5_CLASS_VALID != cls)
+
+    if (room_mm > (int32_t)B5_ROOM_MAX_MM)
     {
-        steer = last_steer;
+        room_mm = (int32_t)B5_ROOM_MAX_MM;
     }
-    else if (dist_mm < B5_HUG_NEAR_MM)
+
+    /* Cast is safe: room_mm is 0..B5_ROOM_MAX_MM here. */
+    return ((uint32_t)room_mm);
+}
+
+/*!
+ * @brief Revised bypass: E, how far the car moves out after the first
+ *        pivot: A + car length + B5_OUT_BUFFER_MM.
+ *
+ * @param[in] room_mm A (b5_plan_room_mm()).
+ *
+ * @return E in mm.
+ */
+uint32_t b5_plan_out_mm (uint32_t room_mm)
+{
+    return (room_mm + B5_CAR_LEN_MM + B5_OUT_BUFFER_MM);
+}
+
+/*!
+ * @brief Revised bypass: how far the car drives on after the pivot back,
+ *        to come level with the obstacle's near face: B + B5_LEVEL_BUFFER_MM.
+ *
+ * @param[in] closest_mm B, the closest scan reading (from the sensor).
+ *
+ * @return Distance in mm.
+ */
+uint32_t b5_plan_level_mm (uint32_t closest_mm)
+{
+    return (closest_mm + B5_LEVEL_BUFFER_MM);
+}
+
+/*!
+ * @brief Revised bypass: judge one side scan, taken with the car facing
+ *        the line.
+ *
+ * Each reading at servo angle t (alpha = fwd_sign x t, positive = forward
+ * along the line) is a point f = r cos(alpha) towards the line and
+ * s = r sin(alpha) along it. Points with f beyond lane_mm are past the line
+ * and ignored; the rest are "hits".
+ *   - Lane: a hit with |s| <= B5_LANE_HALF_MM blocks the way to the line.
+ *   - d: the closest hit.
+ *   - Forward cleared angle: one slot past the last hit with alpha >= 0;
+ *     0 with no forward hit; none (B5_SIDE_ASSUMED_DECI is used) when the
+ *     hits reach the servo limit.
+ *   - Move on: d x tan(cleared angle) + B5_LANE_HALF_MM (D + C).
+ *
+ * @param[in]  p_mm     B5_SLOT_COUNT readings in slot order (mm, or
+ *                      B5_PLAN_NO_ECHO).
+ * @param[in]  fwd_sign +1 if a left (positive) servo angle looks forward
+ *                      along the line, -1 if a right one does.
+ * @param[in]  lane_mm  How far the lane runs from the sensor towards (and
+ *                      past) the line.
+ * @param[out] p_side   The judgement.
+ */
+void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
+                        uint32_t lane_mm, b5_plan_side_t * p_side)
+{
+    uint32_t closest_mm = B5_PLAN_NO_ECHO;
+    int32_t  last_deci  = -1;
+    bool     b_blocked  = false;
+    uint32_t slot       = 0U;
+
+    for (slot = 0U; slot < B5_SLOT_COUNT; slot++)
     {
-        steer = b5_plan_steer_away(side);
+        uint32_t const range_mm = p_mm[slot];
+
+        /* Cast is safe: slot is 0..24. */
+        int32_t const alpha = fwd_sign * scan_algo_slot_deci((uint8_t)slot);
+
+        if (B5_PLAN_NO_ECHO != range_mm)
+        {
+            int32_t const to_line_mm =
+                mul_q14(range_mm, b5_plan_cos_q14(alpha));
+            int32_t const along_mm = mul_q14(range_mm, b5_plan_sin_q14(alpha));
+
+            /* Cast is safe: lane_mm is a few hundred mm. */
+            if (to_line_mm <= (int32_t)lane_mm)
+            {
+                closest_mm = (range_mm < closest_mm) ? range_mm : closest_mm;
+                b_blocked =
+                    b_blocked || ((along_mm <= (int32_t)B5_LANE_HALF_MM) &&
+                                  (along_mm >= -(int32_t)B5_LANE_HALF_MM));
+                last_deci =
+                    ((alpha >= 0) && (alpha > last_deci)) ? alpha : last_deci;
+            }
+        }
     }
-    else if (dist_mm <= B5_HUG_FAR_MM)
+
+    p_side->b_lane_clear = !b_blocked;
+    p_side->b_cleared    = (last_deci < B5_SERVO_LIMIT_DECI);
+
+    /* Casts are safe: the angles are 0..600 and closest_mm is 12 bits or
+     * B5_PLAN_NO_ECHO. */
+    if (last_deci < 0)
     {
-        steer = B5_STEER_STRAIGHT;
+        p_side->clear_deci = 0;
+    }
+    else if (p_side->b_cleared)
+    {
+        p_side->clear_deci = (int16_t)(last_deci + B5_SLOT_STEP_DECI);
     }
     else
     {
-        steer = b5_plan_steer_toward(side);
+        p_side->clear_deci = (int16_t)B5_SIDE_ASSUMED_DECI;
     }
 
-    return (steer);
+    if (B5_PLAN_NO_ECHO == closest_mm)
+    {
+        p_side->closest_mm = 0U;
+        p_side->move_mm    = B5_LANE_HALF_MM;
+    }
+    else
+    {
+        p_side->closest_mm = (uint16_t)closest_mm;
+        p_side->move_mm =
+            (uint32_t)mul_q14(closest_mm, b5_plan_tan_q14(p_side->clear_deci)) +
+            B5_LANE_HALF_MM;
+    }
+}
+
+/*!
+ * @brief Side position of a point straight ahead of the axle (an IR
+ *        sensor), for a car at side_mm pointing away_deci from the line
+ *        (positive = away from the obstacle).
+ *
+ * @param[in] side_mm   Side position of the middle of the axle.
+ * @param[in] away_deci Heading, deci-degrees, positive = away.
+ * @param[in] ahead_mm  How far the point is ahead of the axle.
+ *
+ * @return Side position of the point, mm.
+ */
+int32_t b5_plan_point_side_mm (int32_t side_mm, int32_t away_deci,
+                               uint32_t ahead_mm)
+{
+    return (side_mm +
+            (((int32_t)ahead_mm * b5_plan_sin_q14(away_deci)) / Q14_ONE));
 }
 
 /*!
@@ -564,6 +731,12 @@ static void plan_side (scan_algo_ctx_t const * p_scan,
     }
 
     p_res->need_mm[side] = B5_PLAN_SIDE_BLOCKED;
+
+    /* Cast is safe: a slot angle is within +-600. */
+    p_res->clear_deci[side] =
+        (SCAN_ALGO_EDGE_BOUNDED == p_scan->edge_state[side])
+            ? (int16_t)(sign * scan_algo_slot_deci(miss_slot))
+            : (int16_t)B5_PLAN_CLEAR_UNBOUNDED;
 
     /* Casts are safe: need_mm is non-negative and, when stored, no larger
      * than the free floor (<= 1023). */

@@ -63,7 +63,7 @@ void b5_fsm_ping (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
 void b5_fsm_tick (b5_fsm_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
                   b5_fsm_out_t * p_out);
 
-int16_t  b5_fsm_servo_deci (b5_fsm_t const * p_fsm);
+int16_t  b5_fsm_servo_deci (b5_fsm_t const * p_fsm, int16_t look_deci);
 uint32_t b5_fsm_status (b5_fsm_t const * p_fsm);
 
 #endif /* B5_FSM_H */

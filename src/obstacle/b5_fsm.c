@@ -238,9 +238,9 @@ void b5_fsm_ping (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
             break;
 
             case B5_STATE_REACQUIRE:
-                emit_steer(p_fsm, p_out,
-                           b5_plan_hug_steer(p_fsm->plan.side, cls, dist,
-                                             p_fsm->steer));
+                /* Navigation steers the bypass from the status word; the
+                 * STEER word only says "straight on". */
+                emit_steer(p_fsm, p_out, B5_STEER_STRAIGHT);
             break;
 
             default:
@@ -261,10 +261,13 @@ void b5_fsm_ping (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
 void b5_fsm_tick (b5_fsm_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
                   b5_fsm_out_t * p_out)
 {
-    /* Unsigned subtraction stays correct when the clock wraps. */
+    /* Unsigned subtraction stays correct when the clock wraps. The car may
+     * back up before its first pivot, so the odometer can be below its
+     * value at ACCEPT: that counts as no distance yet. */
     uint32_t const elapsed_ms = now_ms - p_fsm->since_ms;
-    uint32_t const hugged_mm  = odo_mm - p_fsm->bypass_mm;
-    uint8_t        cause      = B5_CAUSE_NONE;
+    uint32_t const bypass_mm =
+        (odo_mm >= p_fsm->bypass_mm) ? (odo_mm - p_fsm->bypass_mm) : 0U;
+    uint8_t cause = B5_CAUSE_NONE;
 
     switch (p_fsm->state)
     {
@@ -297,7 +300,8 @@ void b5_fsm_tick (b5_fsm_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
         break;
 
         case B5_STATE_REACQUIRE:
-            if ((elapsed_ms > B5_HUG_MAX_MS) || (hugged_mm > B5_HUG_MAX_MM))
+            if ((elapsed_ms > B5_BYPASS_MAX_MS) ||
+                (bypass_mm > B5_BYPASS_MAX_MM))
             {
                 cause = B5_CAUSE_LINE_TIMEOUT;
             }
@@ -317,11 +321,13 @@ void b5_fsm_tick (b5_fsm_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
 /*!
  * @brief Where the servo must point for the next ping.
  *
- * @param[in] p_fsm Statechart.
+ * @param[in] p_fsm     Statechart.
+ * @param[in] look_deci Angle Navigation asked for (obstacle_set_look()),
+ *                      used in REACQUIRE.
  *
  * @return Angle in deci-degrees, positive = left.
  */
-int16_t b5_fsm_servo_deci (b5_fsm_t const * p_fsm)
+int16_t b5_fsm_servo_deci (b5_fsm_t const * p_fsm, int16_t look_deci)
 {
     int16_t deci = 0;
 
@@ -336,11 +342,10 @@ int16_t b5_fsm_servo_deci (b5_fsm_t const * p_fsm)
     }
     else if (B5_STATE_REACQUIRE == p_fsm->state)
     {
-        /* Passing on the left puts the obstacle on our right (negative).
-         * Casts are safe: the hug angle is 450. */
-        deci = (B5_SIDE_LEFT == p_fsm->plan.side)
-                   ? (int16_t)(-B5_HUG_SERVO_DECI)
-                   : (int16_t)B5_HUG_SERVO_DECI;
+        /* The bypass needs a different angle in each part (straight ahead
+         * while driving, a full sweep at each side scan), so Navigation
+         * chooses. */
+        deci = look_deci;
     }
     else
     {
@@ -721,7 +726,14 @@ static bool check_health (b5_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
 }
 
 /*!
- * @brief Collision guard while the car may be moving.
+ * @brief Collision guard while the car may be moving round the obstacle.
+ *
+ * NOTE: [Chat] Only REACQUIRE is guarded. In WAIT_STOP the car is already
+ * braking, and in BYPASS Navigation first backs away from an obstacle that
+ * is too close (b5_plan_backup_mm()), so a close reading straight ahead
+ * there is expected; stopping for it would leave the car stuck in front of
+ * the obstacle. Navigation's virtual bumper covers contact in every
+ * bypass phase.
  *
  * @param[in,out] p_fsm   Statechart.
  * @param[in]     cls     Ping class.
@@ -734,10 +746,7 @@ static bool check_health (b5_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
 static bool check_collision (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                              uint32_t now_ms, b5_fsm_out_t * p_out)
 {
-    uint8_t const state     = p_fsm->state;
-    bool const    b_guarded = (B5_STATE_WAIT_STOP == state) ||
-                           (B5_STATE_BYPASS == state) ||
-                           (B5_STATE_REACQUIRE == state);
+    bool const b_guarded = (B5_STATE_REACQUIRE == p_fsm->state);
     bool const b_close = (B5_CLASS_VALID == cls) && (dist_mm < B5_COLLISION_MM);
     bool       b_stopped = false;
 
@@ -861,9 +870,8 @@ static void ping_bypass (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
 
     if (clear_count >= B5_ESCAPE_CLEAR_PINGS)
     {
-        /* Drive straight while the servo swings to the hug angle (about
-         * 155 ms), instead of pivoting on blind; the first hug ping then
-         * picks the steering. */
+        /* The way ahead is clear: Navigation takes over (it keeps pivoting
+         * until the car is 90 degrees off the line, then moves out). */
         enter(p_fsm, B5_STATE_REACQUIRE, now_ms);
         emit_steer(p_fsm, p_out, B5_STEER_STRAIGHT);
     }
