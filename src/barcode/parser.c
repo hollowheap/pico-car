@@ -10,6 +10,8 @@
  * *       => 43
  * else    => unsupported
  */
+#include <stddef.h>
+
 #include "barcode/parser.h"
 
 #define BARCODE_CHARACTER_COUNT   3
@@ -187,21 +189,25 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
 }
 
 static bool handle_end_of_character (barcode_parser_t * state,
-                                     bool is_elem_space, elem_type_t elem_type)
+                                     bool is_elem_space, elem_type_t elem_type,
+                                     uint8_t * p_reason)
 {
     if (state->wide_bar_count != WIDE_BARS_PER_CHARACTER ||
         state->wide_space_count != WIDE_SPACES_PER_CHARACTER)
     {
+        *p_reason = BARCODE_REJECT_PARITY;
         return true;
     }
     /* The element between characters must be a narrow space */
     if (!is_elem_space || (elem_type != ELEM_TYPE_NARROW))
     {
+        *p_reason = BARCODE_REJECT_ELEMENT;
         return true;
     }
     /* First character must be the delimiter */
     if ((state->char_index == 0) && (state->curr_value != DELIM_CHARACTER))
     {
+        *p_reason = BARCODE_REJECT_DELIMITER;
         return true;
     }
     /* Second character contains the data */
@@ -229,13 +235,15 @@ static bool is_start_invalid (bool is_elem_space, uint16_t elem_width_um)
  * Returns whether the element is invalid.
  */
 static bool process_elem (barcode_parser_t * state, bool is_elem_space,
-                          uint16_t elem_width_um)
+                          uint16_t elem_width_um, uint8_t * p_reason)
 {
     const bool expect_space = (((uint32_t)state->elem_index & 1U) == 1U);
     const bool is_first_elem =
         (state->char_index == 0) && (state->elem_index == 0);
     bool        b_invalid = (expect_space != is_elem_space);
     elem_type_t elem_type = ELEM_TYPE_INVALID;
+
+    *p_reason = BARCODE_REJECT_ELEMENT;
 
     if (!b_invalid && is_first_elem)
     {
@@ -253,17 +261,19 @@ static bool process_elem (barcode_parser_t * state, bool is_elem_space,
 
     if (!b_invalid && (state->elem_index > CHARACTER_ELEM_COUNT))
     {
-        b_invalid = handle_end_of_character(state, is_elem_space, elem_type);
+        b_invalid = handle_end_of_character(state, is_elem_space, elem_type, p_reason);
     }
 
     return b_invalid;
 }
 
-uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
-                              uint16_t elem_width_um)
+uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
+                                   uint16_t elem_width_um, barcode_info_t * p_info)
 {
-    uint8_t    result    = BARCODE_NO_CHAR;
-    bool       b_invalid = process_elem(state, is_elem_space, elem_width_um);
+    uint8_t    result      = BARCODE_NO_CHAR;
+    uint8_t    reason      = BARCODE_REJECT_NONE;
+    bool const b_progress  = (state->char_index != 0) || (state->elem_index != 0);
+    bool       b_invalid   = process_elem(state, is_elem_space, elem_width_um, &reason);
     const bool b_at_end =
         !b_invalid && (state->char_index == (BARCODE_CHARACTER_COUNT - 1)) &&
         (state->elem_index == CHARACTER_ELEM_COUNT);
@@ -271,9 +281,29 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
     if (b_at_end)
     {
         /* Last character must be the delimiter with valid parity */
-        b_invalid = (state->curr_value != DELIM_CHARACTER) ||
-                    (state->wide_bar_count != WIDE_BARS_PER_CHARACTER) ||
-                    (state->wide_space_count != WIDE_SPACES_PER_CHARACTER);
+        if ((state->wide_bar_count != WIDE_BARS_PER_CHARACTER) ||
+            (state->wide_space_count != WIDE_SPACES_PER_CHARACTER))
+        {
+            b_invalid = true;
+            reason    = BARCODE_REJECT_PARITY;
+        }
+        else if (state->curr_value != DELIM_CHARACTER)
+        {
+            b_invalid = true;
+            reason    = BARCODE_REJECT_DELIMITER;
+        }
+        else
+        {
+            /* A closed barcode. */
+        }
+    }
+
+    if (p_info != NULL)
+    {
+        p_info->narrow_width_um = state->narrow_width_um;
+        p_info->is_reverse      = state->is_reverse;
+        p_info->in_progress     = b_progress;
+        p_info->reject = (b_invalid && b_progress) ? reason : BARCODE_REJECT_NONE;
     }
 
     if (b_invalid)
@@ -291,6 +321,12 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
     }
 
     return result;
+}
+
+uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
+                              uint16_t elem_width_um)
+{
+    return barcode_parser_input_info(state, is_elem_space, elem_width_um, NULL);
 }
 
 /*** end of file ***/

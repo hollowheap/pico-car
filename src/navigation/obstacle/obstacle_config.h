@@ -52,9 +52,15 @@
 #define OBSTACLE_TRIG_PULSE_US (12U)
 
 /* Echo widths from 116 us (about 20 mm) to 23500 us (about 4 m) are
- * VALID readings. */
-#define OBSTACLE_VALID_MIN_US (116U)
-#define OBSTACLE_VALID_MAX_US (23500U)
+ * VALID readings. A clean echo from OBSTACLE_GLITCH_MAX_US up to 116 us is
+ * TOO_CLOSE: an object inside the blind zone, which counts as a hit at
+ * OBSTACLE_MIN_RANGE_MM. An echo shorter than OBSTACLE_GLITCH_MAX_US is too
+ * short to come from a reflection and is a GLITCH. [Default] The glitch limit
+ * is a placeholder: tune it on the car. */
+#define OBSTACLE_VALID_MIN_US  (116U)
+#define OBSTACLE_VALID_MAX_US  (23500U)
+#define OBSTACLE_GLITCH_MAX_US (30U)
+#define OBSTACLE_MIN_RANGE_MM  (20U)
 
 /* Distance in mm is width_us * 343 / 2000 (speed of sound 343 m/s). */
 #define OBSTACLE_SOUND_NUM (343U)
@@ -68,11 +74,16 @@
  * Faults [Spec].
  * ------------------------------------------------------------------ */
 
-/* This many UNKNOWN pings in a row raise NO_ECHO. */
-#define OBSTACLE_NO_ECHO_COUNT (5U)
+/* [Default] This many NO_ECHO pings in a row raise NO_ECHO. */
+#define OBSTACLE_NO_ECHO_COUNT (3U)
 
-/* This many STUCK pings in a row raise ECHO_STUCK. */
+/* [Default] This many STUCK pings in a row raise ECHO_STUCK. */
 #define OBSTACLE_STUCK_COUNT (3U)
+
+/* [Default] This many GLITCH pings in a row, or this many failed pings of
+ * any mix (NO_ECHO, GLITCH, STUCK) in a row, raise ECHO_NOISE. */
+#define OBSTACLE_GLITCH_COUNT (5U)
+#define OBSTACLE_FAIL_COUNT   (5U)
 
 /* A stationary step (scan, side check, servo move) that makes no progress
  * for this long is a hung task, not a slow step: stop the car. */
@@ -87,13 +98,17 @@
  * leaves room for two pings and braking. */
 #define OBSTACLE_DETECT_MM (250U)
 
-/* [Spec] Consecutive VALID hits needed to report an obstacle. */
+/* [Spec] A ping is a hit when it is VALID within OBSTACLE_DETECT_MM, or
+ * TOO_CLOSE. This many hits among the last OBSTACLE_HIT_WINDOW pings report
+ * an obstacle. Two of three tolerates one missed ping and one outlier. */
 #define OBSTACLE_DETECT_HITS (2U)
+#define OBSTACLE_HIT_WINDOW  (3U)
 
 /* [Default] A forward reading closer than this stops the car at once. */
 #define OBSTACLE_COLLISION_MM (80U)
 
-/* [Default] Consecutive close readings needed for the emergency stop. */
+/* [Default] Close readings (VALID within OBSTACLE_COLLISION_MM, or TOO_CLOSE)
+ * needed among the last OBSTACLE_HIT_WINDOW pings for the emergency stop. */
 #define OBSTACLE_COLLISION_HITS (2U)
 
 /* [Default] While the car drives, the sonar faces forward and every VALID
@@ -163,8 +178,38 @@
 #define OBSTACLE_REGION_MAX_MM   (600U)
 #define OBSTACLE_REGION_EXTRA_MM (250U)
 
+/* [Default] Plausibility checks that raise warning flags and never stop the
+ * car (sonar-fault-detection.md). P1: two VALID pings of one slot that differ by more than
+ * OBSTACLE_NOISE_MM while the car and servo stand still, in OBSTACLE_NOISE_PINGS of the last
+ * OBSTACLE_NOISE_WINDOW pings, raise echo_noisy. P5: more than OBSTACLE_SCAN_NOISY_PCT percent
+ * of the slots in a finished scan needed 3 or 4 pings, which raises scan_noisy. */
+#define OBSTACLE_NOISE_MM        (40U)
+#define OBSTACLE_NOISE_PINGS     (3U)
+#define OBSTACLE_NOISE_WINDOW    (8U)
+#define OBSTACLE_SCAN_NOISY_PCT  (30U)
+#define OBSTACLE_PCT_BASE        (100U)
+
+/* [Default] P3: of the first OBSTACLE_BEAM_CHECK_PINGS pings after boot, this many
+ * hits mean something is in the beam (a bracket, a wire, the floor): beam_blocked.
+ * Nothing is expected within the detect distance at the start line. */
+#define OBSTACLE_BEAM_CHECK_PINGS (8U)
+#define OBSTACLE_BEAM_CHECK_HITS  (6U)
+
+/* [Default] P2: after the car has moved at least OBSTACLE_CONSIST_TRAVEL_MM between
+ * two VALID readings under OBSTACLE_CONSIST_RANGE_MM, the range must have changed by
+ * the travel, within OBSTACLE_CONSIST_TOL_MM. Otherwise echo_inconsistent is raised. */
+#define OBSTACLE_CONSIST_TRAVEL_MM (100U)
+#define OBSTACLE_CONSIST_RANGE_MM  (600U)
+#define OBSTACLE_CONSIST_TOL_MM    (40U)
+
+/* [Default] P4: read the TRIG pad back during the pulse. If it does not read high, the
+ * ping counts as NO_ECHO and the 40 ms wait is skipped. Set 0 if the readback does not
+ * work on the car (checklist H7e). */
+#define OBSTACLE_TRIG_READBACK (1U)
+#define OBSTACLE_RETRY_PINGS     (3U) /* a slot that needed this many pings was retried */
+
 /* [Spec 3e] Two pings agree when within 15 mm; four pings without
- * agreement make the slot UNKNOWN. */
+ * agreement make the slot a GLITCH (unresolved). */
 #define OBSTACLE_AGREE_MM  (15U)
 #define OBSTACLE_MAX_PINGS (4U)
 
@@ -436,15 +481,17 @@
 #define OBSTACLE_SLOT_BITS      (6U)
 #define OBSTACLE_STATE_COUNT    (7U)
 #define OBSTACLE_STATE_BITS     (3U)
-#define OBSTACLE_CAUSE_COUNT    (14U)
+#define OBSTACLE_CAUSE_COUNT    (15U)
 #define OBSTACLE_CAUSE_BITS     (4U)
-#define OBSTACLE_SEQ_BITS       (6U)
-#define OBSTACLE_MBX_WIDTH_BITS (16U)
+#define OBSTACLE_SEQ_BITS       (5U)
+#define OBSTACLE_ECHO_WIDTH_BITS (16U)
+#define OBSTACLE_CLASS_BITS     (3U)
+#define OBSTACLE_CLASS_COUNT    (6U)
 
 /* Largest VALID distance: 23500 us * 343 / 2000 = 4030 mm. */
 #define OBSTACLE_VALID_MAX_MM ((OBSTACLE_VALID_MAX_US * OBSTACLE_SOUND_NUM) / OBSTACLE_SOUND_DEN)
 
-/* Value used for a reading that is not a distance (OPEN, UNKNOWN, STUCK):
+/* Value used for a reading that is not a distance (OPEN, NO_ECHO, GLITCH, STUCK):
  * farther than any echo (12-bit distance maximum). */
 #define OBSTACLE_SIDE_FAR_MM (4095U)
 
@@ -454,11 +501,17 @@
 OBSTACLE_CT_ASSERT(dist_fits, OBSTACLE_VALID_MAX_MM <= OBSTACLE_DIST_MAX);
 OBSTACLE_CT_ASSERT(region_fits,
              (OBSTACLE_REGION_MAX_MM + OBSTACLE_REGION_EXTRA_MM) <= OBSTACLE_DIST_MAX);
-OBSTACLE_CT_ASSERT(mbx_width_fits,
-             (OBSTACLE_ECHO_WAIT_MS * 1000U) <= ((1UL << OBSTACLE_MBX_WIDTH_BITS) - 1UL));
+OBSTACLE_CT_ASSERT(echo_width_fits,
+             (OBSTACLE_ECHO_WAIT_MS * 1000U) <= ((1UL << OBSTACLE_ECHO_WIDTH_BITS) - 1UL));
 OBSTACLE_CT_ASSERT(slots_fit, OBSTACLE_SLOT_COUNT <= (1U << OBSTACLE_SLOT_BITS));
 OBSTACLE_CT_ASSERT(states_fit, OBSTACLE_STATE_COUNT <= (1U << OBSTACLE_STATE_BITS));
 OBSTACLE_CT_ASSERT(causes_fit, OBSTACLE_CAUSE_COUNT <= (1U << OBSTACLE_CAUSE_BITS));
+OBSTACLE_CT_ASSERT(classes_fit, OBSTACLE_CLASS_COUNT <= (1U << OBSTACLE_CLASS_BITS));
+OBSTACLE_CT_ASSERT(window_holds_hits,
+             (OBSTACLE_DETECT_HITS <= OBSTACLE_HIT_WINDOW) &&
+             (OBSTACLE_COLLISION_HITS <= OBSTACLE_HIT_WINDOW) && (OBSTACLE_HIT_WINDOW <= 8U));
+OBSTACLE_CT_ASSERT(noise_window_is_a_byte, OBSTACLE_NOISE_WINDOW == 8U);
+OBSTACLE_CT_ASSERT(glitch_below_valid, OBSTACLE_GLITCH_MAX_US < OBSTACLE_VALID_MIN_US);
 OBSTACLE_CT_ASSERT(profile_bytes,
              OBSTACLE_PROFILE_BYTES == (sizeof(uint16_t) * OBSTACLE_SLOT_COUNT));
 OBSTACLE_CT_ASSERT(slot_grid_symmetric,

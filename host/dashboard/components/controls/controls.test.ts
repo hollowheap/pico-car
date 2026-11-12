@@ -32,6 +32,7 @@ describe('controls', () => {
     expect(encodeCommand('left', 1, 1, 1)[6]).toBe(0x03);
     expect(encodeCommand('right', 1, 1, 1)[6]).toBe(0x04);
     expect(encodeCommand('uturn', 1, 1, 1)[6]).toBe(0x05);
+    expect(encodeCommand('straight', 1, 1, 1)[6]).toBe(0x07);
     expect(encodeCommand('estop', 1, 1, 1)[6]).toBe(0x06);
   });
 });

@@ -10,6 +10,7 @@
 
 #include "cyw43_utk.h"
 #include "telemetry/tcp_transport.h"
+#include "platform/log.h"
 
 #define TCP_TRANSPORT_RETRY_MS          1000u
 #define TCP_TRANSPORT_CONNECT_TIMEOUT_MS 10000u
@@ -121,7 +122,8 @@ fail_attempt (uint32_t now_ms)
 {
     g_resolving = false;
     g_state = TCP_TRANSPORT_FAILED;
-    (void) tm_printf((UB *) "[tcp] attempt failed state=%d\n", (INT) g_state);
+    LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_TCP, "attempt failed, state=%d",
+             (int) g_state);
     g_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
     ring_reset(&g_tx);
 }
@@ -176,7 +178,7 @@ on_connected (void * arg, struct tcp_pcb * pcb, err_t err)
     }
     tcp_nagle_disable(pcb);
     g_state = TCP_TRANSPORT_CONNECTED;
-    (void) tm_printf((UB *) "[tcp] connected\n");
+    LOG_INFO(LOG_TASK_CONNECTION, LOG_MOD_TCP, "connected");
     drain_tx();
     return ERR_OK;
 }
@@ -232,7 +234,7 @@ on_error (void * arg, err_t err)
     (void) arg;
 
     /* lwIP has already freed the pcb when this callback runs. */
-    (void) tm_printf((UB *) "[tcp] error %d\n", (INT) err);
+    LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_TCP, "error %d", (int) err);
     gp_pcb = 0;
     fail_attempt((uint32_t) sys_now());
 }
@@ -269,8 +271,8 @@ start_connect (void)
     }
     g_state = TCP_TRANSPORT_CONNECTING;
     g_connect_started_ms = (uint32_t) sys_now();
-    (void) tm_printf((UB *) "[tcp] connect %s:%u\n", g_host,
-                     (unsigned int) g_port);
+    LOG_INFO(LOG_TASK_CONNECTION, LOG_MOD_TCP, "connecting to %s:%d", g_host,
+             (int) g_port);
 }
 
 static void

@@ -6,6 +6,11 @@
 
 #include "cyw43_utk.h"
 
+#include "platform/faults.h"
+#include "platform/liveness.h"
+#include "platform/watchdog.h"
+#include "supervisor/health_ids.h"
+#include "platform/log.h"
 #include "telemetry/cmd.h"
 #include "telemetry/connection.h"
 #include "telemetry/mqtt.h"
@@ -26,12 +31,18 @@
 #define CONNECTION_RSSI_MIN     (-128)
 #define CONNECTION_DROPS_MAX    255U
 #define CONNECTION_SLEEP_TIMEOUT_MS 50U
+/* No MQTT session for this long sets the wifi_disconn fault bit. */
+#define CONNECTION_LINK_DOWN_MS 3000U
 
 static const char g_topic_status[]    = TELEMETRY_TOPIC_PREFIX "/s";
+static const char g_topic_motion[]    = TELEMETRY_TOPIC_PREFIX "/m";
+static const char g_topic_physics[]   = TELEMETRY_TOPIC_PREFIX "/p";
+static const char g_topic_obstacle[]  = TELEMETRY_TOPIC_PREFIX "/o";
+static const char g_topic_diag[]      = TELEMETRY_TOPIC_PREFIX "/d";
 static const char g_topic_event[]     = TELEMETRY_TOPIC_PREFIX "/e";
+static const char g_topic_profile[]   = TELEMETRY_TOPIC_PREFIX "/f";
 static const char g_topic_heartbeat[] = TELEMETRY_TOPIC_PREFIX "/h";
 static const char g_topic_command[]   = TELEMETRY_TOPIC_PREFIX "/c";
-static const char g_topic_system[]    = TELEMETRY_TOPIC_PREFIX "/t";
 
 static volatile connection_state_t g_state = CONNECTION_DISCONNECTED;
 static mqtt_client_t               g_mqtt;
@@ -118,17 +129,29 @@ publish_frame (const uint8_t * frame, uint16_t len)
     }
     switch (frame[0])
     {
-    case (uint8_t) 's':
+    case (uint8_t) TELEMETRY_TOPIC_STATUS:
         topic = g_topic_status;
         break;
-    case (uint8_t) 'e':
+    case (uint8_t) TELEMETRY_TOPIC_MOTION:
+        topic = g_topic_motion;
+        break;
+    case (uint8_t) TELEMETRY_TOPIC_PHYSICS:
+        topic = g_topic_physics;
+        break;
+    case (uint8_t) TELEMETRY_TOPIC_OBSTACLE:
+        topic = g_topic_obstacle;
+        break;
+    case (uint8_t) TELEMETRY_TOPIC_DIAG:
+        topic = g_topic_diag;
+        break;
+    case (uint8_t) TELEMETRY_TOPIC_EVENT:
         topic = g_topic_event;
         break;
-    case (uint8_t) 'h':
-        topic = g_topic_heartbeat;
+    case (uint8_t) TELEMETRY_TOPIC_PROFILE:
+        topic = g_topic_profile;
         break;
-    case (uint8_t) 't':
-        topic = g_topic_system;
+    case (uint8_t) TELEMETRY_TOPIC_HEARTBEAT:
+        topic = g_topic_heartbeat;
         break;
     default:
         return -1;
@@ -136,17 +159,20 @@ publish_frame (const uint8_t * frame, uint16_t len)
     if (mqtt_client_publish(&g_mqtt, topic, &frame[1], (uint16_t) (len - 1u),
                             tcp_transport_now_ms()) != MQTT_OK)
     {
+        system_fault_set(FAULT_MQTT_NACK_BIT);
         return -1;
     }
+    system_fault_clear(FAULT_MQTT_NACK_BIT);
     return 0;
 }
 
 static void
 publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
 {
-    uint8_t  payload[TELEMETRY_HEARTBEAT_WIRE_SIZE];
-    uint32_t drops = 0u;
-    int32_t  rssi = status->link_rssi;
+    uint8_t               payload[TELEMETRY_HEARTBEAT_WIRE_SIZE];
+    telemetry_heartbeat_t heartbeat;
+    uint32_t              drops = 0u;
+    int32_t               rssi = status->link_rssi;
 
     if ((uint32_t) (now_ms - g_heartbeat_ms) < CONNECTION_HEARTBEAT_MS)
     {
@@ -167,9 +193,14 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     {
         drops = CONNECTION_DROPS_MAX;
     }
-    if (telemetry_pack_heartbeat(
-            payload, (uint16_t) (now_ms / CONNECTION_MS_PER_S),
-            (uint8_t) drops, (int8_t) rssi) == 0u)
+    /* The heartbeat is only sent while MQTT is connected, so the link state
+       is always "mqtt". The reset reason is filled by the boot checks. */
+    heartbeat.uptime_s     = now_ms / CONNECTION_MS_PER_S;
+    heartbeat.drops        = (uint8_t) drops;
+    heartbeat.wifi_rssi    = (int8_t) rssi;
+    heartbeat.reset_reason = platform_reset_reason ();
+    heartbeat.link_state   = (uint8_t) TELEMETRY_LINK_STATE_MQTT;
+    if (telemetry_pack_heartbeat(payload, &heartbeat) == 0u)
     {
         return;
     }
@@ -249,7 +280,7 @@ open_transport (void)
     if (!g_transport_started && !g_open_failure_logged)
     {
         g_open_failure_logged = true;
-        (void) tm_printf((UB *) "[conn] transport open failed\n");
+        LOG_ERROR(LOG_TASK_CONNECTION, LOG_MOD_NONE, "transport open failed");
     }
 }
 
@@ -260,6 +291,7 @@ connection_run (void)
     connection_state_t previous = CONNECTION_DISCONNECTED;
     uint32_t           last_poll_ms = 0u;
     uint32_t           last_status_ms = 0u;
+    uint32_t           last_mqtt_up_ms = tcp_transport_now_ms();
     bool               first_status = true;
 
     g_conn_task_id = tk_get_tid();
@@ -273,6 +305,8 @@ connection_run (void)
     for (;;)
     {
         const uint32_t now_ms = tcp_transport_now_ms();
+
+        liveness_kick(LIVE_CONNECTION);
 
         if ((uint32_t) (now_ms - last_poll_ms) >= CONNECTION_POLL_MS)
         {
@@ -289,12 +323,13 @@ connection_run (void)
                 g_state = next;
                 first_status = false;
                 last_status_ms = now_ms;
-                (void) tm_printf(
-                    (UB *) "[conn] state=%d link=%u started=%u join=%d "
-                           "dhcp_done=%u dhcp=%d init=%d\n",
-                    (INT) next, g_status.link_up, g_status.join_started,
-                    g_status.join_result, g_status.dhcp_complete,
-                    g_status.dhcp_result, g_status.init_result);
+                LOG_INFO(LOG_TASK_CONNECTION, LOG_MOD_NONE,
+                         "state=%d link=%d started=%d join=%d dhcp_done=%d "
+                         "dhcp=%d init=%d",
+                         (int) next, (int) g_status.link_up,
+                         (int) g_status.join_started, (int) g_status.join_result,
+                         (int) g_status.dhcp_complete, (int) g_status.dhcp_result,
+                         (int) g_status.init_result);
             }
             if (next == CONNECTION_READY)
             {
@@ -312,10 +347,16 @@ connection_run (void)
             (void) mqtt_client_poll(&g_mqtt, now_ms);
             if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
             {
+                last_mqtt_up_ms = now_ms;
                 telemetry_publisher_run(net_pull, publish_frame);
                 publish_heartbeat(now_ms, &g_status);
             }
         }
+        system_fault_assign(FAULT_WIFI_DISCONN_BIT,
+                            ((uint32_t) (now_ms - last_mqtt_up_ms) >=
+                             CONNECTION_LINK_DOWN_MS)
+                                ? FAULT_WIFI_DISCONN_BIT
+                                : 0u);
 
         wait_connection_cycle();
     }

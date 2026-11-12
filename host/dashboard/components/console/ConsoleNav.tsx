@@ -13,11 +13,14 @@ import type { Theme } from '../../lib/theme';
 import { useTheme } from '../../lib/theme-provider';
 import { CarIcon } from './CarIcon';
 
-type Page = 'live' | 'history';
+type Page = 'live' | 'systems' | 'run';
 
-const ITEMS: { key: Page; label: string; href: '/' | '/history' }[] = [
+type Href = '/' | '/systems' | '/run';
+
+const ITEMS: { key: Page; label: string; href: Href }[] = [
   { key: 'live', label: 'Live', href: '/' },
-  { key: 'history', label: 'History', href: '/history' },
+  { key: 'systems', label: 'Systems', href: '/systems' },
+  { key: 'run', label: 'Run', href: '/run' },
 ];
 
 type Props = {
@@ -77,7 +80,7 @@ function NavItem({
   label,
 }: {
   active: boolean;
-  href: '/' | '/history';
+  href: Href;
   label: string;
 }) {
   const theme = useTheme();

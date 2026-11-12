@@ -30,8 +30,24 @@ static inline void mp_memory_barrir (void)
 {
 }
 
-/** Single-threaded host stand-ins for the kernel atomics. Both return the
+/** Single-threaded host stand-ins for the kernel atomics. Each returns the
  *  value held before the update, as the kernel does. */
+static inline UW atomic_bitset (UW * addr, UW bits)
+{
+    const UW old = *addr;
+
+    *addr = old | bits;
+    return old;
+}
+
+static inline UW atomic_bitclr (UW * addr, UW bits)
+{
+    const UW old = *addr;
+
+    *addr = old & ~bits;
+    return old;
+}
+
 static inline UW atomic_inc (UW * addr)
 {
     const UW old = *addr;

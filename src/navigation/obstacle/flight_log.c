@@ -31,8 +31,7 @@
  *
  * NOTE: The kernel types UB, INT, UINT and SYSTIM are used where the
  * kernel requires them (deviation from BARR-C 5.2.a, see
- * docs/obstacle.md). Casts to (UB const *) and (INT) feed
- * tm_printf() only.
+ * docs/obstacle.md). Casts to (INT) feed the log macros only.
  */
 
 #include <stdbool.h>
@@ -41,6 +40,7 @@
 #include <tm/tmonitor.h>
 
 #include "../../usb_console_compat.h"
+#include "platform/log.h"
 #include "obstacle_config.h"
 #include "flight_log.h"
 #include "obstacle_pack.h"
@@ -55,6 +55,7 @@
 #define STATE_NAMES  (8U)
 #define CAUSE_NAMES  (16U)
 #define FIELD2_NAMES (4U)
+#define CLASS_NAMES  (8U)
 #define MOTION_NAMES (8U)
 #define CMD_NAMES    (8U)
 #define PHASE_NAMES  (4U)
@@ -116,10 +117,12 @@ static char const * const g_cause_name[CAUSE_NAMES]   = {"NONE",
                                                          "BYPASS_LIMIT",
                                                          "LINE_TIMEOUT",
                                                          "INIT_FAIL",
-                                                         "?",
+                                                         "ECHO_NOISE",
                                                          "?"};
-static char const * const g_class_name[FIELD2_NAMES]  = {"VALID", "OPEN",
-                                                         "UNKNOWN", "STUCK"};
+static char const * const g_class_name[CLASS_NAMES]   = {"VALID", "OPEN",
+                                                         "TOO_CLOSE", "NO_ECHO",
+                                                         "GLITCH", "STUCK",
+                                                         "?", "?"};
 static char const * const g_steer_name[FIELD2_NAMES]  = {"STRAIGHT", "LEFT",
                                                          "RIGHT", "HOLD"};
 static char const * const g_result_name[FIELD2_NAMES] = {
@@ -255,8 +258,8 @@ static void start_dump (void)
     g_log.dump_index = 0U;
     g_log.b_dumping  = true;
 
-    tm_printf((UB const *)"\n===== Buddy 5 flight log: %d records, now %d ms,"
-                          " %d missed during earlier dumps =====\n",
+    LOG_NOW("INFO", "line:nav",
+            "flight log: %d records, now %d ms, %d missed during earlier dumps\n",
               (INT)g_log.dump_total, (INT)now_ms(), (INT)g_log.missed);
 }
 
@@ -272,7 +275,7 @@ static void continue_dump (void)
     {
         if (g_log.dump_index >= g_log.dump_total)
         {
-            tm_printf((UB const *)"===== end of Buddy 5 flight log =====\n");
+            LOG_NOW("INFO", "line:nav", "end of flight log\n");
             g_log.b_dumping = false;
         }
         else
@@ -303,7 +306,7 @@ static void print_profile (uint32_t index, uint32_t t_ms)
     /* The profile is stored just before its RESULT record. */
     if ((t_ms - p_store->t_ms) > OBSTACLE_LOG_PROFILE_MATCH_MS)
     {
-        tm_printf((UB const *)"           (profile overwritten)\n");
+        LOG_NOW("DATA", "line:nav", "(profile overwritten)\n");
     }
     else
     {
@@ -316,23 +319,23 @@ static void print_profile (uint32_t index, uint32_t t_ms)
 
             if (0U == (slot % SLOTS_PER_LINE))
             {
-                tm_printf((UB const *)"          ");
+                LOG_NOW("DATA", "line:nav", "         ");
             }
 
             if (obstacle_pack_slot_is_measured(value))
             {
-                tm_printf((UB const *)" %+3d:%-7s%4d |", angle,
+                LOG_CONT(" %+3d:%-7s%4d |", angle,
                           g_class_name[obstacle_pack_slot_class(value)],
                           (INT)obstacle_pack_slot_dist(value));
             }
             else
             {
-                tm_printf((UB const *)" %+3d:--          |", angle);
+                LOG_CONT(" %+3d:--          |", angle);
             }
 
             if ((SLOTS_PER_LINE - 1U) == (slot % SLOTS_PER_LINE))
             {
-                tm_printf((UB const *)"\n");
+                LOG_CONT("\n");
             }
         }
     }
@@ -350,30 +353,30 @@ static void print_record (flight_log_rec_t const * p_rec)
     switch (p_rec->kind)
     {
         case OBSTACLE_LOG_BOOT:
-            tm_printf((UB const *)"%8d BOOT obstacle_init=%d\n", t_ms,
+            LOG_NOW("DATA", "line:nav", "%8d BOOT obstacle_init=%d\n", t_ms,
                       (INT)p_rec->val_d);
         break;
 
         case OBSTACLE_LOG_STATE:
-            tm_printf((UB const *)"%8d STATE %s cause=%s faults=0x%02x\n", t_ms,
+            LOG_NOW("DATA", "line:nav", "%8d STATE %s cause=%s faults=0x%02x\n", t_ms,
                       g_state_name[p_rec->val_a % STATE_NAMES],
                       g_cause_name[p_rec->val_b % CAUSE_NAMES],
                       (UINT)p_rec->val_c);
         break;
 
         case OBSTACLE_LOG_OBST:
-            tm_printf((UB const *)"%8d OBSTACLE at %d mm\n", t_ms,
+            LOG_NOW("DATA", "line:nav", "%8d OBSTACLE at %d mm\n", t_ms,
                       (INT)p_rec->val_d);
         break;
 
         case OBSTACLE_LOG_FAULT:
-            tm_printf((UB const *)"%8d FAULT %s faults=0x%02x\n", t_ms,
+            LOG_NOW("DATA", "line:nav", "%8d FAULT %s faults=0x%02x\n", t_ms,
                       g_cause_name[p_rec->val_a % CAUSE_NAMES],
                       (UINT)p_rec->val_c);
         break;
 
         case OBSTACLE_LOG_RESULT:
-            tm_printf((UB const *)"%8d SCAN_RESULT %s side=%s width=%d mm "
+            LOG_NOW("DATA", "line:nav", "%8d SCAN_RESULT %s side=%s width=%d mm "
                                   "start=%d deg\n",
                       t_ms, g_result_name[p_rec->val_a % FIELD2_NAMES],
                       g_side_name[p_rec->val_b % FIELD2_NAMES],
@@ -382,30 +385,30 @@ static void print_record (flight_log_rec_t const * p_rec)
         break;
 
         case OBSTACLE_LOG_STEER:
-            tm_printf((UB const *)"%8d STEER %s L=%d R=%d mm/s turned=%d deg\n",
+            LOG_NOW("DATA", "line:nav", "%8d STEER %s L=%d R=%d mm/s turned=%d deg\n",
                       t_ms, g_steer_name[p_rec->val_a % FIELD2_NAMES],
                       (INT)p_rec->val_d, (INT)p_rec->val_e,
                       (INT)(p_rec->val_f / DECI_PER_DEG));
         break;
 
         case OBSTACLE_LOG_MOTION:
-            tm_printf((UB const *)"%8d MOTION state=%s fault=%s hold=%d\n",
+            LOG_NOW("DATA", "line:nav", "%8d MOTION state=%s fault=%s hold=%d\n",
                       t_ms, g_mstate_name[p_rec->val_a % MOTION_NAMES],
                       g_mfault_name[p_rec->val_b % MOTION_NAMES],
                       (INT)p_rec->val_c);
         break;
 
         case OBSTACLE_LOG_CMD:
-            tm_printf((UB const *)"%8d CMD %s id=%d -> %d\n", t_ms,
+            LOG_NOW("DATA", "line:nav", "%8d CMD %s id=%d -> %d\n", t_ms,
                       g_cmd_name[p_rec->val_a % CMD_NAMES], (INT)p_rec->val_b,
                       (INT)p_rec->val_d);
         break;
 
         case OBSTACLE_LOG_TRACE:
-            tm_printf((UB const *)"%8d   . %-9s %-7s %4d mm IR=%c%c "
+            LOG_NOW("DATA", "line:nav", "%8d   . %-9s %-7s %4d mm IR=%c%c "
                                   "wheels L=%d R=%d mm %s\n",
                       t_ms, g_state_name[p_rec->val_a % STATE_NAMES],
-                      g_class_name[p_rec->val_b % FIELD2_NAMES],
+                      g_class_name[p_rec->val_b % CLASS_NAMES],
                       (INT)p_rec->val_d,
                       (0U != (p_rec->val_c & TRACE_IR_LEFT)) ? 'L' : '-',
                       (0U != (p_rec->val_c & TRACE_IR_RIGHT)) ? 'R' : '-',
@@ -433,14 +436,14 @@ static void print_nav_record (flight_log_rec_t const * p_rec)
     switch (p_rec->kind)
     {
         case OBSTACLE_LOG_TURNED:
-            tm_printf((UB const *)"%8d ESCAPE planned angle reached: turned "
+            LOG_NOW("DATA", "line:nav", "%8d ESCAPE planned angle reached: turned "
                                   "%d deg (plan %d deg)\n",
                       t_ms, (INT)(p_rec->val_d / DECI_PER_DEG),
                       (INT)p_rec->val_e);
         break;
 
         case OBSTACLE_LOG_PHASE:
-            tm_printf((UB const *)"%8d PHASE %s: side %d mm, ahead %d mm, "
+            LOG_NOW("DATA", "line:nav", "%8d PHASE %s: side %d mm, ahead %d mm, "
                                   "heading %d deg\n",
                       t_ms, g_phase_name[p_rec->val_a % PHASE_NAMES],
                       (INT)p_rec->val_d, (INT)p_rec->val_e,
@@ -448,7 +451,7 @@ static void print_nav_record (flight_log_rec_t const * p_rec)
         break;
 
         case OBSTACLE_LOG_MFAULT:
-            tm_printf((UB const *)"%8d   MOTION FAULT wheel %d: speed_valid %d "
+            LOG_NOW("DATA", "line:nav", "%8d   MOTION FAULT wheel %d: speed_valid %d "
                                   "odo_valid %d bad steps %d speed %d mm/s "
                                   "interval %d us\n",
                       t_ms, (INT)p_rec->val_a, (INT)p_rec->val_b,
@@ -457,7 +460,7 @@ static void print_nav_record (flight_log_rec_t const * p_rec)
         break;
 
         case OBSTACLE_LOG_GUARD:
-            tm_printf((UB const *)"%8d GUARD %s in %s: 45 deg reading %d mm "
+            LOG_NOW("DATA", "line:nav", "%8d GUARD %s in %s: 45 deg reading %d mm "
                                   "(median of 3), heading %d deg\n",
                       t_ms, (0U != p_rec->val_a) ? "ON" : "off",
                       g_phase_name[p_rec->val_b % PHASE_NAMES],
@@ -465,7 +468,7 @@ static void print_nav_record (flight_log_rec_t const * p_rec)
         break;
 
         default:
-            tm_printf((UB const *)"%8d ? kind %d\n", t_ms, (INT)p_rec->kind);
+            LOG_NOW("DATA", "line:nav", "%8d ? kind %d\n", t_ms, (INT)p_rec->kind);
         break;
     }
 }

@@ -1,5 +1,6 @@
 import type { LinkSnapshot, LinkStatus } from '../../lib/link';
 import { FAULT_BITS as GENERATED_FAULT_BITS } from '../../lib/schema.generated';
+import { headingDegrees } from '../../lib/schema';
 
 export type OverviewHealth = 'healthy' | 'fault' | 'stale' | 'offline';
 
@@ -53,6 +54,6 @@ export function buildOverview(
     statusAgeMs: age,
     faults,
     speedMms: statusPacket?.speed_mms ?? null,
-    headingDeg: statusPacket?.heading_deg ?? null,
+    headingDeg: headingDegrees(statusPacket?.heading_ddeg),
   };
 }

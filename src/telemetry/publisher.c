@@ -1,6 +1,7 @@
+#include "telemetry/packet.h"
 #include "telemetry/publisher.h"
 
-#define TELEMETRY_PUBLISHER_MAX_FRAME 17U
+#define TELEMETRY_PUBLISHER_MAX_FRAME TELEMETRY_FRAME_MAX
 
 void telemetry_publisher_run (telemetry_pull_t pull, telemetry_publish_t publish)
 {

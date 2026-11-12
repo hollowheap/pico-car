@@ -29,12 +29,10 @@
 
 /* imu_motion_default_config values; all are placeholders until tuned. */
 #define DEFAULT_CLASS_SAMPLES    (3U)
-#define DEFAULT_IMPACT_HOLD      (10U)
 #define DEFAULT_STAT_SPEED_MPS   (0.01f)
 #define DEFAULT_STAT_DEV_G       (0.05f)
 #define DEFAULT_ACCEL_MPS2       (0.3f)
 #define DEFAULT_TURN_DPS         (20.0f)
-#define DEFAULT_COLLISION_G      (0.5f)
 #define DEFAULT_TRACK_WIDTH_M    (0.12f)
 #define DEFAULT_MAG_MIN_GAUSS    (0.15f)
 #define DEFAULT_MAG_MAX_GAUSS    (1.0f)
@@ -208,12 +206,10 @@ void imu_motion_default_config (imu_motion_config_t * p_cfg)
     if (NULL != p_cfg)
     {
         p_cfg->class_samples = DEFAULT_CLASS_SAMPLES;
-        p_cfg->impact_hold = DEFAULT_IMPACT_HOLD;
         p_cfg->stat_speed_mps = DEFAULT_STAT_SPEED_MPS;
         p_cfg->stat_dev_g = DEFAULT_STAT_DEV_G;
         p_cfg->accel_mps2 = DEFAULT_ACCEL_MPS2;
         p_cfg->turn_dps = DEFAULT_TURN_DPS;
-        p_cfg->collision_g = DEFAULT_COLLISION_G;
         p_cfg->track_width_m = DEFAULT_TRACK_WIDTH_M;
         p_cfg->mag_enabled = true;
         p_cfg->mag_offset_g[IMU_AXIS_X] = 0.0f;
@@ -238,10 +234,10 @@ bool imu_motion_init (imu_motion_ctx_t * p_ctx,
 
     if (ok)
     {
-        ok = (p_cfg->class_samples >= 1U) && (p_cfg->impact_hold >= 1U)
+        ok = (p_cfg->class_samples >= 1U)
              && is_pos (p_cfg->stat_speed_mps) && is_pos (p_cfg->stat_dev_g)
              && is_pos (p_cfg->accel_mps2) && is_pos (p_cfg->turn_dps)
-             && is_pos (p_cfg->collision_g) && is_pos (p_cfg->track_width_m)
+             && is_pos (p_cfg->track_width_m)
              && isfinite (p_cfg->mag_offset_g[IMU_AXIS_X])
              && isfinite (p_cfg->mag_offset_g[IMU_AXIS_Y])
              && isfinite (p_cfg->mag_offset_g[IMU_AXIS_Z])
@@ -265,7 +261,6 @@ bool imu_motion_init (imu_motion_ctx_t * p_ctx,
         p_ctx->motion = MOTION_CLASS_UNKNOWN;
         p_ctx->candidate = MOTION_CLASS_UNKNOWN;
         p_ctx->candidate_count = 0U;
-        p_ctx->impact_left = 0U;
         p_ctx->have_heading = false;
         p_ctx->last_heading_deg = 0.0f;
         p_ctx->since_mag_s = 0.0f;
@@ -436,32 +431,17 @@ static void classify (imu_motion_ctx_t * p_ctx,
                       const hump_output_t * p_hump,
                       const imu_motion_input_t * p_in,
                       const imu_motion_output_t * p_out,
-                      float acc_norm, bool fresh, bool wheels_ok,
-                      bool collision)
+                      float acc_norm, bool fresh, bool wheels_ok)
 {
-    const imu_motion_config_t * p_cfg = &p_ctx->cfg;
     motion_class_t cand = MOTION_CLASS_UNKNOWN;
 
     if (!p_hump->calibrated)
     {
         p_ctx->motion = MOTION_CLASS_UNKNOWN;
         p_ctx->candidate_count = 0U;
-        p_ctx->impact_left = 0U;
-    }
-    else if (collision)
-    {
-        p_ctx->motion = MOTION_CLASS_IMPACT;
-        p_ctx->candidate_count = 0U;
-        p_ctx->impact_left = p_cfg->impact_hold;
-    }
-    else if (p_ctx->impact_left > 1U)
-    {
-        p_ctx->impact_left--;
     }
     else
     {
-        p_ctx->impact_left = 0U;
-
         cand = pick_candidate (p_ctx, p_sample, p_hump, p_in, p_out, acc_norm,
                                fresh, wheels_ok);
         debounce_class (p_ctx, cand);
@@ -482,7 +462,6 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
     bool fresh = false;
     bool wheels_ok = false;
     bool enc_valid = false;
-    bool collision = false;
     motion_class_t previous = MOTION_CLASS_UNKNOWN;
 
     if (!update_args_ok (p_ctx, p_sample, p_hump, p_in, p_out))
@@ -508,11 +487,9 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
                                 * (p_sample->accel_mps2 / STD_GRAVITY);
     }
 
-    /* Collision: forward residual against the filtered pitch. */
+    /* Forward residual against the filtered pitch, for telemetry. */
     residual = ((float)p_ctx->fwd_sign * acc[p_ctx->fwd_axis])
                - sinf ((p_hump->pitch_deg + p_hump->theta0_deg) * DEG_TO_RAD);
-    collision = p_hump->impact
-                || (p_hump->calibrated && (fabsf (residual) > p_cfg->collision_g));
 
     /* Turn rate. */
     enc_valid = wheels_ok;
@@ -527,11 +504,10 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
     fill_yaw_output (p_ctx, p_out, enc_valid, enc_yaw);
 
     classify (p_ctx, p_sample, p_hump, p_in, p_out, acc_norm, fresh,
-              wheels_ok, collision);
+              wheels_ok);
 
     p_out->motion = p_ctx->motion;
     p_out->changed = (p_ctx->motion != previous);
-    p_out->collision = collision;
     p_out->fwd_residual_g = residual;
 
     return true;

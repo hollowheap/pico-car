@@ -5,7 +5,7 @@ import { buildOverview } from './overview';
 const statusPacket: LinkPacket = {
   timestamp: 1000,
   packet: 'status',
-  values: { speed_mms: 150, dist_mm: 1000, heading_deg: 90, state: 2, faults: 0 },
+  values: { speed_mms: 150, odometer_mm: 1000, heading_ddeg: 900, state: 2, faults: 0 },
 };
 
 function snapshot(overrides: Partial<LinkSnapshot> = {}): LinkSnapshot {
@@ -32,7 +32,7 @@ describe('overview', () => {
     const faultStatus: LinkPacket = {
       timestamp: 1000,
       packet: 'status',
-      values: { speed_mms: 0, dist_mm: 0, heading_deg: 0, state: 2, faults: 0x14 },
+      values: { speed_mms: 0, odometer_mm: 0, heading_ddeg: 0, state: 2, faults: 0x14 },
     };
     const overview = buildOverview(
       snapshot({ lastPacket: faultStatus, lastStatus: faultStatus }),

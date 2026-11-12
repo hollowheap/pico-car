@@ -18,6 +18,7 @@ set(PHYSICS_SRC ${PROJECT_SOURCE_DIR}/src/physics)
 # arm-none-eabi-gcc does not add -lm by itself, and the team build does not
 # link pico_float.
 add_library(physics_core STATIC EXCLUDE_FROM_ALL
+    ${PHYSICS_SRC}/attitude.c
     ${PHYSICS_SRC}/hump_detect.c
     ${PHYSICS_SRC}/imu_motion.c
     ${PHYSICS_SRC}/hump_msg.c
@@ -34,7 +35,7 @@ target_link_libraries(physics_core PUBLIC m)
 add_library(physics_task STATIC EXCLUDE_FROM_ALL
     ${PHYSICS_SRC}/i2c_rp2040.c
     ${PHYSICS_SRC}/physics_task.c)
-target_link_libraries(physics_task PUBLIC physics_core mtk3smp)
+target_link_libraries(physics_task PUBLIC physics_core platform mtk3smp)
 target_compile_options(physics_task PRIVATE
     -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal
     ${FIRMWARE_WARNINGS})

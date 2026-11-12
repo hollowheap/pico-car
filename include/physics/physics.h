@@ -28,23 +28,29 @@ typedef struct
 {
     uint32_t cycles;         /* Task cycles since start.                */
     uint32_t overruns;       /* Wake-ups missed while still working.    */
-    uint32_t dropped;        /* Messages lost to a full buffer.         */
     int16_t  pitch_cdeg;     /* Pitch in centi-degrees.                 */
+    int16_t  yaw_rate_cdps;  /* Best available yaw rate, 0.01 deg/s.    */
+    int16_t  a_fwd_mg;       /* Forward acceleration residual, mg.      */
+    int16_t  roll_cdeg;      /* Roll, left-down positive, 0.01 deg.     */
+    int16_t  az_mg;          /* Board z reading, mg.                    */
+    uint16_t amag_mg;        /* Acceleration magnitude, mg.             */
+    uint16_t heading_ddeg;   /* Tilt-compensated heading, 0..3599 ddeg. */
     uint16_t hump_peak_mm;   /* Peak height of the current hump, mm.    */
     uint16_t run_peak_mm;    /* Highest valid hump in the run, mm.      */
     uint8_t  state;          /* Hump state: idle, rising, falling, ...  */
     uint8_t  motion;         /* Motion class from the IMU.              */
     uint8_t  faults;         /* Latched B4 faults.                      */
-    uint8_t  heading_deg;    /* Tilt-compensated magnetic heading.      */
+    uint8_t  attitude_state; /* Wire attitude_state: ok, candidate, lifted, overturned. */
     bool     ready;          /* The task has produced a message.        */
     bool     calibrated;     /* Hump detector has its rest reference.   */
-    bool     heading_valid;  /* heading_deg is fresh and usable.        */
+    bool     heading_valid;  /* heading_ddeg is fresh and usable.       */
     bool     hump_active;    /* A hump is in progress.                  */
     bool     finished;       /* The last hump finished.                 */
     bool     height_valid;   /* hump_peak_mm is trustworthy.            */
 } physics_status_t;
 
-STATIC_ASSERT (sizeof(physics_status_t) == 28U, "physics_status_t size");
+/* 8 + 10 + 8 + 4 + 6 = 36 bytes of fields. */
+STATIC_ASSERT (sizeof(physics_status_t) == 36U, "physics_status_t size");
 
 /* Set up the task's message buffers and cyclic handler. The composition
  * root creates the task named by task_id and calls physics_run() from it,
@@ -62,6 +68,10 @@ ER physics_snapshot (physics_status_t * p_status);
 
 /* Request a new run at rest: recalibrate and reset the run peak. */
 void physics_request_new_run (void);
+
+/* The supervisor tells physics that the wheels turn on target with low duty.
+ * It raises the attitude state CANDIDATE and never LIFTED (D161). */
+void physics_set_wheels_free (bool b_free);
 
 /* Clear the latched I2C fault on the next cycle. */
 void physics_request_clear_fault (void);

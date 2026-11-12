@@ -32,6 +32,7 @@ add_test(NAME imu_motion COMMAND test_imu_motion)
 
 # test_drivers
 add_executable(test_drivers test_drivers.c
+    ${PHYSICS_SRC}/attitude.c
     ${PHYSICS_SRC}/hump_detect.c
     ${PHYSICS_SRC}/imu_motion.c
     ${PHYSICS_SRC}/hump_msg.c
@@ -50,6 +51,7 @@ set(APP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 add_executable(test_obstacle_scan test_obstacle_scan.c
     ${OBSTACLE_SRC}/scan_algo.c)
 target_include_directories(test_obstacle_scan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_link_libraries(test_obstacle_scan PRIVATE m)
 target_compile_options(test_obstacle_scan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
@@ -126,7 +128,8 @@ foreach(tname packet cmd mqtt)
     add_executable(test_${tname} test_${tname}.c
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/${tsrc})
     target_include_directories(test_${tname} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+        ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_options(test_${tname} PRIVATE -Wall -Wextra -Werror)
     add_test(NAME telemetry_${tname} COMMAND test_${tname})
 endforeach()
@@ -157,3 +160,76 @@ target_compile_options(test_line_control PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_line_control PRIVATE m)
 add_test(NAME line_control COMMAND test_line_control)
+
+add_executable(test_line_filter test_line_filter.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_filter.c)
+target_include_directories(test_line_filter PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track)
+target_compile_options(test_line_filter PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME line_filter COMMAND test_line_filter)
+
+add_executable(test_log_core test_log_core.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/log_core.c)
+target_include_directories(test_log_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform)
+target_compile_options(test_log_core PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME log_core COMMAND test_log_core)
+
+add_executable(test_faults test_faults.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/faults.c)
+target_include_directories(test_faults PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_faults PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME faults COMMAND test_faults)
+
+add_executable(test_assemble test_assemble.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/assemble.c)
+target_include_directories(test_assemble PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_assemble PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME telemetry_assemble COMMAND test_assemble)
+
+add_executable(test_telemetry_emit test_telemetry_emit.c
+    ${TELEMETRY_SRC}/emit.c ${TELEMETRY_SRC}/queue.c ${TELEMETRY_SRC}/packet.c)
+target_include_directories(test_telemetry_emit PRIVATE ${TELEMETRY_TEST_INCLUDES})
+target_compile_options(test_telemetry_emit PRIVATE ${TELEMETRY_TEST_FLAGS})
+add_test(NAME telemetry_emit COMMAND test_telemetry_emit)
+
+# D120, D160: the command ring, the run state and the health checks.
+set(SUPERVISOR_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/supervisor)
+add_executable(test_supervisor test_supervisor.c
+    ${SUPERVISOR_SRC}/command_ring.c
+    ${SUPERVISOR_SRC}/run_state.c
+    ${SUPERVISOR_SRC}/health_core.c
+    ${SUPERVISOR_SRC}/edge_events.c)
+target_include_directories(test_supervisor PRIVATE
+    ${SUPERVISOR_SRC}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_supervisor PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME supervisor COMMAND test_supervisor)
+
+# D140: lift and overturn from the gravity direction.
+add_executable(test_attitude test_attitude.c ${PHYSICS_SRC}/attitude.c)
+target_include_directories(test_attitude PRIVATE ${PHYSICS_SRC})
+target_compile_options(test_attitude PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_attitude PRIVATE m)
+add_test(NAME attitude COMMAND test_attitude)
+
+# D130: barcode actions, the re-arm gate and the parser information.
+add_executable(test_barcode_action test_barcode_action.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/action.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
+target_include_directories(test_barcode_action PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_barcode_action PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME barcode_action COMMAND test_barcode_action)

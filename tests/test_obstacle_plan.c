@@ -69,7 +69,9 @@ static void test_escape_clear(void)
     CHECK(obstacle_plan_is_escape_clear(OBSTACLE_CLASS_OPEN, 0U, 200U));
     CHECK(obstacle_plan_is_escape_clear(OBSTACLE_CLASS_VALID, 500U, 200U));
     CHECK(!obstacle_plan_is_escape_clear(OBSTACLE_CLASS_VALID, 300U, 200U));
-    CHECK(!obstacle_plan_is_escape_clear(OBSTACLE_CLASS_UNKNOWN, 0U, 200U));
+    CHECK(!obstacle_plan_is_escape_clear(OBSTACLE_CLASS_NO_ECHO, 0U, 200U));
+    CHECK(!obstacle_plan_is_escape_clear(OBSTACLE_CLASS_GLITCH, 0U, 200U));
+    CHECK(!obstacle_plan_is_escape_clear(OBSTACLE_CLASS_TOO_CLOSE, 20U, 200U));
     CHECK(!obstacle_plan_is_escape_clear(OBSTACLE_CLASS_STUCK, 0U, 200U));
 }
 
@@ -98,7 +100,7 @@ static void test_build_clear_and_unsafe(void)
 
     scan_algo_start(&ctx);
     fill_scan(&ctx, OBSTACLE_CLASS_OPEN);
-    ctx.profile[OBSTACLE_SLOT_CENTRE] = obstacle_pack_slot(0U, OBSTACLE_CLASS_UNKNOWN);
+    ctx.profile[OBSTACLE_SLOT_CENTRE] = obstacle_pack_slot(0U, OBSTACLE_CLASS_GLITCH);
     obstacle_plan_build(&ctx, &cfg, &result);
     CHECK(result.status == OBSTACLE_RESULT_NO_SAFE_PATH);
 }
@@ -221,7 +223,7 @@ static void test_build_wall(void)
      * the bounded right edge takes the pass. */
     map_open(&map);
     map_fill(&map, 14U, 35U, OBSTACLE_CLASS_VALID, 300U);
-    map_fill(&map, 36U, 36U, OBSTACLE_CLASS_UNKNOWN, 0U);
+    map_fill(&map, 36U, 36U, OBSTACLE_CLASS_GLITCH, 0U);
     run_scan(&ctx, &map);
     CHECK(ctx.edge_state[SCAN_ALGO_LEFT] == SCAN_ALGO_EDGE_UNBOUNDED);
     CHECK(ctx.edge_state[SCAN_ALGO_RIGHT] == SCAN_ALGO_EDGE_BOUNDED);
@@ -235,7 +237,7 @@ static void test_build_wall(void)
 
     /* Left blocked and the right edge also unbounded: no safe path. */
     map_fill(&map, 0U, 35U, OBSTACLE_CLASS_VALID, 300U);
-    map_fill(&map, 36U, 36U, OBSTACLE_CLASS_UNKNOWN, 0U);
+    map_fill(&map, 36U, 36U, OBSTACLE_CLASS_GLITCH, 0U);
     run_scan(&ctx, &map);
     CHECK(ctx.edge_state[SCAN_ALGO_LEFT] == SCAN_ALGO_EDGE_UNBOUNDED);
     CHECK(ctx.edge_state[SCAN_ALGO_RIGHT] == SCAN_ALGO_EDGE_UNBOUNDED);

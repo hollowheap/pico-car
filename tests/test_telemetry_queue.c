@@ -1,16 +1,17 @@
 /** @file test_telemetry_queue.c
- * @brief Host test for the Core 0 to Core 1 telemetry queue (S03).
+ * @brief Host test for the Core 0 to Core 1 telemetry queue (S03, S46).
  *
  * src/telemetry/queue.c is compiled unchanged against the kernel shim. The
  * message buffer is the fake in tests/shim/tk/mbf_fake.h, which copies the
  * capacity and ring rules of lib/mtk3smp-rp2040/kernel/tkernel/messagebuf.c.
- * Frames are stored without a topic byte (D87, S35) and the topic is inferred
- * from the stored length, so a 384-byte buffer holds:
- *   system    (16 B stored): 20 bytes each, 19 messages
- *   status     (8 B stored): 12 bytes each, 32 messages
- *   event      (7 B stored): 12 bytes each, 32 messages
- *   heartbeat  (4 B stored):  8 bytes each, 48 messages
- * pop still returns topic || wire frame (events with byte 7 restored as 0).
+ * A queued frame is the topic byte plus the wire packet (D110), so a 1024-byte
+ * buffer holds:
+ *   physics   (25 B frame): 32 bytes each, 32 messages
+ *   status    (17 B frame): 24 bytes each, 42 messages
+ *   event     (13 B frame): 20 bytes each, 51 messages
+ *   heartbeat ( 9 B frame): 16 bytes each, 64 messages
+ *   profile   (83 B frame): 88 bytes each, 11 messages
+ * pop returns the frame as it was pushed.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -19,23 +20,28 @@
 #include <tk/mbf_fake.h>
 #include "telemetry/queue.h"
 
-#define BUFFER_BYTES   384U
-#define FRAME_MAX      16U
-#define MSG_MAX        17U
-#define STATUS_LEN     8U
-#define SYSTEM_LEN     16U
-#define HEARTBEAT_LEN  4U
-#define EVENT_LEN      8U
-#define CAP_SYSTEM     19U
-#define CAP_STATUS     32U
-#define CAP_EVENT      32U
-#define CAP_HEARTBEAT  48U
-#define COST_HEARTBEAT 8U
-#define COST_EVENT     12U
-#define COST_STATUS    12U
-#define COST_SYSTEM    20U
-#define CAP_17         16U /* kernel math only: 17 B message costs 24 B */
-#define MODEL_MAX      64U
+#define BUFFER_BYTES   1024U
+#define MSG_MAX        83U
+#define FRAME_MAX      83U
+#define FRAME_HEARTBEAT 9U
+#define FRAME_EVENT    13U
+#define FRAME_STATUS   17U
+#define FRAME_PHYSICS  25U
+#define FRAME_PROFILE  83U
+#define CAP_PHYSICS    32U
+#define CAP_STATUS     42U
+#define CAP_EVENT      51U
+#define CAP_HEARTBEAT  64U
+#define COST_HEARTBEAT 16U
+#define COST_EVENT     20U
+#define COST_STATUS    24U
+#define COST_PHYSICS   32U
+#define COST_DIAG      40U
+#define COST_PROFILE   88U
+#define FILL_LEN       28U /* kernel math only: a 28 B message costs 32 B */
+#define CAP_FILL       32U
+#define EV_FILL_LAST   41U /* last status seed when an event is queued 2nd */
+#define MODEL_MAX      80U
 #define GUARD_BYTE     0xCCU
 #define GUARD_LEN      4U
 #define FUZZ_STEPS     20000U
@@ -65,92 +71,83 @@ static void fill_frame (uint8_t * frame, uint16_t len, uint8_t seed)
     }
 }
 
-/* Wire length of a frame for `topic`, 0 for an unknown topic. */
-static uint16_t wire_len (uint8_t topic)
+/* Frame length (topic byte + wire packet) for `topic`, 0 for an unknown one. */
+static uint16_t frame_len (uint8_t topic)
 {
     switch (topic)
     {
         case 'h':
-            return HEARTBEAT_LEN;
+            return FRAME_HEARTBEAT;
         case 'e':
+            return FRAME_EVENT;
         case 's':
-            return STATUS_LEN;
-        case 't':
-            return SYSTEM_LEN;
+        case 'm':
+            return FRAME_STATUS;
+        case 'p':
+        case 'o':
+            return FRAME_PHYSICS;
+        case 'd':
+            return TELEMETRY_DIAG_WIRE_SIZE + 1U;
+        case 'f':
+            return FRAME_PROFILE;
         default:
             return 0U;
     }
 }
 
-/* Bytes one message of `topic` takes in the 384-byte buffer (D87). */
+/* Bytes one frame of `topic` takes in the 1024-byte buffer: 4 B header plus
+   the length rounded up to 4 B. */
 static unsigned cost_of (uint8_t topic)
 {
-    switch (topic)
-    {
-        case 'h':
-            return COST_HEARTBEAT;
-        case 'e':
-            return COST_EVENT;
-        case 's':
-            return COST_STATUS;
-        default:
-            return COST_SYSTEM;
-    }
+    const unsigned len = frame_len(topic);
+
+    return 4U + ((len + 3U) / 4U) * 4U;
 }
 
-/* Wire frame for `topic` filled from `seed`; an event's byte 7 is 0. */
+/* A frame for `topic`: the topic byte, then bytes filled from `seed`. */
 static void make_frame (uint8_t * frame, uint8_t topic, uint8_t seed)
 {
-    fill_frame(frame, wire_len(topic), seed);
-    if (topic == (uint8_t)'e')
-    {
-        frame[EVENT_LEN - 1U] = 0U;
-    }
+    const uint16_t len = frame_len(topic);
+
+    fill_frame(&frame[1], (uint16_t)(len - 1U), seed);
+    frame[0] = topic;
 }
 
-/* Push a frame of `len` bytes filled from `seed` (len may be wrong for the
-   topic, to test validation). */
+/* Push a frame of `len` bytes whose first byte is `topic`, filled from `seed`
+   (len may be wrong for the topic, to test validation). */
 static ER push_seed (uint16_t len, uint8_t topic, uint8_t qos, uint8_t seed)
 {
-    uint8_t frame[FRAME_MAX];
+    uint8_t frame[FRAME_MAX + 1U];
 
     fill_frame(frame, len, seed);
-    if ((topic == (uint8_t)'e') && (len == EVENT_LEN))
-    {
-        len = TELEMETRY_EVENT_QUEUED_SIZE;
-    }
+    frame[0] = topic;
     return telemetry_queue_push(frame, len, qos);
 }
 
-/* Push a valid frame with the queued length of `topic`. */
+/* Push a valid frame of `topic`. */
 static ER push_t (uint8_t topic, uint8_t qos, uint8_t seed)
 {
     uint8_t frame[FRAME_MAX];
 
     make_frame(frame, topic, seed);
-    if (topic == (uint8_t)'e')
-    {
-        return telemetry_queue_push(frame, TELEMETRY_EVENT_QUEUED_SIZE, qos);
-    }
-    return telemetry_queue_push(frame, wire_len(topic), qos);
+    return telemetry_queue_push(frame, frame_len(topic), qos);
 }
 
-/* Pop one message and check it is `topic` + the frame made from `seed`, with
+/* Pop one message and check it is the frame of `topic` made from `seed`, with
    nothing written past the returned length. */
 static int pop_t (uint8_t topic, uint8_t seed)
 {
     uint8_t  msg[MSG_MAX + GUARD_LEN];
     uint8_t  want[FRAME_MAX];
-    uint16_t len = wire_len(topic);
+    uint16_t len = frame_len(topic);
     INT      got;
     int      ok;
 
     memset(msg, (int)GUARD_BYTE, sizeof msg);
     got = telemetry_queue_pop(msg, TMO_POL);
     make_frame(want, topic, seed);
-    ok = (got == (INT)(len + 1U)) && (msg[0] == topic) &&
-         (memcmp(&msg[1], want, len) == 0);
-    for (unsigned i = (unsigned)len + 1U; i < sizeof msg; i++)
+    ok = (got == (INT)len) && (memcmp(msg, want, len) == 0);
+    for (unsigned i = (unsigned)len; i < sizeof msg; i++)
     {
         ok = ok && (msg[i] == GUARD_BYTE);
     }
@@ -204,8 +201,8 @@ static void pass (const char * name, unsigned fail_before)
 static void test_fake_matches_kernel (void)
 {
     static uint8_t buf[BUFFER_BYTES] __attribute__((aligned(4)));
-    uint8_t        msg[32];
-    uint8_t        out[32];
+    uint8_t        msg[FRAME_MAX];
+    uint8_t        out[FRAME_MAX];
     T_CMBF         cfg = {0};
     ID             id;
     unsigned       before = g_fail;
@@ -224,17 +221,19 @@ static void test_fake_matches_kernel (void)
     CHECK(MBF_FAKE_COST(5U) == 12U);
     CHECK(MBF_FAKE_COST(9U) == 16U);
     CHECK(MBF_FAKE_COST(17U) == 24U);
+    CHECK(MBF_FAKE_COST(FILL_LEN) == 32U);
+    CHECK(MBF_FAKE_COST(MSG_MAX) == COST_PROFILE);
 
-    for (unsigned i = 0U; i < CAP_17; i++)
+    for (unsigned i = 0U; i < CAP_FILL; i++)
     {
-        CHECK(tk_snd_mbf(id, msg, (INT)MSG_MAX, TMO_POL) == E_OK);
+        CHECK(tk_snd_mbf(id, msg, (INT)FILL_LEN, TMO_POL) == E_OK);
     }
     CHECK(mbf_fake_free(id) == 0);
     CHECK(tk_snd_mbf(id, msg, 1, TMO_POL) == E_TMOUT);
-    CHECK(tk_rcv_mbf(id, out, TMO_POL) == (INT)MSG_MAX);
-    CHECK(mbf_fake_free(id) == 24);
-    CHECK(tk_snd_mbf(id, msg, (INT)MSG_MAX, TMO_POL) == E_OK);
-    CHECK(tk_snd_mbf(id, msg, (INT)MSG_MAX, TMO_FEVR) == E_TMOUT);
+    CHECK(tk_rcv_mbf(id, out, TMO_POL) == (INT)FILL_LEN);
+    CHECK(mbf_fake_free(id) == 32);
+    CHECK(tk_snd_mbf(id, msg, (INT)FILL_LEN, TMO_POL) == E_OK);
+    CHECK(tk_snd_mbf(id, msg, (INT)FILL_LEN, TMO_FEVR) == E_TMOUT);
     CHECK(g_mbf_fake.would_block == 1U);
 
     CHECK(tk_snd_mbf(id, msg, (INT)MSG_MAX + 1, TMO_POL) == E_PAR);
@@ -346,7 +345,7 @@ static void test_create_parameters (void)
     unsigned before = g_fail;
 
     setup();
-    /* S03: 384-byte user buffer, kernel-managed wait order irrelevant. */
+    /* S03: 1024-byte user buffer, kernel-managed wait order irrelevant. */
     CHECK(g_mbf_fake.create_calls == 1U);
     CHECK((g_mbf_fake.last_cmbf.mbfatr & TA_USERBUF) != 0U);
     CHECK(g_mbf_fake.last_cmbf.bufsz == (SZ)TELEMETRY_QUEUE_BYTES);
@@ -383,197 +382,154 @@ static void test_pop_arguments (void)
 
 /* ---- argument validation ------------------------------------------------ */
 
+static const uint8_t g_topics[] = {'h', 'e', 's', 'm', 'p', 'o', 'd', 'f'};
+
 static void test_push_arguments (void)
 {
-    static const uint8_t topics[] = {'h', 'e', 's', 't'};
-    uint8_t              frame[FRAME_MAX + 1U] = {0};
-    unsigned             before = g_fail;
-    unsigned             sent;
+    uint8_t  frame[FRAME_MAX + 1U] = {0};
+    unsigned before = g_fail;
+    unsigned sent;
 
     setup();
     sent = g_mbf_fake.send_calls;
 
-    CHECK(telemetry_queue_push(0, STATUS_LEN, 0U) == E_PAR);
+    CHECK(telemetry_queue_push(0, FRAME_STATUS, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 0U, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, FRAME_MAX + 1U, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, UINT16_MAX, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 1U, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 2U, 0U) == E_PAR);
-    CHECK(telemetry_queue_push(frame, 3U, 0U) == E_PAR);
-    CHECK(telemetry_queue_push(frame, 5U, 0U) == E_PAR);
+    CHECK(telemetry_queue_push(frame, FRAME_STATUS, 0U) == E_PAR); /* topic 0 */
     CHECK(g_mbf_fake.send_calls == sent); /* nothing reached the kernel */
     CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)BUFFER_BYTES);
 
+    /* The command topic is not a queue topic. */
+    CHECK(push_seed(FRAME_STATUS, (uint8_t)'c', 0U, 1U) == E_PAR);
+    /* The old system topic is gone. */
+    CHECK(push_seed(FRAME_PHYSICS, (uint8_t)'t', 0U, 1U) == E_PAR);
+
     /* Bad arguments are reported before a missing queue is. */
     g_mbf_telem_id = 0;
-    CHECK(telemetry_queue_push(0, STATUS_LEN, 0U) == E_PAR);
+    CHECK(telemetry_queue_push(0, FRAME_STATUS, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 0U, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 15U, 0U) == E_PAR);
     CHECK(push_t((uint8_t)'s', 0U, 0U) == E_NOEXS);
 
-    /* Every topic is accepted and round-trips as the first byte. */
+    /* Every topic is accepted and round-trips unchanged. */
     setup();
-    for (unsigned t = 0U; t < sizeof topics; t++)
+    for (unsigned t = 0U; t < sizeof g_topics; t++)
     {
-        CHECK(push_t(topics[t], 0U, (uint8_t)t) == E_OK);
+        CHECK(push_t(g_topics[t], 0U, (uint8_t)t) == E_OK);
     }
-    for (unsigned t = 0U; t < sizeof topics; t++)
+    for (unsigned t = 0U; t < sizeof g_topics; t++)
     {
-        CHECK(pop_t(topics[t], (uint8_t)t));
+        CHECK(pop_t(g_topics[t], (uint8_t)t));
     }
     pass("push_arguments", before);
 }
 
-/* D87: only these queued lengths are valid: h 4, e 7, s 8, t 16. */
+/* D110: a frame is valid only when its length matches its topic's wire size. */
 static void test_topic_length_validation (void)
 {
-    uint8_t  frame[FRAME_MAX + 1U] = {0};
+    uint8_t  frame[FRAME_MAX + 1U];
     unsigned before = g_fail;
     unsigned drops;
 
     setup();
     drops = telemetry_queue_drop_count();
-    for (uint16_t len = 1U; len <= FRAME_MAX + 1U; len++)
+    for (unsigned t = 0U; t < sizeof g_topics; t++)
     {
-        const unsigned sent = g_mbf_fake.send_calls;
-        const ER       r    = telemetry_queue_push(frame, len, 0U);
+        for (uint16_t len = 1U; len <= FRAME_MAX + 1U; len++)
+        {
+            const unsigned sent = g_mbf_fake.send_calls;
+            ER             r;
 
-        if ((len == 4U) || (len == 7U) || (len == 8U) || (len == 16U))
-        {
-            CHECK(r == E_OK);
-            CHECK(g_mbf_fake.send_calls == (sent + 1U));
-            CHECK(telemetry_queue_pop(frame, TMO_POL) > 0);
+            fill_frame(frame, len, 0x11U);
+            frame[0] = g_topics[t];
+            r        = telemetry_queue_push(frame, len, 0U);
+            if (len == frame_len(g_topics[t]))
+            {
+                CHECK(r == E_OK);
+                CHECK(g_mbf_fake.send_calls == (sent + 1U));
+                CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)len);
+            }
+            else
+            {
+                CHECK(r == E_PAR);
+                CHECK(g_mbf_fake.send_calls == sent);
+            }
         }
-        else
-        {
-            CHECK(r == E_PAR);
-            CHECK(g_mbf_fake.send_calls == sent);
-        }
-        memset(frame, 0, sizeof frame);
     }
     CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)BUFFER_BYTES);
     CHECK(telemetry_queue_drop_count() == drops);
     pass("topic_length_validation", before);
 }
 
-static void test_event_reserved_byte (void)
-{
-    uint8_t  frame[FRAME_MAX];
-    uint8_t  msg[MSG_MAX];
-    unsigned before = g_fail;
-
-    setup();
-    /* Status (8 B) keeps byte 7 intact in the queue and on pop. */
-    fill_frame(frame, STATUS_LEN, 0x10U);
-    frame[STATUS_LEN - 1U] = 0x5AU;
-    CHECK(telemetry_queue_push(frame, STATUS_LEN, 0U) == E_OK);
-    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)(STATUS_LEN + 1U));
-    CHECK(msg[0] == (uint8_t)'s');
-    CHECK(msg[STATUS_LEN] == 0x5AU);
-
-    /* Event is queued as 7 B and byte 7 is restored as 0 on publish/pop. */
-    fill_frame(frame, TELEMETRY_EVENT_QUEUED_SIZE, 0x10U);
-    CHECK(telemetry_queue_push(frame, TELEMETRY_EVENT_QUEUED_SIZE, 1U) == E_OK);
-    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)(EVENT_LEN + 1U));
-    CHECK(msg[0] == (uint8_t)'e');
-    CHECK(msg[EVENT_LEN] == 0U);
-    pass("event_reserved_byte", before);
-}
-
 /* ---- stored format and pop output --------------------------------------- */
 
-/* The kernel sees 4, 7, 8 and 16 bytes with no topic byte; an event is its
-   wire frame without byte 7. */
+/* The kernel sees the whole frame, topic byte first. */
 static void test_stored_lengths_and_content (void)
 {
-    static const uint8_t topics[] = {'h', 'e', 's', 't'};
-    static const INT     stored[] = {4, 7, 8, 16};
-    uint8_t              raw[MSG_MAX];
-    uint8_t              frame[FRAME_MAX];
-    T_RMBF               info;
-    unsigned             before = g_fail;
+    uint8_t  raw[MSG_MAX];
+    uint8_t  frame[FRAME_MAX];
+    T_RMBF   info;
+    unsigned before = g_fail;
 
-    for (unsigned t = 0U; t < sizeof topics; t++)
+    for (unsigned t = 0U; t < sizeof g_topics; t++)
     {
         int32_t free_before;
 
         setup();
-        make_frame(frame, topics[t], 0x30U);
+        make_frame(frame, g_topics[t], 0x30U);
         free_before = mbf_fake_free(g_mbf_telem_id);
-        CHECK(telemetry_queue_push(frame, (uint16_t)stored[t], 0U) == E_OK);
+        CHECK(telemetry_queue_push(frame, frame_len(g_topics[t]), 0U) == E_OK);
         CHECK(tk_ref_mbf(g_mbf_telem_id, &info) == E_OK);
-        CHECK(info.msgsz == stored[t]);
+        CHECK(info.msgsz == (INT)frame_len(g_topics[t]));
         CHECK((free_before - mbf_fake_free(g_mbf_telem_id)) ==
-              (int32_t)cost_of(topics[t]));
-        CHECK(tk_rcv_mbf(g_mbf_telem_id, raw, TMO_POL) == stored[t]);
-        CHECK(memcmp(raw, frame, (size_t)stored[t]) == 0);
+              (int32_t)cost_of(g_topics[t]));
+        CHECK(tk_rcv_mbf(g_mbf_telem_id, raw, TMO_POL) ==
+              (INT)frame_len(g_topics[t]));
+        CHECK(memcmp(raw, frame, frame_len(g_topics[t])) == 0);
+        CHECK(raw[0] == g_topics[t]);
     }
-    CHECK(TELEMETRY_HEARTBEAT_QUEUED_SIZE == 4U);
-    CHECK(TELEMETRY_EVENT_QUEUED_SIZE == 7U);
-    CHECK(TELEMETRY_STATUS_QUEUED_SIZE == 8U);
-    CHECK(TELEMETRY_SYSTEM_QUEUED_SIZE == 16U);
+    CHECK(TELEMETRY_EVENT_QUEUED_SIZE == FRAME_EVENT);
+    CHECK(TELEMETRY_QUEUE_MAX_MSG == FRAME_MAX);
+    CHECK(cost_of((uint8_t)'h') == COST_HEARTBEAT);
+    CHECK(cost_of((uint8_t)'e') == COST_EVENT);
+    CHECK(cost_of((uint8_t)'s') == COST_STATUS);
+    CHECK(cost_of((uint8_t)'p') == COST_PHYSICS);
+    CHECK(cost_of((uint8_t)'d') == COST_DIAG);
+    CHECK(cost_of((uint8_t)'f') == COST_PROFILE);
     pass("stored_lengths_and_content", before);
 }
 
-/* pop returns topic || frame, the same bytes and length as before D87. */
-static void test_pop_output_unchanged (void)
+/* pop returns the frame as it was pushed, with nothing written past it. */
+static void test_pop_output_is_the_frame (void)
 {
-    static const uint8_t topics[] = {'h', 'e', 's', 't'};
-    uint8_t              msg[MSG_MAX];
-    unsigned             before = g_fail;
-    INT                  got;
+    unsigned before = g_fail;
 
     setup();
-    CHECK(push_seed(HEARTBEAT_LEN, (uint8_t)'h', 0U, 0x10U) == E_OK);
-    got = telemetry_queue_pop(msg, TMO_POL);
-    CHECK(got == (INT)(HEARTBEAT_LEN + 1U));
-    CHECK(msg[0] == (uint8_t)'h');
-    CHECK(msg[1] == 0x10U);
-    CHECK(msg[4] == 0x13U);
-
-    CHECK(push_seed(SYSTEM_LEN, (uint8_t)'t', 0U, 0x20U) == E_OK);
-    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)MSG_MAX);
-    CHECK(msg[0] == (uint8_t)'t');
-    CHECK(msg[SYSTEM_LEN] == 0x2FU);
-
-    /* Event: 9 bytes, byte 8 (the reserved byte) is 0 again. */
-    CHECK(push_seed(EVENT_LEN, (uint8_t)'e', 1U, 0x40U) == E_OK);
-    memset(msg, 0xFF, sizeof msg);
-    got = telemetry_queue_pop(msg, TMO_POL);
-    CHECK(got == (INT)(EVENT_LEN + 1U));
-    CHECK(msg[0] == (uint8_t)'e');
-    CHECK(msg[1] == 0x40U);
-    CHECK(msg[7] == 0x46U);
-    CHECK(msg[8] == 0U);
-    CHECK(msg[9] == 0xFFU); /* nothing written past the frame */
-
-    CHECK(push_seed(STATUS_LEN, (uint8_t)'s', 0U, 0x50U) == E_OK);
-    got = telemetry_queue_pop(msg, TMO_POL);
-    CHECK(got == (INT)(STATUS_LEN + 1U));
-    CHECK(msg[0] == (uint8_t)'s');
-    CHECK(msg[8] == 0x57U);
-
-    /* All four, back to back, in a full-width ring. */
+    /* All topics, back to back, many times round the ring. */
     for (unsigned round = 0U; round < 40U; round++)
     {
-        for (unsigned t = 0U; t < sizeof topics; t++)
+        for (unsigned t = 0U; t < sizeof g_topics; t++)
         {
-            CHECK(push_t(topics[t], 0U, (uint8_t)(round + t)) == E_OK);
+            CHECK(push_t(g_topics[t], 0U, (uint8_t)(round + t)) == E_OK);
         }
-        for (unsigned t = 0U; t < sizeof topics; t++)
+        for (unsigned t = 0U; t < sizeof g_topics; t++)
         {
-            CHECK(pop_t(topics[t], (uint8_t)(round + t)));
+            CHECK(pop_t(g_topics[t], (uint8_t)(round + t)));
         }
     }
     CHECK(queue_empty());
-    pass("pop_output_unchanged", before);
+    pass("pop_output_is_the_frame", before);
 }
 
-/* A foreign message (length 5, not a telemetry frame) is dropped and counted
-   on pop, and is evictable. */
+/* A foreign message (first byte not a topic, or the wrong length) is dropped
+   and counted on pop, and is evictable. */
 static void test_foreign_length (void)
 {
-    uint8_t  raw[5] = {1, 2, 3, 4, 5};
+    uint8_t  raw[25] = {1, 2, 3, 4, 5};
     uint8_t  msg[MSG_MAX];
     unsigned drops;
     unsigned before = g_fail;
@@ -584,8 +540,18 @@ static void test_foreign_length (void)
     CHECK(telemetry_queue_pop(msg, TMO_POL) == E_OBJ);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
     CHECK(queue_empty());
-    /* An unknown length in the queue is evicted and counted. */
+
+    /* A known topic with the wrong length is foreign too. */
+    raw[0] = (uint8_t)'s';
     CHECK(tk_snd_mbf(g_mbf_telem_id, raw, 5, TMO_POL) == E_OK);
+    CHECK(telemetry_queue_pop(msg, TMO_POL) == E_OBJ);
+    CHECK(telemetry_queue_drop_count() == drops + 2U);
+    CHECK(queue_empty());
+
+    /* An unknown message in the queue is evicted and counted. It costs 32
+       bytes; 41 status frames cost 984. */
+    raw[0] = 1U;
+    CHECK(tk_snd_mbf(g_mbf_telem_id, raw, 25, TMO_POL) == E_OK);
     CHECK(fill_with((uint8_t)'s', CAP_STATUS - 1U) == CAP_STATUS - 1U);
     drops = telemetry_queue_drop_count();
     CHECK(push_t((uint8_t)'s', 0U, 0x55U) == E_OK);
@@ -607,23 +573,51 @@ static void test_fifo_order (void)
     CHECK(push_t((uint8_t)'s', 0U, 1U) == E_OK);
     CHECK(push_t((uint8_t)'e', 1U, 2U) == E_OK);
     CHECK(push_t((uint8_t)'h', 0U, 3U) == E_OK);
-    CHECK(push_t((uint8_t)'t', 0U, 4U) == E_OK);
+    CHECK(push_t((uint8_t)'p', 0U, 4U) == E_OK);
     CHECK(pop_t((uint8_t)'s', 1U));
     CHECK(pop_t((uint8_t)'e', 2U));
     CHECK(pop_t((uint8_t)'h', 3U));
-    CHECK(pop_t((uint8_t)'t', 4U));
+    CHECK(pop_t((uint8_t)'p', 4U));
     CHECK(queue_empty());
     pass("fifo_order", before);
 }
 
+/* telemetry_queue_push_packet builds topic || packet. */
+static void test_push_packet (void)
+{
+    uint8_t  packet[TELEMETRY_WIRE_MAX];
+    uint8_t  want[FRAME_MAX];
+    uint8_t  msg[MSG_MAX];
+    unsigned before = g_fail;
+
+    setup();
+    make_frame(want, (uint8_t)'m', 0x21U);
+    memcpy(packet, &want[1], FRAME_STATUS - 1U);
+    CHECK(telemetry_queue_push_packet((uint8_t)'m', packet,
+                                      (uint16_t)(FRAME_STATUS - 1U), 0U) == E_OK);
+    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)FRAME_STATUS);
+    CHECK(memcmp(msg, want, FRAME_STATUS) == 0);
+
+    CHECK(telemetry_queue_push_packet((uint8_t)'m', 0, 16U, 0U) == E_PAR);
+    CHECK(telemetry_queue_push_packet((uint8_t)'m', packet, 0U, 0U) == E_PAR);
+    CHECK(telemetry_queue_push_packet((uint8_t)'m', packet,
+                                      TELEMETRY_WIRE_MAX + 1U, 0U) == E_PAR);
+    /* The queue still validates topic and length. */
+    CHECK(telemetry_queue_push_packet((uint8_t)'m', packet, 15U, 0U) == E_PAR);
+    CHECK(telemetry_queue_push_packet((uint8_t)'z', packet, 16U, 0U) == E_PAR);
+    CHECK(queue_empty());
+    pass("push_packet", before);
+}
+
 /* ---- capacity and non-blocking ------------------------------------------ */
 
-static void test_capacity_of_384_bytes (void)
+static void test_capacity_of_1024_bytes (void)
 {
     unsigned before = g_fail;
 
     setup();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM + 4U) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS + 4U) == CAP_PHYSICS);
+    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
     setup();
     CHECK(fill_with((uint8_t)'s', CAP_STATUS + 4U) == CAP_STATUS);
     setup();
@@ -631,9 +625,11 @@ static void test_capacity_of_384_bytes (void)
     setup();
     CHECK(fill_with((uint8_t)'h', CAP_HEARTBEAT + 4U) == CAP_HEARTBEAT);
     CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
-    CHECK((CAP_SYSTEM * COST_SYSTEM) <= BUFFER_BYTES);
-    CHECK(((CAP_SYSTEM + 1U) * COST_SYSTEM) > BUFFER_BYTES);
-    pass("capacity_of_384_bytes", before);
+    setup();
+    CHECK(fill_with((uint8_t)'f', 20U) == (BUFFER_BYTES / COST_PROFILE));
+    CHECK((CAP_STATUS * COST_STATUS) <= BUFFER_BYTES);
+    CHECK(((CAP_STATUS + 1U) * COST_STATUS) > BUFFER_BYTES);
+    pass("capacity_of_1024_bytes", before);
 }
 
 static void test_producers_never_block (void)
@@ -641,15 +637,16 @@ static void test_producers_never_block (void)
     unsigned before = g_fail;
 
     setup();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
-    CHECK(push_t((uint8_t)'t', 1U, 0U) == E_TMOUT);
-    CHECK(push_t((uint8_t)'t', 0U, 0U) == E_OK);
-    CHECK(g_mbf_fake.send_calls > CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
+    CHECK(push_t((uint8_t)'p', 1U, 0U) == E_TMOUT);
+    CHECK(push_t((uint8_t)'p', 0U, 0U) == E_OK);
+    CHECK(g_mbf_fake.send_calls > CAP_PHYSICS);
     CHECK(g_mbf_fake.last_snd_tmout == TMO_POL);
     CHECK(g_mbf_fake.last_rcv_tmout == TMO_POL); /* eviction read */
     CHECK(g_mbf_fake.would_block == 0U);
 
-    /* Also when the eviction ends in a rejection. */
+    /* Also when the eviction ends in a rejection: an event, then statuses
+       leave 20 free bytes, and a status needs 24. */
     setup();
     CHECK(push_t((uint8_t)'e', 1U, 0U) == E_OK);
     CHECK(fill_with((uint8_t)'s', CAP_STATUS - 1U) == CAP_STATUS - 1U);
@@ -664,20 +661,20 @@ static void test_nonzero_qos_rejected_when_full (void)
     unsigned before = g_fail;
 
     setup();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
     drops = telemetry_queue_drop_count();
 
-    CHECK(push_seed(STATUS_LEN, (uint8_t)'e', 1U, 99U) == E_TMOUT);
-    CHECK(push_seed(STATUS_LEN, (uint8_t)'e', 2U, 99U) == E_TMOUT);
-    CHECK(push_seed(STATUS_LEN, (uint8_t)'e', 255U, 99U) == E_TMOUT);
+    CHECK(push_t((uint8_t)'e', 1U, 99U) == E_TMOUT);
+    CHECK(push_t((uint8_t)'e', 2U, 99U) == E_TMOUT);
+    CHECK(push_t((uint8_t)'e', 255U, 99U) == E_TMOUT);
     CHECK(telemetry_queue_drop_count() == drops); /* a rejection is no drop */
     CHECK(g_mbf_fake.recv_calls == 0U);           /* and nothing is evicted */
     CHECK(g_mbf_fake.ref_calls == 0U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 4);
+    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
 
-    for (unsigned i = 0U; i < CAP_SYSTEM; i++)
+    for (unsigned i = 0U; i < CAP_PHYSICS; i++)
     {
-        CHECK(pop_t((uint8_t)'t', (uint8_t)i));
+        CHECK(pop_t((uint8_t)'p', (uint8_t)i));
     }
     CHECK(telemetry_queue_drop_count() == drops);
     pass("nonzero_qos_rejected_when_full", before);
@@ -691,30 +688,30 @@ static void test_qos0_evicts_oldest_and_counts (void)
     unsigned before = g_fail;
 
     setup();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
     drops = telemetry_queue_drop_count();
 
-    CHECK(push_t((uint8_t)'t', 0U, 100U) == E_OK);
+    CHECK(push_t((uint8_t)'p', 0U, 100U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
 
-    /* Message 0 is gone; 1..18 remain in order; the new one is last. */
-    for (unsigned i = 1U; i < CAP_SYSTEM; i++)
+    /* Message 0 is gone; 1..31 remain in order; the new one is last. */
+    for (unsigned i = 1U; i < CAP_PHYSICS; i++)
     {
-        CHECK(pop_t((uint8_t)'t', (uint8_t)i));
+        CHECK(pop_t((uint8_t)'p', (uint8_t)i));
     }
-    CHECK(pop_t((uint8_t)'t', 100U));
+    CHECK(pop_t((uint8_t)'p', 100U));
     CHECK(queue_empty());
 
     /* Every further eviction adds exactly one. */
     setup();
     drops = telemetry_queue_drop_count();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
     for (uint8_t n = 0U; n < 5U; n++)
     {
-        CHECK(push_t((uint8_t)'t', 0U, (uint8_t)(50U + n)) == E_OK);
+        CHECK(push_t((uint8_t)'p', 0U, (uint8_t)(50U + n)) == E_OK);
         CHECK(telemetry_queue_drop_count() == drops + n + 1U);
     }
-    CHECK(pop_t((uint8_t)'t', 5U)); /* 0..4 evicted */
+    CHECK(pop_t((uint8_t)'p', 5U)); /* 0..4 evicted */
     pass("qos0_evicts_oldest_and_counts", before);
 }
 
@@ -725,8 +722,8 @@ static void test_no_drop_while_space_remains (void)
 
     setup();
     drops = telemetry_queue_drop_count();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM - 1U) == CAP_SYSTEM - 1U);
-    CHECK(push_t((uint8_t)'t', 0U, 7U) == E_OK);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS - 1U) == CAP_PHYSICS - 1U);
+    CHECK(push_t((uint8_t)'p', 0U, 7U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops);
     CHECK(g_mbf_fake.recv_calls == 0U);
     CHECK(g_mbf_fake.ref_calls == 0U);
@@ -739,13 +736,14 @@ static void test_small_frame_evicts_larger_oldest (void)
     unsigned before = g_fail;
 
     setup();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
     drops = telemetry_queue_drop_count();
 
-    /* Evicting one 20-byte message frees room for an 8-byte one. */
+    /* Evicting one 32-byte message frees room for a 16-byte one. */
     CHECK(push_t((uint8_t)'h', 0U, 9U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)(24U - COST_HEARTBEAT));
+    CHECK(mbf_fake_free(g_mbf_telem_id) ==
+          (int32_t)(COST_PHYSICS - COST_HEARTBEAT));
     pass("small_frame_evicts_larger_oldest", before);
 }
 
@@ -776,6 +774,19 @@ static void test_qos1_event_is_never_evicted (void)
     pass("qos1_event_is_never_evicted", before);
 }
 
+/* Fill: status seed 0, an event, then statuses seed 2..EV_FILL_LAST. That is
+   24 + 20 + 40 x 24 = 1004 bytes, 20 free. */
+static void fill_status_event_statuses (uint8_t event_seed)
+{
+    CHECK(push_t((uint8_t)'s', 1U, 0U) == E_OK);
+    CHECK(push_t((uint8_t)'e', 1U, event_seed) == E_OK);
+    for (unsigned i = 2U; i <= EV_FILL_LAST; i++)
+    {
+        CHECK(push_t((uint8_t)'s', 1U, (uint8_t)i) == E_OK);
+    }
+    CHECK(mbf_fake_free(g_mbf_telem_id) == 20);
+}
+
 /* An event that becomes the oldest during eviction stops it. Frames evicted
    before that stay lost and are counted; the new frame is rejected and
    counted too. */
@@ -785,27 +796,21 @@ static void test_event_at_head_stops_eviction (void)
     unsigned before = g_fail;
 
     setup();
-    CHECK(push_t((uint8_t)'s', 1U, 0U) == E_OK);
-    CHECK(push_t((uint8_t)'e', 1U, 0xE1U) == E_OK);
-    for (unsigned i = 2U; i < CAP_STATUS; i++)
-    {
-        CHECK(push_t((uint8_t)'s', 1U, (uint8_t)i) == E_OK);
-    }
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
+    fill_status_event_statuses(0xE1U);
     drops = telemetry_queue_drop_count();
 
-    /* A 20-byte system frame needs two 12-byte slots. One status is evicted,
-       then the event is at the head. */
-    CHECK(push_t((uint8_t)'t', 0U, 0x70U) == E_TMOUT);
+    /* A profile frame (88 bytes) needs more than the 20 free plus one status.
+       One status is evicted, then the event is at the head. */
+    CHECK(push_t((uint8_t)'f', 0U, 0x70U) == E_TMOUT);
     CHECK(telemetry_queue_drop_count() == drops + 2U); /* evicted + new */
     CHECK(g_mbf_fake.recv_calls == 1U);
 
-    /* An 8-byte heartbeat fits in the 12 bytes that were freed. */
+    /* A 16-byte heartbeat fits in the 44 bytes that are free now. */
     CHECK(push_t((uint8_t)'h', 0U, 0x71U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 2U);
 
     CHECK(pop_t((uint8_t)'e', 0xE1U));
-    for (unsigned i = 2U; i < CAP_STATUS; i++)
+    for (unsigned i = 2U; i <= EV_FILL_LAST; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
     }
@@ -814,9 +819,9 @@ static void test_event_at_head_stops_eviction (void)
     pass("event_at_head_stops_eviction", before);
 }
 
-/* Realistic sizes from src/main.c: status is 8 B (12 B in the buffer),
-   system is 16 B (20 B). A full queue of status frames takes a system frame
-   by evicting two status frames; both are counted. */
+/* Realistic sizes: status is 17 B as a frame (24 B in the buffer), profile is
+   83 B (88 B). A full queue of status frames takes a profile frame by
+   evicting three status frames; all three are counted. */
 static void test_qos0_evicts_several_to_fit (void)
 {
     unsigned drops;
@@ -826,23 +831,23 @@ static void test_qos0_evicts_several_to_fit (void)
     CHECK(fill_with((uint8_t)'s', CAP_STATUS) == CAP_STATUS);
     drops = telemetry_queue_drop_count();
 
-    CHECK(push_t((uint8_t)'t', 0U, 0x77U) == E_OK);
-    CHECK(telemetry_queue_drop_count() == drops + 2U);
-    CHECK(g_mbf_fake.recv_calls == 2U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)(24U - COST_SYSTEM));
-    for (unsigned i = 2U; i < CAP_STATUS; i++)
+    CHECK(push_t((uint8_t)'f', 0U, 0x77U) == E_OK);
+    CHECK(telemetry_queue_drop_count() == drops + 3U);
+    CHECK(g_mbf_fake.recv_calls == 3U);
+    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
+    for (unsigned i = 3U; i < CAP_STATUS; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
     }
-    CHECK(pop_t((uint8_t)'t', 0x77U));
+    CHECK(pop_t((uint8_t)'f', 0x77U));
     CHECK(queue_empty());
 
-    /* Heartbeats (8 B) evicted for a system frame (20 B): three go. */
+    /* Heartbeats (16 B each) evicted for a profile frame (88 B): six go. */
     setup();
     CHECK(fill_with((uint8_t)'h', CAP_HEARTBEAT) == CAP_HEARTBEAT);
     drops = telemetry_queue_drop_count();
-    CHECK(push_t((uint8_t)'t', 0U, 0x78U) == E_OK);
-    CHECK(telemetry_queue_drop_count() == drops + 3U);
+    CHECK(push_t((uint8_t)'f', 0U, 0x78U) == E_OK);
+    CHECK(telemetry_queue_drop_count() == drops + 6U);
     pass("qos0_evicts_several_to_fit", before);
 }
 
@@ -855,25 +860,25 @@ static void test_kernel_errors_pass_through (void)
     drops = telemetry_queue_drop_count();
 
     /* A send error other than E_TMOUT is returned and nothing is evicted. */
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
     g_mbf_fake.send_error = E_NOMEM;
-    CHECK(push_t((uint8_t)'t', 0U, 0U) == E_NOMEM);
+    CHECK(push_t((uint8_t)'p', 0U, 0U) == E_NOMEM);
     CHECK(g_mbf_fake.recv_calls == 0U);
     CHECK(telemetry_queue_drop_count() == drops);
 
     /* If the eviction read fails, the original E_TMOUT is returned and the
        rejected frame is counted. */
     g_mbf_fake.recv_error = E_NOMEM;
-    CHECK(push_t((uint8_t)'t', 0U, 0U) == E_TMOUT);
+    CHECK(push_t((uint8_t)'p', 0U, 0U) == E_TMOUT);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
 
     /* Same when the size peek fails. */
     g_mbf_fake.ref_error = E_NOMEM;
-    CHECK(push_t((uint8_t)'t', 0U, 0U) == E_TMOUT);
+    CHECK(push_t((uint8_t)'p', 0U, 0U) == E_TMOUT);
     CHECK(telemetry_queue_drop_count() == drops + 2U);
-    for (unsigned i = 0U; i < CAP_SYSTEM; i++)
+    for (unsigned i = 0U; i < CAP_PHYSICS; i++)
     {
-        CHECK(pop_t((uint8_t)'t', (uint8_t)i));
+        CHECK(pop_t((uint8_t)'p', (uint8_t)i));
     }
 
     /* Same for a failed QoS 1 send. */
@@ -904,13 +909,13 @@ static void test_consumer_races_ahead (void)
     CHECK(fill_with((uint8_t)'s', CAP_STATUS) == CAP_STATUS);
     drops = telemetry_queue_drop_count();
     g_mbf_fake.recv_hook = consumer_pops_one; /* pops seed 0 */
-    CHECK(push_t((uint8_t)'t', 0U, 0x60U) == E_OK);
+    CHECK(push_t((uint8_t)'p', 0U, 0x60U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 1U); /* seed 1 */
     for (unsigned i = 2U; i < CAP_STATUS; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
     }
-    CHECK(pop_t((uint8_t)'t', 0x60U));
+    CHECK(pop_t((uint8_t)'p', 0x60U));
     CHECK(queue_empty());
 
     /* The next message is an event: the producer's receive returns it. It must
@@ -918,17 +923,12 @@ static void test_consumer_races_ahead (void)
        consumer and the receive freed now fits the new status, so nothing
        else is evicted and nothing is dropped. */
     setup();
-    CHECK(push_t((uint8_t)'s', 1U, 0U) == E_OK);
-    CHECK(push_t((uint8_t)'e', 1U, 0xE2U) == E_OK);
-    for (unsigned i = 2U; i < CAP_STATUS; i++)
-    {
-        CHECK(push_t((uint8_t)'s', 1U, (uint8_t)i) == E_OK);
-    }
+    fill_status_event_statuses(0xE2U);
     drops = telemetry_queue_drop_count();
     g_mbf_fake.recv_hook = consumer_pops_one; /* pops seed 0 */
     CHECK(push_t((uint8_t)'s', 0U, 0x61U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops);
-    for (unsigned i = 2U; i < CAP_STATUS; i++)
+    for (unsigned i = 2U; i <= EV_FILL_LAST; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
     }
@@ -937,35 +937,30 @@ static void test_consumer_races_ahead (void)
     CHECK(queue_empty());
     CHECK(g_mbf_fake.would_block == 0U);
 
-    /* Same race with a 16 B system frame (20 B): after the event is sent back
-       the next oldest is a status, which is evicted (counted once) and the
-       new frame fits. The loop does not stop at the event it sent back. */
+    /* Same race with a profile frame (88 B): after the event is sent back the
+       next oldest is a status, which is evicted (counted), and again the next.
+       The loop does not stop at the event it sent back. */
     setup();
-    CHECK(push_t((uint8_t)'s', 1U, 0U) == E_OK);
-    CHECK(push_t((uint8_t)'e', 1U, 0xE2U) == E_OK);
-    for (unsigned i = 2U; i < CAP_STATUS; i++)
-    {
-        CHECK(push_t((uint8_t)'s', 1U, (uint8_t)i) == E_OK);
-    }
+    fill_status_event_statuses(0xE2U);
     drops = telemetry_queue_drop_count();
     g_mbf_fake.recv_hook = consumer_pops_one; /* pops seed 0 */
-    CHECK(push_t((uint8_t)'t', 0U, 0x63U) == E_OK);
-    CHECK(telemetry_queue_drop_count() == drops + 1U); /* seed 2 */
-    for (unsigned i = 3U; i < CAP_STATUS; i++)
+    CHECK(push_t((uint8_t)'f', 0U, 0x63U) == E_OK);
+    CHECK(telemetry_queue_drop_count() == drops + 2U); /* seeds 2 and 3 */
+    for (unsigned i = 4U; i <= EV_FILL_LAST; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
     }
     CHECK(pop_t((uint8_t)'e', 0xE2U));
-    CHECK(pop_t((uint8_t)'t', 0x63U));
+    CHECK(pop_t((uint8_t)'f', 0x63U));
     CHECK(queue_empty());
 
     /* The consumer's pop frees a slot first: the producer still evicts one
        more (it only learns the size at the next peek) and succeeds. */
     setup();
-    CHECK(fill_with((uint8_t)'t', CAP_SYSTEM) == CAP_SYSTEM);
+    CHECK(fill_with((uint8_t)'p', CAP_PHYSICS) == CAP_PHYSICS);
     g_mbf_fake.recv_hook = consumer_pops_one;
     drops = telemetry_queue_drop_count();
-    CHECK(push_t((uint8_t)'t', 0U, 0x62U) == E_OK);
+    CHECK(push_t((uint8_t)'p', 0U, 0x62U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
     pass("consumer_races_ahead", before);
 }
@@ -1024,11 +1019,11 @@ static void test_producer_mutex (void)
     /* Rejected arguments never reach the mutex. */
     locks = g_mbf_fake.mtx_lock_calls;
     CHECK(push_seed(15U, (uint8_t)'s', 0U, 0U) == E_PAR);
-    CHECK(telemetry_queue_push(0, STATUS_LEN, 0U) == E_PAR);
+    CHECK(telemetry_queue_push(0, FRAME_STATUS, 0U) == E_PAR);
     CHECK(g_mbf_fake.mtx_lock_calls == locks);
 
     /* pop does not use it (it may block). */
-    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)(STATUS_LEN + 1U));
+    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)FRAME_STATUS);
     CHECK(g_mbf_fake.mtx_lock_calls == locks);
 
     /* A lock error is returned; nothing is sent, counted or unlocked. */
@@ -1049,9 +1044,9 @@ static void test_producer_mutex (void)
     CHECK(push_t((uint8_t)'s', 1U, 0x70U) == E_TMOUT);
     CHECK(g_mbf_fake.mtx_locked == 0);
     CHECK(g_mbf_fake.rcv_locked == 0U);
-    CHECK(push_t((uint8_t)'t', 0U, 0x71U) == E_OK); /* evicts two */
+    CHECK(push_t((uint8_t)'f', 0U, 0x71U) == E_OK); /* evicts three */
     CHECK(g_mbf_fake.mtx_locked == 0);
-    CHECK(g_mbf_fake.rcv_locked >= 2U);
+    CHECK(g_mbf_fake.rcv_locked >= 3U);
     CHECK(g_mbf_fake.snd_ref_unlocked == 0U);
     setup();
     CHECK(push_t((uint8_t)'e', 1U, 0xE3U) == E_OK);
@@ -1088,7 +1083,8 @@ static unsigned model_cost (const model_t * m, unsigned count)
    sees as E_TMOUT and the queue does not count). */
 static void test_mixed_traffic_fuzz (void)
 {
-    static const uint8_t topics[] = {'h', 'e', 's', 't', 's', 's', 'e', 't'};
+    static const uint8_t topics[] = {'h', 'e', 's', 'p', 's', 's', 'e', 'p',
+                                     'm', 'o', 'd', 'f'};
     model_t              model[MODEL_MAX];
     unsigned             count = 0U;
     uint32_t             rng = 1U;
@@ -1187,13 +1183,13 @@ int main (void)
     test_create_parameters();
     test_push_arguments();
     test_topic_length_validation();
-    test_event_reserved_byte();
     test_stored_lengths_and_content();
-    test_pop_output_unchanged();
+    test_pop_output_is_the_frame();
     test_foreign_length();
     test_pop_arguments();
     test_fifo_order();
-    test_capacity_of_384_bytes();
+    test_push_packet();
+    test_capacity_of_1024_bytes();
     test_producers_never_block();
     test_nonzero_qos_rejected_when_full();
     test_qos0_evicts_oldest_and_counts();

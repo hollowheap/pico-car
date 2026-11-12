@@ -28,9 +28,14 @@ uint32_t obstacle_comms_odometer_mm (uint32_t now_ms);
 ER       obstacle_comms_get_event (uint32_t * p_evt, TMO tmout);
 uint32_t obstacle_comms_steer (void);
 uint32_t obstacle_comms_status (void);
-uint8_t  obstacle_comms_faults (void);
+uint16_t obstacle_comms_faults (void);
 uint8_t  obstacle_comms_drops (void);
 ER       obstacle_comms_copy_profile (uint16_t * p_profile);
+ER       obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan);
+uint32_t obstacle_comms_aim (void);
+uint8_t  obstacle_comms_flags (void);
+void     obstacle_comms_count_class (uint8_t cls);
+void     obstacle_comms_class_counts (uint32_t * p_counts);
 
 #endif /* OBSTACLE_COMMS_H */
 

@@ -5,10 +5,13 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
+#include "barcode/action.h"
 #include "platform/alarm.h"
 #include "platform/isr.h"
+#include "platform/log.h"
 #include "track/track.h"
 #include "ir_pins.h"
+#include "line_filter.h"
 
 #define IO_IRQ_BANK0 13U
 #define BARCODE_EDGE_RING 64U
@@ -24,6 +27,8 @@ static volatile uint32_t g_barcode_edges[BARCODE_EDGE_RING];
 static volatile uint32_t g_barcode_head;
 static volatile uint32_t g_barcode_tail;
 static volatile uint32_t g_barcode_drops;
+static volatile uint32_t g_barcode_last_us;
+static volatile bool     g_barcode_seen;
 
 /**
  * Line sensor TIMER alarm state (D88, S31).
@@ -37,6 +42,25 @@ static volatile uint32_t g_line_overruns;
  * (for barcode) and `line_alarm_isr` (for left/right line sensors).
  */
 LOCAL volatile ir_sensors_state_t g_state = {0};
+
+/**
+ * Per-sensor 3-sample debounce (S09). Only `line_alarm_isr` touches these
+ * after `ir_capture_init` has set them up, so they need no lock.
+ */
+LOCAL line_debounce_t g_left_filter;
+LOCAL line_debounce_t g_right_filter;
+
+/**
+ * Sensor state changes since init: filtered (what the follower sees) and raw
+ * (what the comparators put out). The telemetry task turns the difference
+ * between two reads into flips per second. A big raw count with a small
+ * filtered count means chatter. A big filtered count on a straight line
+ * means the car is hunting. Only `line_alarm_isr` writes these.
+ */
+static volatile uint32_t g_line_edges;
+static volatile uint32_t g_line_raw_edges;
+LOCAL bool               g_prev_raw_left;
+LOCAL bool               g_prev_raw_right;
 LOCAL ID                          g_line_sem;
 LOCAL ID                          g_barcode_sem;
 
@@ -92,11 +116,25 @@ LOCAL void line_alarm_isr (UINT intno)
     g_line_alarm_target = target;
     out_w(TIMER_ALARM0, target);
 
-    /* Sample left and right sensors in one GPIO_IN read. */
-    uint32_t const     gpio  = in_w(GPIO_IN);
-    ir_sensors_state_t state = load_state(&g_state);
-    state.left               = (0U != ((gpio >> IR_LEFT_PIN) & 1U));
-    state.right              = (0U != ((gpio >> IR_RIGHT_PIN) & 1U));
+    /* Sample left and right sensors in one GPIO_IN read. The raw bits pass
+     * through the 3-sample debounce (15 ms), so one bad sample never reaches
+     * the line task. */
+    uint32_t const     gpio      = in_w(GPIO_IN);
+    ir_sensors_state_t state     = load_state(&g_state);
+    bool const         raw_left  = (0U != ((gpio >> IR_LEFT_PIN) & 1U));
+    bool const         raw_right = (0U != ((gpio >> IR_RIGHT_PIN) & 1U));
+    bool const         old_left  = state.left;
+    bool const         old_right = state.right;
+
+    state.left  = line_debounce_update(&g_left_filter, raw_left);
+    state.right = line_debounce_update(&g_right_filter, raw_right);
+
+    g_line_raw_edges += (uint32_t)(raw_left != g_prev_raw_left) +
+                        (uint32_t)(raw_right != g_prev_raw_right);
+    g_line_edges += (uint32_t)(state.left != old_left) +
+                    (uint32_t)(state.right != old_right);
+    g_prev_raw_left  = raw_left;
+    g_prev_raw_right = raw_right;
 
     g_line_timestamp_us = now;
     mp_memory_barrir();
@@ -124,6 +162,11 @@ LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
 
         uint32_t const now  = p_snapshot->timestamp_us;
         uint32_t const next = (g_barcode_head + 1U) % BARCODE_EDGE_RING;
+
+        /* Every edge counts for the line-lost suppression, also a dropped one.
+         * The time is the ISR sample timestamp. */
+        g_barcode_last_us = now;
+        g_barcode_seen    = true;
 
         if (next != g_barcode_tail)
         {
@@ -174,6 +217,14 @@ EXPORT ER ir_capture_init (void)
     (void)ir_sensor_init(IR_LEFT_PIN);
     (void)ir_sensor_init(IR_RIGHT_PIN);
     store_state(&g_state, current_state());
+    /* Start the filters at the first raw level so the output is right from
+     * the first sample. */
+    line_debounce_init(&g_left_filter, load_state(&g_state).left);
+    line_debounce_init(&g_right_filter, load_state(&g_state).right);
+    g_prev_raw_left  = load_state(&g_state).left;
+    g_prev_raw_right = load_state(&g_state).right;
+    g_line_edges     = 0U;
+    g_line_raw_edges = 0U;
 
     /* Set up 5 ms line sampling TIMER alarm on Core 0 (D88, S31). */
     uint32_t const start_now = in_w(TIMER_TIMERAWL);
@@ -216,6 +267,16 @@ EXPORT line_sample_t ir_get_line_sample (void)
     return sample;
 }
 
+EXPORT uint32_t ir_line_edges (void)
+{
+    return g_line_edges;
+}
+
+EXPORT uint32_t ir_line_raw_edges (void)
+{
+    return g_line_raw_edges;
+}
+
 EXPORT uint32_t ir_line_overruns (void)
 {
     return g_line_overruns;
@@ -253,6 +314,11 @@ EXPORT uint32_t ir_barcode_drops (void)
     return (g_barcode_drops);
 }
 
+EXPORT bool ir_barcode_recent (void)
+{
+    return barcode_suppress_active(g_barcode_seen, in_w(TIMER_TIMERAWL), g_barcode_last_us);
+}
+
 EXPORT ER ir_wait_change (uint8_t type, TMO tmout)
 {
     switch (type)
@@ -262,9 +328,7 @@ EXPORT ER ir_wait_change (uint8_t type, TMO tmout)
         case IR_TYPE_LINE:
             return tk_wai_sem(g_line_sem, 1, tmout);
         default:
-#ifndef NDEBUG
-            tm_printf((UB *)"Bad type param in ir_wait_change: %d\n", type);
-#endif
+            LOG_ERROR(LOG_TASK_LINE, LOG_MOD_NONE, "bad wait type %d", (int)type);
             return E_PAR;
     }
 }

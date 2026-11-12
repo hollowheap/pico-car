@@ -8,6 +8,9 @@
 #include "motion_pins.h"
 #include "motion_service.h"
 #include "pwm.h"
+#include "platform/faults.h"
+#include "platform/liveness.h"
+#include "supervisor/health_ids.h"
 
 #define STOP_PIN      21U
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
@@ -130,12 +133,46 @@ static void service_halt (ER result)
     }
 }
 
+/* Set by the supervisor drive check. */
+static volatile bool g_encoder_crossed = false;
+
+/* Report the motion fault bits to the shared register: a motor with no edges
+ * (stall), a dead encoder, and the latched stop. Other motion faults reach
+ * telemetry through the motion packet. */
+static void report_faults (motion_fault_t fault, bool stopped)
+{
+    uint16_t active = 0U;
+
+    if (g_encoder_crossed)
+    {
+        active |= FAULT_ENCODER_DEAD_BIT;
+    }
+    if (MOTION_FAULT_NO_EDGES == fault)
+    {
+        active |= FAULT_MOTOR_STALL_BIT;
+    }
+    if (MOTION_FAULT_FEEDBACK == fault)
+    {
+        active |= FAULT_ENCODER_DEAD_BIT;
+    }
+    if (stopped)
+    {
+        active |= FAULT_ESTOP_LATCHED_BIT;
+    }
+    system_fault_assign((uint16_t)(FAULT_MOTOR_STALL_BIT |
+                                   FAULT_ENCODER_DEAD_BIT |
+                                   FAULT_ESTOP_LATCHED_BIT),
+                        active);
+}
+
 /* Apply a stop requested before the first cycle, then publish the first
  * status. */
 static void service_first_status (void)
 {
-    UINT saved        = 0U;
-    bool initial_stop = false;
+    UINT           saved        = 0U;
+    bool           initial_stop = false;
+    motion_fault_t fault        = MOTION_FAULT_NONE;
+    bool           stopped      = false;
 
     (void)ISpinLock(&g_service_lock, &saved);
     initial_stop = g_inbox.stopped;
@@ -155,6 +192,38 @@ static void service_first_status (void)
         !g_inbox.stopped && (g_controller.status.state != MOTION_STOPPED) &&
         (g_controller.status.state != MOTION_FAULT);
     g_published.control        = g_controller.status;
+    fault                      = g_controller.status.fault;
+    stopped                    = g_inbox.stopped;
+    (void)ISpinUnlock(&g_service_lock, saved);
+    report_faults(fault, stopped);
+}
+
+/* Run permit (D160). until_us is written before armed, so the check never
+ * sees an armed permit with an old time. */
+static volatile uint32_t g_permit_until_us = 0U;
+static volatile bool     g_permit_armed    = false;
+
+ER motion_service_renew_permit (uint32_t lease_ms)
+{
+    g_permit_until_us = in_w(TIMER_RAW_LOW) + (lease_ms * US_PER_MS);
+    g_permit_armed    = true;
+
+    return E_OK;
+}
+
+/* Hold the car while the permit is lapsed, release the hold when it is renewed. */
+static void check_permit (void)
+{
+    UINT          saved = 0U;
+    uint32_t const now  = in_w(TIMER_RAW_LOW);
+    bool const     b_lapsed =
+        g_permit_armed && ((int32_t)(now - g_permit_until_us) > 0);
+
+    (void)ISpinLock(&g_service_lock, &saved);
+    if (b_lapsed != (0U != (g_inbox.hold_mask & MOTION_HOLD_SUPERVISOR)))
+    {
+        (void)motion_inbox_hold(&g_inbox, MOTION_HOLD_SUPERVISOR, b_lapsed, now);
+    }
     (void)ISpinUnlock(&g_service_lock, saved);
 }
 
@@ -184,8 +253,11 @@ static void service_cycle (motion_input_t * p_input)
     bool             received = false;
     bool             stop     = false;
     bool             captured = false;
+    motion_fault_t   fault    = MOTION_FAULT_NONE;
 
     wait_motion_cycle();
+    liveness_kick(LIVE_MOTION);
+    check_permit();
     (void)ISpinLock(&g_service_lock, &saved);
     stop = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
@@ -220,7 +292,10 @@ static void service_cycle (motion_input_t * p_input)
     g_published.ready = !g_inbox.stopped &&
                         (g_controller.status.state != MOTION_STOPPED) &&
                         (g_controller.status.state != MOTION_FAULT);
+    fault = g_controller.status.fault;
+    stop  = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
+    report_faults(fault, stop);
 }
 
 void motion_service_run (void)
@@ -513,6 +588,31 @@ ER motion_status (motion_status_t * p_status)
     return E_OK;
 }
 
+ER motion_diag_snapshot (motion_diag_t * p_diag)
+{
+    motion_service_status_t status;
+    ER                      result = E_OK;
+
+    if (p_diag == NULL)
+    {
+        return E_PAR;
+    }
+
+    result = motion_service_read_status(&status);
+    if (E_OK != result)
+    {
+        return result;
+    }
+
+    p_diag->left_target_um_s     = status.control.target_um_s[ENCODER_LEFT];
+    p_diag->right_target_um_s    = status.control.target_um_s[ENCODER_RIGHT];
+    p_diag->left_duty_permille   = status.control.duty[ENCODER_LEFT];
+    p_diag->right_duty_permille  = status.control.duty[ENCODER_RIGHT];
+    p_diag->overruns             = g_motion_overruns;
+
+    return E_OK;
+}
+
 ER motion_set_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
 {
     return motion_service_set_speed(left_um_s, right_um_s, ttl_us);
@@ -526,4 +626,14 @@ ER motion_set_hold (uint32_t reason, bool held)
 ER motion_request_stop (void)
 {
     return motion_service_request_stop();
+}
+
+ER motion_renew_permit (uint32_t lease_ms)
+{
+    return motion_service_renew_permit(lease_ms);
+}
+
+void motion_note_encoder_crossed (bool b_crossed)
+{
+    g_encoder_crossed = b_crossed;
 }
