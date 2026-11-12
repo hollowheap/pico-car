@@ -189,10 +189,13 @@ Base unit: 4px.
 | xxl | 24px |
 | section | 80px |
 
-- Desktop: 1440x900 reference. Status rail, main content, secondary
-  fault/event column. Page max width 1200px.
-- Mobile: 375x812 reference. Single column, sticky status header, bottom
-  navigation.
+- Three screens: Live (what the car does now), Systems (faults, tasks, timing,
+  link) and Run (summary, course trace, events). The status rail and the banner
+  sit on top of all three.
+- Desktop: 1440x900 reference. Status rail, then three columns on Live (motion
+  and line, attitude and obstacle, faults and events). Page max width 1200px.
+- Mobile: 375x812 reference. Single column. The rail and the top navigation
+  scroll with the page; the banner is the first thing under the rail.
 - Page padding: 24px on mobile, 32px to 40px on desktop.
 - Group related items at 8px to 12px. Separate sections at 32px or 80px.
 - Do not use the same gap everywhere.
@@ -231,17 +234,39 @@ Base unit: 4px.
 - Do not use the hero-metric template: huge number, tiny label, supporting
   stats, gradient accent.
 
-### Fault row
+### Fault tile
 
-- Fault name, bit, latch state. One row per active fault.
-- Empty state: `No active faults`.
+- Sixteen tiles in bit order, four by four. Each shows the bit, the name and a
+  state word: `OK`, `SET`, `WAS SET` (set since the last RESET) or `NO DATA`.
+- A set fault adds its severity word (`CRITICAL` or `WARN`). Only a critical set
+  fault uses the danger colour.
+- Under the grid: what to do for each set fault. Empty state: `No active faults`.
 - Do not show a fault bit as an unlabeled number.
+
+### Panel states
+
+- Every panel has four states besides its data: loading (waiting for the first
+  packet), empty (no data and the link is down), stale (the packet is older than
+  its limit; the values stay, dimmed) and error. Never show zeros for a packet
+  that has not arrived.
 
 ### Event row
 
-- Timestamp, event ID, type, p1, p2.
-- If names are unavailable: `Event 12 / type 3`.
-- No invented names.
+- Time, odometer, the name from the schema, and p1 and p2 decoded with the
+  layouts in `protocol/telemetry.yaml`.
+- For a type the schema lacks: `Event 12`. No invented names.
+
+### Instruments
+
+- Compass: a heading-up card that turns under a fixed car. The north mark is the
+  only accent in it. The arc beside the car shows the turn rate.
+- Level gauges: a side view for pitch and a rear view for roll, with ticks at
+  the lift envelope.
+- Scan plot: a half disc, rings every 100 mm. A filled dot is an echo, a ring on
+  the edge is open space, a cross on the edge is a bad echo.
+- Course trace: dead-reckoned from the odometer and the heading, north up. It
+  says that it drifts and that it is not a map.
+- SVG text uses the page font and stays at or above 12 px after scaling.
 
 ### Banner
 
@@ -283,14 +308,18 @@ Base unit: 4px.
 - Do use a 1px inset border for card definition.
 - Do show heartbeat age, packet age, and fault state at all times.
 - Do use real values and units.
-- Do use the same three-screen model on desktop and mobile.
+- Do use the same three screens (Live, Systems, Run) on desktop and mobile.
 
 ### Do not
 
-- Do not use a camera, video, map, GPS, or IR imagery.
+- Do not use a camera, video, GPS, satellite or street map, or IR imagery. The
+  course trace of the Run screen is allowed: it is drawn from the car's own
+  odometer and heading.
 - Do not show per-buddy health or a fleet selector.
-- Do not invent run cards or run comparison. The data has no run ID.
-- Do not invent event names. The schema has no event catalog.
+- Do not invent run cards or run comparison. The data has no run ID. One
+  summary of the latest run is allowed.
+- Do not invent event names. They come from `events` in
+  `protocol/telemetry.yaml`.
 - Do not connect to Mosquitto directly or expose broker credentials.
 - Do not add login, accounts, roles, notifications, export, or settings.
 - Do not use gradients, glass, blur, glow, or decorative grid backgrounds.

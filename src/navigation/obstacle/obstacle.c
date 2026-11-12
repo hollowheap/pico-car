@@ -18,9 +18,17 @@
 #include "obstacle_pack.h"
 #include "scan_hw.h"
 #include "scan_task.h"
+#include "navigation/obstacle.h"
+
+/* The public profile size is the scan's slot count. */
+OBSTACLE_CT_ASSERT(profile_slots_public, OBSTACLE_SLOT_COUNT == OBSTACLE_PROFILE_SLOTS);
 
 /* Processor that owns Buddy 5's ISR and task (RP2040 core 0). */
 #define PROCESSOR_1 (1)
+
+/* The aim word holds the servo angle in the low half and the body offset in the high half. */
+#define AIM_HALF_MASK  (0xFFFFU)
+#define AIM_BODY_SHIFT (16U)
 
 /* Start-up state. NOTE: The Boolean global is a b_ member of a g_ struct,
  * which satisfies both BARR-C 7.1.m/7.1.o and the team .clang-tidy. */
@@ -147,7 +155,7 @@ uint32_t obstacle_get_status (void)
  *
  * @return The OBSTACLE_FAULT_* bits.
  */
-uint8_t obstacle_get_faults (void)
+uint16_t obstacle_get_faults (void)
 {
     return (obstacle_comms_faults());
 }
@@ -165,6 +173,7 @@ uint8_t obstacle_get_faults (void)
 ER obstacle_snapshot (obstacle_status_t * p_status)
 {
     uint32_t word = 0U;
+    uint32_t aim  = 0U;
     ER       result = E_PAR;
 
     if (NULL != p_status)
@@ -190,6 +199,10 @@ ER obstacle_snapshot (obstacle_status_t * p_status)
             p_status->seq = (uint8_t)obstacle_pack_get(
                 word, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
             p_status->dropped_events = obstacle_dropped_events();
+            p_status->flags          = obstacle_comms_flags();
+            aim                      = obstacle_comms_aim();
+            p_status->servo_deci     = (int16_t)(uint16_t)(aim & AIM_HALF_MASK);
+            p_status->body_deci      = (int16_t)(uint16_t)(aim >> AIM_BODY_SHIFT);
 
             result = E_OK;
         }
@@ -209,7 +222,7 @@ uint8_t obstacle_dropped_events (void)
 }
 
 /*!
- * @brief Copy of the 25-slot profile for telemetry. Never waits.
+ * @brief Copy of the 37-slot profile for telemetry. Never waits.
  *
  * @param[out] p_profile Room for OBSTACLE_SLOT_COUNT packed slots.
  *
@@ -218,6 +231,39 @@ uint8_t obstacle_dropped_events (void)
 ER obstacle_copy_profile (uint16_t * p_profile)
 {
     return (obstacle_comms_copy_profile(p_profile));
+}
+
+/*!
+ * @brief Copy of the plan from the last finished scan. Never waits.
+ *
+ * @param[out] p_plan Destination.
+ *
+ * @return E_OK, E_PAR for a null pointer, E_OBJ before init, or E_BUSY if the
+ *         obstacle task was writing it.
+ */
+ER obstacle_copy_plan (obstacle_plan_summary_t * p_plan)
+{
+    ER result = E_PAR;
+
+    if (NULL != p_plan)
+    {
+        result = g_obstacle.b_ready ? obstacle_comms_copy_plan(p_plan) : E_OBJ;
+    }
+
+    return (result);
+}
+
+/*!
+ * @brief Pings per echo class since boot.
+ *
+ * @param[out] p_counts OBSTACLE_ECHO_CLASSES counts.
+ */
+void obstacle_echo_counts (uint32_t * p_counts)
+{
+    if ((NULL != p_counts) && g_obstacle.b_ready)
+    {
+        obstacle_comms_class_counts(p_counts);
+    }
 }
 
 /*!

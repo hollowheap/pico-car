@@ -32,6 +32,8 @@ set -euo pipefail
 readonly EXCLUDED_FILES=(
     "src/navigation/obstacle/bench_main.c"
     "src/physics/physics_check.c"
+    "src/bench/car_bench.c"
+    "src/bench/wdt_check.c"
 )
 
 die() {

@@ -1,9 +1,11 @@
 /*
- * Host unit test for src/telemetry/packet.c (spec S01).
+ * Host unit test for src/telemetry/packet.c (spec S01, S46).
  *
- * Checks the big-endian wire layout of the status, event, heartbeat and
- * system packets against protocol/telemetry.yaml, the NULL handling, and
- * that the serializers neither need alignment nor write outside the packet.
+ * Every packer is checked against the known-good bytes that
+ * protocol/generate.ts derives from protocol/telemetry.yaml
+ * (tests/telemetry_vectors.h). A wrong offset, width or sign shows up as a
+ * byte difference. The test also checks NULL handling, that a packer needs no
+ * alignment, and that it never writes outside its packet.
  */
 
 #include <stdint.h>
@@ -11,11 +13,12 @@
 #include <string.h>
 
 #include "telemetry/packet.h"
+#include "telemetry_vectors.h"
 
-#define GUARD_BYTE   0xA5u
-#define GUARD_LEN    4u
-#define BUF_LEN      (GUARD_LEN + TELEMETRY_SYSTEM_WIRE_SIZE + GUARD_LEN)
-#define ODD_OFFSET   1u
+#define GUARD_BYTE 0xA5u
+#define GUARD_LEN  4u
+#define BUF_LEN    (GUARD_LEN + TELEMETRY_WIRE_MAX + GUARD_LEN)
+#define ODD_OFFSET 1u
 
 static unsigned g_failures = 0u;
 
@@ -29,11 +32,10 @@ static unsigned g_failures = 0u;
         }                                                                    \
     } while (0)
 
-/* A scratch area with guard bytes around the packet.  The packet starts
-   at an odd address when the caller passes an odd lead. */
+/* A scratch area with guard bytes around the packet. */
 typedef struct
 {
-    uint8_t raw[BUF_LEN + ODD_OFFSET];
+    uint8_t   raw[BUF_LEN + ODD_OFFSET];
     uint8_t * pkt;
     uint16_t  size;
 } scratch_t;
@@ -42,22 +44,21 @@ static void
 scratch_init (scratch_t * s, uint16_t size, uint16_t lead)
 {
     (void) memset (s->raw, GUARD_BYTE, sizeof (s->raw));
-    s->pkt = &s->raw[lead];
+    s->pkt  = &s->raw[lead];
     s->size = size;
 }
 
 static int
 guards_intact (const scratch_t * s, uint16_t lead)
 {
-    uint16_t i;
-    for (i = 0u; i < lead; i++)
+    for (uint16_t i = 0u; i < lead; i++)
     {
         if (s->raw[i] != GUARD_BYTE)
         {
             return 0;
         }
     }
-    for (i = (uint16_t) (lead + s->size); i < sizeof (s->raw); i++)
+    for (uint16_t i = (uint16_t) (lead + s->size); i < sizeof (s->raw); i++)
     {
         if (s->raw[i] != GUARD_BYTE)
         {
@@ -67,290 +68,253 @@ guards_intact (const scratch_t * s, uint16_t lead)
     return 1;
 }
 
-static int
-bytes_equal (const uint8_t * got, const uint8_t * want, uint16_t len)
+/* Pack at `lead` bytes into the scratch and compare with the vector. */
+#define CHECK_PACK(NAME, name, src, lead)                                    \
+    do                                                                       \
+    {                                                                        \
+        scratch_t s;                                                         \
+        scratch_init (&s, TELEMETRY_##NAME##_WIRE_SIZE, (lead));             \
+        CHECK (telemetry_pack_##name (s.pkt, &(src)) ==                      \
+               TELEMETRY_##NAME##_WIRE_SIZE);                                \
+        CHECK (memcmp (s.pkt, TELEMETRY_VECTOR_##NAME,                       \
+                       TELEMETRY_##NAME##_WIRE_SIZE) == 0);                  \
+        CHECK (guards_intact (&s, (lead)));                                  \
+    } while (0)
+
+/* NULL destination or source: returns 0 and writes nothing. */
+#define CHECK_NULLS(name, src)                                               \
+    do                                                                       \
+    {                                                                        \
+        uint8_t guard[TELEMETRY_WIRE_MAX];                                   \
+        (void) memset (guard, GUARD_BYTE, sizeof (guard));                   \
+        CHECK (telemetry_pack_##name (NULL, &(src)) == 0u);                  \
+        CHECK (telemetry_pack_##name (guard, NULL) == 0u);                   \
+        for (unsigned i = 0u; i < sizeof (guard); i++)                       \
+        {                                                                    \
+            CHECK (guard[i] == GUARD_BYTE);                                  \
+        }                                                                    \
+    } while (0)
+
+static void
+test_status (void)
 {
-    return memcmp (got, want, len) == 0;
+    telemetry_status_t src = {
+        .odometer_mm  = TELEMETRY_VEC_STATUS_ODOMETER_MM,
+        .speed_mms    = TELEMETRY_VEC_STATUS_SPEED_MMS,
+        .heading_ddeg = TELEMETRY_VEC_STATUS_HEADING_DDEG,
+        .faults       = TELEMETRY_VEC_STATUS_FAULTS,
+        .seq          = TELEMETRY_VEC_STATUS_SEQ,
+        .state        = TELEMETRY_VEC_STATUS_STATE,
+        .mode         = TELEMETRY_VEC_STATUS_MODE,
+        .line_bits    = TELEMETRY_VEC_STATUS_LINE_BITS,
+        .hold_mask    = TELEMETRY_VEC_STATUS_HOLD_MASK,
+    };
+
+    CHECK_PACK (STATUS, status, src, 0u);
+    CHECK_PACK (STATUS, status, src, ODD_OFFSET);
+    CHECK_NULLS (status, src);
 }
 
 static void
-test_wire_sizes (void)
+test_motion (void)
 {
-    CHECK (TELEMETRY_STATUS_WIRE_SIZE == 8u);
-    CHECK (TELEMETRY_EVENT_WIRE_SIZE == 8u);
-    CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 4u);
-    CHECK (TELEMETRY_SYSTEM_WIRE_SIZE == 16u);
+    telemetry_motion_t src = {
+        .left_mms         = TELEMETRY_VEC_MOTION_LEFT_MMS,
+        .right_mms        = TELEMETRY_VEC_MOTION_RIGHT_MMS,
+        .left_target_mms  = TELEMETRY_VEC_MOTION_LEFT_TARGET_MMS,
+        .right_target_mms = TELEMETRY_VEC_MOTION_RIGHT_TARGET_MMS,
+        .left_duty_pm     = TELEMETRY_VEC_MOTION_LEFT_DUTY_PM,
+        .right_duty_pm    = TELEMETRY_VEC_MOTION_RIGHT_DUTY_PM,
+        .overruns         = TELEMETRY_VEC_MOTION_OVERRUNS,
+        .motion_state     = TELEMETRY_VEC_MOTION_MOTION_STATE,
+        .motion_fault     = TELEMETRY_VEC_MOTION_MOTION_FAULT,
+    };
+
+    CHECK_PACK (MOTION, motion, src, 0u);
+    CHECK_PACK (MOTION, motion, src, ODD_OFFSET);
+    CHECK_NULLS (motion, src);
 }
 
 static void
-test_topics (void)
+test_physics (void)
 {
+    telemetry_physics_t src = {
+        .pitch_cdeg     = TELEMETRY_VEC_PHYSICS_PITCH_CDEG,
+        .roll_cdeg      = TELEMETRY_VEC_PHYSICS_ROLL_CDEG,
+        .az_mg          = TELEMETRY_VEC_PHYSICS_AZ_MG,
+        .a_fwd_mg       = TELEMETRY_VEC_PHYSICS_A_FWD_MG,
+        .yaw_rate_cdps  = TELEMETRY_VEC_PHYSICS_YAW_RATE_CDPS,
+        .amag_mg        = TELEMETRY_VEC_PHYSICS_AMAG_MG,
+        .heading_ddeg   = TELEMETRY_VEC_PHYSICS_HEADING_DDEG,
+        .hump_peak_mm   = TELEMETRY_VEC_PHYSICS_HUMP_PEAK_MM,
+        .run_peak_mm    = TELEMETRY_VEC_PHYSICS_RUN_PEAK_MM,
+        .hump_state     = TELEMETRY_VEC_PHYSICS_HUMP_STATE,
+        .motion_class   = TELEMETRY_VEC_PHYSICS_MOTION_CLASS,
+        .physics_faults = TELEMETRY_VEC_PHYSICS_PHYSICS_FAULTS,
+        .flags          = TELEMETRY_VEC_PHYSICS_FLAGS,
+        .attitude_state = TELEMETRY_VEC_PHYSICS_ATTITUDE_STATE,
+    };
+
+    CHECK_PACK (PHYSICS, physics, src, 0u);
+    CHECK_PACK (PHYSICS, physics, src, ODD_OFFSET);
+    CHECK_NULLS (physics, src);
+    /* The reserved byte is always zero. */
+    CHECK (TELEMETRY_VECTOR_PHYSICS[TELEMETRY_PHYSICS_OFF_RESERVED] == 0u);
+}
+
+static void
+test_obstacle (void)
+{
+    telemetry_obstacle_t src = {
+        .faults         = TELEMETRY_VEC_OBSTACLE_FAULTS,
+        .dist_mm        = TELEMETRY_VEC_OBSTACLE_DIST_MM,
+        .closest_mm     = TELEMETRY_VEC_OBSTACLE_CLOSEST_MM,
+        .plan_width_mm  = TELEMETRY_VEC_OBSTACLE_PLAN_WIDTH_MM,
+        .plan_need_mm   = TELEMETRY_VEC_OBSTACLE_PLAN_NEED_MM,
+        .servo_deci     = TELEMETRY_VEC_OBSTACLE_SERVO_DECI,
+        .body_deci      = TELEMETRY_VEC_OBSTACLE_BODY_DECI,
+        .state          = TELEMETRY_VEC_OBSTACLE_STATE,
+        .cause          = TELEMETRY_VEC_OBSTACLE_CAUSE,
+        .echo_class     = TELEMETRY_VEC_OBSTACLE_ECHO_CLASS,
+        .flags          = TELEMETRY_VEC_OBSTACLE_FLAGS,
+        .seq            = TELEMETRY_VEC_OBSTACLE_SEQ,
+        .req_id         = TELEMETRY_VEC_OBSTACLE_REQ_ID,
+        .plan_status    = TELEMETRY_VEC_OBSTACLE_PLAN_STATUS,
+        .plan_side      = TELEMETRY_VEC_OBSTACLE_PLAN_SIDE,
+        .plan_start_deg = TELEMETRY_VEC_OBSTACLE_PLAN_START_DEG,
+        .rescans        = TELEMETRY_VEC_OBSTACLE_RESCANS,
+    };
+
+    CHECK_PACK (OBSTACLE, obstacle, src, 0u);
+    CHECK_PACK (OBSTACLE, obstacle, src, ODD_OFFSET);
+    CHECK_NULLS (obstacle, src);
+}
+
+static void
+test_diag (void)
+{
+    telemetry_diag_t src = {
+        .sticky_faults        = TELEMETRY_VEC_DIAG_STICKY_FAULTS,
+        .task_alive_mask      = TELEMETRY_VEC_DIAG_TASK_ALIVE_MASK,
+        .line_lost_count      = TELEMETRY_VEC_DIAG_LINE_LOST_COUNT,
+        .line_search_mm       = TELEMETRY_VEC_DIAG_LINE_SEARCH_MM,
+        .barcode_ok           = TELEMETRY_VEC_DIAG_BARCODE_OK,
+        .barcode_bad          = TELEMETRY_VEC_DIAG_BARCODE_BAD,
+        .barcode_edge_drops   = TELEMETRY_VEC_DIAG_BARCODE_EDGE_DROPS,
+        .telem_queue_drops    = TELEMETRY_VEC_DIAG_TELEM_QUEUE_DROPS,
+        .net_queue_drops      = TELEMETRY_VEC_DIAG_NET_QUEUE_DROPS,
+        .physics_overruns     = TELEMETRY_VEC_DIAG_PHYSICS_OVERRUNS,
+        .telemetry_overruns   = TELEMETRY_VEC_DIAG_TELEMETRY_OVERRUNS,
+        .last_barcode         = TELEMETRY_VEC_DIAG_LAST_BARCODE,
+        .last_barcode_action  = TELEMETRY_VEC_DIAG_LAST_BARCODE_ACTION,
+        .echo_valid           = TELEMETRY_VEC_DIAG_ECHO_VALID,
+        .echo_open            = TELEMETRY_VEC_DIAG_ECHO_OPEN,
+        .echo_too_close       = TELEMETRY_VEC_DIAG_ECHO_TOO_CLOSE,
+        .echo_no_echo         = TELEMETRY_VEC_DIAG_ECHO_NO_ECHO,
+        .echo_glitch          = TELEMETRY_VEC_DIAG_ECHO_GLITCH,
+        .echo_stuck           = TELEMETRY_VEC_DIAG_ECHO_STUCK,
+        .line_edges_per_s     = TELEMETRY_VEC_DIAG_LINE_EDGES_PER_S,
+        .line_raw_edges_per_s = TELEMETRY_VEC_DIAG_LINE_RAW_EDGES_PER_S,
+        .supervisor_passes = TELEMETRY_VEC_DIAG_SUPERVISOR_PASSES,
+    };
+
+    CHECK_PACK (DIAG, diag, src, 0u);
+    CHECK_PACK (DIAG, diag, src, ODD_OFFSET);
+    CHECK_NULLS (diag, src);
+}
+
+static void
+test_heartbeat (void)
+{
+    telemetry_heartbeat_t src = {
+        .uptime_s     = TELEMETRY_VEC_HEARTBEAT_UPTIME_S,
+        .drops        = TELEMETRY_VEC_HEARTBEAT_DROPS,
+        .wifi_rssi    = TELEMETRY_VEC_HEARTBEAT_WIFI_RSSI,
+        .reset_reason = TELEMETRY_VEC_HEARTBEAT_RESET_REASON,
+        .link_state   = TELEMETRY_VEC_HEARTBEAT_LINK_STATE,
+    };
+
+    CHECK_PACK (HEARTBEAT, heartbeat, src, 0u);
+    CHECK_PACK (HEARTBEAT, heartbeat, src, ODD_OFFSET);
+    CHECK_NULLS (heartbeat, src);
+}
+
+static void
+test_event (void)
+{
+    telemetry_event_t src = {
+        .odometer_mm = TELEMETRY_VEC_EVENT_ODOMETER_MM,
+        .event_id    = TELEMETRY_VEC_EVENT_EVENT_ID,
+        .p1          = TELEMETRY_VEC_EVENT_P1,
+        .p2          = TELEMETRY_VEC_EVENT_P2,
+        .event_type  = TELEMETRY_VEC_EVENT_EVENT_TYPE,
+        .source      = TELEMETRY_VEC_EVENT_SOURCE,
+    };
+
+    CHECK_PACK (EVENT, event, src, 0u);
+    CHECK_PACK (EVENT, event, src, ODD_OFFSET);
+    CHECK_NULLS (event, src);
+}
+
+static void
+test_profile (void)
+{
+    telemetry_profile_t src;
+
+    (void) memset (&src, 0, sizeof (src));
+    for (unsigned i = 0u; i < TELEMETRY_PROFILE_COUNT_SLOTS; i++)
+    {
+        src.slots[i] = TELEMETRY_VEC_PROFILE_SLOTS[i];
+    }
+    src.closest_mm = TELEMETRY_VEC_PROFILE_CLOSEST_MM;
+    src.width_mm   = TELEMETRY_VEC_PROFILE_WIDTH_MM;
+    src.req_id     = TELEMETRY_VEC_PROFILE_REQ_ID;
+    src.status     = TELEMETRY_VEC_PROFILE_STATUS;
+    src.side       = TELEMETRY_VEC_PROFILE_SIDE;
+    src.flags      = TELEMETRY_VEC_PROFILE_FLAGS;
+
+    CHECK_PACK (PROFILE, profile, src, 0u);
+    CHECK_PACK (PROFILE, profile, src, ODD_OFFSET);
+    CHECK_NULLS (profile, src);
+}
+
+/* The sizes the queue and the host decoders rely on. */
+static void
+test_sizes_and_topics (void)
+{
+    CHECK (TELEMETRY_SCHEMA_VERSION == 2u);
+    CHECK (TELEMETRY_STATUS_WIRE_SIZE == 16u);
+    CHECK (TELEMETRY_EVENT_WIRE_SIZE == 12u);
+    CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 8u);
+    CHECK (TELEMETRY_PROFILE_WIRE_SIZE == 82u);
+    CHECK (TELEMETRY_WIRE_MAX == 82u);
+    CHECK (TELEMETRY_FRAME_MAX == 83u);
     CHECK (TELEMETRY_TOPIC_STATUS == 's');
     CHECK (TELEMETRY_TOPIC_EVENT == 'e');
     CHECK (TELEMETRY_TOPIC_HEARTBEAT == 'h');
     CHECK (TELEMETRY_TOPIC_COMMAND == 'c');
-    CHECK (TELEMETRY_TOPIC_SYSTEM == 't');
-}
-
-static void
-test_status_layout (void)
-{
-    scratch_t s;
-    /* speed 0x0102, dist 0x0304, heading 0x05, state 0x06, faults 0x0708 */
-    static const uint8_t want[8] = { 0x01, 0x02, 0x03, 0x04,
-                                     0x05, 0x06, 0x07, 0x08 };
-    uint16_t n;
-
-    scratch_init (&s, TELEMETRY_STATUS_WIRE_SIZE, ODD_OFFSET);
-    n = telemetry_pack_status (s.pkt, 0x0102, 0x0304u, 0x05u, 0x06u, 0x0708u);
-    CHECK (n == 8u);
-    CHECK (bytes_equal (s.pkt, want, 8u));
-    CHECK (guards_intact (&s, ODD_OFFSET));
-}
-
-static void
-test_status_signed_and_extremes (void)
-{
-    scratch_t s;
-    static const uint8_t neg_one[8] = { 0xFF, 0xFF, 0x00, 0x00,
-                                        0x00, 0x00, 0x00, 0x00 };
-    static const uint8_t min_max[8] = { 0x80, 0x00, 0xFF, 0xFF,
-                                        0xFF, 0xFF, 0xFF, 0xFF };
-    static const uint8_t max_speed[8] = { 0x7F, 0xFF, 0x80, 0x00,
-                                          0x01, 0x02, 0x00, 0x01 };
-    static const uint8_t neg_mid[8] = { 0xFE, 0xD4, 0x12, 0x34,
-                                        0x00, 0x00, 0x00, 0x00 };
-
-    scratch_init (&s, TELEMETRY_STATUS_WIRE_SIZE, 0u);
-    CHECK (telemetry_pack_status (s.pkt, -1, 0u, 0u, 0u, 0u) == 8u);
-    CHECK (bytes_equal (s.pkt, neg_one, 8u));
-
-    scratch_init (&s, TELEMETRY_STATUS_WIRE_SIZE, 0u);
-    CHECK (telemetry_pack_status (s.pkt, INT16_MIN, UINT16_MAX, UINT8_MAX,
-                                  UINT8_MAX, UINT16_MAX) == 8u);
-    CHECK (bytes_equal (s.pkt, min_max, 8u));
-
-    scratch_init (&s, TELEMETRY_STATUS_WIRE_SIZE, 0u);
-    CHECK (telemetry_pack_status (s.pkt, INT16_MAX, 0x8000u, 1u, 2u, 1u)
-           == 8u);
-    CHECK (bytes_equal (s.pkt, max_speed, 8u));
-
-    /* -300 mm/s is 0xFED4 in two's complement. */
-    scratch_init (&s, TELEMETRY_STATUS_WIRE_SIZE, 0u);
-    CHECK (telemetry_pack_status (s.pkt, -300, 0x1234u, 0u, 0u, 0u) == 8u);
-    CHECK (bytes_equal (s.pkt, neg_mid, 8u));
-}
-
-static void
-test_status_null (void)
-{
-    CHECK (telemetry_pack_status (NULL, 1, 2u, 3u, 4u, 5u) == 0u);
-}
-
-static void
-test_event_layout (void)
-{
-    scratch_t s;
-    /* id 0x1122, type 0x33, p1 0x4455, p2 0x6677, reserved 0 */
-    static const uint8_t want[8] = { 0x11, 0x22, 0x33, 0x44,
-                                     0x55, 0x66, 0x77, 0x00 };
-    static const uint8_t neg[8] = { 0xFF, 0xFF, 0xFF, 0xFF,
-                                    0x38, 0xFF, 0xFF, 0x00 };
-    uint16_t n;
-
-    scratch_init (&s, TELEMETRY_EVENT_WIRE_SIZE, ODD_OFFSET);
-    /* Pre-dirty the reserved byte to prove it is written, not left alone. */
-    s.pkt[7] = 0xEEu;
-    n = telemetry_pack_event (s.pkt, 0x1122u, 0x33u, 0x4455, 0x6677u);
-    CHECK (n == 8u);
-    CHECK (bytes_equal (s.pkt, want, 8u));
-    CHECK (s.pkt[7] == 0u);
-    CHECK (guards_intact (&s, ODD_OFFSET));
-
-    /* p1 = -200 is 0xFF38. */
-    scratch_init (&s, TELEMETRY_EVENT_WIRE_SIZE, 0u);
-    s.pkt[7] = 0xEEu;
-    n = telemetry_pack_event (s.pkt, UINT16_MAX, UINT8_MAX, -200, UINT16_MAX);
-    CHECK (n == 8u);
-    CHECK (bytes_equal (s.pkt, neg, 8u));
-    CHECK (guards_intact (&s, 0u));
-}
-
-static void
-test_event_null (void)
-{
-    CHECK (telemetry_pack_event (NULL, 1u, 2u, 3, 4u) == 0u);
-}
-
-static void
-test_heartbeat_layout (void)
-{
-    scratch_t s;
-    static const uint8_t want[4] = { 0x12, 0x34, 0x56, 0x78 };
-    static const uint8_t neg[4] = { 0xFF, 0xFF, 0xFF, 0x80 };
-    static const uint8_t rssi_m60[4] = { 0x00, 0x01, 0x00, 0xC4 };
-    uint16_t n;
-
-    scratch_init (&s, TELEMETRY_HEARTBEAT_WIRE_SIZE, ODD_OFFSET);
-    n = telemetry_pack_heartbeat (s.pkt, 0x1234u, 0x56u, 0x78);
-    CHECK (n == 4u);
-    CHECK (bytes_equal (s.pkt, want, 4u));
-    CHECK (guards_intact (&s, ODD_OFFSET));
-
-    scratch_init (&s, TELEMETRY_HEARTBEAT_WIRE_SIZE, 0u);
-    n = telemetry_pack_heartbeat (s.pkt, UINT16_MAX, UINT8_MAX, INT8_MIN);
-    CHECK (n == 4u);
-    CHECK (bytes_equal (s.pkt, neg, 4u));
-    CHECK (guards_intact (&s, 0u));
-
-    /* -60 dBm is 0xC4. */
-    scratch_init (&s, TELEMETRY_HEARTBEAT_WIRE_SIZE, 0u);
-    n = telemetry_pack_heartbeat (s.pkt, 1u, 0u, -60);
-    CHECK (n == 4u);
-    CHECK (bytes_equal (s.pkt, rssi_m60, 4u));
-}
-
-static void
-test_heartbeat_null (void)
-{
-    CHECK (telemetry_pack_heartbeat (NULL, 1u, 2u, 3) == 0u);
-}
-
-static void
-test_system_layout (void)
-{
-    scratch_t s;
-    telemetry_system_t sys;
-    /* Every field distinct so a swapped offset shows up. */
-    static const uint8_t want[16] = { 0x01, 0x02, 0x03, 0x04,
-                                      0x05, 0x06, 0x07, 0x08,
-                                      0x09, 0x0A, 0x0B, 0x0C,
-                                      0x0D, 0x0E, 0x0F, 0x10 };
-    uint16_t n;
-
-    (void) memset (&sys, 0, sizeof (sys));
-    sys.obstacle_state = 0x01u;
-    sys.obstacle_cause = 0x02u;
-    sys.obstacle_faults = 0x03u;
-    sys.echo_class = 0x04u;
-    sys.obstacle_dist_mm = 0x0506u;
-    sys.obstacle_seq = 0x07u;
-    sys.obstacle_req_id = 0x08u;
-    sys.physics_state = 0x09u;
-    sys.physics_motion = 0x0Au;
-    sys.physics_faults = 0x0Bu;
-    sys.physics_flags = 0x0Cu;
-    sys.pitch_cdeg = 0x0D0E;
-    sys.hump_peak_mm = 0x0F10u;
-
-    scratch_init (&s, TELEMETRY_SYSTEM_WIRE_SIZE, ODD_OFFSET);
-    n = telemetry_pack_system (s.pkt, &sys);
-    CHECK (n == 16u);
-    CHECK (bytes_equal (s.pkt, want, 16u));
-    CHECK (guards_intact (&s, ODD_OFFSET));
-}
-
-static void
-test_system_signed_pitch (void)
-{
-    scratch_t s;
-    telemetry_system_t sys;
-
-    (void) memset (&sys, 0, sizeof (sys));
-    sys.pitch_cdeg = -1550; /* 0xF9F2 */
-    sys.obstacle_dist_mm = UINT16_MAX;
-    sys.hump_peak_mm = 0x8001u;
-
-    scratch_init (&s, TELEMETRY_SYSTEM_WIRE_SIZE, 0u);
-    CHECK (telemetry_pack_system (s.pkt, &sys) == 16u);
-    CHECK (s.pkt[12] == 0xF9u);
-    CHECK (s.pkt[13] == 0xF2u);
-    CHECK (s.pkt[4] == 0xFFu);
-    CHECK (s.pkt[5] == 0xFFu);
-    CHECK (s.pkt[14] == 0x80u);
-    CHECK (s.pkt[15] == 0x01u);
-    CHECK (guards_intact (&s, 0u));
-
-    sys.pitch_cdeg = INT16_MIN;
-    scratch_init (&s, TELEMETRY_SYSTEM_WIRE_SIZE, 0u);
-    CHECK (telemetry_pack_system (s.pkt, &sys) == 16u);
-    CHECK (s.pkt[12] == 0x80u);
-    CHECK (s.pkt[13] == 0x00u);
-}
-
-static void
-test_system_null (void)
-{
-    telemetry_system_t sys;
-    uint8_t buf[TELEMETRY_SYSTEM_WIRE_SIZE];
-
-    (void) memset (&sys, 0, sizeof (sys));
-    (void) memset (buf, GUARD_BYTE, sizeof (buf));
-
-    CHECK (telemetry_pack_system (NULL, &sys) == 0u);
-    CHECK (telemetry_pack_system (buf, NULL) == 0u);
-    CHECK (telemetry_pack_system (NULL, NULL) == 0u);
-    /* Nothing written when either pointer is NULL. */
-    {
-        uint8_t want[TELEMETRY_SYSTEM_WIRE_SIZE];
-
-        (void) memset (want, GUARD_BYTE, sizeof (want));
-        CHECK (bytes_equal (buf, want, TELEMETRY_SYSTEM_WIRE_SIZE));
-    }
-}
-
-static void
-test_odd_alignment_all_offsets (void)
-{
-    /* Pack at every start offset 0..3 to cover each alignment. */
-    uint8_t raw[TELEMETRY_SYSTEM_WIRE_SIZE + 4u];
-    telemetry_system_t sys;
-    uint16_t lead;
-
-    (void) memset (&sys, 0, sizeof (sys));
-    sys.obstacle_dist_mm = 0xBEEFu;
-    for (lead = 0u; lead < 4u; lead++)
-    {
-        (void) memset (raw, GUARD_BYTE, sizeof (raw));
-        CHECK (telemetry_pack_status (&raw[lead], -2, 0xBEEFu, 1u, 2u, 3u)
-               == 8u);
-        CHECK (raw[lead + 2u] == 0xBEu);
-        CHECK (raw[lead + 3u] == 0xEFu);
-        CHECK (raw[lead + 8u] == GUARD_BYTE);
-
-        (void) memset (raw, GUARD_BYTE, sizeof (raw));
-        CHECK (telemetry_pack_system (&raw[lead], &sys) == 16u);
-        CHECK (raw[lead + 4u] == 0xBEu);
-        CHECK (raw[lead + 5u] == 0xEFu);
-        if ((lead + 16u) < sizeof (raw))
-        {
-            CHECK (raw[lead + 16u] == GUARD_BYTE);
-        }
-    }
+    CHECK (TELEMETRY_FAULT_BIT_LINE_LOST == 4u);
+    CHECK (TELEMETRY_FAULT_BIT_ESTOP_LATCHED == 9u);
 }
 
 int
 main (void)
 {
-    test_wire_sizes ();
-    test_topics ();
-    test_status_layout ();
-    test_status_signed_and_extremes ();
-    test_status_null ();
-    test_event_layout ();
-    test_event_null ();
-    test_heartbeat_layout ();
-    test_heartbeat_null ();
-    test_system_layout ();
-    test_system_signed_pitch ();
-    test_system_null ();
-    test_odd_alignment_all_offsets ();
+    test_status ();
+    test_motion ();
+    test_physics ();
+    test_obstacle ();
+    test_diag ();
+    test_heartbeat ();
+    test_event ();
+    test_profile ();
+    test_sizes_and_topics ();
 
     if (g_failures != 0u)
     {
-        (void) printf ("test_packet: %u check(s) FAILED\n", g_failures);
+        (void) printf ("%u check(s) failed\n", g_failures);
         return 1;
     }
-    (void) printf ("test_packet: all tests passed\n");
+    (void) printf ("test_packet: all checks passed\n");
     return 0;
 }

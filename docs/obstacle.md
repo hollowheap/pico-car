@@ -1,33 +1,34 @@
 # Buddy 5: obstacle detection and avoidance
 
 Ultrasonic sensor (HC-SR04+), scan servo (SG90), coarse/fine scan, bypass
-planning and the obstacle statechart (design review 6.2). The code is in
+planning and the obstacle statechart. The code is in
 `src/navigation/obstacle/`. Buddy 5 never writes the motors: it only sends events and
-steering words to Navigation.
+steering words to the line task.
+
+The artifacts are the source of truth: `artifacts/specs.md` (S12, S13, S39,
+S40) and `artifacts/decisions.md` (D95 to D99, D150, D151). This page
+describes the code that implements them.
 
 Other Buddy 5 docs:
 
+- [Obstacle contract: commands, events, states, faults, retry policy](obstacle_contract.md)
 - [File guide: which file does what](obstacle_file_guide.md)
 - [Hardware test checklist](obstacle_hardware_checklist.md)
 
 ## Status
 
-Last updated 30 October 2026.
+Last updated 12 November 2026.
 
 | Step | Work | Current position |
 |---|---|---|
-| 1 | Design (pins, statechart, scan, bypass) | Done; agreed with design review sections 2, 4.1 and 6.2. |
-| 2 | Phase 1 code in `src/navigation/obstacle/` | Done. |
-| 3 | Laptop tests | Done: 194 checks passed. The test folder was then taken out of the repo and kept as a backup zip (`buddy5_tests_backup.zip`). |
-| 4 | BARR-C:2018 pass | Done; see [Coding standard](#coding-standard-barr-c2018). |
-| 5 | Bench build in the normal team build | Done; plain `./configure.sh` + `./build.sh` makes `build/obstacle_bench.uf2`. `main.uf2` is unchanged. |
-| 6 | Car measurements (**FILL** values) | Pending; see [Numbers to fill in](#numbers-to-fill-in). |
-| 7 | Hardware checklist H1–H8 on the car | Pending; see the [checklist](obstacle_hardware_checklist.md). |
-| 8 | Phase 2 integration with the line task | Code done and builds into `main.uf2`; floor test (H9) pending. See [Phase 2](#phase-2-integration--in-mainuf2). |
-
-Outside `src/navigation/obstacle/`, Buddy 5 changes the "Buddy 5" block at the end of
-the team `CMakeLists.txt`, five lines of `src/main.c` (Phase 2), and adds
-the three `docs/buddy5_*.md` files.
+| 1 | Design (pins, statechart, scan, bypass) | Done; see the artifacts above. |
+| 2 | Code in `src/navigation/obstacle/` | Done: six echo classes, the 2-of-3 hit rule, the retry policy, and the plan, flags and class counts in telemetry. |
+| 3 | Host tests | Done: `ctest -R obstacle_` (scan, plan, statechart, bypass simulation). |
+| 4 | BARR-C:2018 pass | Done; `bash tools/lint.sh src/navigation/obstacle include/navigation` reports 0 findings. |
+| 5 | Bench build in the normal team build | Done; `./build.sh` makes `build/obstacle_bench.uf2`. |
+| 6 | Car measurements (**FILL** values) | Pending; see [Numbers to fill in](#numbers-to-fill-in). The sonar edge and incidence measurement (Q56) comes first. |
+| 7 | Hardware checklist H1 to H9 on the car | Pending; see the [checklist](obstacle_hardware_checklist.md). |
+| 8 | Floor test | Pending. Boxes 240 to 340 mm wide are planned too narrow; see [wide-box findings](../artifacts/notes/obstacle-wide-box-findings.md). |
 
 ## Wiring
 
@@ -120,182 +121,139 @@ block at the end of the team `CMakeLists.txt`. The
 
 | Item | Value |
 |---|---|
-| Buddy 5 task | priority 6, processor 1 (core 0), 4096 B stack |
-| Echo ISR | 1 slot in the shared `src/platform/isr` dispatcher, processor 1 |
-| Kernel objects created | **1 event flag** (`flg_obs_id`); no message buffer, cyclic handler or mutex |
+| Obstacle task (`ctsk_obstacle`) | priority 4, `TP_PRC1` (Core 0), 4096 B stack |
+| Echo ISR | 1 slot in the shared `src/platform/isr` dispatcher |
+| Kernel objects created | **1 event flag**; no message buffer, cyclic handler or mutex |
 | PWM | slice 6 channel A (GP12), 125 MHz / 125 = 1 MHz, TOP 19999 = 50 Hz |
 
 ### One ping (60 ms)
 
-1. Empty the mailbox with interrupts paused (three statements, about 0.2 µs).
-   If ECHO is already high, the ping is **STUCK** and no trigger is sent.
+1. Empty the echo result with interrupts paused. If ECHO is already high,
+   the ping is **STUCK** and no trigger is sent.
 2. Send a 12 µs TRIG pulse.
-3. The ISR records the rise time, then on the fall writes `width | RISE | DONE`
-   in one store and sets the flag bit.
-4. The task waits at most 40 ms, then classifies the ping:
+3. The ISR records the rise time. On the fall it writes
+   `width | RISE | DONE` in one store and sets the flag bit.
+4. The task waits at most 40 ms, then `scan_algo_classify` gives the class:
+   VALID, OPEN, TOO_CLOSE, NO_ECHO, GLITCH or STUCK. The table, and what
+   each class does, is in the [contract](obstacle_contract.md#echo-classes).
 
-| Class | Meaning |
-|---|---|
-| VALID | 116–23 500 µs |
-| OPEN | rise seen, pulse beyond 4 m |
-| UNKNOWN | no rise, a glitch, or a missed fall |
-| STUCK | ECHO high before the trigger |
-
-A missing echo is **never** OPEN.
-
-Fault counters:
-
-- 5 UNKNOWN in a row → NO_ECHO. This works with ECHO unplugged, because the
-  task raises it on timeout.
-- 3 STUCK in a row → ECHO_STUCK.
+A missing echo is **never** OPEN. There is no UNKNOWN class (D97).
 
 ### Statechart
 
-| State | Servo | Leaves when |
-|---|---|---|
-| STOPPED (power-on, latched) | 0° | RESET (only if the cause is cleared), then START |
-| MONITOR | 0° | 2 VALID ≤ 250 mm in a row → OBSTACLE event |
-| WAIT_STOP | 0° | SCAN_REQ(id); 1 s limit |
-| SCANNING | sweeps | profile done → SCAN_RESULT event; abort after 3 s with no settled slot |
-| PLAN | 0° | ACCEPT(id) → BYPASS (or MONITOR if CLEAR); REJECT → STOPPED; 1 s limit |
-| BYPASS (escape) | 0° | forward beam clear for 2 pings in a row; 10 s limit |
-| REACQUIRE (turn, out, hug) | ±60° toward obstacle | LINE_FOUND(id); 60 s / plan-derived 2.5–8 m limit |
+The states, the time limits and the fault causes are in the
+[contract](obstacle_contract.md#states). Rules that apply in every state:
 
-These rules apply in every state:
-
-- **STOP command or any fault** → STOPPED, plus a FAULT event.
-- **Fault causes** also call the emergency-stop link.
-- **Collision guard** (WAIT_STOP / BYPASS / REACQUIRE): 2 readings under 80 mm
-  → emergency stop.
+- **STOP command or any fault** gives STOPPED, plus a FAULT event.
+- **A fault with a bit** also calls the emergency-stop link.
+- **Detect** is 2 hits among the last 3 pings. The **collision guard** is
+  2 close pings (at most 80 mm, or TOO_CLOSE) among the last 3. Both use the
+  same hit definition (D150).
 
 ### Scan
 
-- **Grid:** 25 slots, −60° to +60° in 5° steps, positive = left.
-- **Coarse:** every 3rd slot, swept right to left.
-- **Region:** the closest VALID ≤ 600 mm, plus coarse neighbours within
+- **Grid:** 37 slots, -90 to +90 degrees in 5 degree steps, positive = left.
+  Slot 18 is straight ahead.
+- **Servo:** never beyond +-30 degrees. The scan reaches the rest of the grid
+  by turning the car body +-60 degrees (S40).
+- **Coarse:** every 2nd slot (10 degrees) in the centre window.
+- **Region:** the closest hit within 600 mm, plus coarse neighbours within
   closest + 250 mm. The closest reading is looked for inside the car's path
-  (±30°) first, and only then over the whole sweep, so clutter off to one
-  side cannot take the place of the obstacle that stopped the car.
+  (+-30 degrees) first.
 - **Fine:** walk outward from each edge, one slot at a time, up to the first
   real miss (OPEN, or VALID beyond the last hit on that edge + 250 mm).
-  Comparing against the last hit, not the global closest, keeps an oblique
-  wall or a curved rock from being cut short.
-  - An UNKNOWN or STUCK slot proves nothing, so the walk assumes the obstacle
-    goes on and steps past it (the car gets more room, never less).
-  - An edge that reaches ±60° without a miss is **unbounded**, and that side
-    is treated as unsafe.
-- **Per slot:**
-  - settle for 3 ms/° + 20 ms;
-  - ping until two pings agree (same class, within 15 mm), keeping the closer
-    distance;
-  - after 4 pings without agreement the slot is UNKNOWN.
+  - A NO_ECHO, GLITCH or STUCK slot proves nothing, so the walk assumes the
+    obstacle goes on and steps past it.
+  - TOO_CLOSE is a hit at 20 mm and never a miss.
+  - An edge with no miss inside the window gets one more body-pivot sweep.
+    An edge still unbounded after that makes the side unsafe.
+- **Per slot:** settle for 3 ms per degree plus 20 ms. Ping until two pings
+  agree (same class, within 15 mm for VALID) and keep the closer distance.
+  After 4 pings without agreement the slot is stored as GLITCH.
+- **Warning flags:** P1 (`echo_noisy`) and P5 (`scan_noisy`) are computed
+  while the scan runs. They never stop the car.
 
 ### Plan and bypass
 
-**Beam-cone correction** (Tribunal decision). With h = last hit angle,
-m = first miss angle and β = half-cone, an edge lies between h − β and m − β.
+**Beam-cone correction.** With h = last hit angle, m = first miss angle and
+β = half-cone (9.5 degrees), the planner places an edge between h - β and
+m - β. This assumes the sonar returns an echo when only the edge of its beam
+is on the obstacle. That assumption is not measured (Q56), and the
+simulation does not follow it. See the
+[wide-box findings](../artifacts/notes/obstacle-wide-box-findings.md).
 
-- **Reported width:** the middle estimates of the two edges, joined by the law
-  of cosines.
-- **Side clearance:** uses the safe outer bound, `x = r · tan(m − β)`.
+**Choosing a side.** A side is usable when the sideways offset it needs (edge
++ `OBSTACLE_BOX_GAP_MM`) fits on the free floor, and no other reading on that
+side falls in the swept band. The smaller offset wins; on a tie, left. An
+edge that is not bounded, or lies beyond `OBSTACLE_EDGE_TRUST_DECI` (30
+degrees), plans a wall pass on the left. With no usable side the plan is
+NO_SAFE_PATH and the car holds.
 
-**Choosing a side.** A side is usable when:
+**Out pivot (D98).** One pivot away from the obstacle at the smallest of 45,
+60, 75 or 90 degrees that clears the front corner by half the car width plus
+`OBSTACLE_PLAN_MARGIN_MM`. The car never reverses.
 
-- the sideways offset it needs (edge + half-width + margin) still fits on the
-  free floor, and
-- no other reading on that side falls in the swept band.
+**Along the obstacle.** Every `OBSTACLE_SIDE_LOOK_MM` (250 mm) the car stops,
+pivots 60 degrees toward the obstacle, aims the servo at 30 degrees so the
+ray is normal to the face, takes a side reading, and pivots back. The reading
+sets the lean that holds `OBSTACLE_BOX_GAP_MM` (190 mm) from the axle line.
+For a wall the gap is `OBSTACLE_WALL_HOLD_MM` (300 mm).
 
-The usable side with the smaller offset wins; on a tie, left. If neither side
-is usable → NO_SAFE_PATH.
+**Return.** After the box the car turns 45 degrees toward the line and
+drives until the IR sensors capture it, then sends LINE_FOUND.
 
-**Start angle:** `atan(needed offset / closest distance)`.
+**While moving** the sonar faces forward. A VALID or TOO_CLOSE reading under
+300 mm stops the car and rescans.
 
-**Bypass [Chat].** The car never reverses; it turns by slowing one wheel.
+### Geometry and blind strip
 
-1. **Escape (BYPASS):** spin away on the spot (inside wheel −40 mm/s,
-   outside wheel +40 mm/s) until the forward beam has been clear for 2
-   pings in a row. NOTE: a pivot with the inside wheel held dragged that
-   wheel backwards on the car, the encoder reported invalid steps and the
-   motion service latched FEEDBACK; the spin drives both wheels.
-2. **TURN:** if the beam cleared before the car had turned the planned start
-   angle, keep pivoting until it has (the beam is on the car's centre line,
-   so "beam clear" alone would let the car's side clip the corner).
-3. **OUT:** straight on at that angle until the car is the planned offset
-   to the side of the line (from the wheel odometry).
-4. **HUG:** hold the planned clearance with a proportional controller. The
-   60° look-ray reading is compared with a 300 mm target. Outside a ±20 mm
-   deadband the wheel next to the obstacle slows in proportion to the error
-   (down to 20% of the outer wheel at 80 mm of error), so the car steers
-   back to the target instead of flipping between two thresholds. UNKNOWN
-   and STUCK readings steer straight; OPEN steers towards. One ping under
-   250 mm still forces a turn away, clamped at 60° from the line.
-5. **Line contact:** the IR gate arms when the offset is reached and opens
-   once both sensors have been off the line; the first contact in HUG sends
-   LINE_FOUND(id) and hands back to line following.
+The car is 126 mm wide. The beam is about 84 to 108 mm wide at 250 mm. An
+object that lies only in the outer 20 to 40 mm of the car width is outside
+the beam until the car comes closer. The line follower keeps the car on its
+lane, so the strip is accepted and not covered by extra pings.
+`OBSTACLE_DETECT_MM` can be raised if the course needs it.
 
-The whole bypass (OUT + HUG) is limited by
-`obstacle_plan_hug_limit_mm()`: the OUT offset plus a half-circle around the
-obstacle, clamped to 2.5–8 m. A fixed 2.5 m cut the U-turn short for rocks
-wider than about 0.7 m.
+### Interfaces
 
-The statechart still publishes its own three-state hug STEER word; Navigation
-drives from the proportional controller instead.
-
-| Look-ray reading | STEER word published |
-|---|---|
-| < 250 mm | away |
-| 250–350 mm | straight |
-| > 350 mm or OPEN | towards |
-| UNKNOWN | keep the last choice |
-
-NOTE: An earlier version steered only from the look-ray and accepted
-the line once the ray had seen and then lost the obstacle. A simulation
-showed why that fails: while the car is still angled out, the ray
-points almost straight ahead, loses the obstacle early and the car curves
-back into its side. Dead reckoning fixes this.
-
-STEER words use the order of Buddy 2's `motion_drive_action_t`:
-STRAIGHT / LEFT / RIGHT / HOLD. In Phase 2, Navigation turns them into
-`motion_service_submit_request()` calls.
-
-### Interfaces (Design review 4.1)
+The commands, events, snapshots and their limits are in the
+[contract](obstacle_contract.md). The calls are in
+`include/navigation/obstacle.h`.
 
 ```c
 obstacle_links_t links = { h_nav_mbf, p_stop, p_get_distance_mm };  /* 0/NULL allowed */
-obstacle_init(&links);              /* processor 1, after gpio_irq_init() */
+obstacle_init(&links);              /* after gpio_irq_init() */
 obstacle_post_cmd(obstacle_pack_cmd(OBSTACLE_CMD_SCAN_REQ, req_id));
 obstacle_get_event(&evt, tmout);    /* own 4-slot outbox while h_nav_mbf == 0 */
-obstacle_get_steer();  obstacle_get_status();  obstacle_get_faults();
-obstacle_copy_profile(profile);     /* telemetry copy: E_BUSY, never waits */
+obstacle_snapshot(&status);         /* state, cause, faults, echo class, flags */
+obstacle_copy_profile(profile);     /* 37 slots: E_BUSY, never waits */
+obstacle_copy_plan(&plan);          /* plan of the last finished scan */
+obstacle_echo_counts(counts);       /* pings per echo class since boot */
 ```
 
-| Commands in (3 bits) | Events out (2 bits) |
-|---|---|
-| SCAN_REQ, ACCEPT, REJECT, LINE_FOUND, STOP, RESET, START | OBSTACLE, SCAN_RESULT, FAULT, STEER |
-
-## Bit table (Change Requirement 1)
+## Bit table
 
 | Word | Field | Valid range | Bits | Representation |
 |---|---|---|---|---|
-| Echo mailbox `u32` | width_us | 0–40 000 µs (sat. 65 535) | 16 | bits 0–15, written whole by the ISR |
+| Echo result `u32` | width_us | 0-40 000 µs (sat. 65 535) | 16 | bits 0-15, written whole by the ISR |
 | | RISE, DONE | flags | 1 + 1 | bits 16, 17 |
-| Scan slot `u16` × 25 | dist_mm | 0–4095 (VALID ≤ 4030) | 12 | bits 0–11 |
-| | class | 4 classes | 2 | bits 12–13 |
-| | measured | flag | 1 | bit 14 (bit 15 spare) → **50 bytes** |
-| Status `u32` (one store) | state | 7 states | 3 | bits 0–2 |
-| | stop cause | 14 causes | 4 | bits 3–6 |
-| | last class | 4 | 2 | bits 7–8 |
-| | last dist_mm | 0–4095 | 12 | bits 9–20 |
-| | scan_req_id | 0–31 | 5 | bits 21–25 |
-| | seq (liveness) | 0–63 wrap | 6 | bits 26–31 |
-| Fault byte `u8` | 8 fault flags | – | 8 | single writer (Buddy 5 task) |
-| Command `u8` | type, id | 8 types, 0–31 | 3 + 5 | one byte |
-| Event `u32` | type, id | 4 types, 0–31 | 2 + 5 | bits 0–6 |
-| | OBSTACLE: dist | 0–4095 | 12 | bits 7–18 |
-| | SCAN_RESULT: status, side, width, angle | 4, 2, 0–1023 mm, 0–60° | 2 + 1 + 10 + 6 | bits 7–25 |
-| | FAULT: cause, faults | 14, byte | 4 + 8 | bits 7–18 |
-| | STEER: action, seq | 4, 0–63 | 2 + 6 | bits 7–14 |
-| Counters `u16` (task-private) | unknown, stuck, hits, collision, clear | 0–5, 0–3, 0–2, 0–2, 0–4 | 3+2+3+2+3 | bits 0–12 |
+| Scan slot `u16` x 37 | dist_mm | 0-4095 (VALID <= 4030) | 12 | bits 0-11 |
+| | class | 6 classes | 3 | bits 12-14 |
+| | measured | flag | 1 | bit 15 → **74 bytes** |
+| Status `u32` (one store) | state | 7 states | 3 | bits 0-2 |
+| | stop cause | 15 causes | 4 | bits 3-6 |
+| | last class | 6 | 3 | bits 7-9 |
+| | last dist_mm | 0-4095 | 12 | bits 10-21 |
+| | scan_req_id | 0-31 | 5 | bits 22-26 |
+| | seq (liveness) | 0-31 wrap | 5 | bits 27-31 |
+| Fault word `u16` | 9 fault flags | - | 9 | single writer (obstacle task) |
+| Command `u8` | type, id | 8 types, 0-31 | 3 + 5 | one byte |
+| Event `u32` | type, id | 4 types, 0-31 | 2 + 5 | bits 0-6 |
+| | OBSTACLE: dist | 0-4095 | 12 | bits 7-18 |
+| | SCAN_RESULT: status, side, width, angle, wall | 4, 2, 0-1023 mm, 0-127 deg, flag | 2 + 1 + 10 + 7 + 1 | bits 7-27 |
+| | FAULT: cause, faults | 15, 9 bits | 4 + 9 | bits 7-19 |
+| | STEER: action, seq | 4, 0-63 | 2 + 6 | bits 7-14 |
+| Ping `u32` (one store) | seq, class, dist_mm, servo | 0-63, 6, 0-4095, -30..+30 deg | 6 + 3 + 12 + 6 | bits 0-26 |
+| Counters (task-private) | `obstacle_counters_t`: seven `uint8_t` | runs and 3-bit histories | 56 | no packed word |
 
 Compile-time checks in `obstacle_config.h` stop the build if a field can't hold
 its range. They use a negative array size, because C99 has no
@@ -341,7 +299,7 @@ Appendix A abbreviations (`cfg`, `init`, `isr`, `max`, `min`, `msg`,
 
 | Abbreviation | Meaning |
 |---|---|
-| cls | echo class (VALID / OPEN / UNKNOWN / STUCK) |
+| cls | echo class (VALID / OPEN / TOO_CLOSE / NO_ECHO / GLITCH / STUCK) |
 | cmd | command |
 | ct | compile-time (in `OBSTACLE_CT_ASSERT`) |
 | deci | deci-degrees, 0.1° (positive = left) |
@@ -349,7 +307,7 @@ Appendix A abbreviations (`cfg`, `init`, `isr`, `max`, `min`, `msg`,
 | evt | event |
 | fsm | finite-state machine (the statechart) |
 | mbf | kernel message buffer |
-| mbx | echo mailbox word |
+| echo_result | echo result word written by the ISR |
 | mm, ms, us | millimetres, milliseconds, microseconds (as unit suffixes) |
 | odo | odometer (distance travelled) |
 | ptn | event-flag bit pattern (kernel term) |
@@ -357,7 +315,7 @@ Appendix A abbreviations (`cfg`, `init`, `isr`, `max`, `min`, `msg`,
 | req | request |
 | seq | sequence number |
 | sh, mk | shift and mask of a packed field (`OBSTACLE_*_SH`, `OBSTACLE_*_MK`) |
-| st, ev, cnt | status, event and counter word fields (`OBSTACLE_ST_*`, `OBSTACLE_EV_*`, `OBSTACLE_CNT_*`) |
+| st, ev | status and event word fields (`OBSTACLE_ST_*`, `OBSTACLE_EV_*`) |
 | stacd, exinf, intsts, tmout | kernel parameter names, as in the T-Kernel spec |
 | um | micrometres (bench odometer only) |
 
@@ -422,11 +380,11 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 
 | Buddy 5 state | What the glue does | Line follower |
 |---|---|---|
-| MONITOR | releases the obstacle hold, unless the latest reading is a VALID echo within 250 mm (so a retry never creeps into the obstacle) | drives as before |
+| MONITOR | releases the obstacle hold, unless the latest ping is a hit: VALID within 250 mm, or TOO_CLOSE (so a retry never creeps into the obstacle) | drives as before |
 | WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id) | paused |
 | BYPASS | releases the hold; pivots away (STEER word) until Buddy 5 sees the way ahead is clear | paused |
 | REACQUIRE | TURN (pivot to the start angle) and OUT (straight to the side offset) from the wheel odometry, then HUG: a proportional controller holds a 300 mm look-ray target by slowing the wheel next to the obstacle by up to 80% of the outer wheel. One ping under 250 mm forces a turn away, clamped at 60° from the line. OUT drives straight. IR gate: armed when the offset is reached, opens once both IR sensors have been off the line; the next line contact sends LINE_FOUND(id) (at most every 100 ms) | paused |
-| STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR | paused |
+| STOPPED (fault) | holds the car. Sends RESET + START every 3 s only after BOOT or a transient cause (`obstacle_pack_cause_may_auto_restart`). After a collision, NO_SAFE_PATH, a sensor fault or a STOP it waits for an explicit RESET and START | paused |
 
 **Speeds** (`motion_service_set_speed()`, lease 100 ms). The car stands
 still while the servo turns (entering BYPASS, REACQUIRE or MONITOR): a
@@ -456,10 +414,10 @@ real beam 9.5°/15°/25°, true track 90/100/115 mm, obstacle centred or
 57–150 mm), rejoin the line at about 30° and resume line following. A
 bypass takes about 20–30 s at these speeds.
 
-The glue prints `[obstacle-nav] state N cause N`, `[obstacle-nav] plan: ...`,
-`[obstacle-nav] phase N: side .. ahead .. heading ..`, `[obstacle-nav] steer N: left ..
-right ..`, `[obstacle-nav] escape turned N deg`, motion changes and every
-`SCAN_RESULT`, and writes all of it to the flight recorder.
+The glue logs `[INFO](line:nav) state N cause N`, `plan: ...`, `phase N: ...`,
+`steer N: ...`, `escape turned N deg`, motion changes and every `SCAN_RESULT`
+(see [debugging](debugging.md) for the format), and writes all of it to the
+flight recorder.
 
 ### Flight recorder (`flight_log.c`)
 
@@ -477,14 +435,14 @@ over USB when a serial monitor is opened.
    print it again.
 
 **What is in it:** every Buddy 5 state change with its cause, OBSTACLE,
-FAULT, every SCAN_RESULT with the full 25-slot profile, every steering
+FAULT, every SCAN_RESULT with the full 37-slot profile, every steering
 change with how far the car has turned, every motion-service state/fault
 change, every command sent, and a trace line (state, echo, IR sensors,
 wheel distances) every 100 ms while Buddy 5 drives and every 500 ms
 otherwise.
 
 **Tethered alternative:** run the car on a long USB cable with the
-monitor open; the live `[obstacle-nav]` lines show the same events as they
+monitor open; the live `(line:nav)` lines show the same events as they
 happen.
 
 The speeds, lease, brake wait, retry time and LINE_FOUND rate are the
@@ -527,10 +485,11 @@ Known points for the team:
   log). It was hidden while the TIMER was frozen after power-on; Buddy 5
   now starts the TIMER (TIMERAWL rule), so it can show up. Suggested fix
   for the owner: a lease of 40–200 ms, for example `5 * poll_ms * 1000`.
-- `obstacle_nav.c` prints `[obstacle-nav] motion state=.. fault=.. hold=..` whenever
+- `obstacle_nav.c` logs `(line:nav) motion state=.. fault=.. hold=..` whenever
   the motion service changes state, so silent motor faults show up.
-- If the ultrasonic sensor is unplugged, Buddy 5 faults with NO_ECHO and
-  holds the car, so line following stops too. This is deliberate.
+- If the ultrasonic sensor is unplugged, Buddy 5 faults with NO_ECHO after 3 pings and
+  holds the car, so line following stops too. This is deliberate, and the car
+  does not restart by itself (D151).
 - GP21 is the motion stop button in `main.uf2` and the "send" button in
   `obstacle_bench.uf2`.
 - `gpio_irq_init()` enables the IRQ only on the core that calls it.

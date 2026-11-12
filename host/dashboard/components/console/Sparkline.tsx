@@ -5,18 +5,20 @@ type Props = {
   color: string;
   label: string;
   height?: number;
+  /** Fixed value range. Without it the line fills the height, which exaggerates noise. */
+  range?: [number, number];
 };
 
 const WIDTH = 100;
 const VIEW_HEIGHT = 40;
 
-export function Sparkline({ values, color, label, height = 64 }: Props) {
+export function Sparkline({ values, color, label, height = 64, range }: Props) {
   const points =
     values.length < 2
       ? `0,${VIEW_HEIGHT / 2} ${WIDTH},${VIEW_HEIGHT / 2}`
       : (() => {
-          const min = Math.min(...values);
-          const max = Math.max(...values);
+          const min = range?.[0] ?? Math.min(...values);
+          const max = range?.[1] ?? Math.max(...values);
           const span = max - min || 1;
           return values
             .map((value, index) => {

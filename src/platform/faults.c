@@ -28,15 +28,34 @@
  */
 /* Kernel atomics operate on 32-bit words; the public API masks to 16 bits. */
 static UW g_fault_reg = 0U;
+static UW g_sticky_reg = 0U;
 
 void system_fault_set(uint16_t fault_bit)
 {
-    (void)atomic_bitset(&g_fault_reg, (UW)(fault_bit & FAULT_ALL_MASK));
+    UW const bits = (UW)(fault_bit & FAULT_ALL_MASK);
+
+    (void)atomic_bitset(&g_fault_reg, bits);
+    (void)atomic_bitset(&g_sticky_reg, bits);
 }
 
 void system_fault_clear(uint16_t fault_bit)
 {
     (void)atomic_bitclr(&g_fault_reg, (UW)(fault_bit & FAULT_ALL_MASK));
+}
+
+void system_fault_assign(uint16_t mask, uint16_t active)
+{
+    uint16_t const to_set   = (uint16_t)(mask & active);
+    uint16_t const to_clear = (uint16_t)(mask & (uint16_t)~active);
+
+    if (0U != to_set)
+    {
+        system_fault_set(to_set);
+    }
+    if (0U != to_clear)
+    {
+        system_fault_clear(to_clear);
+    }
 }
 
 uint16_t system_fault_get(void)
@@ -45,4 +64,16 @@ uint16_t system_fault_get(void)
     UW value = atomic_bitset(&g_fault_reg, 0U);
 
     return (uint16_t)value;
+}
+
+uint16_t system_fault_sticky_get(void)
+{
+    UW value = atomic_bitset(&g_sticky_reg, 0U);
+
+    return (uint16_t)value;
+}
+
+void system_fault_sticky_clear(uint16_t fault_bit)
+{
+    (void)atomic_bitclr(&g_sticky_reg, (UW)(fault_bit & FAULT_ALL_MASK));
 }

@@ -15,6 +15,8 @@ _FIELD_TYPES = {
     "uint8": (">B", 1),
     "int16": (">h", 2),
     "uint16": (">H", 2),
+    "int32": (">i", 4),
+    "uint32": (">I", 4),
 }
 
 
@@ -107,6 +109,10 @@ def _validate(schema: dict) -> None:
                 )
             if "offset" not in field or "name" not in field:
                 raise SchemaError(f"{name} has an incomplete field")
+            count = field.get("count", 1)
+            size = _FIELD_TYPES[field["type"]][1]
+            if int(field["offset"]) + size * int(count) > packet["wire_size"]:
+                raise SchemaError(f"{name}.{field['name']} overruns the packet")
 
 
 def packet_name_for_topic(schema: dict, topic: str) -> str | None:
@@ -131,9 +137,14 @@ def decode_packet(schema: dict, name: str, payload: bytes) -> dict:
     values = {}
     for field in packet["fields"]:
         fmt, size = _FIELD_TYPES[field["type"]]
-        values[field["name"]] = struct.unpack_from(
-            fmt, payload, int(field["offset"])
-        )[0]
+        offset = int(field["offset"])
+        if "count" in field:
+            values[field["name"]] = [
+                struct.unpack_from(fmt, payload, offset + index * size)[0]
+                for index in range(int(field["count"]))
+            ]
+        else:
+            values[field["name"]] = struct.unpack_from(fmt, payload, offset)[0]
     return {"name": name, "values": values}
 
 

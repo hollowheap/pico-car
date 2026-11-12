@@ -15,16 +15,20 @@
 
 #include "obstacle_config.h"
 #include "navigation/obstacle_cmd.h"
+#include "navigation/obstacle_flags.h"
 
 /* ------------------------------------------------------------------ *
  * Codes.
  * ------------------------------------------------------------------ */
 
-/* Echo class, 2 bits. A missing echo is never OPEN. */
-#define OBSTACLE_CLASS_VALID   (0U) /* rise + fall, 116..23500 us           */
-#define OBSTACLE_CLASS_OPEN    (1U) /* rise seen, pulse beyond 4 m           */
-#define OBSTACLE_CLASS_UNKNOWN (2U) /* no rise, glitch or lost edge          */
-#define OBSTACLE_CLASS_STUCK   (3U) /* ECHO high before the trigger          */
+/* Echo class, 3 bits (D97). A missing echo is never OPEN, and no class means
+ * "unknown": each class has its own reaction. */
+#define OBSTACLE_CLASS_VALID     (0U) /* rise + fall, 116..23500 us         */
+#define OBSTACLE_CLASS_OPEN      (1U) /* rise seen, pulse beyond 4 m        */
+#define OBSTACLE_CLASS_TOO_CLOSE (2U) /* clean echo, 30..116 us: an object  */
+#define OBSTACLE_CLASS_NO_ECHO   (3U) /* nothing on ECHO within the wait    */
+#define OBSTACLE_CLASS_GLITCH    (4U) /* one edge missing, or a tiny pulse  */
+#define OBSTACLE_CLASS_STUCK     (5U) /* ECHO high before the trigger       */
 
 /* Statechart, 3 bits. */
 #define OBSTACLE_STATE_STOPPED   (0U)
@@ -50,8 +54,9 @@
 #define OBSTACLE_CAUSE_BYPASS_LIMIT  (11U)
 #define OBSTACLE_CAUSE_LINE_TIMEOUT  (12U)
 #define OBSTACLE_CAUSE_INIT_FAIL     (13U)
+#define OBSTACLE_CAUSE_ECHO_NOISE    (14U) /* ECHO line or edges are bad       */
 
-/* Fault byte: the obstacle task's task is its only writer. */
+/* Fault word, 9 bits: the obstacle task is its only writer. */
 #define OBSTACLE_FAULT_NO_ECHO      (1U << 0U)
 #define OBSTACLE_FAULT_ECHO_STUCK   (1U << 1U)
 #define OBSTACLE_FAULT_SCAN_TIMEOUT (1U << 2U)
@@ -60,6 +65,13 @@
 #define OBSTACLE_FAULT_HANDOVER     (1U << 5U)
 #define OBSTACLE_FAULT_BYPASS_LIMIT (1U << 6U)
 #define OBSTACLE_FAULT_LINE_TIMEOUT (1U << 7U)
+#define OBSTACLE_FAULT_ECHO_NOISE   (1U << 8U)
+/* Faults that leave the car stopped by a planner or bypass limit, as opposed
+   to a sensor fault. They set the shared obstacle_stopped bit. */
+#define OBSTACLE_FAULTS_STOPPING \
+    (OBSTACLE_FAULT_SCAN_TIMEOUT | OBSTACLE_FAULT_NO_SAFE_PATH | \
+     OBSTACLE_FAULT_COLLISION | OBSTACLE_FAULT_HANDOVER | \
+     OBSTACLE_FAULT_BYPASS_LIMIT | OBSTACLE_FAULT_LINE_TIMEOUT)
 
 /* Commands, 3 bits. STOP, RESET and START are in obstacle_cmd.h. */
 #define OBSTACLE_CMD_NONE       (0U)
@@ -93,33 +105,33 @@
  * Layouts, as (shift, mask) pairs.
  * ------------------------------------------------------------------ */
 
-/* Echo mailbox (u32, ISR writes it whole): width 16 | RISE | DONE. */
-#define OBSTACLE_MBX_WIDTH_MASK (0x0000FFFFUL)
-#define OBSTACLE_MBX_RISE       (1UL << 16U)
-#define OBSTACLE_MBX_DONE       (1UL << 17U)
+/* Echo result (u32, the ISR writes it whole): width 16 | RISE | DONE. */
+#define OBSTACLE_ECHO_WIDTH_MASK (0x0000FFFFUL)
+#define OBSTACLE_ECHO_RISE       (1UL << 16U)
+#define OBSTACLE_ECHO_DONE       (1UL << 17U)
 
-/* Scan slot (u16): dist 12 | class 2 | measured 1. */
+/* Scan slot (u16): dist 12 | class 3 | measured 1. */
 #define OBSTACLE_SLOT_DIST_SH  (0U)
 #define OBSTACLE_SLOT_DIST_MK  (0x0FFFU)
 #define OBSTACLE_SLOT_CLASS_SH (12U)
-#define OBSTACLE_SLOT_CLASS_MK (0x3U)
-#define OBSTACLE_SLOT_MEAS_SH  (14U)
+#define OBSTACLE_SLOT_CLASS_MK (0x7U)
+#define OBSTACLE_SLOT_MEAS_SH  (15U)
 #define OBSTACLE_SLOT_MEAS_MK  (0x1U)
 
-/* Status (u32, one store): state 3 | cause 4 | class 2 | dist 12 | id 5 |
- * seq 6. */
+/* Status (u32, one store): state 3 | cause 4 | class 3 | dist 12 | id 5 |
+ * seq 5. */
 #define OBSTACLE_ST_STATE_SH (0U)
 #define OBSTACLE_ST_STATE_MK (0x7U)
 #define OBSTACLE_ST_CAUSE_SH (3U)
 #define OBSTACLE_ST_CAUSE_MK (0xFU)
 #define OBSTACLE_ST_CLASS_SH (7U)
-#define OBSTACLE_ST_CLASS_MK (0x3U)
-#define OBSTACLE_ST_DIST_SH  (9U)
+#define OBSTACLE_ST_CLASS_MK (0x7U)
+#define OBSTACLE_ST_DIST_SH  (10U)
 #define OBSTACLE_ST_DIST_MK  (0xFFFU)
-#define OBSTACLE_ST_ID_SH    (21U)
+#define OBSTACLE_ST_ID_SH    (22U)
 #define OBSTACLE_ST_ID_MK    (0x1FU)
-#define OBSTACLE_ST_SEQ_SH   (26U)
-#define OBSTACLE_ST_SEQ_MK   (0x3FU)
+#define OBSTACLE_ST_SEQ_SH   (27U)
+#define OBSTACLE_ST_SEQ_MK   (0x1FU)
 
 /* Command (u8): type 3 | id 5. */
 #define OBSTACLE_CMD_TYPE_SH (0U)
@@ -147,39 +159,26 @@
 #define OBSTACLE_EV_ANGLE_MK  (0x7FU)
 #define OBSTACLE_EV_WALL_SH   (27U)
 #define OBSTACLE_EV_WALL_MK   (0x1U)
-/* FAULT payload: cause 4 | fault byte 8. */
+/* FAULT payload: cause 4 | fault word 9. */
 #define OBSTACLE_EV_CAUSE_SH  (7U)
 #define OBSTACLE_EV_CAUSE_MK  (0xFU)
 #define OBSTACLE_EV_FAULTS_SH (11U)
-#define OBSTACLE_EV_FAULTS_MK (0xFFU)
+#define OBSTACLE_EV_FAULTS_MK (0x1FFU)
 /* STEER payload: action 2 | seq 6. */
 #define OBSTACLE_EV_STEER_SH (7U)
 #define OBSTACLE_EV_STEER_MK (0x3U)
 #define OBSTACLE_EV_SSEQ_SH  (9U)
 #define OBSTACLE_EV_SSEQ_MK  (0x3FU)
 
-/* Task-private counters (u16): unknown 3 | stuck 2 | hits 3 |
- * collision 2 | clear 3. */
-#define OBSTACLE_CNT_UNK_SH   (0U)
-#define OBSTACLE_CNT_UNK_MK   (0x7U)
-#define OBSTACLE_CNT_STUCK_SH (3U)
-#define OBSTACLE_CNT_STUCK_MK (0x3U)
-#define OBSTACLE_CNT_HIT_SH   (5U)
-#define OBSTACLE_CNT_HIT_MK   (0x7U)
-#define OBSTACLE_CNT_COLL_SH  (8U)
-#define OBSTACLE_CNT_COLL_MK  (0x3U)
-#define OBSTACLE_CNT_CLEAR_SH (10U)
-#define OBSTACLE_CNT_CLEAR_MK (0x7U)
-
-/* Ping (u32, one store by the scan task): seq 6 | class 2 | dist 12 |
+/* Ping (u32, one store by the scan task): seq 6 | class 3 | dist 12 |
  * servo 6. The servo field is the servo angle in whole degrees plus 30. */
 #define OBSTACLE_PING_SEQ_SH   (0U)
 #define OBSTACLE_PING_SEQ_MK   (0x3FU)
 #define OBSTACLE_PING_CLASS_SH (6U)
-#define OBSTACLE_PING_CLASS_MK (0x3U)
-#define OBSTACLE_PING_DIST_SH  (8U)
+#define OBSTACLE_PING_CLASS_MK (0x7U)
+#define OBSTACLE_PING_DIST_SH  (9U)
 #define OBSTACLE_PING_DIST_MK  (0xFFFU)
-#define OBSTACLE_PING_SERVO_SH (20U)
+#define OBSTACLE_PING_SERVO_SH (21U)
 #define OBSTACLE_PING_SERVO_MK (0x3FU)
 
 /* Servo field offset: whole degrees plus 30 (the servo limit). */
@@ -239,7 +238,7 @@ static inline uint16_t obstacle_pack_slot (uint32_t dist_mm, uint32_t cls)
     word = obstacle_pack_put(word, OBSTACLE_SLOT_CLASS_SH, OBSTACLE_SLOT_CLASS_MK, cls);
     word = obstacle_pack_put(word, OBSTACLE_SLOT_MEAS_SH, OBSTACLE_SLOT_MEAS_MK, 1U);
 
-    /* Cast is safe: the three fields use bits 0-14 only. */
+    /* Cast is safe: the three fields use bits 0-15 only. */
     return ((uint16_t)word);
 }
 
@@ -265,7 +264,7 @@ static inline uint16_t obstacle_pack_slot_dist (uint16_t slot)
  */
 static inline uint8_t obstacle_pack_slot_class (uint16_t slot)
 {
-    /* Cast is safe: the field is 2 bits wide. */
+    /* Cast is safe: the field is 3 bits wide. */
     return ((uint8_t)obstacle_pack_get(slot, OBSTACLE_SLOT_CLASS_SH, OBSTACLE_SLOT_CLASS_MK));
 }
 
@@ -279,6 +278,54 @@ static inline uint8_t obstacle_pack_slot_class (uint16_t slot)
 static inline bool obstacle_pack_slot_is_measured (uint16_t slot)
 {
     return (0U != obstacle_pack_get(slot, OBSTACLE_SLOT_MEAS_SH, OBSTACLE_SLOT_MEAS_MK));
+}
+
+/*!
+ * @brief Tell whether a class carries a range (VALID, or TOO_CLOSE which
+ *        counts as a hit at the minimum range).
+ *
+ * @param[in] cls Echo class (OBSTACLE_CLASS_*).
+ *
+ * @return True for VALID and TOO_CLOSE.
+ */
+static inline bool obstacle_pack_class_is_ranged (uint32_t cls)
+{
+    return ((OBSTACLE_CLASS_VALID == cls) || (OBSTACLE_CLASS_TOO_CLOSE == cls));
+}
+
+/*!
+ * @brief Tell whether a class proves nothing about the scene (NO_ECHO,
+ *        GLITCH, STUCK). A slot with such a class stays unresolved.
+ *
+ * @param[in] cls Echo class (OBSTACLE_CLASS_*).
+ *
+ * @return True for NO_ECHO, GLITCH and STUCK.
+ */
+static inline bool obstacle_pack_class_is_unresolved (uint32_t cls)
+{
+    return ((OBSTACLE_CLASS_NO_ECHO == cls) || (OBSTACLE_CLASS_GLITCH == cls) ||
+            (OBSTACLE_CLASS_STUCK == cls));
+}
+
+/*!
+ * @brief Retry policy: tell whether the navigation side may send RESET and
+ *        START by itself after the statechart stopped with this cause.
+ *
+ * The first start after boot and a transient cause (a missed handshake, a
+ * timeout, a limit) can be retried. A collision, a scan with no safe path, a
+ * sensor fault, an external stop and a failed init wait for an explicit RESET
+ * and START from the operator or the supervisor.
+ *
+ * @param[in] cause OBSTACLE_CAUSE_*.
+ *
+ * @return True if an automatic RESET and START is allowed.
+ */
+static inline bool obstacle_pack_cause_may_auto_restart (uint32_t cause)
+{
+    return ((OBSTACLE_CAUSE_BOOT == cause) || (OBSTACLE_CAUSE_SCAN_TIMEOUT == cause) ||
+            (OBSTACLE_CAUSE_HANDOVER == cause) ||
+            (OBSTACLE_CAUSE_PLAN_TIMEOUT == cause) || (OBSTACLE_CAUSE_PLAN_REJECTED == cause) ||
+            (OBSTACLE_CAUSE_BYPASS_LIMIT == cause) || (OBSTACLE_CAUSE_LINE_TIMEOUT == cause));
 }
 
 /*!

@@ -1,56 +1,155 @@
-# Single source of truth for the vehicle wire protocol.
-# Firmware, CLI, backend, and dashboard consumers must be generated from
-# this file; do not hand-edit generated constants or decoders.
+# Single source of truth for the vehicle wire protocol (schema 2, D43, D110).
+# Firmware, CLI, backend, and dashboard consumers are generated from or checked
+# against this file; do not hand-edit generated constants or decoders.
+#
+# Run `npm --prefix host/dashboard run generate` after every change. It writes
+#   host/dashboard/lib/schema.generated.ts   dashboard constants
+#   include/telemetry/wire_schema.h          firmware offsets, sizes, codes
+#   protocol/vectors.json                    known-good bytes for every packet
+#   tests/telemetry_vectors.h                the same bytes for the C test
+#
+# Field types: int8 uint8 int16 uint16 int32 uint32, big-endian. A field with
+# `count: N` is an array of N elements of that type.
 
-schema: 1
+schema: 2
 byte_order: big
 
 topics:
   status: "s"
-  event: "e"
+  motion: "m"
+  physics: "p"
+  obstacle: "o"
+  diag: "d"
   heartbeat: "h"
+  event: "e"
+  profile: "f"
   command: "c"
-  system: "t"
 
 packets:
+  # 5 Hz. The vehicle in one frame.
   status:
-    wire_size: 8
-    fields:
-      - { name: speed_mms, offset: 0, type: int16 }
-      - { name: dist_mm, offset: 2, type: uint16 }
-      - { name: heading_deg, offset: 4, type: uint8 }
-      - { name: state, offset: 5, type: uint8 }
-      - { name: faults, offset: 6, type: uint16 }
-  system:
     wire_size: 16
     fields:
-      - { name: obstacle_state, offset: 0, type: uint8, enum: obstacle_state }
-      - { name: obstacle_cause, offset: 1, type: uint8, enum: obstacle_cause }
-      - { name: obstacle_faults, offset: 2, type: uint8, enum: obstacle_faults }
-      - { name: echo_class, offset: 3, type: uint8, enum: echo_class }
-      - { name: obstacle_dist_mm, offset: 4, type: uint16 }
-      - { name: obstacle_seq, offset: 6, type: uint8 }
-      - { name: obstacle_req_id, offset: 7, type: uint8 }
-      - { name: physics_state, offset: 8, type: uint8, enum: physics_state }
-      - { name: physics_motion, offset: 9, type: uint8, enum: physics_motion }
-      - { name: physics_faults, offset: 10, type: uint8, enum: physics_faults }
-      - { name: physics_flags, offset: 11, type: uint8 }
-      - { name: pitch_cdeg, offset: 12, type: int16 }
+      - { name: speed_mms, offset: 0, type: int16 }
+      - { name: odometer_mm, offset: 2, type: uint32 }
+      - { name: heading_ddeg, offset: 6, type: uint16 }
+      - { name: state, offset: 8, type: uint8, enum: run_state }
+      - { name: mode, offset: 9, type: uint8, enum: vehicle_mode }
+      - { name: faults, offset: 10, type: uint16 }
+      - { name: seq, offset: 12, type: uint16 }
+      - { name: line_bits, offset: 14, type: uint8 }
+      - { name: hold_mask, offset: 15, type: uint8 }
+  # 5 Hz. Wheels and the motion controller.
+  motion:
+    wire_size: 16
+    fields:
+      - { name: left_mms, offset: 0, type: int16 }
+      - { name: right_mms, offset: 2, type: int16 }
+      - { name: left_target_mms, offset: 4, type: int16 }
+      - { name: right_target_mms, offset: 6, type: int16 }
+      - { name: left_duty_pm, offset: 8, type: int16 }
+      - { name: right_duty_pm, offset: 10, type: int16 }
+      - { name: motion_state, offset: 12, type: uint8, enum: motion_state }
+      - { name: motion_fault, offset: 13, type: uint8, enum: motion_fault }
+      - { name: overruns, offset: 14, type: uint16 }
+  # 5 Hz. IMU, hump and attitude. roll, az, amag, a_fwd and attitude_state
+  # are filled by the attitude work (zero until then).
+  physics:
+    wire_size: 24
+    fields:
+      - { name: pitch_cdeg, offset: 0, type: int16 }
+      - { name: roll_cdeg, offset: 2, type: int16 }
+      - { name: az_mg, offset: 4, type: int16 }
+      - { name: amag_mg, offset: 6, type: uint16 }
+      - { name: a_fwd_mg, offset: 8, type: int16 }
+      - { name: yaw_rate_cdps, offset: 10, type: int16 }
+      - { name: heading_ddeg, offset: 12, type: uint16 }
       - { name: hump_peak_mm, offset: 14, type: uint16 }
-  event:
+      - { name: run_peak_mm, offset: 16, type: uint16 }
+      - { name: hump_state, offset: 18, type: uint8, enum: hump_state }
+      - { name: motion_class, offset: 19, type: uint8, enum: motion_class }
+      - { name: physics_faults, offset: 20, type: uint8, enum: physics_faults }
+      - { name: flags, offset: 21, type: uint8, enum: physics_flags }
+      - { name: attitude_state, offset: 22, type: uint8, enum: attitude_state }
+      - { name: reserved, offset: 23, type: uint8 }
+  # 2 Hz and on change. Sonar, scan and plan.
+  obstacle:
+    wire_size: 24
+    fields:
+      - { name: state, offset: 0, type: uint8, enum: obstacle_state }
+      - { name: cause, offset: 1, type: uint8, enum: obstacle_cause }
+      - { name: faults, offset: 2, type: uint16, enum: obstacle_faults }
+      - { name: echo_class, offset: 4, type: uint8, enum: echo_class }
+      - { name: flags, offset: 5, type: uint8, enum: obstacle_flags }
+      - { name: dist_mm, offset: 6, type: uint16 }
+      - { name: closest_mm, offset: 8, type: uint16 }
+      - { name: seq, offset: 10, type: uint8 }
+      - { name: req_id, offset: 11, type: uint8 }
+      - { name: plan_status, offset: 12, type: uint8 }
+      - { name: plan_side, offset: 13, type: uint8 }
+      - { name: plan_width_mm, offset: 14, type: uint16 }
+      - { name: plan_need_mm, offset: 16, type: uint16 }
+      - { name: plan_start_deg, offset: 18, type: uint8 }
+      - { name: rescans, offset: 19, type: uint8 }
+      - { name: servo_deci, offset: 20, type: int16 }
+      - { name: body_deci, offset: 22, type: int16 }
+  # 1 Hz. Counters and health.
+  diag:
+    wire_size: 34
+    fields:
+      - { name: sticky_faults, offset: 0, type: uint16 }
+      - { name: task_alive_mask, offset: 2, type: uint16 }
+      - { name: line_lost_count, offset: 4, type: uint16 }
+      - { name: line_search_mm, offset: 6, type: uint16 }
+      - { name: barcode_ok, offset: 8, type: uint16 }
+      - { name: barcode_bad, offset: 10, type: uint16 }
+      - { name: barcode_edge_drops, offset: 12, type: uint16 }
+      - { name: last_barcode, offset: 14, type: uint8 }
+      - { name: last_barcode_action, offset: 15, type: uint8, enum: barcode_action }
+      - { name: telem_queue_drops, offset: 16, type: uint16 }
+      - { name: net_queue_drops, offset: 18, type: uint16 }
+      - { name: physics_overruns, offset: 20, type: uint16 }
+      - { name: telemetry_overruns, offset: 22, type: uint16 }
+      - { name: echo_valid, offset: 24, type: uint8 }
+      - { name: echo_open, offset: 25, type: uint8 }
+      - { name: echo_too_close, offset: 26, type: uint8 }
+      - { name: echo_no_echo, offset: 27, type: uint8 }
+      - { name: echo_glitch, offset: 28, type: uint8 }
+      - { name: echo_stuck, offset: 29, type: uint8 }
+      - { name: line_edges_per_s, offset: 30, type: uint8 }
+      - { name: line_raw_edges_per_s, offset: 31, type: uint8 }
+      - { name: supervisor_passes, offset: 32, type: uint16 }
+  # 1 Hz. Sent by the connection task, not through the queue.
+  heartbeat:
     wire_size: 8
     fields:
-      - { name: event_id, offset: 0, type: uint16 }
-      - { name: event_type, offset: 2, type: uint8 }
-      - { name: p1, offset: 3, type: int16 }
-      - { name: p2, offset: 5, type: uint16 }
-      - { name: reserved, offset: 7, type: uint8 }
-  heartbeat:
-    wire_size: 4
+      - { name: uptime_s, offset: 0, type: uint32 }
+      - { name: drops, offset: 4, type: uint8 }
+      - { name: wifi_rssi, offset: 5, type: int8 }
+      - { name: reset_reason, offset: 6, type: uint8, enum: reset_reason }
+      - { name: link_state, offset: 7, type: uint8, enum: link_state }
+  # On event. QoS 1 in the queue; a status frame never evicts it.
+  event:
+    wire_size: 12
     fields:
-      - { name: uptime_s, offset: 0, type: uint16 }
-      - { name: drops, offset: 2, type: uint8 }
-      - { name: wifi_rssi, offset: 3, type: int8 }
+      - { name: event_id, offset: 0, type: uint16 }
+      - { name: event_type, offset: 2, type: uint8, enum: event_type }
+      - { name: source, offset: 3, type: uint8, enum: event_source }
+      - { name: p1, offset: 4, type: int16 }
+      - { name: p2, offset: 6, type: uint16 }
+      - { name: odometer_mm, offset: 8, type: uint32 }
+  # Once per finished scan. The 37 packed slots (12-bit distance, 3-bit class,
+  # measured flag) of the original scan frame, slot 18 straight ahead.
+  profile:
+    wire_size: 82
+    fields:
+      - { name: req_id, offset: 0, type: uint8 }
+      - { name: status, offset: 1, type: uint8 }
+      - { name: side, offset: 2, type: uint8 }
+      - { name: flags, offset: 3, type: uint8 }
+      - { name: closest_mm, offset: 4, type: uint16 }
+      - { name: width_mm, offset: 6, type: uint16 }
+      - { name: slots, offset: 8, type: uint16, count: 37 }
 
 commands:
   stop: 0x00
@@ -60,14 +159,97 @@ commands:
   right: 0x04
   uturn: 0x05
   estop: 0x06
+  straight: 0x07
 
-# Event IDs are defined with the command/event schema in T04.
-events: {}
+# Event types (D110). `p1` and `p2` meanings are in
+# artifacts/notes/telemetry-schema-v2-and-fault-bits.md section 6, with these
+# layouts from D130 and D160:
+#   barcode      p1 = ASCII letter (S straight, L left, R right, U u-turn, H halt),
+#                p2 = narrow width/4 um << 4 | reverse << 3 | action
+#   barcode_bad  p1 = reason (1 element, 2 parity, 3 delimiter, 4 speed, 5 duplicate)
+#   cmd_accept   p1 = opcode, p2 = source (1 telemetry, 2 barcode, 3 button)
+#   cmd_reject   p1 = opcode, p2 = source << 8 | reason (1 not running, 2 busy,
+#                3 latched, 4 lifted, 5 source, 6 opcode)
+#   task_stall   p1 = liveness bit; 0x80 = the car does not move; 0x81 = line sensors stuck;
+#                0x82 = the wheels answer crosswise (encoder plugs swapped)
+#   line_lost    p1 = side that saw the line last (0 none, 1 left, 2 right); the weave starts
+#   line_found   p1 = side that saw the line last, p2 = distance driven while lost, in mm
+#   boot         p1 = reset reason, p2 = failed self-test checks (1 imu, 2 sonar, 4 beam)
+#   turn_*       p1 = turn (1 left, 2 right, 3 u-turn, 4 straight), p2 = elapsed ms on done/abort
+#   run_stop     p1 = run state entered (2 stopped, 3 held, 4 latched)
+#   obstacle_seen  p1 = distance mm
+#   scan_done    p1 = plan status (0 ok, 1 clear, 2 no safe path, 3 failed), p2 = width mm
+#   bypass_start p1 = side (0 left, 1 right), p2 = start angle deg
+#   bypass_end   p1 = 0, p2 = 0 (the car is back in MONITOR)
+#   obstacle_stop  p1 = obstacle cause, p2 = echo class
+#   hump_end     p1 = peak mm, p2 = 1 when the height is valid
+#   fault_set, fault_clear  p1 = fault bit
+events:
+  boot: 0x01
+  run_start: 0x02
+  run_stop: 0x03
+  cmd_accept: 0x04
+  cmd_reject: 0x05
+  barcode: 0x10
+  barcode_bad: 0x11
+  turn_start: 0x12
+  turn_done: 0x13
+  turn_abort: 0x14
+  line_lost: 0x18
+  line_found: 0x19
+  obstacle_seen: 0x20
+  scan_done: 0x21
+  bypass_start: 0x22
+  bypass_end: 0x23
+  obstacle_stop: 0x24
+  hump_start: 0x30
+  hump_end: 0x31
+  lift_start: 0x38
+  lift_end: 0x39
+  overturn: 0x3A
+  fault_set: 0x40
+  fault_clear: 0x41
+  task_stall: 0x48
+  link_up: 0x50
+  link_down: 0x51
 
 # Named codes for the fields that carry enumerations. Values match the
-# firmware constants in src/navigation/obstacle/obstacle_pack.h and
-# src/physics/hump_msg.h and imu_motion.h.
+# firmware constants in src/navigation/obstacle/obstacle_pack.h,
+# src/physics/hump_msg.h and imu_motion.h, and src/motion/controller.h.
 enums:
+  run_state:
+    values:
+      init: 0
+      ready: 1
+      running: 2
+      stopped: 3
+  vehicle_mode:
+    values:
+      stopped: 0
+      follow: 1
+      turn: 2
+      search: 3
+      hold: 4
+      bypass: 5
+      hold_barcode: 6
+      lifted: 7
+      overturned: 8
+  motion_state:
+    values:
+      idle: 0
+      running: 1
+      reversing: 2
+      stopped: 3
+      fault: 4
+  motion_fault:
+    values:
+      none: 0
+      command: 1
+      expired: 2
+      feedback: 3
+      gap: 4
+      no_edges: 5
+      output: 6
   obstacle_state:
     values:
       stopped: 0
@@ -93,12 +275,15 @@ enums:
       bypass_limit: 11
       line_timeout: 12
       init_fail: 13
+      echo_noise: 14
   echo_class:
     values:
       valid: 0
       open: 1
-      unknown: 2
-      stuck: 3
+      too_close: 2
+      no_echo: 3
+      glitch: 4
+      stuck: 5
   obstacle_faults:
     bits:
       no_echo: 0
@@ -109,13 +294,23 @@ enums:
       handover: 5
       bypass_limit: 6
       line_timeout: 7
-  physics_state:
+      echo_noise: 8
+  obstacle_flags:
+    bits:
+      wall: 0
+      servo_moving: 1
+      body_pivoting: 2
+      echo_noisy: 3
+      echo_inconsistent: 4
+      beam_blocked: 5
+      scan_noisy: 6
+  hump_state:
     values:
       flat: 0
       climb: 1
       crest: 2
       descend: 3
-  physics_motion:
+  motion_class:
     values:
       unknown: 0
       stationary: 1
@@ -124,13 +319,74 @@ enums:
       turning: 4
       climbing: 5
       descending: 6
-      impact: 7
+      lifted: 7
+  attitude_state:
+    values:
+      ok: 0
+      candidate: 1
+      lifted: 2
+      overturned: 3
   physics_faults:
     bits:
       i2c: 0
       stale: 1
       tilt: 2
+      lifted: 3
+      overturned: 4
+      mag_bad: 5
+  physics_flags:
+    bits:
+      hump_active: 0
+      finished: 1
+      height_valid: 2
+      calibrated: 3
+  barcode_action:
+    values:
+      none: 0
+      stop: 1
+      left: 2
+      right: 3
+      uturn: 4
+      rejected: 5
+      straight: 6
+  reset_reason:
+    values:
+      power: 0
+      watchdog: 1
+      brownout: 2
+      software: 3
+  link_state:
+    values:
+      down: 0
+      wifi: 1
+      tcp: 2
+      mqtt: 3
+  event_source:
+    values:
+      motion: 1
+      line: 2
+      obstacle: 3
+      physics: 4
+      barcode: 5
+      telemetry: 6
+      connection: 7
+      startup: 8
+      supervisor: 9
+  line_bits:
+    bits:
+      left: 0
+      right: 1
+      barcode: 2
+  hold_mask:
+    bits:
+      obstacle: 0
+      line_lost_retired: 1
+      operator: 2
+      barcode: 3
+      lift: 4
+      supervisor: 5
 
+# Shared 16-bit fault register (level bits). Matches include/platform/faults.h.
 fault_bits:
   - { name: wifi_disconn, bit: 0 }
   - { name: mqtt_nack, bit: 1 }
@@ -142,3 +398,9 @@ fault_bits:
   - { name: invalid_tilt, bit: 7 }
   - { name: sonar_no_echo, bit: 8 }
   - { name: estop_latched, bit: 9 }
+  - { name: echo_line, bit: 10 }
+  - { name: lifted, bit: 11 }
+  - { name: overturned, bit: 12 }
+  - { name: obstacle_stopped, bit: 13 }
+  - { name: task_stalled, bit: 14 }
+  - { name: abnormal_reset, bit: 15 }

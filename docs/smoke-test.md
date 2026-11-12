@@ -117,12 +117,12 @@ Pass: profile matches the box, no scan timeout, no fault.
 
 Wheels up. Flash `main.uf2`.
 
-- Expect `[init]` lines without `startup failed`.
-- `physics_init -> 0` and `obstacle_line_init -> 0`.
+- Expect no `[ERROR](boot)` line. A line such as `[ERROR](boot) startup failed, er=-33` means a task did not start.
 - The blink task runs.
-- With the auto-detected Wi-Fi, `[conn]` reports `join=0 dhcp=0` and reaches
+- With the auto-detected Wi-Fi, `[INFO](connection) state=...` reports `join=0 dhcp=0` and reaches
   ready.
-- No `MOTION FAULT`.
+- No `[ERROR](motion) fault=...` line.
+- The console format is in [`docs/debugging.md`](debugging.md).
 
 Pass: every task starts, no fault.
 
@@ -130,32 +130,48 @@ Pass: every task starts, no fault.
 
 - Line sensors: pass a black card under the left, then the right sensor; the
   line bits change.
-- Barcode: present a known Code 39 marker; expect `[barcode] X` and a telemetry
-  event on topic `e`.
-- System packet: the dashboard shows the physics and obstacle values from
-  topic `t`.
+- Barcode: present a known Code 39 marker; expect `[INFO](barcode) read X, action N`
+  and a `barcode` event on topic `e` (p1 is the ASCII letter, p2 the action).
+- Physics and obstacle packets: the dashboard shows the physics values from
+  topic `p` and the obstacle values from topic `o`.
 
-Pass: line bits, barcode character and system fields are correct.
+Pass: line bits, barcode character, and the physics and obstacle fields are correct.
+
+## Stage 4b — supervisor and barcode actions
+
+Wheels up. Run the tests S1 to S7 in [`docs/supervisor.md`](supervisor.md#test-on-the-car).
+
+- A barcode `S` (straight), `L`, `R`, `U` or `H` (halt) gives the `barcode` event on topic `e` and the matching `cmd_accept` event.
+- Any other letter gives the `barcode` event with action 5 (rejected) and no motion.
+- Lift the car by hand: fault bit 11 shows and the wheels stop.
+- Leave the watchdog off (`-DPICO_CAR_WATCHDOG` not set) until test W1 passes.
+
+Pass: every command is accepted or rejected with an event, and no command moves the wheels while the car is held.
 
 ## Stage 5 — motion, wheels up
 
-- With no line under the sensors, the line task drives straight; both wheels
-  turn forward at about 250 mm/s.
+- With no line under the sensors, the line task holds its heading for 100 mm,
+  then weaves at reduced speed (about 100 mm/s). It does not stop (D180). Both
+  wheels turn forward at cruise (163 mm/s) while it holds the heading.
 - Check the encoder speeds on the dashboard or console; no `NO_EDGES` or
   `FEEDBACK` fault.
-- Send STOP from the dashboard or CLI: the wheels stop, fault bit 9
-  (`estop_latched`) is set, and Reset is disabled.
+- Send E-stop from the dashboard or CLI: the wheels stop, fault bit 9
+  (`estop_latched`) is set, and Clear faults is disabled.
 - Power-cycle to clear the latch; START runs again.
 
 Pass: direction, speed, encoder validity and the emergency latch behave.
 
 ## Stage 6 — line following, floor
 
-- Straight line at 250 mm/s: no weave and no lost line.
-- Curve: the car follows without overshoot.
-- Both sensors on the line (junction): the current code drives straight; note
-  the behaviour.
-- Neither sensor (gap): the current code drives straight; note the risk.
+- Straight line at cruise (163 mm/s): a small weave is expected with the sensors
+  35 mm apart. Count the sensor changes per second on the Line panel; run
+  `car_bench` LINEA and LINEB first for the baseline (`docs/bench.md`).
+- Curve of 400 mm and 200 mm radius: the car follows without leaving the line.
+- Gap: cut a 60 mm gap in the line. The car crosses it on its heading.
+- Longer gap (300 mm): the Line panel shows `line_lost`, the car weaves, and it
+  follows again at the next sensor hit.
+- Junction with a barcode `S`: the car drives 250 mm straight and follows the
+  line again. With `L`, `R` or `U` it turns.
 
 Pass: the car follows a straight line and a curve at cruise speed.
 
@@ -217,10 +233,11 @@ HOST_IP=$(ip -4 route get 1.1.1.1 2>/dev/null |
 Or copy the broker line printed by `./dev.sh`.
 
 - Broker check: `mosquitto_sub -h "$HOST_IP" -t 'car/PICO-CAR/#' -v`.
-  Expect `s` at 5 Hz, `t` at 2 Hz, `h` at 1 Hz, `e` for events.
+  Expect `s`, `m` and `p` at 5 Hz, `o` at 2 Hz, `d` and `h` at 1 Hz, `e` for events,
+  and `f` once per obstacle scan.
 - Open the printed dashboard URL (`http://$HOST_IP:8083`) on the host or
   phone. The script sets `EXPO_PUBLIC_ALLOW_INSECURE=1` for the LAN.
-- Check live state, the onboard system panel, and the history page.
+- Check live state, the onboard state panel, and the history page.
 - Send STOP/START/RESET from the dashboard; STOP sets bit 9 and disables
   Reset.
 - CLI: `.venv/bin/python host/cli/cli.py --host "$HOST_IP" monitor`.
@@ -235,10 +252,10 @@ Or copy the broker line printed by `./dev.sh`.
 - The broker log is `logs/broker.log`; the bridge log is `logs/bridge.log`;
   `curl http://127.0.0.1:8090/health` shows the bridge MQTT state and packet
   count.
-- The car prints `[conn] state=...` on state changes and
-  `[conn] transport open failed` once. The TCP retry loop is silent, so watch
+- The car prints `[INFO](connection) state=...` on state changes and
+  `[WARN](connection:tcp)` lines when a connection attempt fails. Watch
   the serial and the broker log for `pico-car`.
-- On the serial, expect the Wi-Fi join, DHCP, and `[conn]` ready state.
+- On the serial, expect the Wi-Fi join, DHCP, and the `[INFO](connection)` ready state.
 - Outage: stop the broker or AP for 30 s. The car retries the TCP/MQTT session;
   the broker log shows a new `pico-car` client when it recovers. The dashboard
   reconnects its WebSocket and shows the bridge state.
@@ -254,6 +271,32 @@ Pass: packets, dashboard, commands, serial reconnect and broker reconnect work.
 - Barcode edge overflow: check `ir_barcode_drops`.
 
 Pass: each fault is reported and the car stops safely.
+
+## Stage 10 — what only you can check
+
+The code cannot see these. Do them with the benches in [`docs/bench.md`](bench.md). Write each result in the question named in the last column of `artifacts/questions.md`.
+
+| # | Check | How | Pass when | Question |
+|---|---|---|---|---|
+| 10.1 | Line sensor lead and spacing | Done: 130 mm lead, 25 mm spacing. Measure again only if you move the sensors | The model is re-run with new numbers | Q71 |
+| 10.2 | Sensor comparator trimpots | `car_bench` SENS: slide the car over the line by hand | Each sensor switches at the middle of the edge, with few raw edges beside the filtered ones | Q71 |
+| 10.3 | Wheel direction and encoder plugs | `car_bench` ENC with the wheels off the floor | Both wheels turn forward, both verdicts `OK` | none |
+| 10.4 | Wheel lag | `car_bench` STEP | 63% time near 60 ms, or the model is re-run with the real value | Q72 |
+| 10.5 | Old and new line law | `car_bench` LINEA then LINEB on the same 1.5 m straight | Cascade changes per second under 0.65 of the legacy value | Q72 |
+| 10.6 | Watchdog and H-bridge | `wdt_check` (test W1) | The wheels stop at the reset and stay stopped | Q61 |
+| 10.7 | Lift cue | `car_bench` LIFT | The cue sets in the air and clears on the floor | none |
+| 10.8 | Hump FLAT checks | `physics_check`, then `physics_log_summary.py --checks` | Checks 1 to 3 pass; check 4 by hand (see `docs/bench.md`) | none |
+| 10.9 | Real ramp | Done: 10 mm high over 100 mm, about 6 degrees at most, less across the wheelbase | The hump detector enters at 4 degrees, so it can see this ramp; the 6 degree limit could not | none |
+| 10.10 | Servo travel | `obstacle_bench` SERVO CHECK on a square wall | Verdict OK, or tune `OBSTACLE_SERVO_US_PER_10DEG` and the centre | none |
+| 10.11 | Sonar beam edge and incidence | `obstacle_bench` scan of a board at 230 mm; slide it across | The angle where the face stops returning is written down | Q56 |
+| 10.12 | TRIG readback | Obstacle checklist H7e | Good pings read VALID or OPEN | Q62 |
+| 10.13 | Battery during braking | Multimeter on the battery rail while the car brakes hard from cruise | The rail stays above the Pico brown-out level and the powerbank does not sleep | Q12 |
+| 10.14 | Barcode reads at speed | Run over each code at cruise and while the car slows | Every pass gives a `barcode` event; a `barcode_bad` reason 1 (element) means a bar fell outside the width bands | Q23 |
+| 10.15 | Crossing length | Only if the track has crossings: the length from the barcode to the far side of the crossing | Under 250 mm (`LINE_STRAIGHT_MM`), or change the constant | none |
+| 10.16 | Wi-Fi coverage | Carry the car (powered, wheels held) to each corner of the course | RSSI above -75 dBm on the Link panel | none |
+| 10.17 | Stack headroom | Run 30 s with the serial monitor open | Every `stack free` line shows at least 512 bytes | Q25 |
+
+Pass: every line has a written result.
 
 ## Sign-off
 

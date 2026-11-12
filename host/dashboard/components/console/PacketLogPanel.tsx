@@ -7,15 +7,32 @@ import { Button } from '../ui/button';
 import { formatTime, packetSummary } from './format';
 import { Panel } from './Panel';
 
-type Filter = 'ALL' | 'STATUS' | 'EVENT' | 'HEARTBEAT' | 'SYSTEM';
+type Filter =
+  | 'ALL'
+  | 'STATUS'
+  | 'MOTION'
+  | 'PHYSICS'
+  | 'OBSTACLE'
+  | 'DIAG'
+  | 'EVENT'
+  | 'PROFILE'
+  | 'HEARTBEAT';
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'ALL', label: 'ALL' },
   { key: 'STATUS', label: 'STAT' },
+  { key: 'MOTION', label: 'MOT' },
+  { key: 'PHYSICS', label: 'PHY' },
+  { key: 'OBSTACLE', label: 'OBS' },
+  { key: 'DIAG', label: 'DIAG' },
   { key: 'EVENT', label: 'EVT' },
+  { key: 'PROFILE', label: 'SCAN' },
   { key: 'HEARTBEAT', label: 'HB' },
-  { key: 'SYSTEM', label: 'SYS' },
 ];
+
+/** One log row is about this tall; the scroller needs an explicit height. */
+const ROW_PX = 48;
+const LOG_MAX_PX = 300;
 
 type Props = {
   packets: LinkPacket[];
@@ -58,7 +75,7 @@ export function PacketLogPanel({ packets, connected, style }: Props) {
       ) : null}
       <ScrollView
         showsVerticalScrollIndicator={false}
-        style={styles.log}
+        style={{ height: Math.min(LOG_MAX_PX, visible.length * ROW_PX) }}
         contentContainerStyle={styles.logContent}
       >
         {visible.length === 0 ? (
@@ -107,7 +124,6 @@ export function PacketLogPanel({ packets, connected, style }: Props) {
 
 const styles = StyleSheet.create({
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  log: { maxHeight: 300 },
   logContent: { gap: 8, paddingRight: 4 },
   row: { borderTopWidth: 1, gap: 2, paddingTop: 8 },
   rowHead: {

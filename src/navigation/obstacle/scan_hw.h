@@ -15,8 +15,8 @@ ER       scan_hw_init (ID h_echo_flag);
 void     scan_hw_servo_set (int16_t deci);
 uint32_t scan_hw_now_us (void);
 bool     scan_hw_rearm (void);
-void     scan_hw_trigger (void);
-uint32_t scan_hw_mailbox (void);
+bool     scan_hw_trigger (void);
+uint32_t scan_hw_echo_result (void);
 bool     scan_hw_is_echo_high (void);
 
 #endif /* SCAN_HW_H */

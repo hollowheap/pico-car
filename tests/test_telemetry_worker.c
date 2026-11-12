@@ -10,9 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "telemetry/packet.h"
 #include "telemetry/worker.h"
 
-#define FRAME_MAX  17U
+#define FRAME_MAX  TELEMETRY_FRAME_MAX
 #define SCRIPT_MAX 32U
 #define CALL_GUARD 64U
 #define RLWAI_CODE (-49)
@@ -141,14 +142,14 @@ static void test_drains_all_frames (void)
     reset();
     add(9, 9U, 10U);
     add(5, 5U, 20U);
-    add(17, 17U, 30U);
+    add((INT)FRAME_MAX, FRAME_MAX, 30U);
     add(1, 1U, 40U);
     telemetry_worker_run(fake_pop, fake_sink, TMO_POL);
 
     CHECK(g_sink_calls == 4U);
     CHECK(sink_got(0U, 9U, 10U));
     CHECK(sink_got(1U, 5U, 20U));
-    CHECK(sink_got(2U, 17U, 30U));
+    CHECK(sink_got(2U, FRAME_MAX, 30U));
     CHECK(sink_got(3U, 1U, 40U));
     CHECK(g_pop_calls == 5U); /* four frames, then the empty pop ends it */
     pass("worker_drains_all_frames", before);

@@ -83,9 +83,9 @@ src/navigation/obstacle/
 1. `scan_task.c` asks `statechart.c` where the servo should point, and moves it
    with `scan_hw.c`.
 2. `scan_hw.c` sends the 12 µs trigger. Its ISR times the echo and writes
-   the result into a mailbox word.
-3. `scan_task.c` hands the mailbox to `scan_algo.c`, which classes the
-   reading (VALID / OPEN / UNKNOWN / STUCK) and turns it into millimetres.
+   the result into the echo result word.
+3. `scan_task.c` hands the echo result to `scan_algo.c`, which classes the
+   reading (VALID / OPEN / TOO_CLOSE / NO_ECHO / GLITCH / STUCK) and turns it into millimetres.
 4. `statechart.c` decides what the reading means (obstacle? scan step? steer?),
    using `scan_algo.c` and `planner.c`.
 5. `comms.c` publishes what changed (events, steering, status) for
@@ -173,9 +173,9 @@ functions, who uses it, and when you would edit it.
 - **What it does:** sets up GP0 (TRIG), GP1 (ECHO) and GP12 (servo PWM, 50
   Hz), checks that the 1 MHz timer is ticking, sends the trigger pulse, and
   holds the ECHO interrupt handler. The ISR times the pulse and writes it
-  into a mailbox word in one store.
+  into the echo result word in one store.
 - **Main functions:** `scan_hw_init`, `scan_hw_servo_set`,
-  `scan_hw_trigger`, `scan_hw_rearm`, `scan_hw_mailbox`,
+  `scan_hw_trigger`, `scan_hw_rearm`, `scan_hw_echo_result`,
   `scan_hw_is_echo_high`, `scan_hw_now_us`; ISR `echo_isr` (private).
 - **Used by:** `obstacle.c` (start-up), `scan_task.c` (every ping).
 - **Edit it when:** pins, PWM settings or the ISR change.

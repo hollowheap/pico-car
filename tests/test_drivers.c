@@ -522,6 +522,57 @@ static pipe_result_t run_pipeline (uint32_t fail_at, uint32_t fail_n)
     return res;
 }
 
+/* A lift is reported through the pipeline: the attitude state and the LIFTED
+ * motion class in the packed word. A failed read does not change it. */
+static void test_pipeline_lift (void)
+{
+    hump_config_t hcfg;
+    imu_motion_config_t mcfg;
+    pipeline_t pipe;
+    pipeline_step_t out;
+    hump_fields_t f;
+    motion_input_t m;
+    uint32_t i;
+    float acc[3] = { 0.0f, 0.0f, 1.0f };
+    bool saw_lifted = false;
+
+    hump_default_config (&hcfg);
+    imu_motion_default_config (&mcfg);
+    mcfg.mag_enabled = false;
+    CHECK (pipeline_init (&pipe, &hcfg, &mcfg, 10U));
+    memset (&m, 0, sizeof (m));
+    m.valid = true;
+    m.wheels_valid = true;
+    m.age_s = 0.005f;
+
+    for (i = 0U; i < 60U; i++)
+    {
+        CHECK (pipeline_step (&pipe, acc, NULL, &m, DT_S, false, &out));
+    }
+    CHECK (ATTITUDE_OK == out.attitude.state);
+    CHECK (out.attitude.calibrated);
+
+    /* Picked up and tilted past the envelope for 30 cycles. */
+    acc[0] = sinf (30.0f * DEG_TO_RAD);
+    acc[2] = cosf (30.0f * DEG_TO_RAD);
+    for (i = 0U; i < 30U; i++)
+    {
+        CHECK (pipeline_step (&pipe, acc, NULL, &m, DT_S, false, &out));
+        saw_lifted = saw_lifted || (ATTITUDE_LIFTED == out.attitude.state);
+    }
+    CHECK (saw_lifted);
+    CHECK (hump_unpack (out.word, &f));
+    CHECK (MOTION_CLASS_LIFTED == f.motion);
+
+    /* A new run starts from a fresh reference. */
+    pipeline_new_run (&pipe);
+    acc[0] = 0.0f;
+    acc[2] = 1.0f;
+    CHECK (pipeline_step (&pipe, acc, NULL, &m, DT_S, false, &out));
+    CHECK (ATTITUDE_OK == out.attitude.state);
+    CHECK (!out.attitude.calibrated);
+}
+
 static void test_pipeline (void)
 {
     pipe_result_t clean;
@@ -589,6 +640,7 @@ int main (void)
     test_reads ();
     test_retries ();
     test_adapter ();
+    test_pipeline_lift ();
     test_pipeline ();
 
     if (0 == g_failures)

@@ -307,14 +307,20 @@ set(FIRMWARE_WARNINGS
 add_library(platform STATIC
     src/platform/faults.c
     src/platform/isr.c
+    src/platform/liveness.c
+    src/platform/log.c
+    src/platform/log_core.c
+    src/platform/watchdog.c
 )
 target_include_directories(platform PUBLIC include)
 target_link_libraries(platform PUBLIC mtk3smp)
 target_compile_options(platform PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(telemetry STATIC
+    src/telemetry/assemble.c
     src/telemetry/cmd.c
     src/telemetry/connection_task.c
+    src/telemetry/emit.c
     src/telemetry/mqtt_client.c
     src/telemetry/net_queue.c
     src/telemetry/packet.c
@@ -328,6 +334,26 @@ target_include_directories(telemetry PUBLIC include PRIVATE
 target_link_libraries(telemetry PUBLIC platform mtk3smp)
 target_compile_options(telemetry PRIVATE ${FIRMWARE_WARNINGS})
 
+# D120, D160: the supervisor. The first three files are pure and host-tested.
+add_library(supervisor STATIC
+    src/supervisor/command_ring.c
+    src/supervisor/health_core.c
+    src/supervisor/edge_events.c
+    src/supervisor/run_state.c
+    src/supervisor/supervisor.c
+)
+target_include_directories(supervisor PUBLIC include PRIVATE src/supervisor)
+target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle physics mtk3smp)
+target_compile_options(supervisor PRIVATE ${FIRMWARE_WARNINGS})
+
+# The hardware watchdog (D160) is off by default. Turn it on only after you have
+# checked that the H-bridge inputs stay low across a chip reset (docs/supervisor.md,
+# test W1): ./configure.sh -DPICO_CAR_WATCHDOG=ON
+option(PICO_CAR_WATCHDOG "Start the RP2040 watchdog in the supervisor" OFF)
+if(PICO_CAR_WATCHDOG)
+    target_compile_definitions(supervisor PRIVATE PICO_CAR_WATCHDOG)
+endif()
+
 add_library(motion_core STATIC
     src/motion/controller.c
     src/motion/pid.c
@@ -337,11 +363,12 @@ add_library(motion_core STATIC
     src/motion/motion_inbox.c
 )
 target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(motion_core PUBLIC mtk3smp)
+target_link_libraries(motion_core PUBLIC platform mtk3smp)
 target_compile_options(motion_core PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(motion_service STATIC
     src/motion/motion_service.c
+    src/motion/motor_setup.c
     src/motion/pwm.c
     src/motion/motor.c
     src/motion/encoder.c
@@ -356,12 +383,14 @@ add_library(track STATIC
     src/track/barcode_task.c
     src/track/barcode_width.c
     src/track/line_control.c
+    src/track/line_filter.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(track PUBLIC platform barcode motion_service mtk3smp)
+target_link_libraries(track PUBLIC platform barcode motion_service telemetry supervisor mtk3smp)
 target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(barcode STATIC
+    src/barcode/action.c
     src/barcode/parser.c
 )
 target_include_directories(barcode PUBLIC include)
@@ -454,7 +483,27 @@ target_include_directories(obstacle_nav PRIVATE
 target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3smp)
 target_compile_options(obstacle_nav PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
-target_link_libraries(main PRIVATE obstacle_nav)
+target_link_libraries(main PRIVATE obstacle_nav supervisor)
+
+# Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
+# part of main.uf2. docs/bench.md says what each one measures.
+add_executable(car_bench src/bench/car_bench.c)
+target_include_directories(car_bench PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(car_bench PRIVATE track motion_service platform supervisor mtk3smp)
+add_executable(wdt_check src/bench/wdt_check.c)
+target_include_directories(wdt_check PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(wdt_check PRIVATE platform mtk3smp)
+foreach(bench_target IN ITEMS car_bench wdt_check)
+    target_compile_options(${bench_target} PRIVATE
+        -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
+    target_link_options(${bench_target} PRIVATE
+        -nostartfiles
+        -Wl,--gc-sections
+        -Wl,--undefined=boot2
+        -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
+    )
+    pico_add_extra_outputs(${bench_target})
+endforeach()
 
 # Buddy 4: IMU, terrain detection, and bring-up targets
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/physics.cmake)

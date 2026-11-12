@@ -40,6 +40,7 @@
  * GPIO_PUE and GPIO_PDE, which are signed ints (BARR-C 5.3.b). */
 #define PAD_PULL_UP   (1UL << 3U)
 #define PAD_PULL_DOWN (1UL << 2U)
+#define PAD_INPUT_ENABLE (1UL << 6U)
 
 /* Cast is safe: RESETS_RESET_PWM is a positive single-bit constant. */
 #define RESET_PWM_BIT ((UW)RESETS_RESET_PWM)
@@ -88,12 +89,12 @@ OBSTACLE_CT_ASSERT(servo_slice_matches_pin,
 OBSTACLE_CT_ASSERT(servo_on_channel_a, 0U == (OBSTACLE_SERVO_PIN & 1U));
 
 /* Echo state shared with the ISR, so every member is volatile: the
- * mailbox (width 16 | RISE | DONE), the rise time and the flag to set.
+ * echo result (width 16 | RISE | DONE), the rise time and the flag to set.
  * NOTE: The handle is an h_ member of a g_ struct, which satisfies both
  * BARR-C 7.1.n/7.1.o and the team .clang-tidy. */
 typedef struct
 {
-    uint32_t volatile mbx;
+    uint32_t volatile result;
     uint32_t volatile rise_us;
     ID volatile h_flag;
 } echo_state_t;
@@ -104,8 +105,8 @@ static void start_timer (void);
 static ER   check_timer (void);
 static bool is_pwm_out_of_reset (void);
 static ER   servo_pwm_init (void);
-static void echo_rise (uint32_t mbx, uint32_t now_us);
-static void echo_fall (uint32_t mbx, uint32_t now_us);
+static void echo_rise (uint32_t echo_result, uint32_t now_us);
+static void echo_fall (uint32_t echo_result, uint32_t now_us);
 static void echo_isr (const gpio_edge_snapshot_t * p_snapshot);
 
 /*!
@@ -142,6 +143,9 @@ ER scan_hw_init (ID h_echo_flag)
          * "no rise" rather than noise. */
         (void)gpio_set_val(OBSTACLE_TRIG_PIN, 0U);
         (void)gpio_set_pin(OBSTACLE_TRIG_PIN, GPIO_MODE_OUT);
+        /* The BSP turns the input buffer off for an output. P4 reads TRIG back, so
+         * turn it on again. */
+        set_w(GPIO(OBSTACLE_TRIG_PIN), PAD_INPUT_ENABLE);
         (void)gpio_set_pin(OBSTACLE_ECHO_PIN, GPIO_MODE_IN);
         clr_w(GPIO(OBSTACLE_ECHO_PIN), PAD_PULL_UP);
         set_w(GPIO(OBSTACLE_ECHO_PIN), PAD_PULL_DOWN);
@@ -150,7 +154,7 @@ ER scan_hw_init (ID h_echo_flag)
 
     if (E_OK == result)
     {
-        g_echo.mbx = 0U;
+        g_echo.result = 0U;
         result     = gpio_irq_add_handler(TP_PRC1, ECHO_BIT, echo_isr);
     }
 
@@ -212,7 +216,7 @@ uint32_t scan_hw_now_us (void)
 }
 
 /*!
- * @brief Empty the mailbox for the next ping.
+ * @brief Empty the echo result for the next ping.
  *
  * Interrupts are paused on this core for two statements (about 0.2 us)
  * so the ISR cannot write while the box is being emptied.
@@ -226,7 +230,7 @@ bool scan_hw_rearm (void)
     bool b_high = false;
 
     DI(intsts);
-    g_echo.mbx = 0U;
+    g_echo.result = 0U;
     b_high     = scan_hw_is_echo_high();
     EI(intsts);
 
@@ -234,23 +238,33 @@ bool scan_hw_rearm (void)
 }
 
 /*!
- * @brief Send the 12 us trigger pulse on GP0.
+ * @brief Send the 12 us trigger pulse on GP0 and read the pad back (P4).
+ *
+ * @return True if the pad read high at the end of the pulse. Always true when
+ *         OBSTACLE_TRIG_READBACK is 0.
  */
-void scan_hw_trigger (void)
+bool scan_hw_trigger (void)
 {
+    bool b_high = true;
+
     (void)gpio_set_val(OBSTACLE_TRIG_PIN, 1U);
     WaitUsec(OBSTACLE_TRIG_PULSE_US);
+#if (0U != OBSTACLE_TRIG_READBACK)
+    b_high = (0U != gpio_get_val(OBSTACLE_TRIG_PIN));
+#endif
     (void)gpio_set_val(OBSTACLE_TRIG_PIN, 0U);
+
+    return (b_high);
 }
 
 /*!
- * @brief Read the mailbox the ISR writes.
+ * @brief Read the echo result the ISR writes.
  *
- * @return The mailbox word (width 16 | RISE | DONE).
+ * @return The echo result word (width 16 | RISE | DONE).
  */
-uint32_t scan_hw_mailbox (void)
+uint32_t scan_hw_echo_result (void)
 {
-    return (g_echo.mbx);
+    return (g_echo.result);
 }
 
 /*!
@@ -372,41 +386,41 @@ static ER servo_pwm_init (void)
 /*!
  * @brief ISR helper for a rising level: remember the time, set RISE.
  *
- * @param[in] mbx    Mailbox value the ISR read.
+ * @param[in] echo_result    Echo result the ISR read.
  * @param[in] now_us TIMER value at the edge.
  */
-static void echo_rise (uint32_t mbx, uint32_t now_us)
+static void echo_rise (uint32_t echo_result, uint32_t now_us)
 {
-    if (0U == (mbx & OBSTACLE_MBX_RISE))
+    if (0U == (echo_result & OBSTACLE_ECHO_RISE))
     {
         g_echo.rise_us = now_us;
-        g_echo.mbx     = OBSTACLE_MBX_RISE;
+        g_echo.result     = OBSTACLE_ECHO_RISE;
     }
 }
 
 /*!
  * @brief ISR helper for a falling level: store width | RISE | DONE in one
  *        write and wake the task. A fall with no rise stores DONE alone,
- *        which is classed UNKNOWN.
+ *        which is classed GLITCH.
  *
- * @param[in] mbx    Mailbox value the ISR read.
+ * @param[in] echo_result    Echo result the ISR read.
  * @param[in] now_us TIMER value at the edge.
  */
-static void echo_fall (uint32_t mbx, uint32_t now_us)
+static void echo_fall (uint32_t echo_result, uint32_t now_us)
 {
     uint32_t width_us = 0U;
 
-    if (0U != (mbx & OBSTACLE_MBX_RISE))
+    if (0U != (echo_result & OBSTACLE_ECHO_RISE))
     {
         /* Unsigned subtraction is wrap-safe. */
         width_us = now_us - g_echo.rise_us;
-        if (width_us > OBSTACLE_MBX_WIDTH_MASK)
+        if (width_us > OBSTACLE_ECHO_WIDTH_MASK)
         {
-            width_us = OBSTACLE_MBX_WIDTH_MASK;
+            width_us = OBSTACLE_ECHO_WIDTH_MASK;
         }
     }
 
-    g_echo.mbx = (mbx & OBSTACLE_MBX_RISE) | OBSTACLE_MBX_DONE | width_us;
+    g_echo.result = (echo_result & OBSTACLE_ECHO_RISE) | OBSTACLE_ECHO_DONE | width_us;
     (void)tk_set_flg(g_echo.h_flag, OBSTACLE_FLG_ECHO);
 }
 
@@ -423,20 +437,20 @@ static void echo_fall (uint32_t mbx, uint32_t now_us)
 static void echo_isr (const gpio_edge_snapshot_t * p_snapshot)
 {
     uint32_t const now_us = p_snapshot->timestamp_us;
-    uint32_t const mbx    = g_echo.mbx;
+    uint32_t const echo_result    = g_echo.result;
     bool const     b_high = scan_hw_is_echo_high();
 
-    if (0U != (mbx & OBSTACLE_MBX_DONE))
+    if (0U != (echo_result & OBSTACLE_ECHO_DONE))
     {
         /* This ping is finished; later edges wait for the next re-arm. */
     }
     else if (b_high)
     {
-        echo_rise(mbx, now_us);
+        echo_rise(echo_result, now_us);
     }
     else
     {
-        echo_fall(mbx, now_us);
+        echo_fall(echo_result, now_us);
     }
 }
 

@@ -59,8 +59,18 @@ bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level);
 /** Barcode edges dropped because the ISR ring was full. */
 uint32_t ir_barcode_drops (void);
 
+/* True while the line follower must ignore the line sensors because of a barcode:
+ * a barcode edge was seen less than BARCODE_SUPPRESS_US ago, by the sample
+ * timestamp of the edge, not by the time a task woke up (D130). */
+bool ir_barcode_recent (void);
+
 /** Line timer alarm overruns. */
 uint32_t ir_line_overruns (void);
+
+/** Filtered line sensor state changes since init (both sensors counted). */
+uint32_t ir_line_edges (void);
+/** Raw comparator changes since init. Compare with ir_line_edges to see chatter. */
+uint32_t ir_line_raw_edges (void);
 
 #endif /* TRACK_TRACK_H */
 

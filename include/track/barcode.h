@@ -3,8 +3,9 @@
  * @brief Code 39 barcode decode task facade.
  *
  * The line ISR timestamps each barcode edge into a bounded ring. The barcode
- * task drains the ring and feeds element widths to the parser; a decoded
- * character is handed to the composition root's callback.
+ * task drains the ring and feeds element widths to the parser. A decoded
+ * letter becomes an event and, for S, L, R and U, a command for the
+ * supervisor (D130). The barcode task never drives the car itself.
  */
 
 #ifndef TRACK_BARCODE_H
@@ -14,11 +15,21 @@
 #include <stdint.h>
 
 #include "motion/motion.h"
+#include "platform/static_assert.h"
 
-/* Receives 0..25 for 'A'..'Z'. */
-typedef void (*barcode_handler_t)(uint8_t code);
+/* Counters for the diag packet. Written by the barcode task only. */
+typedef struct
+{
+    uint16_t ok;          /* barcodes decoded and acted on or rejected as a letter */
+    uint16_t bad;         /* barcodes the parser, the speed check or the gate refused */
+    uint8_t  last_letter; /* ASCII, 0 before the first */
+    uint8_t  last_action; /* BARCODE_ACTION_* */
+} barcode_stats_t;
 
-void barcode_set_handler (barcode_handler_t handler);
+STATIC_ASSERT (sizeof(barcode_stats_t) == 6U, "barcode_stats_t size");
+
+/* Consistent enough for telemetry: each field is read whole. */
+void barcode_stats (barcode_stats_t * p_stats);
 
 /* Task body. Never returns. */
 void barcode_task_run (void);

@@ -48,7 +48,7 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
     cmd->sent_ms  = read_u16(&src[CMD_OFFSET_SENT]);
     cmd->opcode   = src[CMD_OFFSET_OPCODE];
 
-    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_ESTOP)
+    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_STRAIGHT)
     {
         return TELEMETRY_CMD_BAD_OPCODE;
     }

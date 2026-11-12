@@ -3,16 +3,16 @@
  *
  * src/telemetry/net_queue.c is compiled unchanged against the kernel shim and
  * the message buffer fake in tests/shim/tk/mbf_fake.h (capacity and ring
- * rules copied from messagebuf.c). Frames are stored without a tag, so a
- * 17-byte tagged frame from the telemetry queue is a 17-byte message here:
- * 24 bytes in the buffer, 16 messages in 384 bytes.
+ * rules copied from messagebuf.c). A frame is the topic byte plus the wire
+ * packet, so the largest frame (the 82-byte profile) is an 83-byte message
+ * here: 88 bytes in the buffer, 11 messages in 1024 bytes.
  *
  * Unlike the telemetry queue, a full net queue never evicts: the new frame is
  * refused with E_TMOUT and counted.
  *
- * SPEC MISMATCH: artifacts/SE01_PostTri1.md (sections 3 and 4.1) describes
- * mbf_net_tx_id as 1024 B and says overflow drops the oldest QoS 0 report.
- * The code is 384 B and drops the newest frame. These tests assert the code.
+ * NOTE: artifacts/SE01_PostTri1.md (sections 3 and 4.1) says overflow drops
+ * the oldest QoS 0 report. The code drops the newest frame. These tests
+ * assert the code.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -21,13 +21,13 @@
 #include <tk/mbf_fake.h>
 #include "telemetry/net_queue.h"
 
-#define BUFFER_BYTES 384U
-#define MSG_MAX      17U
-#define CAP_17       16U
-#define CAP_9        24U
-#define CAP_2        48U
+#define BUFFER_BYTES 1024U
+#define MSG_MAX      83U
+#define CAP_17       11U /* messages of MSG_MAX bytes (88 B each) */
+#define CAP_9        64U /* 9 B costs 16 B */
+#define CAP_2        128U /* 1 B costs 8 B */
 #define FUZZ_STEPS   3000U
-#define MODEL_MAX    64U
+#define MODEL_MAX    160U
 #define LCG_MUL      1103515245U
 #define LCG_ADD      12345U
 
@@ -194,11 +194,11 @@ static void test_fifo_and_lengths (void)
 
     setup();
     CHECK(push_seed(4U, 1U) == E_OK);
-    CHECK(push_seed(17U, 2U) == E_OK);
+    CHECK(push_seed(MSG_MAX, 2U) == E_OK);
     CHECK(push_seed(1U, 3U) == E_OK);
     CHECK(push_seed(8U, 4U) == E_OK);
     CHECK(pop_is(4U, 1U));
-    CHECK(pop_is(17U, 2U));
+    CHECK(pop_is(MSG_MAX, 2U));
     CHECK(pop_is(1U, 3U));
     CHECK(pop_is(8U, 4U));
     CHECK(pop_empty());
@@ -217,13 +217,14 @@ static void test_full_rejects_new_and_counts (void)
 
     CHECK(push_seed(MSG_MAX, 200U) == E_TMOUT);
     CHECK(telemetry_net_queue_drop_count() == drops + 1U);
-    CHECK(push_seed(1U, 201U) == E_TMOUT);
+    /* 968 of 1024 bytes are used; another full-size frame still does not fit. */
+    CHECK(push_seed(MSG_MAX, 201U) == E_TMOUT);
     CHECK(telemetry_net_queue_drop_count() == drops + 2U);
     CHECK(g_mbf_fake.last_snd_tmout == TMO_POL);
     CHECK(g_mbf_fake.would_block == 0U);
     CHECK(g_mbf_fake.recv_calls == 0U); /* never evicts */
 
-    /* The queue still holds the first 16 frames, oldest first. */
+    /* The queue still holds the first frames, oldest first. */
     for (unsigned i = 0U; i < CAP_17; i++)
     {
         CHECK(pop_is(MSG_MAX, (uint8_t)i));
@@ -271,7 +272,7 @@ typedef struct
 
 static void test_wraparound_fuzz (void)
 {
-    static const uint8_t lens[] = {1U, 4U, 5U, 8U, 9U, 12U, 16U, 17U};
+    static const uint8_t lens[] = {1U, 4U, 5U, 8U, 9U, 12U, 16U, 17U, 40U, 83U};
     model_t              model[MODEL_MAX];
     unsigned             count = 0U;
     unsigned             used = 0U;

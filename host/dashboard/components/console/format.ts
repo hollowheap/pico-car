@@ -1,20 +1,5 @@
 import type { LinkPacket } from '../../lib/link';
-import { enumLabel } from '../../lib/schema';
-
-export const MOTION_STATES = [
-  'IDLE',
-  'RUNNING',
-  'REVERSING',
-  'STOPPED',
-  'FAULT',
-] as const;
-
-export function motionName(state: number | undefined): string {
-  if (state === undefined || state < 0 || state >= MOTION_STATES.length) {
-    return '--';
-  }
-  return MOTION_STATES[state] ?? '--';
-}
+import { enumLabel, headingDegrees } from '../../lib/schema';
 
 export function faultHex(mask: number | undefined): string {
   if (mask === undefined) {
@@ -41,26 +26,62 @@ export function bearingName(headingDeg: number): string {
 
 export function packetSummary(packet: LinkPacket): string {
   const values = packet.values;
-  if (packet.packet === 'status') {
-    return `speed ${values.speed_mms ?? '--'} mm/s  dist ${values.dist_mm ?? '--'} mm  hdg ${values.heading_deg ?? '--'} deg`;
+  const heading = headingDegrees(values.heading_ddeg);
+  switch (packet.packet) {
+    case 'status':
+      return (
+        `speed ${values.speed_mms ?? '--'} mm/s  odo ${values.odometer_mm ?? '--'} mm  ` +
+        `hdg ${heading === null ? '--' : heading.toFixed(1)} deg  ` +
+        `${enumLabel('runState', values.state)}  faults ${faultHex(values.faults)}`
+      );
+    case 'motion':
+      return (
+        `L ${values.left_mms ?? '--'}/${values.left_target_mms ?? '--'}  ` +
+        `R ${values.right_mms ?? '--'}/${values.right_target_mms ?? '--'} mm/s  ` +
+        `${enumLabel('motionState', values.motion_state)}  ${enumLabel('motionFault', values.motion_fault)}`
+      );
+    case 'physics':
+      return (
+        `pitch ${values.pitch_cdeg ?? '--'} cdeg  hump ${enumLabel('humpState', values.hump_state)}  ` +
+        `${enumLabel('motionClass', values.motion_class)}  ${enumLabel('attitudeState', values.attitude_state)}`
+      );
+    case 'obstacle':
+      return (
+        `obstacle ${enumLabel('obstacleState', values.state)}  dist ${values.dist_mm ?? '--'} mm  ` +
+        `cause ${enumLabel('obstacleCause', values.cause)}  echo ${enumLabel('echoClass', values.echo_class)}`
+      );
+    case 'diag':
+      return (
+        `line lost ${values.line_lost_count ?? '--'}  barcode ok ${values.barcode_ok ?? '--'} ` +
+        `bad ${values.barcode_bad ?? '--'}  queue drops ${values.telem_queue_drops ?? '--'}`
+      );
+    case 'event':
+      return (
+        `id ${values.event_id ?? '--'}  ${enumLabel('eventType', values.event_type)}  ` +
+        `${enumLabel('eventSource', values.source)}  p1 ${values.p1 ?? '--'}  p2 ${values.p2 ?? '--'}`
+      );
+    case 'heartbeat':
+      return (
+        `up ${values.uptime_s ?? '--'}s  drops ${values.drops ?? '--'}  ` +
+        `rssi ${values.wifi_rssi ?? '--'} dBm  ${enumLabel('linkState', values.link_state)}`
+      );
+    case 'profile':
+      return `req ${values.req_id ?? '--'}  closest ${values.closest_mm ?? '--'} mm  width ${values.width_mm ?? '--'} mm`;
+    default:
+      return packet.packet;
   }
-  if (packet.packet === 'event') {
-    return `id ${values.event_id ?? '--'}  type ${values.event_type ?? '--'}  p1 ${values.p1 ?? '--'}  p2 ${values.p2 ?? '--'}`;
-  }
-  if (packet.packet === 'heartbeat') {
-    return `up ${values.uptime_s ?? '--'}s  drops ${values.drops ?? '--'}  rssi ${values.wifi_rssi ?? '--'} dBm`;
-  }
-  if (packet.packet === 'system') {
-    const obstacle = enumLabel('obstacleState', values.obstacle_state);
-    const hump = enumLabel('physicsState', values.physics_state);
-    return (
-      `obstacle ${obstacle}  dist ${values.obstacle_dist_mm ?? '--'} mm  ` +
-      `hump ${hump}  pitch ${values.pitch_cdeg ?? '--'} cdg`
-    );
-  }
-  return packet.packet;
 }
 
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour12: false });
+}
+
+/** A value with its unit, or `--` when the packet has not arrived. */
+export function withUnit(value: number | undefined, unit: string, digits = 0): string {
+  return value === undefined ? '--' : `${value.toFixed(digits)} ${unit}`;
+}
+
+/** Odometer in millimetres as metres with two decimals. */
+export function metres(mm: number | undefined): string {
+  return mm === undefined ? '--' : `${(mm / 1000).toFixed(2)} m`;
 }

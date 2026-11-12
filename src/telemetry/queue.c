@@ -1,3 +1,5 @@
+#include <stdbool.h>
+
 #include <tk/smp.h>
 
 #include "platform/static_assert.h"
@@ -6,42 +8,32 @@
 
 #define QUEUE_BUFFER_ALIGN 4
 
-/* Smallest message cost in the buffer: 4 B header + the 4 B heartbeat. It
-   bounds the eviction loop by the number of messages the buffer can hold. */
-#define QUEUE_MIN_COST      8U
+/* Smallest message cost in the buffer: 4 B header + the 9 B heartbeat frame
+   rounded up to 12 B. It bounds the eviction loop by the number of messages
+   the buffer can hold. */
+#define QUEUE_MIN_COST      16U
 #define QUEUE_EVICT_LIMIT   (TELEMETRY_QUEUE_BYTES / QUEUE_MIN_COST)
 
-/* D87: the topic is inferred from the stored length, so the four lengths must
-   be distinct and fit the pop buffer (topic byte + frame) and the kernel
-   maxmsz. */
-STATIC_ASSERT (TELEMETRY_HEARTBEAT_QUEUED_SIZE != TELEMETRY_EVENT_QUEUED_SIZE,
-               "queued lengths distinct");
-STATIC_ASSERT (TELEMETRY_HEARTBEAT_QUEUED_SIZE != TELEMETRY_STATUS_QUEUED_SIZE,
-               "queued lengths distinct");
-STATIC_ASSERT (TELEMETRY_HEARTBEAT_QUEUED_SIZE != TELEMETRY_SYSTEM_QUEUED_SIZE,
-               "queued lengths distinct");
-STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != TELEMETRY_STATUS_QUEUED_SIZE,
-               "queued lengths distinct");
-STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != TELEMETRY_SYSTEM_QUEUED_SIZE,
-               "queued lengths distinct");
-STATIC_ASSERT (TELEMETRY_STATUS_QUEUED_SIZE != TELEMETRY_SYSTEM_QUEUED_SIZE,
-               "queued lengths distinct");
-STATIC_ASSERT (TELEMETRY_HEARTBEAT_QUEUED_SIZE <= TELEMETRY_QUEUE_MAX_MSG,
-               "heartbeat fits queue");
-STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE <= TELEMETRY_QUEUE_MAX_MSG,
-               "event fits queue");
-STATIC_ASSERT (TELEMETRY_STATUS_QUEUED_SIZE <= TELEMETRY_QUEUE_MAX_MSG,
-               "status fits queue");
-STATIC_ASSERT (TELEMETRY_SYSTEM_QUEUED_SIZE + 1U <= TELEMETRY_QUEUE_MAX_MSG,
-               "system plus topic byte fits pop buffer");
-STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE + 1U == TELEMETRY_EVENT_WIRE_SIZE,
-               "event drops exactly the reserved byte");
-STATIC_ASSERT (TELEMETRY_HEARTBEAT_QUEUED_SIZE == TELEMETRY_HEARTBEAT_WIRE_SIZE,
-               "heartbeat stored whole");
-STATIC_ASSERT (TELEMETRY_STATUS_QUEUED_SIZE == TELEMETRY_STATUS_WIRE_SIZE,
-               "status stored whole");
-STATIC_ASSERT (TELEMETRY_SYSTEM_QUEUED_SIZE == TELEMETRY_SYSTEM_WIRE_SIZE,
-               "system stored whole");
+/* D110: the first byte of a stored frame is its topic. Eviction recognises an
+   event by its stored length (tk_ref_mbf reports only a size), so that length
+   must be unique among the frame lengths. */
+#define FRAME_STATUS    (TELEMETRY_STATUS_WIRE_SIZE + 1u)
+#define FRAME_MOTION    (TELEMETRY_MOTION_WIRE_SIZE + 1u)
+#define FRAME_PHYSICS   (TELEMETRY_PHYSICS_WIRE_SIZE + 1u)
+#define FRAME_OBSTACLE  (TELEMETRY_OBSTACLE_WIRE_SIZE + 1u)
+#define FRAME_DIAG      (TELEMETRY_DIAG_WIRE_SIZE + 1u)
+#define FRAME_HEARTBEAT (TELEMETRY_HEARTBEAT_WIRE_SIZE + 1u)
+#define FRAME_PROFILE   (TELEMETRY_PROFILE_WIRE_SIZE + 1u)
+
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_STATUS, "event length unique");
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_MOTION, "event length unique");
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_PHYSICS, "event length unique");
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_OBSTACLE, "event length unique");
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_DIAG, "event length unique");
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_HEARTBEAT, "event length unique");
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_PROFILE, "event length unique");
+STATIC_ASSERT (FRAME_PROFILE <= TELEMETRY_QUEUE_MAX_MSG, "profile fits the queue");
+STATIC_ASSERT (TELEMETRY_QUEUE_MAX_MSG == FRAME_PROFILE, "the profile is the largest frame");
 
 static uint8_t g_queue_buffer[TELEMETRY_QUEUE_BYTES]
     __attribute__((aligned(QUEUE_BUFFER_ALIGN)));
@@ -90,23 +82,44 @@ telemetry_queue_create (void)
     return result;
 }
 
-/* Topic of a message stored with `queued_len` bytes, 0 if no topic has it. */
-static uint8_t
-topic_of_queued (INT queued_len)
+/* True when `frame` is a known queue topic followed by a packet of exactly
+   that topic's wire size. */
+static bool
+frame_is_valid (const uint8_t * frame, uint16_t len)
 {
-    switch (queued_len)
+    uint16_t want = 0u;
+
+    switch (frame[0])
     {
-        case (INT) TELEMETRY_HEARTBEAT_QUEUED_SIZE:
-            return (uint8_t) TELEMETRY_TOPIC_HEARTBEAT;
-        case (INT) TELEMETRY_EVENT_QUEUED_SIZE:
-            return (uint8_t) TELEMETRY_TOPIC_EVENT;
-        case (INT) TELEMETRY_STATUS_QUEUED_SIZE:
-            return (uint8_t) TELEMETRY_TOPIC_STATUS;
-        case (INT) TELEMETRY_SYSTEM_QUEUED_SIZE:
-            return (uint8_t) TELEMETRY_TOPIC_SYSTEM;
+        case (uint8_t) TELEMETRY_TOPIC_STATUS:
+            want = FRAME_STATUS;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_MOTION:
+            want = FRAME_MOTION;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_PHYSICS:
+            want = FRAME_PHYSICS;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_OBSTACLE:
+            want = FRAME_OBSTACLE;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_DIAG:
+            want = FRAME_DIAG;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_HEARTBEAT:
+            want = FRAME_HEARTBEAT;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_EVENT:
+            want = TELEMETRY_EVENT_QUEUED_SIZE;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_PROFILE:
+            want = FRAME_PROFILE;
+            break;
         default:
-            return 0U;
+            want = 0u;
+            break;
     }
+    return (want != 0u) && (len == want);
 }
 
 /* Send into the full queue after making room, called with g_push_mtx held.
@@ -179,7 +192,7 @@ send_evicting (const uint8_t * stored, INT stored_len)
    (CHECK_DISPATCH), and a plain spinlock held across a preemption would
    deadlock a higher priority task on the same core. TA_INHERIT bounds the
    wait of a high priority producer. Inside the lock only non-blocking
-   (TMO_POL) message buffer calls run, each copies at most 16 B, and eviction
+   (TMO_POL) message buffer calls run, each copies at most 83 B, and eviction
    is bounded by QUEUE_EVICT_LIMIT, so the lock is held for a few
    microseconds.
 
@@ -190,38 +203,25 @@ send_evicting (const uint8_t * stored, INT stored_len)
    consumer only ever frees space. The one effect is that a sent-back event
    lands behind the frames queued after it. */
 ER
-telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t qos)
+telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
 {
-    uint8_t stored[TELEMETRY_QUEUE_MAX_MSG];
-    INT     stored_len = 0;
-    ER      result     = E_OK;
+    INT stored_len = 0;
+    ER  result     = E_OK;
 
-    if (payload == 0)
+    if (frame == 0)
     {
         return E_PAR;
     }
-
-    if ((len == TELEMETRY_HEARTBEAT_QUEUED_SIZE) ||
-        (len == TELEMETRY_EVENT_QUEUED_SIZE) ||
-        (len == TELEMETRY_STATUS_QUEUED_SIZE) ||
-        (len == TELEMETRY_SYSTEM_QUEUED_SIZE))
-    {
-        stored_len = (INT) len;
-    }
-    else
+    if ((0U == len) || (len > TELEMETRY_QUEUE_MAX_MSG) ||
+        !frame_is_valid(frame, len))
     {
         return E_PAR;
     }
+    stored_len = (INT) len;
 
     if (g_mbf_telem_id <= 0)
     {
         return E_NOEXS;
-    }
-
-    /* The topic byte is not stored; an event has no reserved byte 7. */
-    for (INT i = 0; i < stored_len; i++)
-    {
-        stored[i] = payload[i];
     }
 
     result = tk_loc_mtx(g_push_mtx, TMO_FEVR);
@@ -229,23 +229,40 @@ telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t qos)
     {
         return result;
     }
-    result = tk_snd_mbf(g_mbf_telem_id, stored, stored_len, TMO_POL);
+    result = tk_snd_mbf(g_mbf_telem_id, frame, stored_len, TMO_POL);
     if ((result == E_TMOUT) && (qos == 0U))
     {
-        result = send_evicting(stored, stored_len);
+        result = send_evicting(frame, stored_len);
     }
     (void) tk_unl_mtx(g_push_mtx);
     return result;
 }
 
-INT
-telemetry_queue_pop (uint8_t * payload, TMO tmout)
+ER
+telemetry_queue_push_packet (uint8_t topic, const uint8_t * packet,
+                             uint16_t packet_len, uint8_t qos)
 {
-    uint8_t stored[TELEMETRY_QUEUE_MAX_MSG];
-    uint8_t topic = 0U;
-    INT     got = 0;
+    uint8_t frame[TELEMETRY_QUEUE_MAX_MSG];
 
-    if (payload == 0)
+    if ((packet == 0) || (packet_len == 0u) ||
+        (packet_len > TELEMETRY_WIRE_MAX))
+    {
+        return E_PAR;
+    }
+    frame[0] = topic;
+    for (uint16_t i = 0u; i < packet_len; i++)
+    {
+        frame[i + 1u] = packet[i];
+    }
+    return telemetry_queue_push(frame, (uint16_t) (packet_len + 1u), qos);
+}
+
+INT
+telemetry_queue_pop (uint8_t * frame, TMO tmout)
+{
+    INT got = 0;
+
+    if (frame == 0)
     {
         return E_PAR;
     }
@@ -254,31 +271,18 @@ telemetry_queue_pop (uint8_t * payload, TMO tmout)
         return E_NOEXS;
     }
 
-    got = tk_rcv_mbf(g_mbf_telem_id, stored, tmout);
+    got = tk_rcv_mbf(g_mbf_telem_id, frame, tmout);
     if (got <= 0)
     {
         return got;
     }
-
-    topic = topic_of_queued(got);
-    if (topic == 0U)
+    if (!frame_is_valid(frame, (uint16_t) got))
     {
         /* Not a telemetry frame (cannot come from telemetry_queue_push). */
         (void) atomic_inc(&g_drop_count);
         return E_OBJ;
     }
-
-    payload[0] = topic;
-    for (INT i = 0; i < got; i++)
-    {
-        payload[i + 1] = stored[i];
-    }
-    if (topic == (uint8_t) TELEMETRY_TOPIC_EVENT)
-    {
-        payload[got + 1] = 0U;
-        got++;
-    }
-    return got + 1;
+    return got;
 }
 
 UW

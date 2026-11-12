@@ -3,75 +3,69 @@ import { BIT_FIELDS, ENUMS, PACKETS } from './schema.generated';
 export type PacketName = keyof typeof PACKETS;
 export type EnumName = keyof typeof ENUMS;
 export type BitFieldName = keyof typeof BIT_FIELDS;
-export type StatusPacket = {
-  speedMms: number;
-  distMm: number;
-  headingDeg: number;
-  state: number;
-  faults: number;
-};
-export type EventPacket = {
-  eventId: number;
-  eventType: number;
-  p1: number;
-  p2: number;
-  reserved: number;
-};
-export type HeartbeatPacket = {
-  uptimeS: number;
-  drops: number;
-  wifiRssi: number;
+type FieldType = 'int8' | 'uint8' | 'int16' | 'uint16' | 'int32' | 'uint32';
+type AnyField = { name: string; offset: number; type: FieldType; count?: number };
+type AnyPacket = { wireSize: number; fields: readonly AnyField[] };
+
+const FIELD_SIZE: Record<FieldType, number> = {
+  int8: 1,
+  uint8: 1,
+  int16: 2,
+  uint16: 2,
+  int32: 4,
+  uint32: 4,
 };
 
-type AnyPacket = { wireSize: number; fields: readonly { name: string; offset: number }[] };
-
-function layout(packet: PacketName): AnyPacket {
-  return PACKETS[packet] as AnyPacket;
-}
-
-function offset(packet: PacketName, field: string): number {
-  const found = layout(packet).fields.find((candidate) => candidate.name === field);
-  if (!found) throw new Error(`missing ${packet}.${field}`);
-  return found.offset;
-}
-
-function dataView(payload: Uint8Array, packet: PacketName): DataView {
-  const expected = layout(packet).wireSize;
-  if (payload.byteLength !== expected) {
-    throw new RangeError(`${packet} packet is ${payload.byteLength} bytes, expected ${expected}`);
+function readField(view: DataView, type: FieldType, offset: number): number {
+  switch (type) {
+    case 'int8':
+      return view.getInt8(offset);
+    case 'uint8':
+      return view.getUint8(offset);
+    case 'int16':
+      return view.getInt16(offset, false);
+    case 'uint16':
+      return view.getUint16(offset, false);
+    case 'int32':
+      return view.getInt32(offset, false);
+    case 'uint32':
+      return view.getUint32(offset, false);
   }
-  return new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
 }
 
-export function decodeStatus(payload: Uint8Array): StatusPacket {
-  const view = dataView(payload, 'status');
-  return {
-    speedMms: view.getInt16(offset('status', 'speed_mms'), false),
-    distMm: view.getUint16(offset('status', 'dist_mm'), false),
-    headingDeg: view.getUint8(offset('status', 'heading_deg')),
-    state: view.getUint8(offset('status', 'state')),
-    faults: view.getUint16(offset('status', 'faults'), false),
-  };
+/**
+ * Decode one packet to the flat shape the bridge sends. An array field
+ * `slots` with count N becomes slots_0 .. slots_<N-1>.
+ */
+export function decodePacket(name: PacketName, payload: Uint8Array): Record<string, number> {
+  const packet = PACKETS[name] as AnyPacket;
+  if (payload.byteLength !== packet.wireSize) {
+    throw new RangeError(`${name} packet is ${payload.byteLength} bytes, expected ${packet.wireSize}`);
+  }
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const values: Record<string, number> = {};
+  for (const field of packet.fields) {
+    if (field.count === undefined) {
+      values[field.name] = readField(view, field.type, field.offset);
+      continue;
+    }
+    for (let index = 0; index < field.count; index += 1) {
+      values[`${field.name}_${index}`] = readField(
+        view,
+        field.type,
+        field.offset + index * FIELD_SIZE[field.type],
+      );
+    }
+  }
+  return values;
 }
 
-export function decodeEvent(payload: Uint8Array): EventPacket {
-  const view = dataView(payload, 'event');
-  return {
-    eventId: view.getUint16(offset('event', 'event_id'), false),
-    eventType: view.getUint8(offset('event', 'event_type')),
-    p1: view.getInt16(offset('event', 'p1'), false),
-    p2: view.getUint16(offset('event', 'p2'), false),
-    reserved: view.getUint8(offset('event', 'reserved')),
-  };
-}
+/** heading_ddeg value that means the heading is not valid yet. */
+const HEADING_INVALID = 0xffff;
 
-export function decodeHeartbeat(payload: Uint8Array): HeartbeatPacket {
-  const view = dataView(payload, 'heartbeat');
-  return {
-    uptimeS: view.getUint16(offset('heartbeat', 'uptime_s'), false),
-    drops: view.getUint8(offset('heartbeat', 'drops')),
-    wifiRssi: view.getInt8(offset('heartbeat', 'wifi_rssi')),
-  };
+/** Convert heading_ddeg (0.1 degree) to degrees, or null when invalid. */
+export function headingDegrees(ddeg: number | undefined): number | null {
+  return ddeg === undefined || ddeg === HEADING_INVALID ? null : ddeg / 10;
 }
 
 function labelName(name: string): string {
@@ -99,7 +93,7 @@ export function bitLabels(
     return [];
   }
   return Object.entries(BIT_FIELDS[name])
-    .filter(([, bit]) => (mask & (1 << bit)) !== 0)
+    .filter(([label, bit]) => !/retired/i.test(label) && (mask & (1 << bit)) !== 0)
     .map(([label]) => labelName(label));
 }
 

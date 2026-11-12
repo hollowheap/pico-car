@@ -14,9 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "telemetry/packet.h"
 #include "telemetry/publisher.h"
 
-#define FRAME_MAX  17U
+#define FRAME_MAX  TELEMETRY_FRAME_MAX
 #define SCRIPT_MAX 32U
 #define CALL_GUARD 64U
 
@@ -137,13 +138,13 @@ static void test_publishes_until_empty (void)
     reset();
     add(1, 8U, 10U);
     add(1, 4U, 20U);
-    add(1, 17U, 30U);
+    add(1, FRAME_MAX, 30U);
     add(1, 1U, 40U);
     telemetry_publisher_run(fake_pull, fake_publish);
     CHECK(g_pub_calls == 4U);
     CHECK(pub_got(0U, 8U, 10U));
     CHECK(pub_got(1U, 4U, 20U));
-    CHECK(pub_got(2U, 17U, 30U));
+    CHECK(pub_got(2U, FRAME_MAX, 30U));
     CHECK(pub_got(3U, 1U, 40U));
     CHECK(g_pull_calls == 5U);
     pass("publisher_publishes_until_empty", before);
@@ -194,7 +195,7 @@ static void test_stops_on_pull_end_or_error (void)
 
 static void test_rejects_bad_lengths (void)
 {
-    static const uint16_t bad[] = {0U, 18U, 100U, UINT16_MAX};
+    static const uint16_t bad[] = {0U, FRAME_MAX + 1U, 200U, UINT16_MAX};
 
     unsigned before = g_fail;
 
@@ -208,7 +209,7 @@ static void test_rejects_bad_lengths (void)
         CHECK(g_pull_calls == 1U);
     }
 
-    /* Boundaries 1 and 17 are published. */
+    /* Boundaries 1 and FRAME_MAX are published. */
     reset();
     add(1, 1U, 1U);
     add(1, FRAME_MAX, 2U);

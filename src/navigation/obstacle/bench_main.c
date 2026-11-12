@@ -13,7 +13,9 @@
  *   OBSTACLE -> wait 300 ms "braking" -> SCAN_REQ(id)
  *   SCAN_RESULT OK/CLEAR -> ACCEPT(id)
  *   REACQUIRE for 4 s -> LINE_FOUND(id)
- *   FAULT -> wait 3 s -> RESET + START
+ *   FAULT -> wait 3 s -> RESET + START, only for a cause that may restart by
+ *            itself (obstacle_pack_cause_may_auto_restart); otherwise wait
+ *            for a menu RESET and START
  *
  * Build (the "Buddy 5" block in the team CMakeLists.txt):
  *   ./configure.sh
@@ -41,6 +43,7 @@
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
 #include "obstacle_internal.h"
+#include "scan_algo.h"
 
 /* Bench buttons, active low with pull-ups. */
 #define BTN_NEXT_PIN (20U)
@@ -82,12 +85,14 @@
 #define ITEM_LINE_FOUND (6U)
 #define ITEM_STOP       (7U)
 #define ITEM_PROFILE    (8U)
-#define ITEM_COUNT      (9U)
+#define ITEM_SERVO      (9U)
+#define ITEM_COUNT      (10U)
 #define ITEM_NONE       (0xFFU)
 
 /* Name table sizes: 3-bit command, 2-bit class/steer/result fields. */
 #define CMD_NAMES    (8U)
 #define FIELD2_NAMES (4U)
+#define OBSTACLE_CLASS_BITS_NAMES (8U)
 
 /* Forces the first state change to be printed. */
 #define STATUS_UNSEEN (0xFFFFFFFFU)
@@ -114,7 +119,7 @@ typedef struct
 
 static char const * const g_item_name[ITEM_COUNT] = {
     "AUTO-RUN on/off", "RESET",      "START", "SCAN_REQ",     "ACCEPT",
-    "REJECT",          "LINE_FOUND", "STOP",  "PRINT PROFILE"};
+    "REJECT",          "LINE_FOUND", "STOP",  "PRINT PROFILE", "SERVO CHECK"};
 static char const * const g_cmd_name[CMD_NAMES] = {
     "NONE",       "SCAN_REQ", "ACCEPT", "REJECT",
     "LINE_FOUND", "STOP",     "RESET",  "START"};
@@ -124,9 +129,10 @@ static char const * const g_state_name[OBSTACLE_STATE_COUNT] = {
 static char const * const g_cause_name[OBSTACLE_CAUSE_COUNT] = {
     "NONE",          "BOOT",         "EXTERNAL",     "NO_ECHO",  "ECHO_STUCK",
     "SCAN_TIMEOUT",  "NO_SAFE_PATH", "COLLISION",    "HANDOVER", "PLAN_TIMEOUT",
-    "PLAN_REJECTED", "BYPASS_LIMIT", "LINE_TIMEOUT", "INIT_FAIL"};
-static char const * const g_class_name[FIELD2_NAMES]  = {"VALID", "OPEN",
-                                                         "UNKNOWN", "STUCK"};
+    "PLAN_REJECTED", "BYPASS_LIMIT", "LINE_TIMEOUT", "INIT_FAIL",
+    "ECHO_NOISE"};
+static char const * const g_class_name[OBSTACLE_CLASS_BITS_NAMES] = {
+    "VALID", "OPEN", "TOO_CLOSE", "NO_ECHO", "GLITCH", "STUCK", "?", "?"};
 static char const * const g_steer_name[FIELD2_NAMES]  = {"STRAIGHT", "LEFT",
                                                          "RIGHT", "HOLD"};
 static char const * const g_result_name[FIELD2_NAMES] = {
@@ -140,6 +146,7 @@ static sim_nav_t g_nav = {true, 0U, 0U, 0U, 0U, 0U, ITEM_NONE};
 static ER   sim_stop (void);
 static ER   sim_distance (uint32_t * p_distance_mm);
 static void print_profile (void);
+static void print_servo_check (void);
 static void print_event (uint32_t evt);
 static void print_status (uint32_t status);
 static void send_cmd (uint32_t type, uint8_t req_id);
@@ -250,6 +257,36 @@ static void print_profile (void)
 }
 
 /*!
+ * @brief Servo travel check (D162). Run a scan with a square wall 150 to 800 mm
+ *        straight ahead, then run this item. It prints the angle the servo
+ *        really reached at the commanded +30 and -30 degree slots.
+ */
+static void print_servo_check (void)
+{
+    static char const * const verdict_text[] = {
+        "OK: both sides within 3 degrees of 30",
+        "NO DATA: need a finished scan of a square wall 150 to 800 mm straight ahead",
+        "FLAT: the servo hardly moves (check the wiring and the pulse range)",
+        "SCALE: it moves, but not 30 degrees; tune OBSTACLE_SERVO_US_PER_10DEG",
+        "ASYMMETRIC: the wall is skewed, or the centre is off; tune OBSTACLE_SERVO_CENTRE_US"};
+    uint16_t      profile[OBSTACLE_SLOT_COUNT];
+    servo_check_t check;
+
+    if (E_OK != obstacle_copy_profile(profile))
+    {
+        tm_printf((UB const *)"[obstacle-bench] profile busy, try again\n");
+    }
+    else
+    {
+        scan_algo_servo_check(profile, &check);
+        tm_printf((UB const *)"[obstacle-bench] SERVO,centre=%d mm,left=%d deci-deg,right=%d deci-deg,verdict=%d\n",
+                  (INT)check.centre_mm, (INT)check.left_deci, (INT)check.right_deci,
+                  (INT)check.verdict);
+        tm_printf((UB const *)"[obstacle-bench] servo: %s\n", verdict_text[check.verdict]);
+    }
+}
+
+/*!
  * @brief Print one event in words.
  *
  * @param[in] evt Packed event word.
@@ -280,7 +317,7 @@ static void print_event (uint32_t evt)
 
         case OBSTACLE_EVT_FAULT:
             tm_printf(
-                (UB const *)"[obstacle-bench] EVENT FAULT cause=%s faults=0x%02x\n",
+                (UB const *)"[obstacle-bench] EVENT FAULT cause=%s faults=0x%03x\n",
                 g_cause_name[obstacle_pack_get(evt, OBSTACLE_EV_CAUSE_SH, OBSTACLE_EV_CAUSE_MK) %
                              OBSTACLE_CAUSE_COUNT],
                 (UINT)obstacle_pack_get(evt, OBSTACLE_EV_FAULTS_SH, OBSTACLE_EV_FAULTS_MK));
@@ -375,6 +412,10 @@ static void send_item (uint8_t item)
             print_profile();
         break;
 
+        case ITEM_SERVO:
+            print_servo_check();
+        break;
+
         default:
             /* Unknown item: nothing to do. */
         break;
@@ -397,8 +438,12 @@ static void auto_on_event (uint32_t evt)
     }
     else if (OBSTACLE_EVT_FAULT == type)
     {
-        g_nav.wait_item = ITEM_RESET;
-        g_nav.wait_ms   = AUTO_RECOVER_MS;
+        if (obstacle_pack_cause_may_auto_restart(
+                obstacle_pack_get(evt, OBSTACLE_EV_CAUSE_SH, OBSTACLE_EV_CAUSE_MK)))
+        {
+            g_nav.wait_item = ITEM_RESET;
+            g_nav.wait_ms   = AUTO_RECOVER_MS;
+        }
     }
     else if (OBSTACLE_EVT_SCAN_RESULT == type)
     {

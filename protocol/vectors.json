@@ -1,0 +1,173 @@
+{
+  "schema": 2,
+  "vectors": {
+    "status": {
+      "values": {
+        "speed_mms": -7529,
+        "odometer_mm": 2367338731,
+        "heading_ddeg": 7018,
+        "state": 152,
+        "mode": 93,
+        "faults": 24075,
+        "seq": 19811,
+        "line_bits": 221,
+        "hold_mask": 89
+      },
+      "hex": "e2978d1ab8eb1b6a985d5e0b4d63dd59"
+    },
+    "motion": {
+      "values": {
+        "left_mms": -26610,
+        "right_mms": -7327,
+        "left_target_mms": 26173,
+        "right_target_mms": 24440,
+        "left_duty_pm": -22385,
+        "right_duty_pm": -24532,
+        "motion_state": 207,
+        "motion_fault": 144,
+        "overruns": 15033
+      },
+      "hex": "980ee361663d5f78a88fa02ccf903ab9"
+    },
+    "physics": {
+      "values": {
+        "pitch_cdeg": 17105,
+        "roll_cdeg": -28226,
+        "az_mg": -15227,
+        "amag_mg": 44380,
+        "a_fwd_mg": 23346,
+        "yaw_rate_cdps": -15854,
+        "heading_ddeg": 2422,
+        "hump_peak_mm": 38160,
+        "run_peak_mm": 15839,
+        "hump_state": 238,
+        "motion_class": 207,
+        "physics_faults": 238,
+        "flags": 107,
+        "attitude_state": 82,
+        "reserved": 0
+      },
+      "hex": "42d191bec485ad5c5b32c212097695103ddfeecfee6b5200"
+    },
+    "obstacle": {
+      "values": {
+        "state": 32,
+        "cause": 229,
+        "faults": 64870,
+        "echo_class": 230,
+        "flags": 172,
+        "dist_mm": 21294,
+        "closest_mm": 62122,
+        "seq": 22,
+        "req_id": 130,
+        "plan_status": 89,
+        "plan_side": 101,
+        "plan_width_mm": 7058,
+        "plan_need_mm": 52914,
+        "plan_start_deg": 191,
+        "rescans": 8,
+        "servo_deci": 17043,
+        "body_deci": -5278
+      },
+      "hex": "20e5fd66e6ac532ef2aa168259651b92ceb2bf084293eb62"
+    },
+    "diag": {
+      "values": {
+        "sticky_faults": 61024,
+        "task_alive_mask": 31688,
+        "line_lost_count": 40428,
+        "line_search_mm": 39060,
+        "barcode_ok": 48355,
+        "barcode_bad": 18358,
+        "barcode_edge_drops": 60324,
+        "last_barcode": 57,
+        "last_barcode_action": 96,
+        "telem_queue_drops": 40538,
+        "net_queue_drops": 45329,
+        "physics_overruns": 22170,
+        "telemetry_overruns": 13354,
+        "echo_valid": 42,
+        "echo_open": 208,
+        "echo_too_close": 210,
+        "echo_no_echo": 46,
+        "echo_glitch": 137,
+        "echo_stuck": 31,
+        "line_edges_per_s": 138,
+        "line_raw_edges_per_s": 52,
+        "supervisor_passes": 15749
+      },
+      "hex": "ee607bc89dec9894bce347b6eba439609e5ab111569a342a2ad0d22e891f8a343d85"
+    },
+    "heartbeat": {
+      "values": {
+        "uptime_s": 3102537881,
+        "drops": 82,
+        "wifi_rssi": -91,
+        "reset_reason": 48,
+        "link_state": 30
+      },
+      "hex": "b8ecf89952a5301e"
+    },
+    "event": {
+      "values": {
+        "event_id": 33871,
+        "event_type": 202,
+        "source": 25,
+        "p1": 24134,
+        "p2": 37188,
+        "odometer_mm": 110880827
+      },
+      "hex": "844fca195e469144069be83b"
+    },
+    "profile": {
+      "values": {
+        "req_id": 94,
+        "status": 197,
+        "side": 79,
+        "flags": 238,
+        "closest_mm": 13956,
+        "width_mm": 60374,
+        "slots": [
+          62283,
+          45957,
+          13651,
+          3701,
+          60055,
+          30123,
+          34291,
+          2407,
+          3227,
+          28899,
+          27800,
+          27989,
+          54159,
+          7897,
+          58463,
+          30761,
+          37721,
+          46674,
+          27680,
+          62412,
+          57719,
+          43664,
+          22145,
+          16174,
+          41533,
+          3827,
+          12620,
+          1420,
+          28481,
+          737,
+          6148,
+          26607,
+          19220,
+          35304,
+          1459,
+          40177,
+          54836
+        ]
+      },
+      "hex": "5ec54fee3684ebd6f34bb38535530e75ea9775ab85f309670c9b70e36c986d55d38f1ed9e45f78299359b6526c20f3cce177aa9056813f2ea23d0ef3314c058c6f4102e1180467ef4b1489e805b39cf1d634"
+    }
+  }
+}

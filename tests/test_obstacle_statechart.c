@@ -131,7 +131,7 @@ static void test_no_echo_fault(void)
     obstacle_statechart_out_clear(&out);
     for (i = 0U; i < OBSTACLE_NO_ECHO_COUNT; i++)
     {
-        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_UNKNOWN, 0U, (uint32_t)i, &out);
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_NO_ECHO, 0U, (uint32_t)i, &out);
     }
     CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
     CHECK((fsm.faults & OBSTACLE_FAULT_NO_ECHO) != 0U);
@@ -139,6 +139,277 @@ static void test_no_echo_fault(void)
     CHECK(out.evt_count > 0U);
     CHECK(obstacle_pack_get(out.evt[0], OBSTACLE_EV_CAUSE_SH, OBSTACLE_EV_CAUSE_MK) ==
           OBSTACLE_CAUSE_NO_ECHO);
+}
+
+/* Send one ping and return the state, for the pattern tests below. */
+static uint8_t ping_state(obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
+                          uint32_t * p_now)
+{
+    obstacle_statechart_out_t out;
+
+    obstacle_statechart_out_clear(&out);
+    *p_now += 1U;
+    obstacle_statechart_ping(p_fsm, cls, dist_mm, *p_now, &out);
+    return p_fsm->state;
+}
+
+static void new_monitor(obstacle_statechart_t * p_fsm)
+{
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t       cfg;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(p_fsm, &cfg, 0U);
+    start_monitor(p_fsm, &out);
+}
+
+/* S12: 2 hits among the last 3 pings report an obstacle. A hit, a miss and a
+ * hit used to restart the count at the miss and report nothing. */
+static void test_detect_two_of_three(void)
+{
+    obstacle_statechart_t fsm;
+    uint32_t              now = 10U;
+
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 200U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 900U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 200U, &now) == OBSTACLE_STATE_WAIT_STOP);
+
+    /* A failed ping in the gap also keeps the hit in the window. */
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 200U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_GLITCH, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 200U, &now) == OBSTACLE_STATE_WAIT_STOP);
+
+    /* Two misses push the first hit out of the window of 3. */
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 200U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_OPEN, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_OPEN, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 200U, &now) == OBSTACLE_STATE_MONITOR);
+
+    /* A reading beyond the detect distance is no hit. */
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_DETECT_MM + 1U, &now) ==
+          OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_DETECT_MM + 1U, &now) ==
+          OBSTACLE_STATE_MONITOR);
+}
+
+/* D97: TOO_CLOSE is an obstacle at the minimum range, not a fault. */
+static void test_too_close_is_a_hit(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    uint32_t                  now = 10U;
+
+    new_monitor(&fsm);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_TOO_CLOSE, 0U, now, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 900U, now + 1U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_TOO_CLOSE, 0U, now + 2U, &out);
+    /* 2 TOO_CLOSE pings among the last 3 are a collision. */
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
+    CHECK((fsm.faults & OBSTACLE_FAULT_COLLISION) != 0U);
+    CHECK(out.b_call_stop);
+    /* The status word shows the class and the minimum range. */
+    CHECK(obstacle_pack_get(obstacle_statechart_status(&fsm), OBSTACLE_ST_CLASS_SH,
+                            OBSTACLE_ST_CLASS_MK) == OBSTACLE_CLASS_TOO_CLOSE);
+    CHECK(obstacle_pack_get(obstacle_statechart_status(&fsm), OBSTACLE_ST_DIST_SH,
+                            OBSTACLE_ST_DIST_MK) == OBSTACLE_MIN_RANGE_MM);
+}
+
+/* The collision guard uses the same 2 of 3 rule on VALID readings. */
+static void test_collision_two_of_three(void)
+{
+    obstacle_statechart_t fsm;
+    uint32_t              now = 10U;
+
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, &now) !=
+          OBSTACLE_STATE_STOPPED);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, 900U, &now) != OBSTACLE_STATE_STOPPED);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, &now) ==
+          OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
+
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM + 1U, &now) !=
+          OBSTACLE_STATE_STOPPED);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM + 1U, &now) !=
+          OBSTACLE_STATE_STOPPED);
+}
+
+/* D97: each failing class has its own limit and cause. */
+static void test_echo_fault_causes(void)
+{
+    obstacle_statechart_t fsm;
+    uint32_t              now = 10U;
+    uint8_t               i   = 0U;
+
+    new_monitor(&fsm);
+    for (i = 0U; i < OBSTACLE_STUCK_COUNT; i++)
+    {
+        (void)ping_state(&fsm, OBSTACLE_CLASS_STUCK, 0U, &now);
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_ECHO_STUCK);
+    CHECK((fsm.faults & OBSTACLE_FAULT_ECHO_STUCK) != 0U);
+
+    new_monitor(&fsm);
+    for (i = 0U; i < OBSTACLE_GLITCH_COUNT; i++)
+    {
+        CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+        (void)ping_state(&fsm, OBSTACLE_CLASS_GLITCH, 0U, &now);
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_ECHO_NOISE);
+    CHECK((fsm.faults & OBSTACLE_FAULT_ECHO_NOISE) != 0U);
+
+    /* A mix of failures that never reaches a single limit still adds up. */
+    new_monitor(&fsm);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_NO_ECHO, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_GLITCH, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_NO_ECHO, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_GLITCH, 0U, &now) == OBSTACLE_STATE_MONITOR);
+    CHECK(ping_state(&fsm, OBSTACLE_CLASS_STUCK, 0U, &now) == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_ECHO_NOISE);
+
+    /* Any good ping ends the run. */
+    new_monitor(&fsm);
+    for (i = 0U; i < 10U; i++)
+    {
+        (void)ping_state(&fsm, OBSTACLE_CLASS_NO_ECHO, 0U, &now);
+        (void)ping_state(&fsm, OBSTACLE_CLASS_NO_ECHO, 0U, &now);
+        (void)ping_state(&fsm, OBSTACLE_CLASS_OPEN, 0U, &now);
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+}
+
+/* The retry policy: only the first start and a transient cause restart by
+ * themselves. */
+static void test_retry_policy(void)
+{
+    uint32_t cause = 0U;
+
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_BOOT));
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_SCAN_TIMEOUT));
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_HANDOVER));
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_PLAN_TIMEOUT));
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_PLAN_REJECTED));
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_BYPASS_LIMIT));
+    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_LINE_TIMEOUT));
+
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_COLLISION));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_NO_SAFE_PATH));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_NO_ECHO));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_ECHO_STUCK));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_ECHO_NOISE));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_EXTERNAL));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_INIT_FAIL));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_NONE));
+
+    /* Every cause the statechart can latch is covered by the list above. */
+    for (cause = 0U; cause < OBSTACLE_CAUSE_COUNT; cause++)
+    {
+        (void)obstacle_pack_cause_may_auto_restart(cause);
+    }
+}
+
+/* The status word keeps the 3-bit class and the 5-bit sequence apart. */
+static void test_status_word_fields(void)
+{
+    obstacle_statechart_t fsm;
+    uint32_t              now = 10U;
+    uint32_t              word = 0U;
+    uint8_t               cls  = 0U;
+
+    new_monitor(&fsm);
+    for (cls = 0U; cls < OBSTACLE_CLASS_COUNT; cls++)
+    {
+        if (OBSTACLE_STATE_STOPPED == fsm.state)
+        {
+            new_monitor(&fsm);
+        }
+        (void)ping_state(&fsm, (uint8_t)((cls % 2U == 0U) ? cls : OBSTACLE_CLASS_VALID), 900U, &now);
+        word = obstacle_statechart_status(&fsm);
+        CHECK(obstacle_pack_get(word, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK) ==
+              (fsm.seq & OBSTACLE_ST_SEQ_MK));
+    }
+    fsm.last_class = OBSTACLE_CLASS_STUCK;
+    fsm.seq        = 31U;
+    fsm.req_id     = 31U;
+    word           = obstacle_statechart_status(&fsm);
+    CHECK(obstacle_pack_get(word, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK) ==
+          OBSTACLE_CLASS_STUCK);
+    CHECK(obstacle_pack_get(word, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK) == 31U);
+    CHECK(obstacle_pack_get(word, OBSTACLE_ST_ID_SH, OBSTACLE_ST_ID_MK) == 31U);
+}
+
+/* P3: of the first pings after boot, mostly hits means the beam is blocked. */
+static void test_beam_blocked_at_boot (void)
+{
+    obstacle_statechart_t fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t   cfg;
+    uint32_t              idx = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    obstacle_statechart_out_clear(&out);
+    for (idx = 0U; idx < OBSTACLE_BEAM_CHECK_PINGS; idx++)
+    {
+        CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_BEAM_BLOCKED) == 0U);
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 120U, idx, &out);
+    }
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_BEAM_BLOCKED) != 0U);
+
+    /* A clear beam raises nothing, and later hits do not set it. */
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    for (idx = 0U; idx < OBSTACLE_BEAM_CHECK_PINGS; idx++)
+    {
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, idx, &out);
+    }
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 120U, 100U, &out);
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_BEAM_BLOCKED) == 0U);
+}
+
+/* P2: after 100 mm of travel the range must have changed by the travel. */
+static void test_range_follows_travel (void)
+{
+    obstacle_statechart_t fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t   cfg;
+    uint32_t              now = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    obstacle_statechart_out_clear(&out);
+
+    obstacle_statechart_set_odometer(&fsm, 1000U);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 500U, ++now, &out);
+
+    /* 60 mm of travel: too short to judge. */
+    obstacle_statechart_set_odometer(&fsm, 1060U);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 100U, ++now, &out);
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
+
+    /* 120 mm travelled and the range fell 110 mm (500 -> 390): consistent. */
+    obstacle_statechart_set_odometer(&fsm, 1120U);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 390U, ++now, &out);
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
+
+    /* 150 mm travelled and the range did not move: a wrong target or a phantom. */
+    obstacle_statechart_set_odometer(&fsm, 1270U);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 385U, ++now, &out);
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) != 0U);
+
+    /* A consistent pair clears it again. */
+    obstacle_statechart_set_odometer(&fsm, 1400U);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 255U, ++now, &out);
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
 }
 
 static void test_handover_timeout(void)
@@ -429,7 +700,7 @@ static void test_forward_guard_limits(void)
         CHECK(out.evt_count == 0U);
     }
 
-    /* OPEN, UNKNOWN or STUCK forward never count as close. */
+    /* OPEN, NO_ECHO, GLITCH or STUCK forward never count as close. */
     to_reacquire(&fsm, &out, false);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 500U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
@@ -656,6 +927,14 @@ int main(void)
     test_init_and_status();
     test_obstacle_to_scan();
     test_no_echo_fault();
+    test_detect_two_of_three();
+    test_too_close_is_a_hit();
+    test_collision_two_of_three();
+    test_echo_fault_causes();
+    test_retry_policy();
+    test_status_word_fields();
+    test_beam_blocked_at_boot();
+    test_range_follows_travel();
     test_handover_timeout();
     test_scan_stall();
     test_wall_reaches_bypass();

@@ -20,6 +20,8 @@
 #include "obstacle_pack.h"
 #include "planner.h"
 #include "obstacle_internal.h"
+#include "platform/liveness.h"
+#include "supervisor/health_ids.h"
 #include "scan_algo.h"
 #include "scan_hw.h"
 #include "scan_task.h"
@@ -91,6 +93,7 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
     {
         uint32_t since_us = 0U;
 
+        liveness_kick(LIVE_OBSTACLE);
         poll_commands();
         tick();
         since_us = scan_hw_now_us() - g_last_trig_us;
@@ -313,20 +316,29 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
     {
         UINT     ptn    = 0U;
         ER       result = E_OK;
-        uint32_t mbx    = 0U;
+        uint32_t echo_result    = 0U;
 
-        scan_hw_trigger();
+        bool const b_pulse = scan_hw_trigger();
 
-        /* Cast is safe: OBSTACLE_ECHO_WAIT_MS is 40. */
-        result = tk_wai_flg(obstacle_comms_flag(), OBSTACLE_FLG_ECHO, TWF_ORW | TWF_BITCLR,
-                            &ptn, (TMO)OBSTACLE_ECHO_WAIT_MS);
-        mbx    = scan_hw_mailbox();
-        *p_cls = scan_algo_classify(mbx, (E_OK != result),
-                                    scan_hw_is_echo_high(), false);
-
-        if (OBSTACLE_CLASS_VALID == *p_cls)
+        if (!b_pulse)
         {
-            *p_dist_mm = scan_algo_dist_mm(mbx & OBSTACLE_MBX_WIDTH_MASK);
+            /* P4: the TRIG pad did not read high during the pulse, so the sensor
+             * got no trigger. Skip the wait; this ping proves nothing. */
+            *p_cls = OBSTACLE_CLASS_NO_ECHO;
+        }
+        else
+        {
+            /* Cast is safe: OBSTACLE_ECHO_WAIT_MS is 40. */
+            result = tk_wai_flg(obstacle_comms_flag(), OBSTACLE_FLG_ECHO, TWF_ORW | TWF_BITCLR,
+                                &ptn, (TMO)OBSTACLE_ECHO_WAIT_MS);
+            echo_result    = scan_hw_echo_result();
+            *p_cls = scan_algo_classify(echo_result, (E_OK != result),
+                                        scan_hw_is_echo_high(), false);
+
+            if (OBSTACLE_CLASS_VALID == *p_cls)
+            {
+                *p_dist_mm = scan_algo_dist_mm(echo_result & OBSTACLE_ECHO_WIDTH_MASK);
+            }
         }
     }
 }
@@ -337,10 +349,12 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
 static void ping_and_step (void)
 {
     obstacle_statechart_out_t out;
-    uint8_t      cls     = OBSTACLE_CLASS_UNKNOWN;
+    uint8_t      cls     = OBSTACLE_CLASS_NO_ECHO;
     uint16_t     dist_mm = 0U;
 
+    obstacle_statechart_set_odometer(&g_fsm, obstacle_comms_odometer_mm(now_ms()));
     ping(&cls, &dist_mm);
+    obstacle_comms_count_class(cls);
     obstacle_statechart_out_clear(&out);
     obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
     obstacle_comms_publish(&out, &g_fsm);

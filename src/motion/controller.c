@@ -4,12 +4,26 @@
 #include <limits.h>
 #include <stddef.h>
 #include "controller.h"
-#include "tm/tmonitor.h"
+#include "platform/log.h"
 
 /* Consecutive invalid speed samples tolerated per wheel before FEEDBACK.
  * One sample is 10 ms, so a single encoder glitch (e.g. a motor switching
  * spike) is ridden through, while a dead encoder still faults in ~30 ms. */
 #define MAX_BAD_SAMPLES 3U
+
+/* Names of motion_fault_t, in enum order. */
+static char const * const g_fault_name[] = {"NONE",    "COMMAND", "EXPIRED",
+                                            "FEEDBACK", "GAP",     "NO_EDGES",
+                                            "OUTPUT"};
+
+static char const * fault_name (motion_fault_t reason)
+{
+    uint32_t const idx = (uint32_t)reason;
+
+    return (idx < (sizeof (g_fault_name) / sizeof (g_fault_name[0])))
+               ? g_fault_name[idx]
+               : "?";
+}
 
 static int8_t sign (int32_t value)
 {
@@ -54,9 +68,8 @@ static void fault (controller_t * p_control, uint32_t now_us,
     p_control->status.fault = reason;
     reset_pid(p_control);
     brake(p_control, now_us, true);
-#ifndef NDEBUG
-    tm_printf((UB *)"MOTION FAULT, reason: %d\n", p_control->status.fault);
-#endif
+    LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE, "fault=%s, stopped",
+              fault_name(reason));
 }
 
 bool controller_config_valid (const controller_config_t * p_config)

@@ -13,6 +13,21 @@
  *   PHYS_S lines: counters every 5 s.
  *
  * Keep the car still for the first second: calibration needs rest.
+ *
+ * Guided checks (D162). The program prints PHYS_G lines that tell you what to do
+ * and when. They answer the four checks "Why the hump state may always read
+ * FLAT" of artifacts/notes/imu-lift-overturn.md. Save the whole console to a
+ * file and run `python3 tools/physics_log_summary.py FILE --checks`.
+ *
+ *    0 to  4 s  keep the car still and level          check 1, calibration
+ *    6 to 11 s  lift the NOSE to about 10 degrees     check 2, forward axis
+ *   13 to 17 s  set it level and keep it still
+ *   19 to 24 s  lift the LEFT side to about 10 degrees  check 2, side axis
+ *   26 to 30 s  set it level and keep it still
+ *   32 to 52 s  push the car by hand up and over a ramp  check 3, ramp angle
+ *
+ * Check 4 (driving against standing still) needs the wheels: see
+ * docs/bench.md, "Hump check 4".
  */
 
 #include <stdbool.h>
@@ -48,6 +63,48 @@ static void hold_motors (void)
     }
 }
 
+/* One guided phase: starts at start_s, tells the person what to do. */
+typedef struct
+{
+    uint32_t start_s;
+    char const * text;
+} guided_phase_t;
+
+static guided_phase_t const PHASES[] = {
+    {0U, "KEEP STILL AND LEVEL (calibration)"},
+    {6U, "LIFT THE NOSE to about 10 degrees and hold it"},
+    {13U, "SET LEVEL and keep still"},
+    {19U, "LIFT THE LEFT SIDE to about 10 degrees and hold it"},
+    {26U, "SET LEVEL and keep still"},
+    {32U, "PUSH THE CAR BY HAND up and over the ramp, slowly, a few times"},
+    {52U, "END of the guided checks"},
+};
+#define PHASE_COUNT (sizeof (PHASES) / sizeof (PHASES[0]))
+#define MS_PER_S    (1000U)
+
+/* Sleep for STATS_PERIOD_MS and print each phase when its time comes. */
+static void guided_wait (void)
+{
+    static uint32_t elapsed_s;
+    uint32_t        step = 0U;
+
+    for (step = 0U; step < (STATS_PERIOD_MS / MS_PER_S); step++)
+    {
+        uint32_t idx = 0U;
+
+        for (idx = 0U; idx < PHASE_COUNT; idx++)
+        {
+            if (PHASES[idx].start_s == elapsed_s)
+            {
+                tm_printf ((UB *)"PHYS_G,%u,%u,%s\n", (unsigned int)elapsed_s,
+                           (unsigned int)idx, PHASES[idx].text);
+            }
+        }
+        (void)tk_dly_tsk (MS_PER_S);
+        elapsed_s++;
+    }
+}
+
 LOCAL void check_task (INT stacd, void * exinf)
 {
     (void)stacd;
@@ -72,7 +129,7 @@ EXPORT INT usermain (void)
 
     hold_motors ();
 
-    physics_task_default_config (&cfg);
+    physics_car_config (&cfg);
     cfg.log_every = 1U;
     cfg.read_motion = NULL;
     ctsk.itskpri = cfg.priority;
@@ -104,11 +161,11 @@ EXPORT INT usermain (void)
 
     for (;;)
     {
-        (void)tk_dly_tsk (STATS_PERIOD_MS);
+        guided_wait ();
         physics_task_get_stats (&stats);
         tm_printf ((UB *)"PHYS_S,cycles=%u,overruns=%u,max_work_us=%u,"
                    "inits=%u,init=%d,i2c_tx=%u,retries=%u,nacks=%u,"
-                   "timeouts=%u,fails=%u,nav=%u/%u,telem=%u/%u,word=%08x\n",
+                   "timeouts=%u,fails=%u,word=%08x\n",
                    (unsigned int)stats.cycles, (unsigned int)stats.overruns,
                    (unsigned int)stats.max_work_us,
                    (unsigned int)stats.sensor_inits, (int)stats.last_init,
@@ -117,10 +174,6 @@ EXPORT INT usermain (void)
                    (unsigned int)stats.i2c.nacks,
                    (unsigned int)stats.i2c.timeouts,
                    (unsigned int)stats.i2c.failures,
-                   (unsigned int)stats.nav_sent,
-                   (unsigned int)stats.nav_dropped,
-                   (unsigned int)stats.telem_sent,
-                   (unsigned int)stats.telem_dropped,
                    (unsigned int)stats.last_word);
     }
 }

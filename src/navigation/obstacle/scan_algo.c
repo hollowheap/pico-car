@@ -51,6 +51,7 @@
 static bool    find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
                              uint16_t * p_best_mm);
 static void    finish_coarse (scan_algo_ctx_t * p_ctx);
+static void    note_noise (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm);
 static bool    slot_in_servo_window (int16_t body_deci, int32_t slot);
 static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                           uint8_t * p_miss);
@@ -79,22 +80,28 @@ uint16_t scan_algo_dist_mm (uint32_t width_us)
 }
 
 /*!
- * @brief Classify one ping. A missing echo is never OPEN.
+ * @brief Classify one ping (D97). A missing echo is never OPEN, and every
+ *        outcome has a class of its own.
  *
- * @param[in] mbx         Mailbox word written by the echo ISR.
+ * VALID and OPEN need a clean rise and fall. A clean echo shorter than the
+ * VALID range is TOO_CLOSE (an object in the blind zone), or a GLITCH when
+ * it is too short to be a reflection. One missing edge is a GLITCH. Nothing
+ * on ECHO within the wait is NO_ECHO.
+ *
+ * @param[in] echo_result Echo result word written by the echo ISR.
  * @param[in] b_timed_out True if the 40 ms wait ended without DONE.
  * @param[in] b_echo_high ECHO level read after the wait.
  * @param[in] b_stuck     True if ECHO was already high before the trigger.
  *
  * @return One of OBSTACLE_CLASS_*.
  */
-uint8_t scan_algo_classify (uint32_t mbx, bool b_timed_out, bool b_echo_high,
+uint8_t scan_algo_classify (uint32_t echo_result, bool b_timed_out, bool b_echo_high,
                             bool b_stuck)
 {
-    uint8_t        cls    = OBSTACLE_CLASS_UNKNOWN;
-    uint32_t const width  = mbx & OBSTACLE_MBX_WIDTH_MASK;
-    bool const     b_rise = (0U != (mbx & OBSTACLE_MBX_RISE));
-    bool const     b_done = (0U != (mbx & OBSTACLE_MBX_DONE));
+    uint8_t        cls    = OBSTACLE_CLASS_NO_ECHO;
+    uint32_t const width  = echo_result & OBSTACLE_ECHO_WIDTH_MASK;
+    bool const     b_rise = (0U != (echo_result & OBSTACLE_ECHO_RISE));
+    bool const     b_done = (0U != (echo_result & OBSTACLE_ECHO_DONE));
 
     if (b_stuck)
     {
@@ -102,10 +109,13 @@ uint8_t scan_algo_classify (uint32_t mbx, bool b_timed_out, bool b_echo_high,
     }
     else if (b_done && b_rise)
     {
-        if (width < OBSTACLE_VALID_MIN_US)
+        if (width < OBSTACLE_GLITCH_MAX_US)
         {
-            /* Too short: a glitch or an object closer than 2 cm. */
-            cls = OBSTACLE_CLASS_UNKNOWN;
+            cls = OBSTACLE_CLASS_GLITCH;
+        }
+        else if (width < OBSTACLE_VALID_MIN_US)
+        {
+            cls = OBSTACLE_CLASS_TOO_CLOSE;
         }
         else if (width <= OBSTACLE_VALID_MAX_US)
         {
@@ -121,11 +131,16 @@ uint8_t scan_algo_classify (uint32_t mbx, bool b_timed_out, bool b_echo_high,
         /* Still high after 40 ms: nothing within 4 m. */
         cls = OBSTACLE_CLASS_OPEN;
     }
+    else if (b_rise || b_done || b_echo_high)
+    {
+        /* One edge is missing: a fall without a rise, a rise whose fall was
+         * missed (ECHO is low now), or ECHO high with no rise seen. */
+        cls = OBSTACLE_CLASS_GLITCH;
+    }
     else
     {
-        /* No rise, a fall without a rise, or a rise whose fall was missed
-         * (ECHO is low now). None of these can be trusted. */
-        cls = OBSTACLE_CLASS_UNKNOWN;
+        /* No edge at all. */
+        cls = OBSTACLE_CLASS_NO_ECHO;
     }
 
     return (cls);
@@ -212,8 +227,9 @@ void scan_algo_agree_reset (scan_algo_agree_t * p_agree)
  * @brief Add one ping to the agreement buffer.
  *
  * Two pings agree when they have the same class and, for VALID, are within
- * 15 mm of each other. The closer distance is kept. After four pings
- * without agreement the slot is UNKNOWN.
+ * 15 mm of each other. The closer distance is kept. TOO_CLOSE is stored as
+ * a hit at the minimum range. After four pings without agreement the slot is
+ * a GLITCH (the readings contradict each other), which stays unresolved.
  *
  * @param[in,out] p_agree Agreement buffer for the current slot.
  * @param[in]     cls     Ping class.
@@ -227,7 +243,20 @@ bool scan_algo_agree_add (scan_algo_agree_t * p_agree, uint8_t cls,
 {
     bool           b_settled = false;
     uint8_t        idx       = 0U;
-    uint16_t const dist      = (OBSTACLE_CLASS_VALID == cls) ? dist_mm : 0U;
+    uint16_t       dist      = 0U;
+
+    if (OBSTACLE_CLASS_VALID == cls)
+    {
+        dist = dist_mm;
+    }
+    else if (OBSTACLE_CLASS_TOO_CLOSE == cls)
+    {
+        dist = OBSTACLE_MIN_RANGE_MM;
+    }
+    else
+    {
+        dist = 0U;
+    }
 
     for (idx = 0U; (idx < p_agree->count) && (!b_settled); idx++)
     {
@@ -253,7 +282,7 @@ bool scan_algo_agree_add (scan_algo_agree_t * p_agree, uint8_t cls,
 
     if ((!b_settled) && (p_agree->count >= OBSTACLE_MAX_PINGS))
     {
-        *p_slot   = obstacle_pack_slot(0U, OBSTACLE_CLASS_UNKNOWN);
+        *p_slot   = obstacle_pack_slot(0U, OBSTACLE_CLASS_GLITCH);
         b_settled = true;
     }
 
@@ -266,14 +295,14 @@ bool scan_algo_agree_add (scan_algo_agree_t * p_agree, uint8_t cls,
  * @param[in] slot_val   Packed slot.
  * @param[in] closest_mm Closest distance in the region.
  *
- * @return True for a VALID reading within closest + 250 mm.
+ * @return True for a VALID reading within closest + 250 mm, or TOO_CLOSE.
  */
 bool scan_algo_is_hit (uint16_t slot_val, uint16_t closest_mm)
 {
     uint32_t const limit_mm = (uint32_t)closest_mm + OBSTACLE_REGION_EXTRA_MM;
 
     return ((obstacle_pack_slot_is_measured(slot_val)) &&
-            (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(slot_val)) &&
+            (obstacle_pack_class_is_ranged(obstacle_pack_slot_class(slot_val))) &&
             ((uint32_t)obstacle_pack_slot_dist(slot_val) <= limit_mm));
 }
 
@@ -333,6 +362,10 @@ void scan_algo_start (scan_algo_ctx_t * p_ctx)
     p_ctx->closest_mm   = 0U;
     p_ctx->region_lo    = CENTRE_FIRST_SLOT;
     p_ctx->region_hi    = CENTRE_FIRST_SLOT;
+    p_ctx->noisy_hist    = 0U;
+    p_ctx->slots_done    = 0U;
+    p_ctx->slots_retried = 0U;
+    p_ctx->b_scan_noisy  = false;
 
     for (idx = 0U; idx < SCAN_ALGO_SIDES; idx++)
     {
@@ -380,12 +413,24 @@ bool scan_algo_has_region (scan_algo_ctx_t const * p_ctx)
 bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
 {
     uint16_t slot_val = 0U;
+    uint8_t  pings    = 0U;
+
+    if (PHASE_DONE != p_ctx->phase)
+    {
+        note_noise(p_ctx, cls, dist_mm);
+        pings = (uint8_t)(p_ctx->agree.count + 1U);
+    }
 
     if ((PHASE_DONE != p_ctx->phase) &&
         (scan_algo_agree_add(&p_ctx->agree, cls, dist_mm, &slot_val)))
     {
         p_ctx->profile[p_ctx->slot] = slot_val;
         scan_algo_agree_reset(&p_ctx->agree);
+        p_ctx->slots_done++;
+        if (pings >= OBSTACLE_RETRY_PINGS)
+        {
+            p_ctx->slots_retried++;
+        }
 
         switch (p_ctx->phase)
         {
@@ -415,7 +460,61 @@ bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
         }
     }
 
+    if (PHASE_DONE == p_ctx->phase)
+    {
+        p_ctx->b_scan_noisy = ((uint32_t)p_ctx->slots_retried * OBSTACLE_PCT_BASE) >
+                              ((uint32_t)p_ctx->slots_done * OBSTACLE_SCAN_NOISY_PCT);
+    }
+
     return (PHASE_DONE == p_ctx->phase);
+}
+
+/*!
+ * @brief Tell whether the recent pings were noisy (P1).
+ *
+ * @param[in] p_ctx Scan engine state.
+ *
+ * @return True when OBSTACLE_NOISE_PINGS of the last OBSTACLE_NOISE_WINDOW
+ *         pings contradicted the ping before them.
+ */
+bool scan_algo_echo_noisy (scan_algo_ctx_t const * p_ctx)
+{
+    uint32_t bits  = p_ctx->noisy_hist;
+    uint32_t count = 0U;
+
+    while (0U != bits)
+    {
+        count += bits & 1U;
+        bits >>= 1U;
+    }
+
+    return (count >= OBSTACLE_NOISE_PINGS);
+}
+
+/*!
+ * @brief P1: record whether a VALID ping contradicts the VALID ping before it
+ *        in the same slot by more than OBSTACLE_NOISE_MM. The car and the
+ *        servo stand still during a scan, so the range must not move.
+ *
+ * @param[in,out] p_ctx   Scan engine state.
+ * @param[in]     cls     Ping class.
+ * @param[in]     dist_mm Ping distance.
+ */
+static void note_noise (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
+{
+    bool b_noisy = false;
+
+    if ((OBSTACLE_CLASS_VALID == cls) && (p_ctx->agree.count > 0U))
+    {
+        uint16_t const last = p_ctx->agree.sample[p_ctx->agree.count - 1U];
+        uint32_t const prev = obstacle_pack_slot_dist(last);
+        uint32_t const diff = (prev > dist_mm) ? (prev - dist_mm) : (dist_mm - prev);
+
+        b_noisy = (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(last)) &&
+                  (diff > OBSTACLE_NOISE_MM);
+    }
+
+    p_ctx->noisy_hist = (uint8_t)((uint32_t)(p_ctx->noisy_hist << 1U) | (b_noisy ? 1U : 0U));
 }
 
 /*!
@@ -442,7 +541,7 @@ static bool find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
 
         if ((deci >= -half_deci) && (deci <= half_deci) &&
             (obstacle_pack_slot_is_measured(slot_val)) &&
-            (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(slot_val)) &&
+            (obstacle_pack_class_is_ranged(obstacle_pack_slot_class(slot_val))) &&
             (dist <= OBSTACLE_REGION_MAX_MM) && ((!b_found) || (dist < *p_best_mm)))
         {
             *p_best_mm          = dist;
@@ -596,7 +695,7 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
             }
             else
             {
-                /* UNKNOWN or STUCK: assume the obstacle goes on. */
+                /* NO_ECHO, GLITCH or STUCK: assume the obstacle goes on. */
                 slot += step;
             }
         }
@@ -650,6 +749,108 @@ static void run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first)
                 p_ctx->body_deci = 0;
                 b_more           = false;
             }
+        }
+    }
+}
+
+/* Servo check ------------------------------------------------------------ */
+
+#define SERVO_CHECK_SLOT_OFFSET   (6U)    /* 30 degrees at 5 degrees per slot */
+#define SERVO_CHECK_MIN_MM        (120U)
+#define SERVO_CHECK_MAX_MM        (800U)
+#define SERVO_CHECK_FLAT_DECI     (150)   /* below 15 degrees reads as no travel */
+#define SERVO_CHECK_TARGET_DECI   (300)
+#define SERVO_CHECK_TOLERANCE     (30)    /* 3 degrees */
+#define SERVO_CHECK_ASYM_DECI     (60)    /* 6 degrees */
+#define SERVO_CHECK_COS_STEPS     (13U)   /* 0 to 60 degrees */
+#define SERVO_CHECK_COS_STEP_DECI (50)
+#define SERVO_CHECK_ONE           (1000U)
+
+/* cos(0), cos(5) ... cos(60) in permille. */
+static uint16_t const g_servo_check_cos[SERVO_CHECK_COS_STEPS] = {
+    1000U, 996U, 985U, 966U, 940U, 906U, 866U, 819U, 766U, 707U, 643U, 574U, 500U};
+
+/* Angle in deci-degrees whose cosine is cos_permille, 0..600. */
+static int16_t servo_check_angle (uint32_t cos_permille)
+{
+    uint32_t idx = 0U;
+    int32_t  deci = (int32_t)(SERVO_CHECK_COS_STEPS - 1U) * SERVO_CHECK_COS_STEP_DECI;
+
+    for (idx = 0U; idx < (SERVO_CHECK_COS_STEPS - 1U); idx++)
+    {
+        uint32_t const hi = g_servo_check_cos[idx];
+        uint32_t const lo = g_servo_check_cos[idx + 1U];
+
+        if (cos_permille >= lo)
+        {
+            uint32_t const above = (cos_permille >= hi) ? 0U : (hi - cos_permille);
+
+            deci = ((int32_t)idx * SERVO_CHECK_COS_STEP_DECI) +
+                   (int32_t)((above * (uint32_t)SERVO_CHECK_COS_STEP_DECI) / (hi - lo));
+            break;
+        }
+    }
+
+    return (int16_t)deci;
+}
+
+static bool servo_check_slot (uint16_t slot, uint16_t * p_mm)
+{
+    bool const b_ok = obstacle_pack_slot_is_measured(slot) &&
+                      (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(slot));
+
+    *p_mm = obstacle_pack_slot_dist(slot);
+    return b_ok && (*p_mm >= SERVO_CHECK_MIN_MM) && (*p_mm <= SERVO_CHECK_MAX_MM);
+}
+
+void scan_algo_servo_check (uint16_t const * p_profile, servo_check_t * p_out)
+{
+    uint16_t centre = 0U;
+    uint16_t left   = 0U;
+    uint16_t right  = 0U;
+
+    p_out->verdict    = (uint8_t)SERVO_CHECK_NO_DATA;
+    p_out->left_deci  = 0;
+    p_out->right_deci = 0;
+    p_out->centre_mm  = 0U;
+
+    if (servo_check_slot(p_profile[OBSTACLE_SLOT_CENTRE], &centre) &&
+        servo_check_slot(p_profile[OBSTACLE_SLOT_CENTRE + SERVO_CHECK_SLOT_OFFSET], &left) &&
+        servo_check_slot(p_profile[OBSTACLE_SLOT_CENTRE - SERVO_CHECK_SLOT_OFFSET], &right))
+    {
+        /* cos = d0 / d, never above 1. */
+        uint32_t const cos_l = (left <= centre) ? SERVO_CHECK_ONE
+                                                : (((uint32_t)centre * SERVO_CHECK_ONE) / left);
+        uint32_t const cos_r = (right <= centre) ? SERVO_CHECK_ONE
+                                                 : (((uint32_t)centre * SERVO_CHECK_ONE) / right);
+        int32_t        diff   = 0;
+
+        p_out->centre_mm  = centre;
+        p_out->left_deci  = servo_check_angle(cos_l);
+        p_out->right_deci = servo_check_angle(cos_r);
+        diff = (int32_t)p_out->left_deci - (int32_t)p_out->right_deci;
+        if (diff < 0)
+        {
+            diff = -diff;
+        }
+        if ((p_out->left_deci < SERVO_CHECK_FLAT_DECI) && (p_out->right_deci < SERVO_CHECK_FLAT_DECI))
+        {
+            p_out->verdict = (uint8_t)SERVO_CHECK_FLAT;
+        }
+        else if (diff > SERVO_CHECK_ASYM_DECI)
+        {
+            p_out->verdict = (uint8_t)SERVO_CHECK_ASYMMETRIC;
+        }
+        else if ((p_out->left_deci < (SERVO_CHECK_TARGET_DECI - SERVO_CHECK_TOLERANCE)) ||
+                 (p_out->left_deci > (SERVO_CHECK_TARGET_DECI + SERVO_CHECK_TOLERANCE)) ||
+                 (p_out->right_deci < (SERVO_CHECK_TARGET_DECI - SERVO_CHECK_TOLERANCE)) ||
+                 (p_out->right_deci > (SERVO_CHECK_TARGET_DECI + SERVO_CHECK_TOLERANCE)))
+        {
+            p_out->verdict = (uint8_t)SERVO_CHECK_SCALE;
+        }
+        else
+        {
+            p_out->verdict = (uint8_t)SERVO_CHECK_OK;
         }
     }
 }

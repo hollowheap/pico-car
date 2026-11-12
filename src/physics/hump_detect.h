@@ -67,7 +67,6 @@ typedef struct
     uint16_t enter_samples;      /* Consecutive samples above enter_deg.       */
     uint16_t exit_samples;       /* Consecutive samples inside exit band.      */
     uint32_t max_hump_samples;   /* Give up on a hump that lasts longer.       */
-    float    impact_g;           /* | |a| - 1 g | above this sets impact.      */
     float    min_speed_mps;      /* Below this, height is marked invalid.      */
     float    max_motion_age_s;   /* Older motion data counts as stale.         */
     uint16_t cal_samples;        /* Rest samples needed to set theta_0.        */
@@ -103,7 +102,6 @@ typedef struct
     bool  height_valid;          /* False if any motion sample was unusable.   */
     bool  complete;              /* On FINISHED: full climb and descent seen.  */
     bool  motion_stale;          /* Motion data invalid or too old this call.  */
-    bool  impact;                /* Shock detected on this sample.             */
 } hump_output_t;
 
 typedef struct
@@ -151,6 +149,10 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg);
 /* Drop theta_0, abandon any hump in progress and start calibration again.
  * Call only while the car is at rest, e.g. at the start of each run. */
 void hump_recalibrate (hump_ctx_t * p_ctx);
+
+/* The mean gravity vector measured during calibration, in board axes and g.
+ * Returns false before the calibration is done. */
+bool hump_rest_gravity (const hump_ctx_t * p_ctx, float * p_g0);
 
 /* Process one sample. Returns false and leaves the context and output
  * unchanged for a null argument, a non-finite acceleration, or (when

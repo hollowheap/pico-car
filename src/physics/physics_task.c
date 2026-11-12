@@ -18,6 +18,10 @@
 #include "physics_task.h"
 #include "hump_msg.h"
 #include "lsm303.h"
+#include "platform/faults.h"
+#include "platform/liveness.h"
+#include "supervisor/health_ids.h"
+#include "platform/log.h"
 
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
 #define SLEEP_TIMEOUT_MS   (200)    /* Wake-up missing for 10 periods.   */
@@ -29,7 +33,8 @@
 #define US_TO_S            (1.0e-6f)
 #define MS_TO_S            (1.0e-3f)
 #define ROUND_HALF         (0.5f)
-#define HEADING_WRAP_DEG   (360U)
+#define HEADING_WRAP_DDEG  (3600U)
+#define SCALE_CENTI        (100.0f)
 
 /* physics_task_default_config values. */
 #define DEFAULT_TASK_PRIORITY (4)
@@ -45,8 +50,6 @@ static motion_adapter_t  g_motion;
 static lsm303_t         g_imu;
 static i2c_bus_t     g_bus;
 static ID               g_task_id = 0;
-static ID               g_nav_mbf = 0;
-static ID               g_telem_mbf = 0;
 static bool             g_started = false;
 
 /* Counters: written by the task, copied by readers under the spinlock. */
@@ -55,6 +58,7 @@ static physics_task_stats_t  g_stats;
 
 /* Requests from other tasks: single-word flags, set elsewhere, cleared here. */
 static volatile bool    g_req_new_run = false;
+static volatile bool    g_wheels_free = false;
 static volatile bool    g_req_clear_fault = false;
 
 static void cyclic_wakeup (void * p_exinf)
@@ -70,21 +74,6 @@ static void stats_update (const physics_task_stats_t * p_local)
     (void)ISpinLock (&g_stats_lock, &saved);
     g_stats = *p_local;
     (void)ISpinUnlock (&g_stats_lock, saved);
-}
-
-static void send (ID mbf, packed_hump_t word, uint32_t * p_sent,
-                  uint32_t * p_dropped)
-{
-    ER er = tk_snd_mbf (mbf, &word, (INT)sizeof (word), TMO_POL);
-
-    if (E_OK == er)
-    {
-        (*p_sent)++;
-    }
-    else
-    {
-        (*p_dropped)++;
-    }
 }
 
 static int32_t scaled (float value, float scale)
@@ -108,7 +97,17 @@ static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
                      const motion_input_t * p_mot,
                      const pipeline_step_t * p_step)
 {
-    tm_printf ((UB *)"B4,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%08x\n",
+    /* Scaled before the call: the lint check reads the scale macros as magic
+     * numbers when they sit inside the LOG_NOW arguments. */
+    int const v_left_mm_s = (int)scaled (p_mot->v_left_mps, SCALE_MILLI);
+    int const v_right_mm_s = (int)scaled (p_mot->v_right_mps, SCALE_MILLI);
+    int const ds_um       = (int)scaled (p_mot->ds_m, SCALE_MICRO);
+    int const acc_mm_s2   = (int)scaled (p_mot->accel_mps2, SCALE_MILLI);
+    int const yaw_ddps    = p_step->sensors_ok
+                                ? (int)scaled (p_step->motion.yaw_rate_dps, SCALE_DECI)
+                                : 0;
+
+    LOG_NOW ("DATA", "physics:imu", "B4,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%08x\n",
                (unsigned int)t_us,
                acc_ok ? (int)p_acc->raw[LSM303_AXIS_X] : 0,
                acc_ok ? (int)p_acc->raw[LSM303_AXIS_Y] : 0,
@@ -118,16 +117,12 @@ static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
                mag_ok ? (int)p_mag->raw[LSM303_AXIS_Z] : 0,
                mag_ok ? 1 : 0,
                p_mot->valid ? 1 : 0,
-               (int)scaled (p_mot->v_left_mps, SCALE_MILLI),
-               (int)scaled (p_mot->v_right_mps, SCALE_MILLI),
-               (int)scaled (p_mot->ds_m, SCALE_MICRO),
-               (int)scaled (p_mot->accel_mps2, SCALE_MILLI),
+               v_left_mm_s, v_right_mm_s, ds_um, acc_mm_s2,
                p_step->sensors_ok ? (int)scaled (p_step->hump.pitch_deg, 100.0f)
                                   : 0,
                p_step->sensors_ok ? (int)p_step->hump.state : -1,
                (int)p_step->motion.motion,
-               p_step->sensors_ok ? (int)scaled (p_step->motion.yaw_rate_dps, SCALE_DECI)
-                                  : 0,
+               yaw_ddps,
                (p_step->sensors_ok && p_step->hump.calibrated) ? 1 : 0,
                p_step->sensors_ok ? (int)scaled (p_step->hump.theta0_deg, 100.0f)
                                   : 0,
@@ -136,10 +131,10 @@ static void log_row (uint32_t t_us, const lsm303_vec_t * p_acc, bool acc_ok,
 
 static void log_header (void)
 {
-    tm_printf ((UB *)"PHYS_H,t_us,ax_mg,ay_mg,az_mg,mx_raw,my_raw,mz_raw,mag_new,"
+    LOG_NOW ("DATA", "physics:imu", "columns: t_us,ax_mg,ay_mg,az_mg,mx_raw,my_raw,mz_raw,mag_new,"
                "motion_valid,vl_mm_s,vr_mm_s,ds_um,acc_mm_s2,pitch_cdeg,state,"
                "motion,yaw_ddps,cal,theta0_cdeg,word\n");
-    tm_printf ((UB *)"PHYS_H,mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
+    LOG_NOW ("INFO", "physics:imu", "mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
 }
 
 /* Sleep until the next period and count missed wake-ups. */
@@ -197,52 +192,97 @@ static void read_sensors (const physics_task_stats_t * p_local,
     }
 }
 
-/* Heading and calibration state for the stats; heading is whole degrees
- * wrapped into 0..359. */
+/* Clamp a scaled value into int16_t for the snapshot. */
+static int16_t clamp_i16 (int32_t value)
+{
+    int32_t out = value;
+
+    if (out > INT16_MAX)
+    {
+        out = INT16_MAX;
+    }
+    if (out < INT16_MIN)
+    {
+        out = INT16_MIN;
+    }
+    return (int16_t)out;
+}
+
+/* Heading, yaw rate and forward residual for the stats. The heading is in
+ * deci-degrees wrapped into 0..3599, so it fits the wire field (D110); the
+ * old whole-degree byte wrapped at 256. */
 static void update_heading (physics_task_stats_t * p_local,
                             const pipeline_step_t * p_step)
 {
     p_local->heading_valid = p_step->sensors_ok && p_step->motion.heading_valid;
     p_local->calibrated = p_step->hump.calibrated;
+    p_local->yaw_rate_cdps = p_step->sensors_ok
+        ? clamp_i16 (scaled (p_step->motion.yaw_rate_dps, SCALE_CENTI))
+        : 0;
+    p_local->a_fwd_mg = p_step->sensors_ok
+        ? clamp_i16 (scaled (p_step->motion.fwd_residual_g, SCALE_MILLI))
+        : 0;
     if (p_local->heading_valid)
     {
-        uint32_t heading = (uint32_t)(p_step->motion.heading_deg + ROUND_HALF);
+        uint32_t heading =
+            (uint32_t)((p_step->motion.heading_deg * SCALE_DECI) + ROUND_HALF);
 
-        if (heading >= HEADING_WRAP_DEG)
+        if (heading >= HEADING_WRAP_DDEG)
         {
-            heading -= HEADING_WRAP_DEG;
+            heading -= HEADING_WRAP_DDEG;
         }
-        p_local->heading_deg = (uint8_t)heading;
+        p_local->heading_ddeg = (uint16_t)heading;
     }
     else
     {
-        p_local->heading_deg = 0U;
+        p_local->heading_ddeg = 0U;
     }
 }
 
-/* Send the word to the receivers the step selected, then report a change in
- * the physics fault bits. */
-static void dispatch_step (physics_task_stats_t * p_local,
-                           const pipeline_step_t * p_step,
+/* Roll, vertical acceleration and the attitude state for the stats, and the
+ * lifted and overturned bits of the shared fault word (bits 11 and 12). A
+ * failed read keeps the last attitude state. */
+static void update_attitude (physics_task_stats_t * p_local, const pipeline_step_t * p_step)
+{
+    if (p_step->sensors_ok)
+    {
+        uint16_t active = 0U;
+
+        p_local->roll_cdeg = clamp_i16 (scaled (p_step->attitude.roll_deg, SCALE_CENTI));
+        p_local->az_mg     = clamp_i16 (scaled (p_step->attitude.az_g, SCALE_MILLI));
+        p_local->amag_mg   = (uint16_t) clamp_i16 (scaled (p_step->attitude.amag_g, SCALE_MILLI));
+        p_local->attitude_state = (uint8_t) p_step->attitude.state;
+
+        if (ATTITUDE_LIFTED == p_step->attitude.state)
+        {
+            active = FAULT_LIFTED_BIT;
+        }
+        else if (ATTITUDE_OVERTURNED == p_step->attitude.state)
+        {
+            active = (uint16_t) (FAULT_LIFTED_BIT | FAULT_OVERTURNED_BIT);
+        }
+        else
+        {
+            active = 0U;
+        }
+        system_fault_assign ((uint16_t) (FAULT_LIFTED_BIT | FAULT_OVERTURNED_BIT), active);
+    }
+}
+
+/* Report the physics fault bits (I2C, stale, tilt) as shared bits 5 to 7. The
+ * detail is read through physics_snapshot(); nothing receives it by message
+ * buffer (D110). */
+static void dispatch_step (const pipeline_step_t * p_step,
                            uint8_t * p_last_faults)
 {
     hump_fields_t fields;
 
-    if (p_step->to_nav)
-    {
-        send (g_nav_mbf, p_step->word, &p_local->nav_sent,
-              &p_local->nav_dropped);
-    }
-    if (p_step->to_telem)
-    {
-        send (g_telem_mbf, p_step->word, &p_local->telem_sent,
-              &p_local->telem_dropped);
-    }
-
     (void)hump_unpack (p_step->word, &fields);
-    if ((fields.faults != *p_last_faults) && (NULL != g_cfg.publish_faults))
+    if (fields.faults != *p_last_faults)
     {
-        g_cfg.publish_faults (fields.faults);
+        system_fault_assign (PHYSICS_SHARED_FAULT_MASK,
+                             (uint16_t) ((uint16_t) fields.faults
+                                         << PHYSICS_SHARED_FAULT_SHIFT));
     }
     *p_last_faults = fields.faults;
 }
@@ -262,7 +302,7 @@ void physics_task_run (void)
     if (g_cfg.log_every > 0U)
     {
         log_header ();
-        tm_printf ((UB *)"PHYS_H,lsm303_init=%d\n", (int)local.last_init);
+        LOG_NOW ("INFO", "physics:imu", "lsm303_init=%d\n", (int)local.last_init);
     }
     prev_us = physics_time_us ();
 
@@ -279,6 +319,7 @@ void physics_task_run (void)
         float dt_s = 0.0f;
 
         wait_cycle (&local);
+        liveness_kick (LIVE_PHYSICS);
 
         now_us = physics_time_us ();
         dt_s = (float)(now_us - prev_us) * US_TO_S;
@@ -309,12 +350,14 @@ void physics_task_run (void)
         (void)motion_adapter_convert (&g_motion, have_motion ? &reading : NULL, now_us,
                              &motion);
 
+        g_pipe.wheels_free = g_wheels_free;
         (void)pipeline_step (&g_pipe, acc_ok ? acc.value : NULL,
                                 mag_ok ? mag.value : NULL, &motion, dt_s,
                                 g_imu.fault || !g_imu.ready, &step);
 
         update_heading (&local, &step);
-        dispatch_step (&local, &step, &last_faults);
+        update_attitude (&local, &step);
+        dispatch_step (&step, &last_faults);
 
         if ((g_cfg.log_every > 0U) && (0U == (local.cycles % g_cfg.log_every)))
         {
@@ -349,7 +392,6 @@ void physics_task_default_config (physics_task_config_t * p_cfg)
         p_cfg->i2c_attempts = DEFAULT_I2C_ATTEMPTS;  /* First try + 3 retries. */
         p_cfg->motion_accel_alpha = DEFAULT_ACCEL_ALPHA;
         p_cfg->read_motion = NULL;
-        p_cfg->publish_faults = NULL;
         hump_default_config (&p_cfg->hump);
         imu_motion_default_config (&p_cfg->motion);
     }
@@ -358,7 +400,6 @@ void physics_task_default_config (physics_task_config_t * p_cfg)
 ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id)
 {
     static const physics_task_stats_t zero_stats = { 0 };
-    T_CMBF cmbf = { 0 };
     T_CCYC ccyc = { 0 };
     ID id = 0;
 
@@ -383,21 +424,6 @@ ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id)
     (void)InitSpinLock (&g_stats_lock);
     g_stats = zero_stats;
 
-    cmbf.mbfatr = TA_TFIFO;
-    cmbf.bufsz = (SZ)PHYSICS_MBF_BUFSZ;
-    cmbf.maxmsz = (INT)sizeof (packed_hump_t);
-    id = tk_cre_mbf (&cmbf);
-    if (id < E_OK)
-    {
-        return (ER)id;
-    }
-    g_nav_mbf = id;
-    id = tk_cre_mbf (&cmbf);
-    if (id < E_OK)
-    {
-        return (ER)id;
-    }
-    g_telem_mbf = id;
     g_task_id   = task_id;
 
     ccyc.cycatr = TA_HLNG | TA_STA;
@@ -414,16 +440,6 @@ ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id)
     return E_OK;
 }
 
-ID physics_task_nav_mbf (void)
-{
-    return g_nav_mbf;
-}
-
-ID physics_task_telem_mbf (void)
-{
-    return g_telem_mbf;
-}
-
 void physics_task_get_stats (physics_task_stats_t * p_stats)
 {
     UINT saved = 0U;
@@ -434,6 +450,27 @@ void physics_task_get_stats (physics_task_stats_t * p_stats)
         *p_stats = g_stats;
         (void)ISpinUnlock (&g_stats_lock, saved);
     }
+}
+
+/* The GY-511 sits with X pointing aft on the car, so nose-up reads negative.
+ * Flip the forward axis so the hump state machine and the compass use the
+ * car's forward direction. The logged humps peak near 5 deg above rest, so
+ * enter at 4 deg with a 2 deg exit band. The decision to keep 6.0 and 2.5
+ * (imu-lift-overturn.md) does not reach the car: this is what runs. */
+#define CAR_HUMP_ENTER_DEG     (4.0f)
+#define CAR_HUMP_EXIT_BAND_DEG (2.0f)
+
+void physics_car_config (physics_task_config_t * p_cfg)
+{
+    physics_task_default_config (p_cfg);
+    p_cfg->hump.fwd_sign      = -1;
+    p_cfg->hump.enter_deg     = CAR_HUMP_ENTER_DEG;
+    p_cfg->hump.exit_band_deg = CAR_HUMP_EXIT_BAND_DEG;
+}
+
+void physics_task_set_wheels_free (bool b_free)
+{
+    g_wheels_free = b_free;
 }
 
 void physics_task_request_new_run (void)

@@ -502,11 +502,13 @@ static bool slot_blocks (scan_algo_ctx_t const * p_scan, int32_t slot,
     {
         b_blocked = false;
     }
-    else if ((OBSTACLE_CLASS_UNKNOWN == cls) || (OBSTACLE_CLASS_STUCK == cls))
+    else if (obstacle_pack_class_is_unresolved(cls))
     {
+        /* NO_ECHO, GLITCH and STUCK prove nothing: assume the corridor is
+         * blocked. */
         b_blocked = true;
     }
-    else if (OBSTACLE_CLASS_VALID == cls)
+    else if (obstacle_pack_class_is_ranged(cls))
     {
         int32_t const  deci     = scan_algo_slot_deci((uint8_t)slot);
         uint32_t const range_mm = obstacle_pack_slot_dist(slot_val);
@@ -610,7 +612,7 @@ static void plan_wall_left (scan_algo_ctx_t const * p_scan,
             (uint32_t)p_cfg->free_floor_mm - (uint32_t)p_cfg->half_width_mm;
         int32_t const first = (int32_t)p_scan->edge_hit[SCAN_ALGO_LEFT] + 1;
 
-        /* Only UNKNOWN/STUCK slots beyond the last hit block a wall fallback;
+        /* Only NO_ECHO, GLITCH and STUCK slots beyond the last hit block a wall fallback;
          * if an edge was bounded beyond edge_trust_deci, start checking at
          * edge_miss so VALID hits on the wall face do not block it. */
         int32_t const check_from =
@@ -644,7 +646,7 @@ static uint8_t clear_or_unsafe (scan_algo_ctx_t const * p_scan,
 
         if ((obstacle_pack_slot_is_measured(slot_val)) &&
             (magnitude <= (int32_t)p_cfg->path_half_deci) &&
-            (OBSTACLE_CLASS_VALID != cls) && (OBSTACLE_CLASS_OPEN != cls))
+            (obstacle_pack_class_is_unresolved(cls)))
         {
             status = OBSTACLE_RESULT_NO_SAFE_PATH;
         }

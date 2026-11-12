@@ -67,7 +67,6 @@ typedef struct
     uint32_t cal_done;
     uint32_t started;
     uint32_t finished;
-    uint32_t impacts;
     uint32_t complete;
     float last_peak_m;
     float last_peak_pitch_deg;
@@ -169,10 +168,6 @@ static void tally (result_t * p_res, const hump_output_t * p_out)
         {
             p_res->complete++;
         }
-    }
-    if (p_out->impact)
-    {
-        p_res->impacts++;
     }
     p_res->final_state = p_out->state;
 }
@@ -438,7 +433,6 @@ static void test_flat_ground (void)
     res = run (&cfg, &prof, 0U, 1000U, 0U);
     CHECK (0U == res.started);
     CHECK (0U == res.finished);
-    CHECK (0U == res.impacts);
     CHECK (HUMP_STATE_FLAT == res.final_state);
 }
 
@@ -752,25 +746,6 @@ static void test_two_humps (void)
     CHECK (2U == res.complete);
 }
 
-static void test_impact (void)
-{
-    hump_ctx_t ctx;
-    hump_config_t cfg;
-    hump_sample_t sample;
-    hump_output_t out;
-
-    printf ("impact_flag\n");
-    hump_default_config (&cfg);
-    CHECK (hump_init (&ctx, &cfg));
-    memset (&sample, 0, sizeof (sample));
-    sample.az_g = 1.0f;
-    CHECK (hump_update (&ctx, &sample, &out));
-    CHECK (!out.impact);
-    sample.az_g = 1.8f;
-    CHECK (hump_update (&ctx, &sample, &out));
-    CHECK (out.impact);
-}
-
 int main (void)
 {
     test_init_validation ();
@@ -791,7 +766,6 @@ int main (void)
     test_below_min_speed ();
     test_incomplete_hump ();
     test_two_humps ();
-    test_impact ();
 
     if (0 == g_failures)
     {
