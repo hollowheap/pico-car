@@ -34,7 +34,8 @@
 #define MOTION_HOLD_BARCODE   UINT32_C(8)  /* a barcode stop; START releases it */
 #define MOTION_HOLD_LIFT      UINT32_C(16) /* lifted or overturned; START releases it */
 #define MOTION_HOLD_SUPERVISOR UINT32_C(32) /* the run permit lapsed (D120) */
-#define MOTION_HOLD_ALL       UINT32_C(61)
+#define MOTION_HOLD_CALIBRATE UINT32_C(64) /* the IMU calibrates at rest (D165) */
+#define MOTION_HOLD_ALL       UINT32_C(125)
 
 /* One coherent feedback snapshot. Speeds and displacements are signed and
  * positive car-forward. fresh means the sample is within the age limit. */

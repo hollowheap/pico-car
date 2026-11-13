@@ -5,6 +5,7 @@ import type { PanelStatus } from '../../lib/panel-state';
 import { useTheme } from '../../lib/theme-provider';
 import { faultHex } from './format';
 import { Panel } from './Panel';
+import { StatusPill } from './StatusPill';
 
 type Props = {
   /** The fault word of the status packet: set now. */
@@ -57,10 +58,12 @@ export function FaultGrid({ level, sticky, status, style }: Props) {
   return (
     <Panel
       right={
-        <Text style={[theme.typography.label, { color: summary.critical > 0 ? theme.colors.danger : theme.colors.muted }]}>
-          {level === undefined ? '--' : `${summary.set} of 16 set · ${faultHex(level)}`}
-        </Text>
+        <StatusPill
+          label={level === undefined ? 'NO DATA' : summary.set === 0 ? `ALL CLEAR · ${faultHex(level)}` : `${summary.set} SET · ${faultHex(level)}`}
+          tone={level === undefined ? 'muted' : summary.critical > 0 ? 'danger' : summary.set > 0 ? 'neutral' : 'muted'}
+        />
       }
+      icon="faults"
       status={status}
       style={style}
       testID="fault-grid"

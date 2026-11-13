@@ -30,7 +30,7 @@ export function HealthPanel({ diag, motion, status, style }: Props) {
   const mask = d?.task_alive_mask;
 
   return (
-    <Panel status={status} style={style} testID="health-panel" title="Tasks and timing">
+    <Panel icon="tasks" status={status} style={style} testID="health-panel" title="Tasks and timing">
       <View style={styles.tasks}>
         {TASKS.map((name, bit) => {
           const alive = mask === undefined ? undefined : (mask & (1 << bit)) !== 0;

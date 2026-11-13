@@ -8,8 +8,11 @@
  * Copy the lines that start with a tag in capitals (STEP, SENS, LINE, DRV,
  * ENC) into a file and give the file to the analysis scripts.
  *
- *   GP20 = next item (the item is printed)
- *   GP21 = run it (3 s countdown, GP20 stops the run)
+ *   GP20 short press = next item (the item is printed)
+ *   GP20 long press (1 s) = run it (3 s countdown, a press stops the run)
+ *
+ * GP21 is not used: it is the emergency-stop input of the motion service, and a
+ * press latches the stop until the board reboots.
  *
  * Items:
  *   ENC   Spin each wheel alone and tell which encoder answers.
@@ -19,6 +22,9 @@
  *   LINEB Follow the same line with the NEW law (heading cascade), 8 s.
  *   LIFT  Drive 14 s, lift the car at 6 s, put it down at 10 s. Logs duty and
  *         speed and shows when the wheels-run-free cue sets.
+ *   ODO   The motors stay off for 30 s. Push the car along a ruler, or turn a
+ *         wheel one full turn by hand. Prints the distance and the encoder
+ *         edges each wheel counted, so the encoder scale can be checked.
  *
  * NOTE: usermain() is the name the kernel calls, so it has no module prefix.
  */
@@ -44,7 +50,7 @@
 
 /* Bench buttons, active low with pull-ups. */
 #define BTN_NEXT_PIN (20U)
-#define BTN_RUN_PIN  (21U)
+#define LONG_PRESS_MS (1000U)
 #define PAD_PULL_UP   (1UL << 3U)
 #define PAD_PULL_DOWN (1UL << 2U)
 
@@ -82,6 +88,7 @@ typedef enum
     ITEM_LINEA,
     ITEM_LINEB,
     ITEM_LIFT,
+    ITEM_ODO,
     ITEM_COUNT
 } item_t;
 
@@ -92,6 +99,7 @@ static char const * const ITEM_TEXT[ITEM_COUNT] = {
     "LINEA OLD law on a straight line, 8 s (needs 1.5 m of straight line)",
     "LINEB NEW law on a straight line, 8 s (put the car back at the start)",
     "LIFT  drive 14 s: lift the car at 6 s, put it down at 10 s (1.5 m free)",
+    "ODO   motors off: push the car by hand along a ruler, or turn one wheel one full turn",
 };
 
 typedef struct
@@ -121,21 +129,26 @@ static void button_init (UINT pin)
     set_w (GPIO (pin), PAD_PULL_UP);
 }
 
-static bool is_pressed (UINT pin, bool * p_b_was_down)
-{
-    bool const b_down    = (0U == gpio_get_val (pin));
-    bool const b_pressed = b_down && !*p_b_was_down;
-
-    *p_b_was_down = b_down;
-    return b_pressed;
-}
-
-/* The abort button is read by every run loop. */
-static bool g_b_next_down;
+/* A stop needs the button held for ABORT_POLLS polls in a row (about 50 ms in
+ * a 10 ms loop), so the bounce when GP20 is released to start a run does not
+ * stop the run at once. */
+#define ABORT_POLLS (5U)
+static uint32_t g_abort_count;
 
 static bool abort_requested (void)
 {
-    return is_pressed (BTN_NEXT_PIN, &g_b_next_down);
+    bool b_abort = false;
+
+    if (0U == gpio_get_val (BTN_NEXT_PIN))
+    {
+        g_abort_count++;
+        b_abort = (ABORT_POLLS == g_abort_count);
+    }
+    else
+    {
+        g_abort_count = 0U;
+    }
+    return b_abort;
 }
 
 static void drive (int32_t left_um_s, int32_t right_um_s)
@@ -154,15 +167,22 @@ static bool countdown (void)
 {
     uint32_t secs = COUNTDOWN_S;
 
+    g_abort_count = 0U;
     for (; secs > 0U; secs--)
     {
-        LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "start in %d s (GP20 aborts)", (int) secs);
+        uint32_t waited = 0U;
+
+        LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "start in %d s (press GP20 to stop)", (int) secs);
         log_flush ();
-        (void) tk_dly_tsk (MS_PER_S);
-        if (abort_requested ())
+        for (waited = 0U; waited < MS_PER_S; waited += LOOP_MS)
         {
-            LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "aborted");
-            return false;
+            (void) tk_dly_tsk (LOOP_MS);
+            if (abort_requested ())
+            {
+                LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "aborted");
+                log_flush ();
+                return false;
+            }
         }
     }
     return true;
@@ -258,10 +278,8 @@ static void run_step (void)
         LOG_NOW ("DATA", "bench:step", "STEP,%u,%d,%d,%d,%d\n", (unsigned) (idx * LOOP_MS),
                  (int) g_step[idx].left_mms, (int) g_step[idx].right_mms,
                  (int) g_step[idx].left_duty, (int) g_step[idx].right_duty);
-        if (0U == (idx % 10U))
-        {
-            log_flush ();
-        }
+        /* The USB console drops rows printed faster than the host reads them. */
+        (void) tk_dly_tsk (5U);
     }
     LOG_NOW ("DATA", "bench:step",
              "STEP_RESULT,target_mms=%d,final_left=%d,final_right=%d,t63_left_ms=%d,t63_right_ms=%d\n",
@@ -469,6 +487,45 @@ static void run_lift (void)
     log_flush ();
 }
 
+/* ODO: no motor command; print what the encoders count while the car is moved by hand. */
+#define ODO_RUN_MS   (30000U)
+#define ODO_PRINT_MS (500U)
+#define ODO_TRAVEL_UM_PER_REV (204204)
+#define ODO_EDGES_PER_REV     (2530)
+
+static void run_odo (void)
+{
+    motion_feedback_t start;
+    uint32_t          t0 = now_ms ();
+    uint32_t          next = 0U;
+
+    (void) motion_feedback_snapshot (&start);
+    while (((now_ms () - t0) < ODO_RUN_MS) && !abort_requested ())
+    {
+        uint32_t const t = now_ms () - t0;
+
+        if (t >= next)
+        {
+            motion_feedback_t fb;
+            int64_t           left_um  = 0;
+            int64_t           right_um = 0;
+
+            (void) motion_feedback_snapshot (&fb);
+            left_um  = fb.left_displacement_um - start.left_displacement_um;
+            right_um = fb.right_displacement_um - start.right_displacement_um;
+            /* The edges the firmware counted, from its own scale: um * edges / travel. */
+            LOG_NOW ("DATA", "bench:odo", "ODO,%u,left_mm=%d,right_mm=%d,left_edges=%d,right_edges=%d\n",
+                     (unsigned) t, (int) mm_of (left_um), (int) mm_of (right_um),
+                     (int) ((left_um * ODO_EDGES_PER_REV) / ODO_TRAVEL_UM_PER_REV),
+                     (int) ((right_um * ODO_EDGES_PER_REV) / ODO_TRAVEL_UM_PER_REV));
+            next += ODO_PRINT_MS;
+        }
+        (void) tk_dly_tsk (LOOP_MS);
+    }
+    LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "ODO end: compare left_mm/right_mm with the ruler");
+    log_flush ();
+}
+
 static void run_item (item_t item)
 {
     if (!countdown ())
@@ -492,6 +549,9 @@ static void run_item (item_t item)
         case ITEM_LINEB:
             run_line (true);
             break;
+        case ITEM_ODO:
+            run_odo ();
+            break;
         default:
             run_lift ();
             break;
@@ -502,9 +562,9 @@ static void run_item (item_t item)
 
 static void bench_task (INT stacd, void * exinf)
 {
-    item_t item        = ITEM_ENC;
-    bool   b_run_down  = false;
-    uint32_t loops     = 0U;
+    item_t   item    = ITEM_ENC;
+    uint32_t down_ms = 0U;
+    uint32_t loops   = 0U;
 
     (void) stacd;
     (void) exinf;
@@ -512,20 +572,37 @@ static void bench_task (INT stacd, void * exinf)
     {
         (void) tk_dly_tsk (USB_WAIT_MS);
     }
-    LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "car_bench: GP20 next item, GP21 run");
+    LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "car_bench: GP20 short press = next item, hold GP20 for 1 s = run");
     LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "item: %s", ITEM_TEXT[item]);
     log_flush ();
     for (;;)
     {
-        if (abort_requested ())
+        bool const b_down = (0U == gpio_get_val (BTN_NEXT_PIN));
+
+        if (b_down)
         {
-            item = (item_t) (((uint32_t) item + 1U) % (uint32_t) ITEM_COUNT);
+            down_ms += LOOP_MS;
+            if (LONG_PRESS_MS == down_ms)
+            {
+                LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "release GP20 to run: %s", ITEM_TEXT[item]);
+                log_flush ();
+            }
+        }
+        else if (down_ms >= LONG_PRESS_MS)
+        {
+            down_ms        = 0U;
+            run_item (item);
+        }
+        else if (down_ms > 0U)
+        {
+            down_ms = 0U;
+            item    = (item_t) (((uint32_t) item + 1U) % (uint32_t) ITEM_COUNT);
             LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE, "item: %s", ITEM_TEXT[item]);
             log_flush ();
         }
-        if (is_pressed (BTN_RUN_PIN, &b_run_down))
+        else
         {
-            run_item (item);
+            /* Not pressed. */
         }
         (void) tk_dly_tsk (LOOP_MS);
     }
@@ -564,7 +641,6 @@ EXPORT INT usermain (void)
 
     log_init ();
     button_init (BTN_NEXT_PIN);
-    button_init (BTN_RUN_PIN);
     if (E_OK != gpio_irq_init ())
     {
         LOG_ERROR (LOG_TASK_BOOT, LOG_MOD_NONE, "gpio_irq_init failed");

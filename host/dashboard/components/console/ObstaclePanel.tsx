@@ -7,6 +7,7 @@ import { bitLabels, enumLabel } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
 import { formatTime } from './format';
 import { Panel } from './Panel';
+import { StatusPill } from './StatusPill';
 import { ScanPlot } from './ScanPlot';
 
 type Props = {
@@ -42,11 +43,12 @@ export function ObstaclePanel({ obstacle, profile, status, style }: Props) {
   return (
     <Panel
       right={
-        <Text style={[theme.typography.label, { color: stopped ? theme.colors.danger : theme.colors.muted }]}>
-          {o === undefined ? '--' : enumLabel('obstacleState', o.state)}
-          {stopped ? ` · ${cause}` : ''}
-        </Text>
+        <StatusPill
+          label={o === undefined ? 'NO DATA' : `${enumLabel('obstacleState', o.state)}${stopped ? ` · ${cause}` : ''}`}
+          tone={o === undefined ? 'muted' : stopped ? 'danger' : o.state === 1 ? 'neutral' : 'active'}
+        />
       }
+      icon="sonar"
       status={status}
       style={style}
       testID="obstacle-panel"

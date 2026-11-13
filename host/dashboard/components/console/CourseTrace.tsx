@@ -114,3 +114,13 @@ export function CourseTrace({ course }: Props) {
     </View>
   );
 }
+
+/** The mark of an event kind at icon size, so the timeline and the trace match. */
+export function EventGlyph({ kind }: { kind: EventKind }) {
+  const theme = useTheme();
+  return (
+    <Svg aria-hidden height={14} viewBox="0 0 14 14" width={14}>
+      <Mark color={kind === 'fault' ? theme.colors.danger : theme.colors.muted} kind={kind} x={7} y={7} />
+    </Svg>
+  );
+}

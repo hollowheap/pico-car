@@ -47,7 +47,7 @@ Read events with `obstacle_get_event`. The event ring holds 4 events. A full rin
 | `STOPPED` | 0 degrees | `RESET`, then `START`. |
 | `MONITOR` | 0 degrees | 2 hits among the last 3 pings: `OBSTACLE` event, then `WAIT_STOP`. |
 | `WAIT_STOP` | 0 degrees | `SCAN_REQ`. After `OBSTACLE_WAIT_STOP_MS` (500 ms) with no `SCAN_REQ`: `STOPPED`, cause `HANDOVER`. |
-| `SCANNING` | sweeps, at most +-30 degrees | Scan done: `SCAN_RESULT`, then `PLAN`. No progress for `OBSTACLE_STEP_STALL_MS` (3 s): `STOPPED`, cause `SCAN_TIMEOUT`. |
+| `SCANNING` | sweeps at most +-15 degrees, and pivots the body in 30 degree steps up to 75 degrees | Scan done: `SCAN_RESULT`, then `PLAN`. No progress for `OBSTACLE_STEP_STALL_MS` (3 s): `STOPPED`, cause `SCAN_TIMEOUT`. |
 | `PLAN` | 0 degrees | `ACCEPT` or `REJECT`. After `OBSTACLE_PLAN_ACCEPT_MS` (200 ms): `STOPPED`, cause `PLAN_TIMEOUT`. |
 | `BYPASS` | 0 degrees | Forward beam clear for 2 pings and the planned angle reached: `REACQUIRE`. After `OBSTACLE_ESCAPE_MAX_MS` (4 s): `STOPPED`, cause `BYPASS_LIMIT`. |
 | `REACQUIRE` | 0 degrees | `LINE_FOUND`. Time or distance limits (`OBSTACLE_HUG_MAX_MS`, the plan hug limit) end it: `STOPPED`, cause `LINE_TIMEOUT`. |

@@ -45,6 +45,7 @@
 #define SELFTEST_IMU   (1U)
 #define SELFTEST_SONAR (2U)
 #define SELFTEST_BEAM  (4U)
+#define SELFTEST_IMU_CAL (8U) /* no rest calibration in the first 2 s */
 #define PHYSICS_FAULT_I2C_BIT (1U)
 
 /* The run permit lease. The motion task holds the car when it lapses. */
@@ -72,6 +73,8 @@ static progress_t          g_progress;
 static stuck_t             g_stuck;
 static drive_t             g_drive;
 static edge_watch_t        g_edge;
+static calhold_t           g_cal;
+static bool                g_b_cal_held = false;
 static supervisor_config_t g_config;
 
 static volatile uint8_t  g_turn_pending = SUPERVISOR_NO_TURN;
@@ -100,6 +103,8 @@ ER supervisor_init (const supervisor_config_t * p_config)
         stuck_init (&g_stuck);
         drive_init (&g_drive);
         edge_init (&g_edge);
+        /* No motion before the first rest calibration (D165). */
+        calhold_start (&g_cal, false);
 
         if (PLATFORM_RESET_WATCHDOG == platform_reset_reason ())
         {
@@ -185,7 +190,7 @@ void supervisor_turn_refused (uint8_t opcode)
 
 static run_inputs_t read_inputs (void)
 {
-    run_inputs_t        in = { false, false, false, true };
+    run_inputs_t        in = { false, false, false, true, false };
     physics_status_t    physics;
     motion_status_t     motion;
     obstacle_status_t   obstacle;
@@ -194,6 +199,7 @@ static run_inputs_t read_inputs (void)
     {
         in.b_lifted     = (TELEMETRY_ATTITUDE_STATE_LIFTED == physics.attitude_state);
         in.b_overturned = (TELEMETRY_ATTITUDE_STATE_OVERTURNED == physics.attitude_state);
+        in.b_on_hump    = physics.hump_active || (TELEMETRY_HUMP_STATE_FLAT != physics.state);
     }
     if (0 == motion_status (&motion))
     {
@@ -240,6 +246,8 @@ static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command
     if (p_res->b_physics_recal)
     {
         physics_request_new_run ();
+        calhold_start (&g_cal, true);
+        LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "IMU calibrates, the car waits at rest");
     }
     if (p_res->b_obstacle_stop)
     {
@@ -326,6 +334,33 @@ static void watch_edges (void)
     {
         emit_edges ((uint8_t) TELEMETRY_EVENT_SOURCE_PHYSICS, ev,
                     edge_hump (&g_edge, physics.hump_active, physics.hump_peak_mm, physics.height_valid, ev));
+    }
+}
+
+/* Keep MOTION_HOLD_CALIBRATE on while the IMU takes its rest reference. */
+static void hold_for_calibration (bool b_calibrated)
+{
+    bool const b_held = calhold_update (&g_cal, b_calibrated);
+
+    if (b_held != g_b_cal_held)
+    {
+        if (0 == motion_set_hold (MOTION_HOLD_CALIBRATE, b_held))
+        {
+            g_b_cal_held = b_held;
+            if (!b_held && g_cal.b_timed_out)
+            {
+                LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
+                          "IMU did not calibrate in 5 s (car not at rest, or no IMU): the car runs without a fresh reference");
+            }
+            else if (!b_held)
+            {
+                LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "IMU calibrated");
+            }
+            else
+            {
+                /* Hold set. */
+            }
+        }
     }
 }
 
@@ -475,6 +510,14 @@ static void selftest (void)
     {
         failed |= SELFTEST_IMU;
     }
+    else if (!physics.calibrated)
+    {
+        failed |= SELFTEST_IMU_CAL;
+    }
+    else
+    {
+        /* IMU present and calibrated. */
+    }
     obstacle_echo_counts (echo);
     if ((echo[OBSTACLE_ECHO_IDX_VALID] + echo[OBSTACLE_ECHO_IDX_OPEN] +
          echo[OBSTACLE_ECHO_IDX_TOO_CLOSE]) == 0U)
@@ -529,10 +572,14 @@ static void pass (void)
     {
         physics_status_t physics;
 
+        bool             b_cal = false;
+
         if ((E_OK == physics_snapshot (&physics)) && physics.ready)
         {
             note_attitude (physics.attitude_state);
+            b_cal = physics.calibrated;
         }
+        hold_for_calibration (b_cal);
     }
 
     if (0U == (g_passes % HEALTH_PASSES))

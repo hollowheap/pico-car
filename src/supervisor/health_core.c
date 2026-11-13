@@ -329,3 +329,38 @@ drive_probe_t drive_probe_verdict (int32_t driven_mm, int32_t other_mm)
 
     return verdict;
 }
+
+void calhold_start (calhold_t * p_hold, bool b_wait_drop)
+{
+    p_hold->phase       = (uint8_t) (b_wait_drop ? CALHOLD_WAIT_DROP : CALHOLD_WAIT_CAL);
+    p_hold->passes      = 0U;
+    p_hold->b_timed_out = false;
+}
+
+bool calhold_update (calhold_t * p_hold, bool b_calibrated)
+{
+    if ((uint8_t) CALHOLD_IDLE != p_hold->phase)
+    {
+        p_hold->passes++;
+        if (((uint8_t) CALHOLD_WAIT_DROP == p_hold->phase) &&
+            (!b_calibrated || (p_hold->passes >= CALHOLD_DROP_PASSES)))
+        {
+            p_hold->phase = (uint8_t) CALHOLD_WAIT_CAL;
+        }
+        else if (((uint8_t) CALHOLD_WAIT_CAL == p_hold->phase) && b_calibrated)
+        {
+            p_hold->phase = (uint8_t) CALHOLD_IDLE;
+        }
+        else
+        {
+            /* Still waiting. */
+        }
+        if (((uint8_t) CALHOLD_IDLE != p_hold->phase) && (p_hold->passes >= CALHOLD_MAX_PASSES))
+        {
+            p_hold->phase       = (uint8_t) CALHOLD_IDLE;
+            p_hold->b_timed_out = true;
+        }
+    }
+
+    return (uint8_t) CALHOLD_IDLE != p_hold->phase;
+}

@@ -264,8 +264,10 @@ uint32_t obstacle_plan_hug_limit_mm (obstacle_plan_result_t const * p_result,
         need = 0U;
     }
 
+    /* The front scan cannot see how deep the box is. Allow the full along-leg
+     * cap for the depth; the along leg ends a box deeper than that by itself. */
     limit = need + ((radius * PI_APPROX_NUM) / PI_APPROX_DEN) +
-            OBSTACLE_HUG_EXTRA_MM;
+            OBSTACLE_HUG_EXTRA_MM + OBSTACLE_BOX_ALONG_MAX_MM;
 
     if (limit < OBSTACLE_HUG_MIN_MM)
     {
@@ -707,7 +709,10 @@ static uint8_t pick_start_deg (obstacle_plan_cfg_t const * p_cfg,
 {
     int32_t const edge_x   = (int32_t)need_mm - (int32_t)p_cfg->box_gap_mm;
     int32_t const front_y  = (int32_t)closest_mm + (int32_t)OBSTACLE_SONAR_FWD_MM;
-    int32_t const min_perp = (int32_t)p_cfg->half_width_mm + (int32_t)OBSTACLE_PLAN_MARGIN_MM;
+    /* The car pivots (ALIGN) at the end of the leg, next to the corner, so the
+     * leg must clear the corner by the pivot circle, not only the half width
+     * (D166). With the half width a 280 mm box kept only 43 mm. */
+    int32_t const min_perp = (int32_t)OBSTACLE_PIVOT_RADIUS_MM + (int32_t)OBSTACLE_PLAN_MARGIN_MM;
     int32_t       chosen   = OBSTACLE_OUT_ANGLE_D_DECI;
     uint32_t      idx      = 0U;
 

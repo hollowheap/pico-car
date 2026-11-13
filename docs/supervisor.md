@@ -20,7 +20,8 @@ Every command goes into one ring. The dashboard, a barcode and a button post wit
 | `STOP` | telemetry, button | Operator hold. State `STOPPED`. |
 | `STOP` | barcode | Barcode hold. State `HELD`. |
 | `ESTOP` | telemetry, button | Motion emergency latch. State `LATCHED`. The stop also acts at once in the connection task. |
-| `START` | telemetry, button | Releases the operator, barcode and lift holds, and sends RESET and START to the obstacle task. Refused while latched or lifted. |
+| `START` | telemetry, button | Releases the operator, barcode and lift holds, and sends RESET and START to the obstacle task. On level ground (not in a hump) it also recalibrates the IMU first: the car waits about 1 s at rest. Refused while latched or lifted. |
+| `RECALIBRATE` | telemetry, button | "Recalibrate IMU" on the dashboard. The car stops (hold `calibrate`) while the IMU takes a new rest reference, about 1 s. Refused on a hump, while lifted, and after an emergency stop. |
 | `RESET` | telemetry, button | Called "Clear faults" on the dashboard. Clears the obstacle faults (after an obstacle stop, a sonar fault or a bypass failure) and an overturn latch, and starts the IMU calibration again. It never releases a hold and never moves the car: send START after it. Refused after an emergency stop. |
 | `LEFT`, `RIGHT`, `UTURN`, `STRAIGHT` | telemetry, barcode, button | `STRAIGHT` drives `LINE_STRAIGHT_MM` (250 mm) on the heading it had, with the line sensors ignored: the car crosses a junction. Accepted only when the state is `RUNNING`, the line task follows the line, the obstacle task monitors and no turn is pending. |
 
@@ -55,6 +56,8 @@ The state follows from five flags: operator hold, barcode hold, lift hold, overt
 | `LATCHED` | Emergency latch or overturn | `overturned`, `stopped` |
 
 The car starts to run after boot without a START, as before. There is no `ready` state.
+
+It does not move before the IMU has its first rest reference: the supervisor holds the wheels (`calibrate` in the hold mask) until physics reports `calibrated`. Keep the car level and still for the first second. The calibration rejects samples while the wheels turn, when the acceleration is not 1 g within 0.05 g, or when the tilt spreads more than 2 degrees. If no calibration comes within 5 s (no IMU, or the car keeps moving), the hold ends with a WARN line and the `boot` event reports check 8.
 
 A lift or an overturn sets `MOTION_HOLD_LIFT` at once. The hold stays until START, and START is refused while the car is still lifted. An overturn needs RESET after the car is upright. RESET starts the IMU calibration again.
 
@@ -123,7 +126,9 @@ All limits are placeholders. Tune them on logs from the car.
 
 | # | Test | Pass when |
 |---|---|---|
-| S1 | Send STOP, then START, from the dashboard | The wheels stop and start. `cmd_accept` events show. |
+| S1 | Send STOP, then START, from the dashboard | The wheels stop. After START they wait about 1 s (HOLD `calibrate`), then start. `cmd_accept` events show. |
+| S1b | Boot the car while you move it by hand, then put it down | The wheels do not turn until it rests for about 1 s. |
+| S1c | Put the car on a hump and send Recalibrate IMU | `cmd_reject` with reason 7 (on a hump). On flat ground it is accepted. |
 | S2 | Send LEFT while the obstacle task scans | `cmd_reject` with reason 2 (busy). No turn. |
 | S3 | Show a barcode `H` | The car stops. Mode is `hold_barcode`. START releases it. |
 | S4 | Show a barcode `L`, `R`, `U` | The car turns left, right, U-turn. |

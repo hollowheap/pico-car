@@ -25,6 +25,7 @@ const ACTION_WORDS: Record<string, string> = {
   right: 'turn right 90°',
   uturn: 'U-turn',
   straight: 'go straight across the junction',
+  recalibrate: 'recalibrate the IMU (the car stops for about 1 s; keep it level and still)',
 };
 
 export function ControlsPanel({
@@ -122,85 +123,93 @@ export function ControlsPanel({
       )}
       {pending === null ? (
         <View style={styles.row}>
-          <Button
-            disabled={disabled || emergencyLatched}
-            onPress={() => request('start')}
-          >
-            <Button.Text>Start</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled}
-            variant="secondary"
-            onPress={() => request('stop')}
-          >
-            <Button.Text>Stop</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled}
-            variant="secondary"
-            onPress={() => request('estop')}
-          >
-            <Button.Text>E-stop</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('reset')}
-          >
-            <Button.Text>Clear faults</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('left')}
-          >
-            <Button.Text>Left 90°</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('straight')}
-          >
-            <Button.Text>Straight</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('right')}
-          >
-            <Button.Text>Right 90°</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('uturn')}
-          >
-            <Button.Text>U-turn</Button.Text>
-          </Button>
+          <View style={styles.group}>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              onPress={() => request('start')}
+            >
+              <Button.Text>Start</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled}
+              variant="secondary"
+              onPress={() => request('stop')}
+            >
+              <Button.Text>Stop</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled}
+              variant="danger"
+              onPress={() => request('estop')}
+            >
+              <Button.Text>E-stop</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('reset')}
+            >
+              <Button.Text>Clear faults</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('recalibrate')}
+            >
+              <Button.Text>Recalibrate IMU</Button.Text>
+            </Button>
+          </View>
+          <View style={styles.group}>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('left')}
+            >
+              <Button.Text>Left 90°</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('straight')}
+            >
+              <Button.Text>Straight</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('right')}
+            >
+              <Button.Text>Right 90°</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('uturn')}
+            >
+              <Button.Text>U-turn</Button.Text>
+            </Button>
+          </View>
         </View>
       ) : (
         <View style={styles.confirmRow}>
-          <View style={styles.confirmActions}>
-            <Button
-              disabled={disabled}
-              variant="secondary"
-              onPress={() => setPending(null)}
-            >
-              <Button.Text>Cancel</Button.Text>
-            </Button>
-            <Button disabled={disabled} onPress={confirm}>
-              <Button.Text>Confirm</Button.Text>
-            </Button>
-          </View>
-          <Text
-            style={[
-              theme.typography.body,
-              styles.confirmText,
-              { color: theme.colors.text },
-            ]}
-          >
+          <Text style={[theme.typography.body, styles.confirmText, { color: theme.colors.text }]}>
             Confirm {ACTION_WORDS[pending] ?? pending}?
           </Text>
+          <Button compact disabled={disabled} onPress={confirm}>
+            <Button.Text>Confirm</Button.Text>
+          </Button>
+          <Button compact disabled={disabled} variant="secondary" onPress={() => setPending(null)}>
+            <Button.Text>Cancel</Button.Text>
+          </Button>
         </View>
       )}
     </View>
@@ -209,20 +218,8 @@ export function ControlsPanel({
 
 const styles = StyleSheet.create({
   card: { gap: 8, borderWidth: 1 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  confirmRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  confirmText: {
-    flexShrink: 1,
-    marginLeft: 'auto',
-    textAlign: 'right',
-  },
-  confirmActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
+  row: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' },
+  group: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, maxWidth: '100%' },
+  confirmRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  confirmText: { flexShrink: 1, fontWeight: '600' },
 });

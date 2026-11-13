@@ -97,7 +97,7 @@ static void test_obstacle_to_scan(void)
     obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 3U), 30U, 0U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_SCANNING);
     CHECK(out.b_profile_changed);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == -300);
+    CHECK(obstacle_statechart_servo_deci(&fsm) == -OBSTACLE_SERVO_LIMIT_DECI);
 
     while ((fsm.state == OBSTACLE_STATE_SCANNING) && (guard < 100U))
     {
@@ -510,7 +510,7 @@ static void test_wall_reaches_bypass(void)
     obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_ACCEPT, 5U), 60U, 1000U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
     CHECK(fsm.hug_limit_mm == obstacle_plan_hug_limit_mm(&fsm.plan, &cfg));
-    CHECK(fsm.hug_limit_mm == 3441U);
+    CHECK(fsm.hug_limit_mm == OBSTACLE_HUG_MAX_MM); /* 3441 + the 2500 mm along-leg cap, capped */
     CHECK(fsm.steer == obstacle_plan_steer_away(OBSTACLE_SIDE_LEFT));
     CHECK(!out.b_call_stop);
 }
@@ -680,7 +680,7 @@ static void test_forward_guard_stops(void)
     obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 9U), 600U, 2000U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_SCANNING);
     CHECK(out.b_profile_changed);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == -300);
+    CHECK(obstacle_statechart_servo_deci(&fsm) == -OBSTACLE_SERVO_LIMIT_DECI);
 }
 
 static void test_forward_guard_limits(void)

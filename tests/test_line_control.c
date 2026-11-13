@@ -284,6 +284,8 @@ typedef struct
     double gap_len_mm;
     double seconds;
     bool   b_corner;     /* a straight, a 90 degree arc of `radius`, a straight */
+    double cross_x_mm;   /* a second line across the path at this x, 0 = none */
+    bool   b_tee;        /* the cross line runs only to the left (a T) */
 } sim_case_t;
 
 typedef struct
@@ -379,6 +381,11 @@ static bool sim_sensor_raw(sim_case_t const * p_c, double x, double y, double ps
     double const pos = path_pos(p_c, sx, sy);
     bool b_on = (d <= (LINE_WIDTH_MM / 2.0));
 
+    if ((p_c->cross_x_mm > 0.0) && (fabs(sx - p_c->cross_x_mm) <= (LINE_WIDTH_MM / 2.0)) &&
+        (!p_c->b_tee || (sy > 0.0)))
+    {
+        b_on = true;
+    }
     if ((p_c->gap_len_mm > 0.0) && (pos >= p_c->gap_from_mm) &&
         (pos < (p_c->gap_from_mm + p_c->gap_len_mm)))
     {
@@ -530,7 +537,7 @@ static sim_result_t sim_run(sim_case_t const * p_c)
  * fails on the old law. */
 static void test_sim_straight_hunting(void)
 {
-    sim_case_t c = {LAW_LEGACY, 0.0, 0.0, 0.0, 12.0, false};
+    sim_case_t c = {LAW_LEGACY, 0.0, 0.0, 0.0, 12.0, false, 0.0, false};
     sim_result_t legacy;
     sim_result_t cascade;
 
@@ -551,7 +558,7 @@ static void test_sim_straight_hunting(void)
 
 static void test_sim_curves_keep_the_line(void)
 {
-    sim_case_t c = {LAW_CASCADE, 400.0, 0.0, 0.0, 12.0, false};
+    sim_case_t c = {LAW_CASCADE, 400.0, 0.0, 0.0, 12.0, false, 0.0, false};
     sim_result_t res;
 
     res = sim_run(&c);
@@ -571,10 +578,30 @@ static void test_sim_curves_keep_the_line(void)
     assert(!res.b_stopped);
 }
 
+/* Junctions: a + crossing and a T branch to the left. With no barcode command
+ * the car goes straight through both. */
+static void test_sim_junctions_go_straight(void)
+{
+    sim_case_t c = {LAW_CASCADE, 0.0, 0.0, 0.0, 14.0, false, 900.0, false};
+    sim_result_t res;
+
+    res = sim_run(&c);
+    (void)printf("junction +: %.2f%% lost, max off %.1f mm, max heading %.1f deg\n",
+                 res.lost_pct, res.max_off_mm, res.heading_deg);
+    assert(res.lost_pct < 1.0);
+    assert(res.max_off_mm < 25.0);
+    c.b_tee = true;
+    res = sim_run(&c);
+    (void)printf("junction T: %.2f%% lost, max off %.1f mm, max heading %.1f deg\n",
+                 res.lost_pct, res.max_off_mm, res.heading_deg);
+    assert(res.lost_pct < 1.0);
+    assert(res.max_off_mm < 25.0);
+}
+
 /* A 60 mm cut in the line (the run-on-car check): the car crosses it. */
 static void test_sim_crosses_a_gap(void)
 {
-    sim_case_t c = {LAW_CASCADE, 0.0, 800.0, 60.0, 14.0, false};
+    sim_case_t c = {LAW_CASCADE, 0.0, 800.0, 60.0, 14.0, false, 0.0, false};
     sim_result_t res;
 
     res = sim_run(&c);
@@ -900,6 +927,7 @@ int main(void)
     test_sim_straight_hunting();
     test_sim_curves_keep_the_line();
     test_sim_crosses_a_gap();
+    test_sim_junctions_go_straight();
     test_heading_sign();
     test_left_turn_phases();
     test_right_turn_and_either_sensor();

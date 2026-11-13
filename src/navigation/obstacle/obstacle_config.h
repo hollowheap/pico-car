@@ -130,9 +130,10 @@
 /* FILL: +1 if a longer pulse turns the sensor left, -1 otherwise. */
 #define OBSTACLE_SERVO_DIR (1)
 
-/* [Measured] The servo mounting only allows +-30 degrees from the car's
- * front. Nothing may ask for more; the scan task and scan_hw.c clamp it. */
-#define OBSTACLE_SERVO_LIMIT_DECI (300)
+/* [Measured 2026-11-13] The servo mounting only allows +-15 degrees from the
+ * car's front: the 45 mm board has about 10 mm of room behind it. Nothing may
+ * ask for more; the scan task and scan_hw.c clamp it. */
+#define OBSTACLE_SERVO_LIMIT_DECI (150)
 
 /* Never command a pulse outside the datasheet range. */
 #define OBSTACLE_SERVO_MIN_US (500U)
@@ -164,14 +165,17 @@
 #define OBSTACLE_SLOT_STEP_DECI  (50)
 #define OBSTACLE_SLOT_FIRST_DECI (-900)
 
-/* Coarse sweep: every 10 degrees over the servo range; refinement halves
- * the step next to an edge. */
-#define OBSTACLE_COARSE_STEP_DECI (100)
+/* Coarse sweep: every 5 degrees over the +-15 degree servo range (7 pings).
+ * The fine walk uses the same 5 degree grid. */
+#define OBSTACLE_COARSE_STEP_DECI (50)
 
-/* [Chat] The body pivots this far toward a side whose edge is not visible
- * in the servo range. 60 degrees plus the 30 degree servo range reaches 90
- * degrees, and the two windows meet at 30 degrees. */
-#define OBSTACLE_SCAN_PIVOT_DECI (600)
+/* The body pivots in steps of this size toward a side whose edge is not yet
+ * found, up to OBSTACLE_SCAN_PIVOT_MAX_DECI. Each step shifts the +-15 degree
+ * servo window by its full width, so the windows meet: 0, 30, 60, then 75
+ * degrees, which reaches 90 degrees. A box of any width up to about 1.5 m at
+ * the stop distance gets a found edge instead of a wall plan. */
+#define OBSTACLE_SCAN_PIVOT_DECI     (300)
+#define OBSTACLE_SCAN_PIVOT_MAX_DECI (750)
 
 /* [Spec 3c] The region is the closest VALID return within 600 mm plus
  * neighbouring readings within closest + 250 mm. */
@@ -272,8 +276,9 @@
 
 /* [Default] Gap kept between the axle line and the side of a box: the
  * pivot circle (the car turns toward the box for every side check) plus
- * the margin plus 20 mm. */
-#define OBSTACLE_BOX_GAP_MM (190U)
+ * the margin plus 30 mm. 190 left a 280 mm box 43 mm of clearance in the
+ * simulation; 200 keeps every width at or above the 50 mm margin. */
+#define OBSTACLE_BOX_GAP_MM (200U)
 
 /* [Default] Smallest clearance the out-leg may leave to the obstacle. */
 #define OBSTACLE_PLAN_MARGIN_MM (25U)
@@ -304,18 +309,22 @@
 #define OBSTACLE_WALL_PIVOT_DECI (900)
 
 /* [Chat] Stop-and-look: every 250 mm along the obstacle the car stops,
- * pivots toward it by 60 degrees and aims the servo at its limit (30
- * degrees), so the sonar ray is normal to the face (60 + 30 = 90). */
+ * pivots toward it by 75 degrees and aims the servo at its limit (15
+ * degrees), so the sonar ray is normal to the face (75 + 15 = 90). */
 #define OBSTACLE_SIDE_LOOK_MM    (250U)
-#define OBSTACLE_SIDE_PIVOT_DECI (600)
+#define OBSTACLE_SIDE_PIVOT_DECI (750)
 
 /* [Chat] The wall is held at this distance from the axle line, plus or
  * minus the tolerance. A box side is held at OBSTACLE_BOX_GAP_MM. */
 #define OBSTACLE_WALL_HOLD_MM (300U)
 #define OBSTACLE_HOLD_TOL_MM  (50U)
 
-/* [Default] Two clear side checks in a row mean the obstacle is passed. */
-#define OBSTACLE_PASS_CLEARS (2U)
+/* [Default] Two clear side checks in a row mean the obstacle is passed. A
+ * face followed as a wall needs four (about 1 m of open space) before the car
+ * takes it as the end of a wide box and turns the corner (D166): a few
+ * dropped echoes on a real wall must not turn the car in. */
+#define OBSTACLE_PASS_CLEARS   (2U)
+#define OBSTACLE_CORNER_CLEARS (4U)
 
 /* [Default] After the passed decision the car drives on this far, so that
  * its tail clears the rear face (sonar to tail is 170 mm, and the cone
@@ -519,9 +528,9 @@ OBSTACLE_CT_ASSERT(slot_grid_symmetric,
 OBSTACLE_CT_ASSERT(slot_grid_ends,
              (OBSTACLE_SLOT_FIRST_DECI +
               (((int32_t)OBSTACLE_SLOT_COUNT - 1) * OBSTACLE_SLOT_STEP_DECI)) == -OBSTACLE_SLOT_FIRST_DECI);
-OBSTACLE_CT_ASSERT(servo_limit_30, OBSTACLE_SERVO_LIMIT_DECI == 300);
+OBSTACLE_CT_ASSERT(servo_limit_15, OBSTACLE_SERVO_LIMIT_DECI == 150);
 OBSTACLE_CT_ASSERT(view_reaches_90,
-             (OBSTACLE_SCAN_PIVOT_DECI + OBSTACLE_SERVO_LIMIT_DECI) == -OBSTACLE_SLOT_FIRST_DECI);
+             (OBSTACLE_SCAN_PIVOT_MAX_DECI + OBSTACLE_SERVO_LIMIT_DECI) == -OBSTACLE_SLOT_FIRST_DECI);
 OBSTACLE_CT_ASSERT(windows_meet, OBSTACLE_SCAN_PIVOT_DECI == (2 * OBSTACLE_SERVO_LIMIT_DECI));
 OBSTACLE_CT_ASSERT(coarse_on_grid, 0 == (OBSTACLE_COARSE_STEP_DECI % OBSTACLE_SLOT_STEP_DECI));
 OBSTACLE_CT_ASSERT(coarse_divides_range,

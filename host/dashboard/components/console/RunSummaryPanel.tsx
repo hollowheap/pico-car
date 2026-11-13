@@ -39,7 +39,7 @@ export function RunSummaryPanel({ summary, status, style }: Props) {
   const faultNames = summary.faultBits.map((bit) => FAULT_META[bit]?.label ?? `bit ${bit}`);
 
   return (
-    <Panel status={status} style={style} testID="run-summary" title="Latest run">
+    <Panel icon="run" status={status} style={style} testID="run-summary" title="Latest run">
       <View style={styles.grid}>
         <Item label="DISTANCE" value={`${(summary.distanceMm / 1000).toFixed(2)} m`} />
         <Item label="TIME" value={duration(summary.durationS)} />

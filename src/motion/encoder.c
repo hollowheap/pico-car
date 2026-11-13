@@ -15,6 +15,10 @@
 #define BANK_INTR      (IO_BANK0_BASE + 0xF0U)
 #define CORE0_INTS     (IO_BANK0_BASE + 0x120U)
 #define TIMER_RAW_LOW  (TIMER_BASE + 0x28U)
+/* An encoder level must hold this long to count. Motor PWM switching couples
+ * short spikes into the encoder lines; a real edge at full speed is more than
+ * 100 us from the next one. */
+#define GLITCH_US      (3U)
 #define EDGE_LOW_FLAG  0x4U
 #define EDGE_HIGH_FLAG 0x8U
 #define EDGE_FLAGS     (EDGE_LOW_FLAG | EDGE_HIGH_FLAG)
@@ -88,13 +92,23 @@ static void encoder_isr (const gpio_edge_snapshot_t * p_snapshot)
 
     /* The dispatcher has already acknowledged the edges in the snapshot.
      * Edges after that remain pending for the next entry. */
-    uint32_t gpio = in_w(GPIO_IN);
+    uint32_t const first = in_w(GPIO_IN);
+    uint32_t const start = in_w(TIMER_RAW_LOW);
+    uint32_t       gpio  = 0U;
+
+    /* Read the levels twice, GLITCH_US apart. A pin that changed in between
+     * was a spike: that wheel is not updated, so a spike counts nothing. */
+    while ((in_w(TIMER_RAW_LOW) - start) < GLITCH_US)
+    {
+        /* Busy wait: a few microseconds inside the interrupt. */
+    }
+    gpio = in_w(GPIO_IN);
     (void)ISpinLock(&g_capture_lock, &saved);
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         uint32_t a = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][0]);
         uint32_t b = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][1]);
-        if ((a | b) != 0U)
+        if (((a | b) != 0U) && (pin_state(first, wheel) == pin_state(gpio, wheel)))
         {
             /* Both channels changed, or both polarities on one pin: the
              * sequence is ambiguous. Record loss instead of guessing. */
@@ -127,8 +141,11 @@ ER encoder_init (void)
         {
             unsigned int pin = g_encoder_pins[wheel][channel];
             (void)gpio_set_pin(pin, GPIO_MODE_IN);
-            clr_w(GPIO(pin), MOTION_PAD_PULL_UP | MOTION_PAD_PULL_DOWN);
-            set_w(GPIO(pin), MOTION_PAD_INPUT_ENABLE | MOTION_PAD_SCHMITT);
+            /* Pull-up: a Hall encoder with an open-collector output, or a
+             * loose encoder wire, otherwise leaves the pin floating, and a
+             * floating pin counts motor PWM noise as edges. */
+            clr_w(GPIO(pin), MOTION_PAD_PULL_DOWN);
+            set_w(GPIO(pin), MOTION_PAD_PULL_UP | MOTION_PAD_INPUT_ENABLE | MOTION_PAD_SCHMITT);
         }
     }
 

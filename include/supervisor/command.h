@@ -21,6 +21,7 @@
 #define VEHICLE_CMD_UTURN (5U)
 #define VEHICLE_CMD_ESTOP (6U)
 #define VEHICLE_CMD_STRAIGHT (7U) /* cross a junction without turning */
+#define VEHICLE_CMD_RECAL    (8U) /* calibrate the IMU again at rest */
 
 /* Who asked. */
 #define VEHICLE_SRC_TELEMETRY (1U)

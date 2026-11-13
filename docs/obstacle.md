@@ -154,12 +154,13 @@ The states, the time limits and the fault causes are in the
 
 - **Grid:** 37 slots, -90 to +90 degrees in 5 degree steps, positive = left.
   Slot 18 is straight ahead.
-- **Servo:** never beyond +-30 degrees. The scan reaches the rest of the grid
-  by turning the car body +-60 degrees (S40).
+- **Servo:** never beyond +-15 degrees (the board has about 10 mm of room
+  behind it). The scan reaches the rest of the grid by turning the car body in
+  30 degree steps up to 75 degrees (D166).
 - **Coarse:** every 2nd slot (10 degrees) in the centre window.
 - **Region:** the closest hit within 600 mm, plus coarse neighbours within
   closest + 250 mm. The closest reading is looked for inside the car's path
-  (+-30 degrees) first.
+  (+-15 degrees) first.
 - **Fine:** walk outward from each edge, one slot at a time, up to the first
   real miss (OPEN, or VALID beyond the last hit on that edge + 250 mm).
   - A NO_ECHO, GLITCH or STUCK slot proves nothing, so the walk assumes the
@@ -194,7 +195,7 @@ NO_SAFE_PATH and the car holds.
 `OBSTACLE_PLAN_MARGIN_MM`. The car never reverses.
 
 **Along the obstacle.** Every `OBSTACLE_SIDE_LOOK_MM` (250 mm) the car stops,
-pivots 60 degrees toward the obstacle, aims the servo at 30 degrees so the
+pivots 75 degrees toward the obstacle, aims the servo at 15 degrees so the
 ray is normal to the face, takes a side reading, and pivots back. The reading
 sets the lean that holds `OBSTACLE_BOX_GAP_MM` (190 mm) from the axle line.
 For a wall the gap is `OBSTACLE_WALL_HOLD_MM` (300 mm).

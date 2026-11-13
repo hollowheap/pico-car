@@ -259,15 +259,15 @@ static void print_profile (void)
 /*!
  * @brief Servo travel check (D162). Run a scan with a square wall 150 to 800 mm
  *        straight ahead, then run this item. It prints the angle the servo
- *        really reached at the commanded +30 and -30 degree slots.
+ *        really reached at the commanded +15 and -15 degree slots.
  */
 static void print_servo_check (void)
 {
     static char const * const verdict_text[] = {
-        "OK: both sides within 3 degrees of 30",
+        "OK: both sides within 3 degrees of the 15 degree limit",
         "NO DATA: need a finished scan of a square wall 150 to 800 mm straight ahead",
         "FLAT: the servo hardly moves (check the wiring and the pulse range)",
-        "SCALE: it moves, but not 30 degrees; tune OBSTACLE_SERVO_US_PER_10DEG",
+        "SCALE: it moves, but not 15 degrees; tune OBSTACLE_SERVO_US_PER_10DEG",
         "ASYMMETRIC: the wall is skewed, or the centre is off; tune OBSTACLE_SERVO_CENTRE_US"};
     uint16_t      profile[OBSTACLE_SLOT_COUNT];
     servo_check_t check;

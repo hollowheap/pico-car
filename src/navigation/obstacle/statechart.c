@@ -285,6 +285,21 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
     }
 }
 
+void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
+                                     uint16_t dist_mm, uint32_t now_ms,
+                                     obstacle_statechart_out_t * p_out)
+{
+    uint16_t const dist = ranged_dist(cls, dist_mm);
+
+    p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
+    p_fsm->last_class = cls;
+    p_fsm->last_dist  = dist;
+    if (!check_health(p_fsm, cls, now_ms, p_out))
+    {
+        (void)check_collision(p_fsm, dist, now_ms, p_out);
+    }
+}
+
 /*!
  * @brief Check time and distance limits.
  *

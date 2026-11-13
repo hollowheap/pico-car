@@ -189,13 +189,15 @@ Base unit: 4px.
 | xxl | 24px |
 | section | 80px |
 
-- Three screens: Live (what the car does now), Systems (faults, tasks, timing,
-  link) and Run (summary, course trace, events). The status rail and the banner
-  sit on top of all three.
-- Desktop: 1440x900 reference. Status rail, then three columns on Live (motion
-  and line, attitude and obstacle, faults and events). Page max width 1200px.
-- Mobile: 375x812 reference. Single column. The rail and the top navigation
-  scroll with the page; the banner is the first thing under the rail.
+- One page. From top to bottom: the status rail, the banner, the commands, the
+  live instruments, the run summary, then the course trace and the events.
+  Long lists (the events) scroll inside their panel.
+- Desktop: 1440x900 reference. Three columns (motion, line and link; attitude
+  and obstacle; faults and tasks), then the run summary, then two columns
+  (course trace; events).
+- Mobile: 375x812 reference. Single column. The rail scrolls with the page; the
+  banner is the first thing under the rail.
+- A stale panel shows STALE in its heading and keeps its values, dimmed.
 - Page padding: 24px on mobile, 32px to 40px on desktop.
 - Group related items at 8px to 12px. Separate sections at 32px or 80px.
 - Do not use the same gap everywhere.
@@ -308,12 +310,12 @@ Base unit: 4px.
 - Do use a 1px inset border for card definition.
 - Do show heartbeat age, packet age, and fault state at all times.
 - Do use real values and units.
-- Do use the same three screens (Live, Systems, Run) on desktop and mobile.
+- Do use the same single page on desktop and mobile.
 
 ### Do not
 
 - Do not use a camera, video, GPS, satellite or street map, or IR imagery. The
-  course trace of the Run screen is allowed: it is drawn from the car's own
+  course trace is allowed: it is drawn from the car's own
   odometer and heading.
 - Do not show per-buddy health or a fleet selector.
 - Do not invent run cards or run comparison. The data has no run ID. One

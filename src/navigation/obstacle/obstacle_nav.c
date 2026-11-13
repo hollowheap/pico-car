@@ -65,6 +65,10 @@
 #include "obstacle_pack.h"
 #include "planner.h"
 #include "obstacle_internal.h"
+#include "comms.h"
+
+/* Body target in the aim word published by comms.c. */
+#define AIM_BODY_SHIFT (16U)
 #include "scan_algo.h"
 
 /* Micrometres per millimetre. */
@@ -118,6 +122,8 @@ typedef struct
     bool     b_ir_armed;
     bool     b_ir_cleared;
     bool     b_wall;
+    bool     b_corner; /* the front face of a wide box ended: turn its corner */
+    bool     b_scan_turning; /* the body turns to a scan window */
     bool     b_have_prev_gap;
     bool     b_passed;
     uint8_t  req_id;
@@ -171,6 +177,8 @@ static nav_state_t g_nav = {
     .b_ir_armed         = false,
     .b_ir_cleared       = false,
     .b_wall             = false,
+    .b_corner           = false,
+    .b_scan_turning     = false,
     .b_have_prev_gap    = false,
     .b_passed           = false,
     .req_id             = 0U,
@@ -221,6 +229,8 @@ static int32_t  heading_deci (void);
 static int32_t  lateral_mm (void);
 static int32_t  ahead_mm (void);
 static void     reset_pose (void);
+static void     step_scan_body (void);
+static void     update_pivoting (uint32_t state);
 static void     update_pose (void);
 static void     note_turned (bool b_turned, uint32_t now);
 static void     drive_wheels (uint8_t steer, int32_t left_um_s,
@@ -365,15 +375,70 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
                 b_in_charge = true;
             break;
 
+            case OBSTACLE_STATE_SCANNING:
+            case OBSTACLE_STATE_PLAN:
+                /* Turn the body to the scan window the statechart asks for
+                 * (D167). It is 0 after the scan, so PLAN turns back. */
+                update_pose();
+                step_scan_body();
+                b_in_charge = true;
+            break;
+
             default:
-                /* WAIT_STOP, SCANNING and PLAN: the car stands still. */
+                /* WAIT_STOP: the car stands still. */
                 hold_car(true);
                 b_in_charge = true;
             break;
         }
     }
 
+    update_pivoting(state);
+
     return (b_in_charge);
+}
+
+/*!
+ * @brief Tell the scan task whether the body is turning: a scan pivot, or a
+ *        side look in REACQUIRE (D167).
+ *
+ * @param[in] state Current Buddy 5 state.
+ */
+static void update_pivoting (uint32_t state)
+{
+    bool const b_scan = g_nav.b_scan_turning &&
+                        ((OBSTACLE_STATE_SCANNING == state) || (OBSTACLE_STATE_PLAN == state));
+    bool const b_look = (OBSTACLE_STATE_REACQUIRE == state) &&
+                        ((OBSTACLE_PHASE_LOOK_STOP == g_nav.phase) ||
+                         (OBSTACLE_PHASE_LOOK_IN == g_nav.phase) ||
+                         (OBSTACLE_PHASE_LOOK_PING == g_nav.phase) ||
+                         (OBSTACLE_PHASE_LOOK_OUT == g_nav.phase));
+
+    obstacle_comms_set_pivoting(b_scan || b_look);
+}
+
+/*!
+ * @brief SCANNING and PLAN: pivot the body to the target of the scan. The car
+ *        stands still once it is there.
+ */
+static void step_scan_body (void)
+{
+    int32_t const target = (int32_t)(int16_t)(uint16_t)(obstacle_comms_aim() >> AIM_BODY_SHIFT);
+    int32_t       left   = 0;
+    int32_t       right  = 0;
+    uint8_t       steer  = OBSTACLE_STEER_HOLD;
+    bool          b_done = false;
+
+    obstacle_plan_wheel_pivot(heading_deci(), target, &left, &right, &steer, &b_done);
+    g_nav.b_scan_turning = !b_done;
+    if (b_done)
+    {
+        hold_car(true);
+    }
+    else
+    {
+        hold_car(false);
+        drive_wheels(steer, left, right);
+    }
 }
 
 /*!
@@ -819,7 +884,7 @@ static bool step_look_ping (uint32_t status)
             ((OBSTACLE_CLASS_VALID == cls) && (dist >= (uint32_t)OBSTACLE_CORNER_CLEAR_MM)))
         {
             g_nav.clear_checks++;
-            if (g_nav.clear_checks >= OBSTACLE_PASS_CLEARS)
+            if (g_nav.clear_checks >= (g_nav.b_wall ? OBSTACLE_CORNER_CLEARS : OBSTACLE_PASS_CLEARS))
             {
                 g_nav.b_passed = true;
             }
@@ -936,8 +1001,12 @@ static void reacquire_look_cycle (int32_t cur_head, uint32_t status, uint32_t no
         if (b_done)
         {
             g_nav.leg_base_um = mean_um;
-            if (g_nav.b_passed && (!g_nav.b_wall))
+            if (g_nav.b_passed)
             {
+                /* A box passes for good. A face followed as a wall that ends
+                 * is the front of a wide box (D166): drive on past the corner,
+                 * then turn and pass the box side as a box. */
+                g_nav.b_corner = g_nav.b_wall;
                 set_phase(OBSTACLE_PHASE_EXTRA);
             }
             else
@@ -967,9 +1036,23 @@ static void reacquire_drive_and_return (int32_t cur_head, int64_t mean_um,
         obstacle_plan_wheel_straight(cur_head, g_nav.along_head_deci,
                                      (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
                                      p_left, p_right, p_steer);
-        if (leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM)
+        if ((leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM) && g_nav.b_corner)
+        {
+            g_nav.b_corner        = false;
+            g_nav.b_wall          = false;
+            g_nav.b_passed        = false;
+            g_nav.clear_checks    = 0U;
+            g_nav.b_have_prev_gap = false;
+            LOG_NOW("INFO", "line:nav", "front face ended: turn the corner, pass the side\n");
+            set_phase(OBSTACLE_PHASE_ALIGN);
+        }
+        else if (leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM)
         {
             set_phase(OBSTACLE_PHASE_RETURN_PIVOT);
+        }
+        else
+        {
+            /* Still driving past the face. */
         }
     }
     else if (OBSTACLE_PHASE_RETURN_PIVOT == g_nav.phase)
@@ -1147,8 +1230,10 @@ static void report_state (uint32_t status)
         log_rec(OBSTACLE_LOG_STATE, (uint8_t)state, (uint8_t)cause,
                 (uint8_t)obstacle_get_faults(), 0, 0, 0);
 
-        if (OBSTACLE_STATE_BYPASS == state)
+        if (OBSTACLE_STATE_SCANNING == state)
         {
+            /* The stop point is the reference for the scan pivots and the
+             * whole bypass (D167). */
             reset_pose();
         }
 
@@ -1224,10 +1309,12 @@ static bool is_servo_moving (uint32_t status, uint32_t now)
 }
 
 /*!
- * @brief Keep the accepted plan: the start angle, the sideways offset the
- *        car needs (closest x tan(start angle), the planner's own offset).
- *        The closest reading comes from the scan profile, as in
- *        scan_algo.c.
+ * @brief Keep the accepted plan: the start angle and the sideways offset the
+ *        car needs. The offset is the planner's side room (the box edge plus
+ *        OBSTACLE_BOX_GAP_MM, D166). It used to be closest x tan(start
+ *        angle), which ignored the box width: with a 45 degree start every
+ *        box got the same offset, and boxes wider than 240 mm were brushed.
+ *        That formula stays as the lower bound.
  *
  * @param[in] angle  Start angle from SCAN_RESULT, degrees.
  * @param[in] b_wall Wall plan flag from SCAN_RESULT.
@@ -1262,6 +1349,15 @@ static void keep_plan (uint32_t angle, bool b_wall)
     g_nav.b_wall    = b_wall;
     g_nav.need_mm =
         (closest * obstacle_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE;
+    {
+        obstacle_plan_summary_t plan;
+
+        if ((E_OK == obstacle_copy_plan(&plan)) && (plan.need_mm < OBSTACLE_PLAN_SIDE_BLOCKED) &&
+            ((int32_t)plan.need_mm > g_nav.need_mm))
+        {
+            g_nav.need_mm = (int32_t)plan.need_mm;
+        }
+    }
     LOG_NOW("INFO", "line:nav", "plan: obstacle %d mm, start %d deg, side "
                     "offset %d mm, %s\n",
               (INT)closest, (INT)angle, (INT)g_nav.need_mm,

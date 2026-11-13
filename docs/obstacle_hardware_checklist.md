@@ -14,8 +14,8 @@ each step: these are your evidence for the tribunal.
 |---|---|---|---|---|
 | H1 | ECHO voltage is safe | Meter the Grove 1 VCC pin. Then power the sensor from Grove 1 with the ECHO wire **not** connected to GP1, and meter ECHO against GND while waving a hand in front. | VCC ≈ 3.3 V and ECHO high ≤ 3.4 V (HC-SR04+ or HC-SR04P). Only then connect ECHO to GP1. If ECHO reads about 5 V, do not connect it; fit the divider in the [wiring section](obstacle.md#wiring). | |
 | H2a | Servo centre | After boot the servo should point straight ahead. If not, adjust `OBSTACLE_SERVO_CENTRE_US` in steps of 10 µs. | Sensor faces straight ahead | |
-| H2b | Servo direction | Watch the start of a scan (GP20 to SCAN_REQ after an OBSTACLE). The servo moves to -30° = **right** first (slot 12 of 37). | First move goes right. If it goes left, set `OBSTACLE_SERVO_DIR` to -1. | |
-| H2c | Servo scale | Protractor under the sensor. Compare the ±30° servo positions with the real angle and adjust `OBSTACLE_SERVO_US_PER_10DEG`. | ±30° within ±3° | |
+| H2b | Servo direction | Watch the start of a scan (GP20 to SCAN_REQ after an OBSTACLE). The servo moves to -15° = **right** first (slot 15 of 37). | First move goes right. If it goes left, set `OBSTACLE_SERVO_DIR` to -1. | |
+| H2c | Servo scale | Protractor under the sensor. Compare the ±15° servo positions with the real angle and adjust `OBSTACLE_SERVO_US_PER_10DEG`. Or run SERVO CHECK. | ±15° within ±3° | |
 | H2d | Settle on a low battery | Repeat a scan on a LiPo at ~3.5 V. Then double `OBSTACLE_SETTLE_MS_PER_DEG`, rebuild and scan again. | The two profiles match within 15 mm | |
 | H3 | Detection distance | Status lines show distance and class. Slide a flat box toward the sensor. | OBSTACLE event at 250 ± 15 mm, after 2 hits among 3 pings | |
 | H3b | One outlier | Hold a box at 200 mm. Pass a hand through the beam for one ping only (about 60 ms). | The OBSTACLE event still comes from the box. A single hand ping alone does not raise it. | |

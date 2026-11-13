@@ -79,6 +79,7 @@ test_constants (void)
     CHECK ((unsigned) TELEMETRY_CMD_UTURN == 0x05u);
     CHECK ((unsigned) TELEMETRY_CMD_ESTOP == 0x06u);
     CHECK ((unsigned) TELEMETRY_CMD_STRAIGHT == 0x07u);
+    CHECK ((unsigned) TELEMETRY_CMD_RECALIBRATE == 0x08u);
 }
 
 static void
@@ -132,16 +133,16 @@ test_parse_all_opcodes (void)
     telemetry_cmd_t c;
     uint8_t op;
 
-    for (op = 0u; op <= (uint8_t) TELEMETRY_CMD_STRAIGHT; op++)
+    for (op = 0u; op <= (uint8_t) TELEMETRY_CMD_RECALIBRATE; op++)
     {
         frame[6] = op;
         CHECK (telemetry_cmd_parse (frame, 8u, &c) == TELEMETRY_CMD_OK);
         CHECK (c.opcode == op);
     }
-    /* First value past STRAIGHT, and the extremes.  The parser fills cmd_id,
+    /* First value past RECALIBRATE, and the extremes.  The parser fills cmd_id,
        run_id and sent_ms before it checks the opcode, so *cmd is partly
        written on BAD_OPCODE; callers must not use it after a reject. */
-    frame[6] = 0x08u;
+    frame[6] = 0x09u;
     CHECK (telemetry_cmd_parse (frame, 8u, &c) == TELEMETRY_CMD_BAD_OPCODE);
     frame[6] = 0x7Fu;
     CHECK (telemetry_cmd_parse (frame, 8u, &c) == TELEMETRY_CMD_BAD_OPCODE);

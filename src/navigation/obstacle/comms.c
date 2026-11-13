@@ -749,3 +749,14 @@ static void publish_profile (obstacle_statechart_t const * p_fsm)
 
 /*** end of file ***/
 
+static volatile bool g_pivoting = false;
+
+void obstacle_comms_set_pivoting (bool b_pivoting)
+{
+    g_pivoting = b_pivoting;
+}
+
+bool obstacle_comms_is_pivoting (void)
+{
+    return g_pivoting;
+}

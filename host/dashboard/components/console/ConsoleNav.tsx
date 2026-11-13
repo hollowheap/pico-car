@@ -8,24 +8,11 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
+import Svg, { Circle, Path } from 'react-native-svg';
 
 import type { Theme } from '../../lib/theme';
-import { useTheme } from '../../lib/theme-provider';
+import { useTheme, useThemeToggle } from '../../lib/theme-provider';
 import { CarIcon } from './CarIcon';
-
-type Page = 'live' | 'systems' | 'run';
-
-type Href = '/' | '/systems' | '/run';
-
-const ITEMS: { key: Page; label: string; href: Href }[] = [
-  { key: 'live', label: 'Live', href: '/' },
-  { key: 'systems', label: 'Systems', href: '/systems' },
-  { key: 'run', label: 'Run', href: '/run' },
-];
-
-type Props = {
-  active: Page;
-};
 
 function webFocusRing(theme: Theme): ViewStyle | undefined {
   if (Platform.OS !== 'web') {
@@ -74,73 +61,44 @@ function Brand() {
   );
 }
 
-function NavItem({
-  active,
-  href,
-  label,
-}: {
-  active: boolean;
-  href: Href;
-  label: string;
-}) {
-  const theme = useTheme();
-  const [focused, setFocused] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const color =
-    active || hovered ? theme.colors.text : theme.colors.muted;
-  const indicatorColor = active
-    ? theme.colors.accent
-    : hovered
-      ? theme.colors.border
-      : 'transparent';
-
+function ThemeToggle() {
+  const { mode, colors } = useTheme();
+  const toggle = useThemeToggle();
+  const dark = mode === 'dark';
   return (
     <Pressable
-      accessibilityRole="link"
-      accessibilityState={{ selected: active }}
-      focusable
-      onBlur={() => setFocused(false)}
-      onFocus={() => setFocused(true)}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      onPress={() => router.push(href)}
+      accessibilityLabel={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      accessibilityRole="button"
+      onPress={toggle}
       style={({ pressed }) => [
-        styles.item,
-        focused ? webFocusRing(theme) : null,
-        pressed && styles.pressed,
+        styles.themeButton,
+        {
+          backgroundColor: pressed ? colors.elevated : colors.card,
+          borderColor: colors.border,
+          opacity: pressed ? 0.8 : 1,
+        },
       ]}
+      testID="theme-toggle"
     >
-      <Text
-        style={[
-          theme.typography.body,
-          { color, fontWeight: active ? '600' : '400' },
-        ]}
-      >
-        {label}
-      </Text>
-      <View
-        style={[styles.indicator, { backgroundColor: indicatorColor }]}
-      />
+      <Svg height={19} width={19} viewBox="0 0 24 24" fill="none" stroke={colors.text} strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round">
+        {dark ? (
+          <>
+            <Circle cx={12} cy={12} r={4} />
+            <Path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4m0-13.4-1.4 1.4M6.7 17.3l-1.4 1.4" />
+          </>
+        ) : <Path d="M20.5 15.1A8.7 8.7 0 0 1 8.9 3.5a8.8 8.8 0 1 0 11.6 11.6Z" />}
+      </Svg>
     </Pressable>
   );
 }
 
-export function ConsoleNav({ active }: Props) {
+export function ConsoleNav() {
   const theme = useTheme();
 
   return (
     <View style={[styles.header, { borderColor: theme.colors.border }]}>
       <Brand />
-      <View style={styles.links}>
-        {ITEMS.map((item) => (
-          <NavItem
-            key={item.key}
-            active={active === item.key}
-            href={item.href}
-            label={item.label}
-          />
-        ))}
-      </View>
+      <ThemeToggle />
     </View>
   );
 }
@@ -161,22 +119,6 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   brandText: { fontWeight: '600', letterSpacing: 1.2 },
-  links: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
-  item: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-    minWidth: 44,
-    paddingHorizontal: 12,
-    position: 'relative',
-  },
+  themeButton: { alignItems: 'center', borderRadius: 59, borderWidth: 1, height: 44, justifyContent: 'center', width: 44 },
   pressed: { opacity: 0.7 },
-  indicator: {
-    borderRadius: 2,
-    bottom: 0,
-    height: 2,
-    left: 12,
-    position: 'absolute',
-    right: 12,
-  },
 });

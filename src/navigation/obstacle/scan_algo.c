@@ -657,12 +657,20 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
         }
         else if (!slot_in_servo_window(p_ctx->body_deci, slot))
         {
-            if (!p_ctx->b_pivoted[side])
+            int32_t const sign = (SCAN_ALGO_LEFT == side) ? 1 : -1;
+            int32_t const now  = sign * (int32_t)p_ctx->body_deci;
+
+            if (now < OBSTACLE_SCAN_PIVOT_MAX_DECI)
             {
+                /* One more pivot step toward the side, clamped at the maximum. */
+                int32_t next = now + OBSTACLE_SCAN_PIVOT_DECI;
+
+                if (next > OBSTACLE_SCAN_PIVOT_MAX_DECI)
+                {
+                    next = OBSTACLE_SCAN_PIVOT_MAX_DECI;
+                }
                 p_ctx->b_pivoted[side] = true;
-                p_ctx->body_deci       = (SCAN_ALGO_LEFT == side)
-                                             ? (int16_t)OBSTACLE_SCAN_PIVOT_DECI
-                                             : (int16_t)(-OBSTACLE_SCAN_PIVOT_DECI);
+                p_ctx->body_deci       = (int16_t)(sign * next);
             }
             else
             {
@@ -755,11 +763,11 @@ static void run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first)
 
 /* Servo check ------------------------------------------------------------ */
 
-#define SERVO_CHECK_SLOT_OFFSET   (6U)    /* 30 degrees at 5 degrees per slot */
+#define SERVO_CHECK_SLOT_OFFSET   ((uint8_t)(OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI))
 #define SERVO_CHECK_MIN_MM        (120U)
 #define SERVO_CHECK_MAX_MM        (800U)
-#define SERVO_CHECK_FLAT_DECI     (150)   /* below 15 degrees reads as no travel */
-#define SERVO_CHECK_TARGET_DECI   (300)
+#define SERVO_CHECK_FLAT_DECI     (OBSTACLE_SERVO_LIMIT_DECI / 2)   /* under half the limit reads as no travel */
+#define SERVO_CHECK_TARGET_DECI   (OBSTACLE_SERVO_LIMIT_DECI)
 #define SERVO_CHECK_TOLERANCE     (30)    /* 3 degrees */
 #define SERVO_CHECK_ASYM_DECI     (60)    /* 6 degrees */
 #define SERVO_CHECK_COS_STEPS     (13U)   /* 0 to 60 degrees */

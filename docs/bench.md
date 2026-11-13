@@ -20,7 +20,7 @@ python3 tools/physics_log_summary.py physics.log --checks
 
 ## car_bench
 
-Buttons: GP20 chooses the next item (the console prints it). GP21 runs it after a 3 s countdown. GP20 during a run stops it. The bench starts only the motors and the line sensors. The obstacle task and the supervisor do not run, so nothing else holds the car.
+Button: a short press on GP20 chooses the next item (the console prints it). Hold GP20 for 1 s and release it to run the item after a 3 s countdown. A press during a run stops it. Do not press GP21: it is the emergency-stop input, and it latches the stop until you power-cycle the board. The bench starts only the motors and the line sensors. The obstacle task and the supervisor do not run, so nothing else holds the car.
 
 | Item | Setup | What it prints | What it answers |
 |---|---|---|---|
@@ -50,4 +50,4 @@ Check 4 (pitch while driving against pitch standing still) needs the wheels. Run
 
 ## obstacle_bench: SERVO CHECK
 
-Put a flat, square wall 150 to 800 mm in front of the sonar. Run a scan (AUTO-RUN, or SCAN_REQ), then choose SERVO CHECK. It prints the angle the servo really reached at the commanded +30 and -30 degree slots, and says OK, FLAT, SCALE or ASYMMETRIC. The scan profile at 5 degree steps also answers the H4c measurement of Q56: the angle where a flat face stops returning.
+Put a flat, square wall 150 to 800 mm in front of the sonar. Run a scan (AUTO-RUN, or SCAN_REQ), then choose SERVO CHECK. It prints the angle the servo really reached at the commanded +15 and -15 degree slots, and says OK, FLAT, SCALE or ASYMMETRIC. The scan profile at 5 degree steps also answers the H4c measurement of Q56: the angle where a flat face stops returning.

@@ -6,6 +6,7 @@ import { enumLabel } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
 import { withUnit } from './format';
 import { Panel } from './Panel';
+import { StatusPill } from './StatusPill';
 import { Sparkline } from './Sparkline';
 
 type Props = {
@@ -66,10 +67,12 @@ export function MotionPanel({ motion, speeds, status, style }: Props) {
   return (
     <Panel
       right={
-        <Text style={[theme.typography.label, { color: faulty ? theme.colors.danger : theme.colors.muted }]}>
-          {v === undefined ? '--' : `${enumLabel('motionState', v.motion_state)}${faulty ? ` · ${fault}` : ''}`}
-        </Text>
+        <StatusPill
+          label={v === undefined ? 'NO DATA' : `${enumLabel('motionState', v.motion_state)}${faulty ? ` · ${fault}` : ''}`}
+          tone={v === undefined ? 'muted' : faulty ? 'danger' : v.motion_state === 1 ? 'active' : 'neutral'}
+        />
       }
+      icon="motion"
       status={status}
       style={style}
       testID="motion-panel"

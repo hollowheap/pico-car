@@ -8,6 +8,7 @@ import { bearingName } from './format';
 import { Compass } from './Compass';
 import { LevelGauge } from './LevelGauge';
 import { Panel } from './Panel';
+import { StatusPill } from './StatusPill';
 
 type Props = {
   /** Status packet: the heading and the mode of the car. */
@@ -40,10 +41,12 @@ export function AttitudePanel({ statusPacket, physics, status, style }: Props) {
   return (
     <Panel
       right={
-        <Text style={[theme.typography.label, { color: alert ? theme.colors.danger : theme.colors.muted }]}>
-          {attitude === undefined ? '--' : `ATTITUDE ${enumLabel('attitudeState', attitude)}`}
-        </Text>
+        <StatusPill
+          label={attitude === undefined ? 'NO DATA' : enumLabel('attitudeState', attitude)}
+          tone={attitude === undefined ? 'muted' : alert ? 'danger' : 'neutral'}
+        />
       }
+      icon="attitude"
       status={status}
       style={style}
       testID="attitude-panel"
