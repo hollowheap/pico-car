@@ -10,6 +10,7 @@
 #include "pwm.h"
 #include "platform/faults.h"
 #include "platform/liveness.h"
+#include "platform/log.h"
 #include "supervisor/health_ids.h"
 
 #define STOP_PIN      21U
@@ -254,6 +255,7 @@ static void service_cycle (motion_input_t * p_input)
     bool             stop     = false;
     bool             captured = false;
     motion_fault_t   fault    = MOTION_FAULT_NONE;
+    motion_fault_t const previous_fault = g_controller.status.fault;
 
     wait_motion_cycle();
     liveness_kick(LIVE_MOTION);
@@ -295,6 +297,14 @@ static void service_cycle (motion_input_t * p_input)
     fault = g_controller.status.fault;
     stop  = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
+    if ((fault != previous_fault) && (MOTION_FAULT_FEEDBACK == fault))
+    {
+        motion_sample_t const * const sample = &g_controller.status.sample;
+        LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE, "feedback captured=%u sample=%u dt_us=%u invalid=%u/%u\n",
+                (unsigned int)captured, (unsigned int)g_controller.status.sample_available,
+                (unsigned int)sample->elapsed_us, (unsigned int)sample->wheel[0].invalid_delta,
+                (unsigned int)sample->wheel[1].invalid_delta);
+    }
     report_faults(fault, stop);
 }
 

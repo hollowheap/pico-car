@@ -30,9 +30,7 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'HEARTBEAT', label: 'HB' },
 ];
 
-/** One log row is about this tall; the scroller needs an explicit height. */
-const ROW_PX = 48;
-const LOG_MAX_PX = 300;
+const LOG_HEIGHT_PX = 300;
 
 type Props = {
   packets: LinkPacket[];
@@ -68,14 +66,10 @@ export function PacketLogPanel({ packets, connected, style }: Props) {
         ))}
       </View>
 
-      {!connected && packets.length > 0 ? (
-        <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-          Link offline. Showing the last received frames.
-        </Text>
-      ) : null}
       <ScrollView
-        showsVerticalScrollIndicator={false}
-        style={{ height: Math.min(LOG_MAX_PX, visible.length * ROW_PX) }}
+        accessibilityLabel={connected ? 'Live packets' : 'Last received packets'}
+        nestedScrollEnabled
+        style={{ height: LOG_HEIGHT_PX, flexGrow: 0, flexShrink: 0 }}
         contentContainerStyle={styles.logContent}
       >
         {visible.length === 0 ? (

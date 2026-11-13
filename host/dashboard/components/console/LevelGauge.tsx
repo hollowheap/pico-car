@@ -10,6 +10,7 @@ type Props = {
   rollDeg: number | null;
   /** The tilt that counts as a lift. Drawn as two ticks on each gauge. */
   envelopeDeg: number;
+  compact?: boolean;
 };
 
 const WIDTH = 120;
@@ -17,10 +18,10 @@ const HEIGHT = 70;
 const GROUND = 56;
 const PIVOT_X = 60;
 
-type ViewProps = { angle: number | null; envelopeDeg: number; label: string; rear: boolean };
+type ViewProps = { angle: number | null; envelopeDeg: number; label: string; rear: boolean; compact: boolean };
 
 /** One gauge: the car tilts about its wheels on a ground line. */
-function Gauge({ angle, envelopeDeg, label, rear }: ViewProps) {
+function Gauge({ angle, envelopeDeg, label, rear, compact }: ViewProps) {
   const theme = useTheme();
   const tilt = angle ?? 0;
   const pivotY = GROUND;
@@ -42,7 +43,7 @@ function Gauge({ angle, envelopeDeg, label, rear }: ViewProps) {
       <Svg
       accessibilityLabel={angle === null ? `${label} unavailable` : `${label} ${angle.toFixed(1)} degrees`}
       accessibilityRole="image"
-      height={HEIGHT * 1.6}
+      height={compact ? 48 : HEIGHT * 1.6}
       preserveAspectRatio="xMidYMid meet"
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       width="100%"
@@ -78,14 +79,14 @@ function Gauge({ angle, envelopeDeg, label, rear }: ViewProps) {
 }
 
 /** Pitch (side view) and roll (rear view) side by side. */
-export function LevelGauge({ pitchDeg, rollDeg, envelopeDeg }: Props) {
+export function LevelGauge({ pitchDeg, rollDeg, envelopeDeg, compact = false }: Props) {
   return (
     <View style={styles.row}>
       <View style={styles.cell}>
-        <Gauge angle={pitchDeg} envelopeDeg={envelopeDeg} label="PITCH" rear={false} />
+        <Gauge compact={compact} angle={pitchDeg} envelopeDeg={envelopeDeg} label="PITCH" rear={false} />
       </View>
       <View style={styles.cell}>
-        <Gauge angle={rollDeg} envelopeDeg={envelopeDeg} label="ROLL" rear />
+        <Gauge compact={compact} angle={rollDeg} envelopeDeg={envelopeDeg} label="ROLL" rear />
       </View>
     </View>
   );

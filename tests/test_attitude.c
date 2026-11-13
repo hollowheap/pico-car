@@ -188,12 +188,15 @@ static void test_tip_on_side (void)
     CHECK (ATTITUDE_OVERTURNED == rig.out.state);
     CHECK (fabsf (rig.out.roll_deg) > 80.0f);
 
-    /* Upright again: it holds until a reset. */
-    run (&rig, 200U, 1.0f, 0.0f, 0.0f, 0.01f);
+    /* One unstable sample restarts the upright window. */
+    run (&rig, rig.ctx.cfg.clear_samples - 1U, 1.0f, 0.0f, 0.0f, 0.01f);
     CHECK (ATTITUDE_OVERTURNED == rig.out.state);
-    attitude_reset (&rig.ctx);
-    run (&rig, 5U, 1.0f, 0.0f, 0.0f, 0.01f);
+    sample (&rig, 1.0f, 10.0f, 0.0f, 0.01f);
+    run (&rig, rig.ctx.cfg.clear_samples - 1U, 1.0f, 0.0f, 0.0f, 0.01f);
+    CHECK (ATTITUDE_OVERTURNED == rig.out.state);
+    sample (&rig, 1.0f, 0.0f, 0.0f, 0.01f);
     CHECK (ATTITUDE_OK == rig.out.state);
+    CHECK (rig.out.changed);
 }
 
 static void test_upside_down (void)

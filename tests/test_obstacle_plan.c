@@ -380,6 +380,14 @@ static void test_hug_limit(void)
     CHECK(obstacle_plan_hug_limit_mm(&result, &cfg) <= OBSTACLE_HUG_MAX_MM);
 }
 
+static void test_return_distance_limit(void)
+{
+    CHECK(!obstacle_plan_return_limit(0));
+    CHECK(!obstacle_plan_return_limit(-281));
+    CHECK(obstacle_plan_return_limit(-282));
+    CHECK(obstacle_plan_return_limit(-300));
+}
+
 int main(void)
 {
     test_trig_and_roots();
@@ -393,6 +401,7 @@ int main(void)
     test_wheel_straight();
     test_side_lean_and_trim();
     test_hug_limit();
+    test_return_distance_limit();
 
     if (g_failures == 0)
     {

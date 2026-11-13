@@ -3,7 +3,7 @@
  *	Run state of the vehicle and the rules for each command (D120). Pure C:
  *	no kernel call, so a host test drives it.
  *
- *	The state is five flags, and the visible state is derived from them. A
+ *	The visible state is derived from the stored run flags. A
  *	command or a tick changes flags and the supervisor applies the result.
  *	The supervisor decides what is allowed. The line task does what is
  *	allowed.
@@ -41,11 +41,13 @@ typedef enum
 typedef struct
 {
     bool b_booted;
+    bool b_wait_button; /* wait for a physical START after boot */
     bool b_operator; /* STOP from the dashboard or a button           */
     bool b_barcode;  /* STOP from a barcode                            */
     bool b_lift;     /* lifted or overturned: the lift hold is on      */
     bool b_overturn; /* overturned: needs RESET after the car is upright */
     bool b_estop;    /* the motion emergency latch                     */
+    bool b_motion_fault; /* controller fault remains latched until reboot */
 } run_ctx_t;
 
 /* Facts the supervisor reads before each step. */
@@ -54,7 +56,9 @@ typedef struct
     bool b_lifted;
     bool b_overturned;
     bool b_estop;
+    bool b_motion_fault;
     bool b_follow; /* the line task follows the line, the obstacle task monitors, no turn is pending */
+    bool b_obstacle_stopped; /* a new physical START can retry a stopped scan */
 } run_inputs_t;
 
 /* What the supervisor must do after a step. hold_mask is the full set of
@@ -74,7 +78,7 @@ typedef struct
     bool     b_physics_recal; /* the IMU must calibrate again after an overturn */
 } run_result_t;
 
-void        run_state_init (run_ctx_t * p_ctx);
+void        run_state_init (run_ctx_t * p_ctx, bool b_button_start);
 run_state_t run_state_of (const run_ctx_t * p_ctx);
 uint32_t    run_state_hold_mask (const run_ctx_t * p_ctx);
 

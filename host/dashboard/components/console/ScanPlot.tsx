@@ -12,6 +12,7 @@ type Props = {
   /** The range where the car stops for an obstacle, mm. */
   detectMm: number;
   maxMm?: number;
+  height?: number;
 };
 
 const WIDTH = 300;
@@ -27,7 +28,7 @@ const SPOKES = [-60, -30, 0, 30, 60];
  * dot is an echo, a ring on the edge is open space, a cross on the edge is a bad
  * echo (no echo, glitch, stuck, too close). The wedge is the live sonar beam.
  */
-export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600 }: Props) {
+export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600, height = HEIGHT * 1.2 }: Props) {
   const theme = useTheme();
   const mmPerUnit = maxMm / (CAR_Y - 20);
   const at = (angle: number, mm: number) => polarToXY(angle, mm, mmPerUnit, CAR_X, CAR_Y);
@@ -46,7 +47,7 @@ export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600 
     <Svg
       accessibilityLabel={`Scan plot, ${points.filter((p) => p.mark === 'echo').length} echoes`}
       accessibilityRole="image"
-      height={HEIGHT * 1.2}
+      height={height}
       preserveAspectRatio="xMidYMid meet"
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       width="100%"

@@ -295,6 +295,14 @@ uint8_t obstacle_plan_steer_away (uint8_t side)
     return ((OBSTACLE_SIDE_LEFT == side) ? OBSTACLE_STEER_LEFT : OBSTACLE_STEER_RIGHT);
 }
 
+/* A box can only rejoin the line after the return pivot. A wall can
+ * intersect the line while the car is travelling alongside it. */
+bool obstacle_plan_line_phase (uint8_t phase, bool b_wall)
+{
+    return ((OBSTACLE_PHASE_RETURN_DRIVE == phase) ||
+            (b_wall && (OBSTACLE_PHASE_ALONG == phase)));
+}
+
 /*!
  * @brief Spin on the spot toward target_head_deci.
  *
@@ -488,6 +496,24 @@ static int32_t side_sign (uint8_t side)
     return ((SCAN_ALGO_LEFT == side) ? 1 : -1);
 }
 
+/* Hit positions are relative to the sonar's original forward position.
+ * Turning the chassis moves the sonar around the axle as well as changing
+ * the bearing. The wheel controller settles close to the nominal body aim. */
+static int32_t sonar_x_mm (scan_algo_ctx_t const * p_scan, uint8_t slot)
+{
+    int32_t const body_deci = (int32_t)p_scan->body_deg[slot] * OBSTACLE_DECI_PER_DEG;
+
+    return (geom_mul_q14((int32_t)OBSTACLE_SONAR_FWD_MM, geom_sin_q14(body_deci)));
+}
+
+static int32_t sonar_y_mm (scan_algo_ctx_t const * p_scan, uint8_t slot)
+{
+    int32_t const body_deci = (int32_t)p_scan->body_deg[slot] * OBSTACLE_DECI_PER_DEG;
+
+    return (geom_mul_q14((int32_t)OBSTACLE_SONAR_FWD_MM, geom_cos_q14(body_deci)) -
+            (int32_t)OBSTACLE_SONAR_FWD_MM);
+}
+
 /*!
  * @brief Tell whether one slot beyond an edge blocks the swept band.
  */
@@ -512,8 +538,10 @@ static bool slot_blocks (scan_algo_ctx_t const * p_scan, int32_t slot,
     {
         int32_t const  deci     = scan_algo_slot_deci((uint8_t)slot);
         uint32_t const range_mm = obstacle_pack_slot_dist(slot_val);
-        int32_t const  x_mm     = sign * geom_mul_q14((int32_t)range_mm, geom_sin_q14(deci));
-        int32_t const  y_mm     = geom_mul_q14((int32_t)range_mm, geom_cos_q14(deci));
+        int32_t const  x_mm     = sign * (sonar_x_mm(p_scan, (uint8_t)slot) +
+                                       geom_mul_q14((int32_t)range_mm, geom_sin_q14(deci)));
+        int32_t const  y_mm     = sonar_y_mm(p_scan, (uint8_t)slot) +
+                                   geom_mul_q14((int32_t)range_mm, geom_cos_q14(deci));
 
         b_blocked = (x_mm <= band_x) && (y_mm <= band_y);
     }
@@ -573,11 +601,14 @@ static void plan_side (scan_algo_ctx_t const * p_scan,
          HALF) -
         (sign * beam);
     int32_t const out_deci = (int32_t)scan_algo_slot_deci(miss_slot) - (sign * beam);
-    int32_t const edge_x   = sign * geom_mul_q14((int32_t)range_mm, geom_tan_q14(out_deci));
+    int32_t const origin_x = sonar_x_mm(p_scan, hit_slot);
+    int32_t const edge_x   = sign * (origin_x +
+                                      geom_mul_q14((int32_t)range_mm, geom_tan_q14(out_deci)));
     int32_t       need_mm  = edge_x + (int32_t)p_cfg->box_gap_mm;
 
-    p_mid_xy[AXIS_X] = geom_mul_q14((int32_t)range_mm, geom_sin_q14(mid_deci));
-    p_mid_xy[AXIS_Y] = geom_mul_q14((int32_t)range_mm, geom_cos_q14(mid_deci));
+    p_mid_xy[AXIS_X] = origin_x + geom_mul_q14((int32_t)range_mm, geom_sin_q14(mid_deci));
+    p_mid_xy[AXIS_Y] = sonar_y_mm(p_scan, hit_slot) +
+                       geom_mul_q14((int32_t)range_mm, geom_cos_q14(mid_deci));
 
     if (need_mm < (int32_t)p_cfg->box_gap_mm)
     {
@@ -725,6 +756,20 @@ static uint8_t pick_start_deg (obstacle_plan_cfg_t const * p_cfg,
     }
 
     return ((uint8_t)((chosen + ROUND_DECI) / OBSTACLE_DECI_PER_DEG));
+}
+
+bool obstacle_plan_forward_phase (uint8_t phase)
+{
+    return ((OBSTACLE_PHASE_OUT == phase) || (OBSTACLE_PHASE_ALONG == phase) ||
+            (OBSTACLE_PHASE_EXTRA == phase) || (OBSTACLE_PHASE_RETURN_DRIVE == phase));
+}
+
+bool obstacle_plan_return_limit (int32_t lateral_mm)
+{
+    int32_t const extra_lateral_mm = geom_mul_q14(
+        (int32_t)OBSTACLE_RETURN_EXTRA_MM, geom_sin_q14(OBSTACLE_RETURN_DECI));
+
+    return (lateral_mm <= -extra_lateral_mm);
 }
 
 /*** end of file ***/

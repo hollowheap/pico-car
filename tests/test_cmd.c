@@ -59,7 +59,7 @@ make_cmd (uint16_t id, uint16_t run, uint16_t sent, uint8_t opcode)
 }
 
 static telemetry_cmd_result_t
-accept (telemetry_cmd_state_t * st, const telemetry_cmd_t * c, uint16_t now,
+accept (telemetry_cmd_state_t * st, const telemetry_cmd_t * c, uint32_t now,
         dispatch_probe_t * probe)
 {
     return telemetry_cmd_accept (st, c, now, probe_dispatch, probe);
@@ -413,6 +413,23 @@ test_accept_cmd_id_wrap (void)
 }
 
 static void
+test_accept_fresh_command_after_idle (void)
+{
+    telemetry_cmd_state_t st;
+    dispatch_probe_t probe = {0};
+    uint32_t const later = 40000u;
+    telemetry_cmd_t c = make_cmd (0u, RUN_ID, 0u, TELEMETRY_CMD_LEFT);
+
+    telemetry_cmd_state_init (&st, RUN_ID);
+    CHECK (accept (&st, &c, 0u, &probe) == TELEMETRY_CMD_OK);
+    CHECK (accept (&st, &c, later, &probe) == TELEMETRY_CMD_STALE);
+    c = make_cmd ((uint16_t) later, RUN_ID, (uint16_t) later, TELEMETRY_CMD_RIGHT);
+    CHECK (accept (&st, &c, later, &probe) == TELEMETRY_CMD_OK);
+    CHECK (accept (&st, &c, later + 1u, &probe) == TELEMETRY_CMD_DUPLICATE);
+    CHECK (probe.calls == 2u);
+}
+
+static void
 test_accept_check_order (void)
 {
     telemetry_cmd_state_t st;
@@ -477,6 +494,7 @@ main (void)
     test_accept_future_timestamp ();
     test_accept_monotonic ();
     test_accept_cmd_id_wrap ();
+    test_accept_fresh_command_after_idle ();
     test_accept_check_order ();
     test_parse_then_accept_each_opcode ();
 

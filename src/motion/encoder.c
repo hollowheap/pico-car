@@ -96,12 +96,12 @@ static void encoder_isr (const gpio_edge_snapshot_t * p_snapshot)
         uint32_t b = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][1]);
         if ((a | b) != 0U)
         {
-            /* Both channels changed, or both polarities on one pin: the
-             * sequence is ambiguous. Record loss instead of guessing. */
-            (void)quadrature_update(
-                &g_captured, wheel, pin_state(gpio, wheel),
-                ((a != 0U) && (b != 0U)) || (a == EDGE_FLAGS) ||
-                    (b == EDGE_FLAGS));
+            uint8_t const rising = (uint8_t)((((a & EDGE_HIGH_FLAG) != 0U) ? 2U : 0U) |
+                                            (((b & EDGE_HIGH_FLAG) != 0U) ? 1U : 0U));
+            uint8_t const falling = (uint8_t)((((a & EDGE_LOW_FLAG) != 0U) ? 2U : 0U) |
+                                             (((b & EDGE_LOW_FLAG) != 0U) ? 1U : 0U));
+            (void)quadrature_update_edges(&g_captured, wheel, rising, falling,
+                                           pin_state(gpio, wheel));
         }
     }
     (void)ISpinUnlock(&g_capture_lock, saved);

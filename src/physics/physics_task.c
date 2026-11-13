@@ -347,8 +347,9 @@ void physics_task_run (void)
         {
             have_motion = g_cfg.read_motion (&reading);
         }
-        (void)motion_adapter_convert (&g_motion, have_motion ? &reading : NULL, now_us,
-                             &motion);
+        /* The encoder snapshot can be newer than the cycle's pre-I2C clock. */
+        (void)motion_adapter_convert (&g_motion, have_motion ? &reading : NULL,
+                                     physics_time_us (), &motion);
 
         g_pipe.wheels_free = g_wheels_free;
         (void)pipeline_step (&g_pipe, acc_ok ? acc.value : NULL,

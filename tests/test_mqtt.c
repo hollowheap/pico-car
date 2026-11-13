@@ -50,6 +50,8 @@ typedef struct
     unsigned recv_calls;
     bool     fail_send;
     bool     short_send;
+    bool     busy_send;
+    unsigned restarts;
     bool     fail_recv;
 } fake_t;
 
@@ -62,6 +64,10 @@ fake_send (void * context, const uint8_t * data, uint16_t len)
     if (f->fail_send)
     {
         return -1;
+    }
+    if (f->busy_send)
+    {
+        return 0;
     }
     if (f->short_send)
     {
@@ -98,6 +104,14 @@ fake_recv (void * context, uint8_t * data, uint16_t len)
     (void) memcpy (data, &f->rx[f->rx_pos], n);
     f->rx_pos += n;
     return (int) n;
+}
+
+static void
+fake_restart (void * context)
+{
+    fake_t * f = (fake_t *) context;
+
+    f->restarts++;
 }
 
 static void
@@ -181,6 +195,7 @@ rig_init_cfg (rig_t * r, const char * id, const char * user,
     r->transport.context = &r->fake;
     r->transport.send = fake_send;
     r->transport.recv = fake_recv;
+    r->transport.restart = fake_restart;
     mqtt_client_init (&r->client, &r->config, &r->transport,
                       with_handler ? probe_handler : NULL, &r->probe);
 }
@@ -883,6 +898,94 @@ test_publish_transport_failure (void)
     CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
 }
 
+/* A full transport buffer must not schedule a second CONNECT. */
+static void
+test_publish_retries_without_restarting (void)
+{
+    rig_t r;
+    const uint8_t payload[1] = { 0x42u };
+    uint32_t mark;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    mark = fake_mark (&r.fake);
+    r.fake.busy_send = true;
+    CHECK (mqtt_client_publish (&r.client, "s", payload, sizeof (payload), 10u)
+           == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    CHECK (r.fake.restarts == 0u);
+    CHECK (mqtt_client_poll (&r.client, 10u + RECONNECT_MS) == MQTT_OK);
+    CHECK (nothing_sent_since (&r.fake, mark));
+
+    r.fake.busy_send = false;
+    CHECK (mqtt_client_publish (&r.client, "s", payload, sizeof (payload),
+                                20u + RECONNECT_MS) == MQTT_OK);
+    CHECK (r.fake.sent[mark] == 0x30u);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+
+    r.fake.fail_send = true;
+    CHECK (mqtt_client_publish (&r.client, "s", payload, sizeof (payload),
+                                30u + RECONNECT_MS) == MQTT_ERR_TRANSPORT);
+    CHECK (r.fake.restarts == 1u);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+}
+
+static void
+test_handshake_waits_for_writable_transport (void)
+{
+    rig_t r;
+    uint32_t mark;
+
+    rig_init (&r);
+    r.fake.busy_send = true;
+    CHECK (mqtt_client_poll (&r.client, 0u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+    CHECK (r.fake.restarts == 0u);
+
+    r.fake.busy_send = false;
+    CHECK (mqtt_client_poll (&r.client, 10u) == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_CONNACK);
+
+    fake_feed (&r.fake, CONNACK_OK, sizeof (CONNACK_OK));
+    mark = fake_mark (&r.fake);
+    r.fake.busy_send = true;
+    CHECK (mqtt_client_poll (&r.client, 20u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_CONNACK);
+    CHECK (r.fake.restarts == 0u);
+    CHECK (nothing_sent_since (&r.fake, mark));
+
+    r.fake.busy_send = false;
+    CHECK (mqtt_client_poll (&r.client, 30u) == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_SUBACK);
+    CHECK (r.fake.sent[mark] == 0x82u);
+    fake_feed (&r.fake, SUBACK_OK, sizeof (SUBACK_OK));
+    CHECK (mqtt_client_poll (&r.client, 40u) == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+}
+
+static void
+test_command_retries_puback_after_backpressure (void)
+{
+    rig_t r;
+    const uint8_t ack[] = { 0x40u, 0x02u, 0x00u, 0x2Au };
+    uint32_t mark;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    mark = fake_mark (&r.fake);
+    r.fake.busy_send = true;
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_ERR_BUSY);
+    CHECK (r.probe.calls == 0u);
+    CHECK (r.fake.restarts == 0u);
+    CHECK (nothing_sent_since (&r.fake, mark));
+
+    r.fake.busy_send = false;
+    CHECK (mqtt_client_poll (&r.client, 20u) == MQTT_OK);
+    CHECK (r.probe.calls == 1u);
+    CHECK (sent_since_is (&r.fake, mark, ack, sizeof (ack)));
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+}
+
 /* ---- inbound PUBLISH / PUBACK ------------------------------------------ */
 
 static void
@@ -1157,6 +1260,21 @@ test_cmd_dedup_survives_reconnect (void)
     CHECK (deliver_cmd (&r, 0x0Au, 1u, 5u, 2000u) == MQTT_OK);
     CHECK (r.probe.calls == 1u);
     CHECK (deliver_cmd (&r, 0x02u, 2u, 6u, 2001u) == MQTT_OK);
+    CHECK (r.probe.calls == 2u);
+}
+
+static void
+test_cmd_id_after_idle (void)
+{
+    rig_t r;
+    const uint32_t later = 40010u;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    CHECK (deliver_cmd (&r, 0x02u, 1u, 10u, 10u) == MQTT_OK);
+    CHECK (deliver_cmd (&r, 0x02u, 2u, (uint16_t) later, later) == MQTT_OK);
+    CHECK (r.probe.calls == 2u);
+    CHECK (deliver_cmd (&r, 0x0Au, 2u, (uint16_t) later, later + 1u) == MQTT_OK);
     CHECK (r.probe.calls == 2u);
 }
 
@@ -1660,6 +1778,9 @@ main (void)
     test_publish_remaining_length_encoding ();
     test_publish_oversize ();
     test_publish_transport_failure ();
+    test_publish_retries_without_restarting ();
+    test_handshake_waits_for_writable_transport ();
+    test_command_retries_puback_after_backpressure ();
     test_cmd_qos1_puback_and_dispatch ();
     test_cmd_duplicate_delivery ();
     test_cmd_id_wrap ();
@@ -1671,6 +1792,7 @@ main (void)
     test_cmd_back_to_back ();
     test_cmd_null_handler ();
     test_cmd_dedup_survives_reconnect ();
+    test_cmd_id_after_idle ();
     test_inbound_protocol_errors ();
     test_rx_buffer_overflow ();
     test_keepalive_ping ();

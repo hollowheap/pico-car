@@ -1,0 +1,79 @@
+diff --git a/config/config_device.h b/config/config_device.h
+--- a/config/config_device.h
++++ b/config/config_device.h
+@@ -30 +30 @@
+-#define DEVCNF_USE_IIC		1		// I2C communication device
++#define DEVCNF_USE_IIC		0		// Car owns GP8/GP9 for motor PWM
+diff --git a/kernel/sysdepend/pico_rp2040/hw_setting.c b/kernel/sysdepend/pico_rp2040/hw_setting.c
+--- a/kernel/sysdepend/pico_rp2040/hw_setting.c
++++ b/kernel/sysdepend/pico_rp2040/hw_setting.c
+@@ -22 +21,0 @@
+- *		BOARD_LED_PIN : GPIO out (external LED)
+@@ -27 +26 @@
+- *	deliberately left alone here; see BOARD_LED_PIN in the board sysdef.h.
++ *	deliberately left alone here. GP16 is the car right encoder input.
+@@ -76,3 +75 @@
+-	/* External LED */
+-	{GPIO_CTRL(BOARD_LED_PIN),	GPIO_CTRL_FUNCSEL_SIO},	/* LED pin GPIO */
+-	{GPIO_OE, (1<<BOARD_LED_PIN)},				/* LED pin output enable */
++	/* The car reserves GP16 for the right encoder. Leave it as an input. */
+@@ -95,0 +93 @@
++#if DEVCNF_USE_IIC
+@@ -102,0 +101 @@
++#endif /* DEVCNF_USE_IIC */
+diff --git a/lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c b/lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c
+--- a/lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c
++++ b/lib/libwifi/sysdepend/pico_rp2040/cyw43_utk.c
+@@ -37,0 +38,5 @@
++/* Optional application transport, polled by the lwIP owner. */
++#if TM_WIFI_NETIF
++extern void cyw43_utk_app_poll(void) __attribute__((weak));
++#endif
++
+@@ -42,0 +48 @@
++#define CYW43_JOIN_RETRY_US    3000000ULL
+@@ -389,0 +396,8 @@
++    if(!radio_status.netif_link_up) {
++        dhcp_started_us = 0;
++        dhcp_ipv4_adopted = 0;
++        radio_status.dhcp_complete = 0;
++        radio_status.dhcp_result = ERR_INPROGRESS;
++        radio_status.dhcp_elapsed_ms = 0;
++        return;
++    }
+@@ -454,0 +469 @@
++    uint64_t join_retry_at_us = 0;
+@@ -553,0 +569 @@
++        }
+@@ -554,0 +571,9 @@
++        const uint64_t now_us = time_us_64();
++        if(radio_status.join_complete && radio_status.join_result == 0 &&
++           !radio_status.link_up) {
++            radio_status.join_result = CYW43_LINK_FAIL;
++            join_retry_at_us = now_us + CYW43_JOIN_RETRY_US;
++        }
++        if(radio_status.scan_complete && !radio_status.link_up &&
++           (!radio_status.join_started ||
++            (radio_status.join_complete && now_us >= join_retry_at_us))) {
+@@ -557 +582 @@
+-            radio_status.link_up = 0;
++            radio_status.join_result = ERR_INPROGRESS;
+@@ -559 +584,2 @@
+-            join_started_us = time_us_64();
++            join_started_us = now_us;
++            join_retry_at_us = now_us + CYW43_JOIN_RETRY_US;
+@@ -570,3 +596 @@
+-#endif
+-        }
+-#if TM_WIFI_JOIN
++        }
+@@ -590,0 +615 @@
++                join_retry_at_us = now + CYW43_JOIN_RETRY_US;
+@@ -594,0 +620 @@
++                join_retry_at_us = now + CYW43_JOIN_RETRY_US;
+@@ -600,0 +627,5 @@
++#if TM_WIFI_NETIF
++        /* The hook reads the published status, so the seqlock must be even.
++         * Keep the radio lock held while it uses the raw lwIP API. */
++        if(cyw43_utk_app_poll != NULL) cyw43_utk_app_poll();
++#endif

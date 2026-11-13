@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { faultTiles, STATE_WORD, summarizeFaults, type FaultTile } from '../../lib/faults';
 import type { PanelStatus } from '../../lib/panel-state';
@@ -36,7 +36,7 @@ function Tile({ tile }: { tile: FaultTile }) {
       testID={`fault-tile-${tile.bit}`}
     >
       <Text style={[theme.typography.caption, { color: set ? theme.colors.text : theme.colors.muted }]}>bit {tile.bit}</Text>
-      <Text style={[theme.typography.body, { color: set ? color : theme.colors.text, fontWeight: set ? '600' : '400' }]}>
+      <Text numberOfLines={2} style={[theme.typography.body, styles.tileName, { color: set ? color : theme.colors.text, fontWeight: set ? '600' : '400' }]}>
         {tile.label}
       </Text>
       <Text style={[theme.typography.label, { color }]}>{word}</Text>
@@ -71,24 +71,20 @@ export function FaultGrid({ level, sticky, status, style }: Props) {
           <Tile key={tile.bit} tile={tile} />
         ))}
       </View>
-      {active.length === 0 ? (
-        <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
-          {level === undefined ? 'No fault word yet.' : 'No active faults'}
-        </Text>
-      ) : (
-        <View style={styles.todo}>
-          {active.map((tile) => (
-            <Text key={tile.bit} style={[theme.typography.body, { color: theme.colors.text }]}>
-              <Text style={{ fontWeight: '600' }}>{tile.label}.</Text> {tile.hint}
-            </Text>
-          ))}
-        </View>
-      )}
-      {summary.wasSet > 0 ? (
-        <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-          Tiles that say WAS SET were set since the last RESET and are clear now.
-        </Text>
-      ) : null}
+      <ScrollView accessibilityLabel="Active fault details" nestedScrollEnabled style={styles.details} contentContainerStyle={styles.todo}>
+        {active.length === 0 ? (
+          <Text style={[theme.typography.body, { color: theme.colors.muted }]}>No active faults</Text>
+        ) : active.map((tile) => (
+          <Text key={tile.bit} style={[theme.typography.body, { color: theme.colors.text }]}>
+            <Text style={{ fontWeight: '600' }}>{tile.label}.</Text> {tile.hint}
+          </Text>
+        ))}
+        {summary.wasSet > 0 ? (
+          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+            WAS SET means the fault occurred since the last reset and has cleared.
+          </Text>
+        ) : null}
+      </ScrollView>
     </Panel>
   );
 }
@@ -96,5 +92,7 @@ export function FaultGrid({ level, sticky, status, style }: Props) {
 const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   tile: { flexBasis: '22%', flexGrow: 1, gap: 2, minWidth: 110, padding: 8 },
-  todo: { gap: 4 },
+  tileName: { height: 40, lineHeight: 20 },
+  details: { height: 116, flexGrow: 0, flexShrink: 0 },
+  todo: { gap: 4, paddingRight: 8 },
 });

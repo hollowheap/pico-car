@@ -73,4 +73,25 @@ bool quadrature_update (quadrature_t * p_quad, unsigned int wheel,
     return true;
 }
 
+bool quadrature_update_edges (quadrature_t * p_quad, unsigned int wheel,
+                                uint8_t rising, uint8_t falling, uint8_t live_state)
+{
+    uint8_t const changed = (uint8_t)(rising | falling);
+    uint8_t next;
+
+    if ((p_quad == NULL) || (wheel >= ENCODER_WHEELS) || (changed == 0U) ||
+        (changed > QUAD_MAX_STATE))
+    {
+        return false;
+    }
+    if ((changed == QUAD_MAX_STATE) || ((rising & falling) != 0U))
+    {
+        return quadrature_update(p_quad, wheel, live_state, true);
+    }
+
+    next = (uint8_t)((p_quad->states >> (wheel * QUAD_BITS_PER_WHEEL)) & QUAD_STATE_MASK);
+    next = (uint8_t)((next | rising) & (uint8_t)~falling);
+    return quadrature_update(p_quad, wheel, next, false);
+}
+
 /*** end of file ***/

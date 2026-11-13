@@ -44,27 +44,27 @@ export function AttitudePanel({ statusPacket, physics, status, style }: Props) {
           {attitude === undefined ? '--' : `ATTITUDE ${enumLabel('attitudeState', attitude)}`}
         </Text>
       }
+      embedded
+      showPlaceholder
       status={status}
       style={style}
       testID="attitude-panel"
       title="Attitude"
     >
-      <View style={styles.readout}>
-        <Text style={[theme.typography.headingLg, { color: theme.colors.text }]}>
-          {heading === null ? '--' : heading.toFixed(0)}
-          <Text style={[theme.typography.subheading, { color: theme.colors.muted }]}> ° heading</Text>
-        </Text>
-        <Text style={[theme.typography.label, { color: heading === null ? theme.colors.muted : theme.colors.text }]}>
-          {heading === null ? 'NO HEADING' : bearingName(heading)}
-        </Text>
+      <View style={styles.instrument}>
+        <View style={styles.compass}>
+          <Compass available={heading !== null} headingDeg={heading ?? 0} size={104} yawRateDps={yawRate} />
+        </View>
+        <View style={styles.details}>
+          <Text style={[styles.heading, { color: theme.colors.text }]}>
+            {heading === null ? '—' : heading.toFixed(0) + '° ' + bearingName(heading)}
+          </Text>
+          <LevelGauge compact envelopeDeg={TILT_ENVELOPE_DEG} pitchDeg={pitch} rollDeg={roll} />
+          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+            {signed(pitch)} pitch · {signed(roll)} roll · {signed(physics ? yawRate : null, 0)}/s
+          </Text>
+        </View>
       </View>
-      <View style={styles.compass}>
-        <Compass available={heading !== null} headingDeg={heading ?? 0} yawRateDps={yawRate} />
-      </View>
-      <LevelGauge envelopeDeg={TILT_ENVELOPE_DEG} pitchDeg={pitch} rollDeg={roll} />
-      <Text style={[theme.typography.body, { color: theme.colors.text }]}>
-        pitch {signed(pitch)} · roll {signed(roll)} · turn {signed(physics ? yawRate : null, 0)}/s
-      </Text>
       <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
         Hump {physics === undefined ? '--' : enumLabel('humpState', physics.values.hump_state).toLowerCase()}, peak{' '}
         {physics?.values.hump_peak_mm ?? '--'} mm. Motion{' '}
@@ -75,6 +75,8 @@ export function AttitudePanel({ statusPacket, physics, status, style }: Props) {
 }
 
 const styles = StyleSheet.create({
-  readout: { alignItems: 'baseline', flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
-  compass: { alignItems: 'center' },
+  instrument: { alignItems: 'center', flexDirection: 'row', gap: 16 },
+  compass: { flexShrink: 0, width: 104 },
+  details: { flex: 1, gap: 4, minWidth: 0 },
+  heading: { fontSize: 27, fontVariant: ['tabular-nums'], fontWeight: '600', lineHeight: 33 },
 });

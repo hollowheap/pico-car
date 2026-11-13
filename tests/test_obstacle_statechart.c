@@ -235,6 +235,20 @@ static void test_collision_two_of_three(void)
           OBSTACLE_STATE_STOPPED);
     CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
 
+    {
+        obstacle_statechart_out_t out;
+        uint32_t ping = 0U;
+
+        for (ping = 0U; ping < 3U; ping++)
+        {
+            obstacle_statechart_out_clear(&out);
+            obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM,
+                                     now + (ping * OBSTACLE_PING_PERIOD_MS), &out);
+            CHECK(!out.b_call_stop && (0U == out.evt_count));
+            CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
+        }
+    }
+
     new_monitor(&fsm);
     CHECK(ping_state(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM + 1U, &now) !=
           OBSTACLE_STATE_STOPPED);
@@ -707,7 +721,7 @@ static void test_forward_guard_limits(void)
     CHECK(out.evt_count == 0U);
 }
 
-/* Far forward readings do not trigger the guard. */
+/* The box can be 120 mm from the side-facing sonar without a forward rescan. */
 static void test_side_ping_not_guarded(void)
 {
     obstacle_statechart_t     fsm;
@@ -719,10 +733,24 @@ static void test_side_ping_not_guarded(void)
     for (ping = 0U; ping < 16U; ping++)
     {
         obstacle_statechart_out_clear(&out);
-        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 1000U, 300U + (ping * 10U), &out);
+        obstacle_statechart_side_ping(&fsm, OBSTACLE_CLASS_VALID, 120U, 300U + (ping * 10U), &out);
         CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+        CHECK(fsm.last_dist == 120U);
         CHECK(out.evt_count == 0U);
     }
+
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 120U, 500U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_WAIT_STOP);
+    CHECK(out.evt_count == 1U);
+
+    to_reacquire(&fsm, &out, false);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_side_ping(&fsm, OBSTACLE_CLASS_VALID, 70U, 500U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+    obstacle_statechart_side_ping(&fsm, OBSTACLE_CLASS_VALID, 70U, 560U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
+    CHECK(out.b_call_stop);
 }
 
 

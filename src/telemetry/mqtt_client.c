@@ -1,5 +1,6 @@
 #include <string.h>
 
+#include "telemetry/cmd.h"
 #include "telemetry/mqtt.h"
 
 #define MQTT_CONNECT      0x10u
@@ -153,6 +154,10 @@ send_packet (mqtt_client_t * client, uint8_t header, const uint8_t * body,
 
     sent = client->transport.send(client->transport.context, client->tx_buffer,
                                   index);
+    if (sent == 0)
+    {
+        return MQTT_ERR_BUSY;
+    }
     if (sent != (int) index)
     {
         return MQTT_ERR_TRANSPORT;
@@ -232,6 +237,10 @@ disconnect (mqtt_client_t * client, uint32_t now_ms)
 {
     uint32_t next_delay = client->reconnect_delay_ms * MQTT_RECONNECT_FACTOR;
 
+    if (client->transport.restart != 0)
+    {
+        client->transport.restart(client->transport.context);
+    }
     client->state = MQTT_STATE_DISCONNECTED;
     client->next_attempt_ms = now_ms + client->reconnect_delay_ms;
     client->reconnect_delay_ms = (next_delay > MQTT_RECONNECT_MAX_MS) ?
@@ -314,7 +323,8 @@ handle_publish (mqtt_client_t * client, const uint8_t * packet,
         uint16_t cmd_id = read_u16(payload);
         int16_t  delta = 0;
 
-        if (client->has_last_cmd)
+        if (client->has_last_cmd &&
+            ((uint32_t) (now_ms - client->last_cmd_ms) <= TELEMETRY_CMD_MAX_AGE_MS))
         {
             delta = (int16_t) (cmd_id - client->last_cmd_id);
             if (delta <= 0)
@@ -322,6 +332,7 @@ handle_publish (mqtt_client_t * client, const uint8_t * packet,
                 return MQTT_OK;
             }
         }
+        client->last_cmd_ms = now_ms;
         client->last_cmd_id = cmd_id;
         client->has_last_cmd = true;
         if (client->command_handler != 0)
@@ -375,14 +386,13 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
             disconnect(client, now_ms);
             return MQTT_ERR_PROTOCOL;
         }
-        client->state = MQTT_STATE_WAIT_SUBACK;
-        client->reply_pending = false;
         result = send_subscribe(client, now_ms);
         if (result == MQTT_OK)
         {
+            client->state = MQTT_STATE_WAIT_SUBACK;
             start_reply_timer(client, now_ms);
         }
-        return result;
+        return (result == MQTT_ERR_ARG) ? MQTT_ERR_PROTOCOL : result;
     }
     if ((type == (MQTT_SUBACK >> MQTT_TYPE_SHIFT)) &&
         (client->state == MQTT_STATE_WAIT_SUBACK))
@@ -461,10 +471,11 @@ receive_packets (mqtt_client_t * client, uint32_t now_ms)
         {
             break;
         }
-        if (handle_packet(client, client->rx_buffer, total_len, now_ms) !=
-            MQTT_OK)
+        const mqtt_result_t result =
+            handle_packet(client, client->rx_buffer, total_len, now_ms);
+        if (result != MQTT_OK)
         {
-            return MQTT_ERR_PROTOCOL;
+            return result;
         }
         (void) memmove(client->rx_buffer, &client->rx_buffer[total_len],
                        (size_t) (client->rx_len - total_len));
@@ -531,6 +542,10 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
         }
         client->attempt_pending = false;
         result = send_connect(client, now_ms);
+        if (result == MQTT_ERR_BUSY)
+        {
+            return result;
+        }
         if (result != MQTT_OK)
         {
             disconnect(client, now_ms);
@@ -542,7 +557,7 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
     }
 
     result = receive_packets(client, now_ms);
-    if (result != MQTT_OK)
+    if ((result != MQTT_OK) && (result != MQTT_ERR_BUSY))
     {
         if (client->state != MQTT_STATE_DISCONNECTED)
         {
@@ -559,17 +574,22 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
         return MQTT_ERR_TRANSPORT;
     }
 
+    if (result == MQTT_ERR_BUSY)
+    {
+        return result;
+    }
+
     if ((client->state == MQTT_STATE_CONNECTED) &&
         (client->config.keepalive_s > 0u) &&
         ((now_ms - client->last_tx_ms) >=
          ((uint32_t) client->config.keepalive_s * MQTT_MS_PER_S)))
     {
         result = send_packet(client, MQTT_PINGREQ, 0, 0u, now_ms);
-        if (result != MQTT_OK)
+        if ((result != MQTT_OK) && (result != MQTT_ERR_BUSY))
         {
             disconnect(client, now_ms);
         }
-        else if (!client->reply_pending)
+        else if ((result == MQTT_OK) && !client->reply_pending)
         {
             start_reply_timer(client, now_ms);
         }
@@ -610,7 +630,7 @@ mqtt_client_publish (mqtt_client_t * client, const char * topic,
     index = (uint16_t) (index + len);
 
     result = send_packet(client, MQTT_PUBLISH, body, index, now_ms);
-    if (result != MQTT_OK)
+    if ((result != MQTT_OK) && (result != MQTT_ERR_BUSY))
     {
         disconnect(client, now_ms);
     }

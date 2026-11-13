@@ -494,11 +494,23 @@ LOCAL void line_follow_step (ir_sensors_state_t state)
                                                 feedback.right_displacement_um);
     }
 
-    status = line_follow_update(&g_line_follow, state.left, state.right,
-                                g_line_heading_deci, g_line_travel_um,
-                                line_now_ms(), &targets);
-    /* Line lost means the gap is over and the car weaves. A sensor hit ends it. */
-    line_update_fault(LINE_FOLLOW_SEARCHING == status);
+    if (PICO_CAR_QR_LINE_COMPARE != 0)
+    {
+        /* Buddy 5 drives straight with matching IR states. A single hit
+         * stops the inside wheel entirely for a one-wheel correction. */
+        bool const b_straight = state.left == state.right;
+
+        targets.left_um_s = (b_straight || state.right) ? LINE_CRUISE_UM_S : 0;
+        targets.right_um_s = (b_straight || state.left) ? LINE_CRUISE_UM_S : 0;
+        line_update_fault(false);
+    }
+    else
+    {
+        status = line_follow_update(&g_line_follow, state.left, state.right,
+                                    g_line_heading_deci, g_line_travel_um,
+                                    line_now_ms(), &targets);
+        line_update_fault(LINE_FOLLOW_SEARCHING == status);
+    }
     (void)motion_set_speed(targets.left_um_s, targets.right_um_s,
                            LINE_LEASE_US);
 }

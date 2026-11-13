@@ -36,6 +36,11 @@ void quadrature_init (quadrature_t * p_quad, uint8_t states);
 bool quadrature_update (quadrature_t * p_quad, unsigned int wheel,
                           uint8_t state, bool ambiguous);
 
+/* Use the captured polarity for one edge. The GPIO level is only used to
+ * resynchronise an ambiguous capture, because it may include a later edge. */
+bool quadrature_update_edges (quadrature_t * p_quad, unsigned int wheel,
+                                uint8_t rising, uint8_t falling, uint8_t live_state);
+
 #endif /* ENCODER_QUAD_H */
 
 /*** end of file ***/

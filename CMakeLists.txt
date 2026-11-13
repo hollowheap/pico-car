@@ -60,12 +60,9 @@ else()
     set(PICO_CAR_WIFI_JOIN 0)
 endif()
 
-# mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
-set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")
-
-if (NOT EXISTS "${MTK3SMP_PATH}/include/tk/tkernel.h")
-    message(FATAL_ERROR "mtk3smp-rp2040 missing. Run 'git submodule update --init --recursive'.")
-endif()
+# Build the car-specific pin setup and Wi-Fi changes from the pinned kernel.
+# The submodule checkout remains available for other builds.
+include(cmake/CarKernel.cmake)
 
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -343,8 +340,10 @@ add_library(supervisor STATIC
     src/supervisor/supervisor.c
 )
 target_include_directories(supervisor PUBLIC include PRIVATE src/supervisor)
-target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle physics mtk3smp)
+target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle_qr physics mtk3smp)
 target_compile_options(supervisor PRIVATE ${FIRMWARE_WARNINGS})
+option(PICO_CAR_BUTTON_START "Wait for the GP20 user button at boot" ON)
+target_compile_definitions(supervisor PRIVATE PICO_CAR_BUTTON_START=$<BOOL:${PICO_CAR_BUTTON_START}>)
 
 # The hardware watchdog (D160) is off by default. Turn it on only after you have
 # checked that the H-bridge inputs stay low across a chip reset (docs/supervisor.md,
@@ -400,6 +399,8 @@ add_executable(main
     src/main.c
 )
 target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+option(PICO_CAR_QR_LINE_COMPARE "Use Buddy 5's line steering for the integrated car" ON)
+target_compile_definitions(main PRIVATE PICO_CAR_QR_LINE_COMPARE=$<BOOL:${PICO_CAR_QR_LINE_COMPARE}>)
 
 foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
@@ -473,14 +474,29 @@ target_link_options(obstacle_bench PRIVATE
 )
 pico_add_extra_outputs(obstacle_bench)
 
-# Phase 2: main.uf2 runs Buddy 5 through the line task (src/main.c).
+# The standalone obstacle bench above keeps the dev-stack bench protocol.
+# main.uf2 uses Qing Rong's 9654e50 scan and bypass through the dev-stack facade.
+add_library(obstacle_qr STATIC
+    src/navigation/obstacle/qr/b5_comms.c
+    src/navigation/obstacle/qr/b5_fsm.c
+    src/navigation/obstacle/qr/b5_plan.c
+    src/navigation/obstacle/qr/obstacle.c
+    src/navigation/obstacle/qr/scan_algo.c
+    src/navigation/obstacle/qr/scan_hw.c
+    src/navigation/obstacle/qr/scan_task.c
+)
+target_include_directories(obstacle_qr PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle_qr PUBLIC platform mtk3smp)
+target_compile_options(obstacle_qr PRIVATE
+    -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
+
 add_library(obstacle_nav STATIC
-    src/navigation/obstacle/obstacle_nav.c
-    src/navigation/obstacle/flight_log.c
+    src/navigation/obstacle/qr/b5_nav.c
+    src/navigation/obstacle/qr/b5_log.c
 )
 target_include_directories(obstacle_nav PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3smp)
+target_link_libraries(obstacle_nav PUBLIC obstacle_qr motion_service platform mtk3smp)
 target_compile_options(obstacle_nav PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_nav supervisor)

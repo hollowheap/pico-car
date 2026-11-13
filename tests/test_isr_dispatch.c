@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "platform/isr.h"
+#include "quadrature.h"
 
 #define INT_WORDS      4U
 #define PINS_PER_WORD  8U
@@ -444,6 +445,24 @@ static void test_core1_status_is_used_on_core1 (void)
     }
 }
 
+static void test_quadrature_preserves_a_later_pending_edge(void)
+{
+    quadrature_t quadrature;
+
+    quadrature_init(&quadrature, 0U);
+    /* GPIO already reads 11, but only B rising belongs to this interrupt. */
+    CHECK(quadrature_update_edges(&quadrature, 0U, 1U, 0U, 3U));
+    CHECK(quadrature.states == 1U);
+    CHECK(quadrature_update_edges(&quadrature, 0U, 2U, 0U, 3U));
+    CHECK(quadrature.wheel[0].positive == 2U);
+    CHECK(quadrature.wheel[0].invalid == 0U);
+
+    /* If both falling edges were pending together, resynchronise and flag loss. */
+    CHECK(!quadrature_update_edges(&quadrature, 0U, 0U, 3U, 0U));
+    CHECK(quadrature.states == 0U);
+    CHECK(quadrature.wheel[0].invalid == 1U);
+}
+
 int main (void)
 {
     CHECK(gpio_irq_init() == E_OK);
@@ -462,6 +481,7 @@ int main (void)
     test_one_timestamp_per_entry();
     test_ack_equals_observed_before_callbacks();
     test_edge_during_callback_stays_pending();
+    test_quadrature_preserves_a_later_pending_edge();
     test_handler_sees_only_its_pins();
     test_unhandled_pin_never_reaches_callback();
     test_no_edges_no_callbacks();

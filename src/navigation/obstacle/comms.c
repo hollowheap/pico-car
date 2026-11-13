@@ -89,6 +89,10 @@ static bool volatile g_plan_wall        = false;
 /* Servo angle (low 16 bits) and body offset (high 16 bits), deci-degrees,
  * stored whole each step. */
 static uint32_t volatile g_aim   = 0U;
+
+/* RP2040 aligned 32-bit read/write, like the published aim above. */
+static uint32_t volatile g_nav_sonar = 0U;
+static bool volatile g_b_nav_sonar_enabled = false;
 static uint8_t volatile g_flags  = 0U;
 
 /* Pings per echo class since boot. The obstacle task is the only writer. */
@@ -305,7 +309,6 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
         (void)g_links.p_stop();
     }
 
-    g_status = obstacle_statechart_status(p_fsm);
     g_faults = p_fsm->faults;
     g_flags  = obstacle_statechart_flags(p_fsm);
     g_aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
@@ -316,6 +319,8 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
     {
         publish_profile(p_fsm);
     }
+
+    g_status = obstacle_statechart_status(p_fsm);
 
     for (idx = 0U; idx < p_out->evt_count; idx++)
     {
@@ -518,6 +523,11 @@ ER obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan)
 uint32_t obstacle_comms_aim (void)
 {
     return (g_aim);
+}
+
+int16_t obstacle_comms_body_target (void)
+{
+    return ((int16_t)(uint16_t)(g_aim >> AIM_BODY_SHIFT));
 }
 
 /*!
@@ -745,6 +755,36 @@ static void publish_profile (obstacle_statechart_t const * p_fsm)
 
     /* Cast is safe: the counter is meant to wrap at 256. */
     g_profile_seq = (uint8_t)(g_profile_seq + 1U);
+}
+
+void obstacle_comms_enable_nav_sonar (void)
+{
+    g_b_nav_sonar_enabled = true;
+}
+
+bool obstacle_comms_has_nav_sonar (void)
+{
+    return (g_b_nav_sonar_enabled);
+}
+
+void obstacle_comms_set_nav_sonar (uint8_t mode, int16_t target_deci)
+{
+    g_nav_sonar = ((uint32_t)mode << AIM_BODY_SHIFT) | (uint32_t)(uint16_t)target_deci;
+}
+
+uint32_t obstacle_comms_nav_sonar (void)
+{
+    return (g_nav_sonar);
+}
+
+uint8_t obstacle_comms_sonar_mode (uint32_t word)
+{
+    return ((uint8_t)(word >> AIM_BODY_SHIFT));
+}
+
+int16_t obstacle_comms_sonar_target (uint32_t word)
+{
+    return ((int16_t)(uint16_t)word);
 }
 
 /*** end of file ***/

@@ -256,6 +256,10 @@ static void test_physics (void)
     memset(&p, 0, sizeof p);
     p.ready          = true;
     p.pitch_cdeg     = -450;
+    p.roll_cdeg      = 6200;
+    p.az_mg          = -240;
+    p.amag_mg        = 1031U;
+    p.attitude_state = TELEMETRY_ATTITUDE_STATE_OVERTURNED;
     p.yaw_rate_cdps  = 1234;
     p.a_fwd_mg       = -87;
     p.hump_peak_mm   = 41U;
@@ -282,11 +286,10 @@ static void test_physics (void)
     CHECK(out.flags == (BIT(TELEMETRY_PHYSICS_FLAGS_BIT_HUMP_ACTIVE) |
                         BIT(TELEMETRY_PHYSICS_FLAGS_BIT_HEIGHT_VALID) |
                         BIT(TELEMETRY_PHYSICS_FLAGS_BIT_CALIBRATED)));
-    /* Not yet filled by the attitude module. */
-    CHECK(out.roll_cdeg == 0);
-    CHECK(out.az_mg == 0);
-    CHECK(out.amag_mg == 0U);
-    CHECK(out.attitude_state == 0U);
+    CHECK(out.roll_cdeg == 6200);
+    CHECK(out.az_mg == -240);
+    CHECK(out.amag_mg == 1031U);
+    CHECK(out.attitude_state == TELEMETRY_ATTITUDE_STATE_OVERTURNED);
 
     p.finished      = true;
     p.hump_active   = false;

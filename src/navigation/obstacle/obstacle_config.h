@@ -366,7 +366,7 @@
 #define OBSTACLE_HUG_MIN_MM       (200U)
 #define OBSTACLE_HUG_MAX_MM       (5000U)
 #define OBSTACLE_WAIT_STOP_MS     (500U)
-#define OBSTACLE_PLAN_ACCEPT_MS   (200U)
+#define OBSTACLE_PLAN_ACCEPT_MS   (4000U)
 #define OBSTACLE_ESCAPE_MAX_MS    (4000U)
 #define OBSTACLE_ESCAPE_CLEARS    OBSTACLE_PASS_CLEARS
 #define OBSTACLE_LINE_GRACE_MS    (250U)
@@ -393,6 +393,7 @@
  * any wheel changes direction. */
 #define OBSTACLE_STILL_UM_PER_MS (15U)
 #define OBSTACLE_STOP_SETTLE_MS  (250U)
+#define OBSTACLE_SCAN_SETTLE_MS  (100U)
 
 /* Lease of every speed command. It must cover several 10 ms loop passes
  * and stay within the motion service limit (200 ms in main.c). */

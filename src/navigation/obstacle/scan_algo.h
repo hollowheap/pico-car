@@ -42,6 +42,7 @@ typedef struct
 typedef struct
 {
     uint16_t          profile[OBSTACLE_SLOT_COUNT];
+    int8_t            body_deg[OBSTACLE_SLOT_COUNT]; /* settled body aim per slot */
     scan_algo_agree_t agree;
     uint8_t           phase;
     uint8_t           slot;
@@ -54,6 +55,8 @@ typedef struct
     uint8_t           edge_hit[SCAN_ALGO_SIDES];
     uint8_t           edge_miss[SCAN_ALGO_SIDES];
     bool              b_pivoted[SCAN_ALGO_SIDES];
+    bool              b_body_turn_enabled;
+    bool              b_slot_retried;
     uint8_t           noisy_hist;    /* P1: one bit per ping, newest in bit 0 */
     uint8_t           slots_done;    /* P5: slots settled in this scan        */
     uint8_t           slots_retried; /* P5: slots that needed 3 or 4 pings    */

@@ -46,6 +46,7 @@ static const char g_topic_command[]   = TELEMETRY_TOPIC_PREFIX "/c";
 
 static volatile connection_state_t g_state = CONNECTION_DISCONNECTED;
 static mqtt_client_t               g_mqtt;
+static telemetry_publisher_t       g_publisher;
 static telemetry_cmd_state_t       g_cmd_state;
 static connection_cmd_dispatch_t   gp_dispatch;
 static void *                      gp_dispatch_context;
@@ -100,9 +101,15 @@ on_mqtt_command (const uint8_t * payload, uint16_t len, void * context)
     {
         return;
     }
-    (void) telemetry_cmd_accept(&g_cmd_state, &cmd,
-                                (uint16_t) tcp_transport_now_ms(),
-                                dispatch_command, 0);
+    const telemetry_cmd_result_t result =
+        telemetry_cmd_accept(&g_cmd_state, &cmd, tcp_transport_now_ms(),
+                             dispatch_command, 0);
+    if (result != TELEMETRY_CMD_OK)
+    {
+        LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_MQTT,
+                 "command opcode=%d refused before supervisor, reason=%d",
+                 (int) cmd.opcode, (int) result);
+    }
 }
 
 static int
@@ -156,17 +163,24 @@ publish_frame (const uint8_t * frame, uint16_t len)
     default:
         return -1;
     }
-    if (mqtt_client_publish(&g_mqtt, topic, &frame[1], (uint16_t) (len - 1u),
-                            tcp_transport_now_ms()) != MQTT_OK)
+    const mqtt_result_t result =
+        mqtt_client_publish(&g_mqtt, topic, &frame[1], (uint16_t) (len - 1u),
+                            tcp_transport_now_ms());
+    if (result == MQTT_ERR_BUSY)
+    {
+        return TELEMETRY_PUBLISH_RETRY;
+    }
+    if (result != MQTT_OK)
     {
         system_fault_set(FAULT_MQTT_NACK_BIT);
+        LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_MQTT, "publish error=%d", (int) result);
         return -1;
     }
     system_fault_clear(FAULT_MQTT_NACK_BIT);
     return 0;
 }
 
-static void
+static mqtt_result_t
 publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
 {
     uint8_t               payload[TELEMETRY_HEARTBEAT_WIRE_SIZE];
@@ -176,9 +190,8 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
 
     if ((uint32_t) (now_ms - g_heartbeat_ms) < CONNECTION_HEARTBEAT_MS)
     {
-        return;
+        return MQTT_OK;
     }
-    g_heartbeat_ms = now_ms;
     if (rssi > CONNECTION_RSSI_MAX)
     {
         rssi = CONNECTION_RSSI_MAX;
@@ -202,10 +215,16 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     heartbeat.link_state   = (uint8_t) TELEMETRY_LINK_STATE_MQTT;
     if (telemetry_pack_heartbeat(payload, &heartbeat) == 0u)
     {
-        return;
+        return MQTT_ERR_PROTOCOL;
     }
-    (void) mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
-                               (uint16_t) sizeof(payload), now_ms);
+    const mqtt_result_t result =
+        mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
+                            (uint16_t) sizeof(payload), now_ms);
+    if (result == MQTT_OK)
+    {
+        g_heartbeat_ms = now_ms;
+    }
+    return result;
 }
 
 static connection_state_t
@@ -217,6 +236,10 @@ classify (const T_CYW43_UTK_STATUS * status)
     }
     if (!status->link_up)
     {
+        if (status->join_complete && (status->join_result != 0))
+        {
+            return CONNECTION_FAULT;
+        }
         return status->join_started ? CONNECTION_JOINING
                                     : CONNECTION_DISCONNECTED;
     }
@@ -254,6 +277,7 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     transport.context = 0;
     transport.send    = tcp_transport_send;
     transport.recv    = tcp_transport_recv;
+    transport.restart = tcp_transport_restart;
 
     mqtt_client_init(&g_mqtt, &config, &transport, on_mqtt_command, 0);
     if (!g_mqtt.valid)
@@ -335,21 +359,29 @@ connection_run (void)
             {
                 open_transport();
             }
-            else if (next == CONNECTION_FAULT)
-            {
-                tcp_transport_close();
-                g_transport_started = false;
-            }
         }
 
         if (g_mqtt_ready)
         {
-            (void) mqtt_client_poll(&g_mqtt, now_ms);
+            const mqtt_state_t before = mqtt_client_state(&g_mqtt);
+            const mqtt_result_t result = mqtt_client_poll(&g_mqtt, now_ms);
+
+            if ((result != MQTT_OK) && (result != MQTT_ERR_BUSY))
+            {
+                LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_MQTT, "session error=%d", (int) result);
+            }
             if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
             {
                 last_mqtt_up_ms = now_ms;
-                telemetry_publisher_run(net_pull, publish_frame);
-                publish_heartbeat(now_ms, &g_status);
+                if (before != MQTT_STATE_CONNECTED)
+                {
+                    LOG_INFO(LOG_TASK_CONNECTION, LOG_MOD_MQTT, "session ready");
+                    g_heartbeat_ms = now_ms - CONNECTION_HEARTBEAT_MS;
+                }
+                if ((result == MQTT_OK) && (publish_heartbeat(now_ms, &g_status) == MQTT_OK))
+                {
+                    telemetry_publisher_run(&g_publisher, net_pull, publish_frame);
+                }
             }
         }
         system_fault_assign(FAULT_WIFI_DISCONN_BIT,

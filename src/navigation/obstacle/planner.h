@@ -70,6 +70,7 @@ bool    obstacle_plan_is_escape_clear (uint8_t cls, uint16_t dist_mm,
 uint32_t obstacle_plan_hug_limit_mm (obstacle_plan_result_t const * p_result,
                                      obstacle_plan_cfg_t const * p_cfg);
 uint8_t  obstacle_plan_steer_away (uint8_t side);
+bool     obstacle_plan_line_phase (uint8_t phase, bool b_wall);
 
 void obstacle_plan_wheel_pivot (int32_t cur_head_deci, int32_t target_head_deci,
                                 int32_t * p_left_um_s, int32_t * p_right_um_s,
@@ -87,6 +88,11 @@ int32_t  obstacle_plan_cos_q14 (int32_t deci);
 int32_t  obstacle_plan_tan_q14 (int32_t deci);
 int32_t  obstacle_plan_atan_deci (uint32_t num, uint32_t den);
 uint32_t obstacle_plan_isqrt (uint32_t value);
+
+bool obstacle_plan_forward_phase (uint8_t phase);
+
+/* Lateral position is positive on the bypass side of the original line. */
+bool obstacle_plan_return_limit (int32_t lateral_mm);
 
 #endif /* OBSTACLE_PLANNER_H */
 

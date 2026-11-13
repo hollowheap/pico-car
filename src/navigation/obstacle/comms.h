@@ -33,9 +33,24 @@ uint8_t  obstacle_comms_drops (void);
 ER       obstacle_comms_copy_profile (uint16_t * p_profile);
 ER       obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan);
 uint32_t obstacle_comms_aim (void);
+int16_t  obstacle_comms_body_target (void);
 uint8_t  obstacle_comms_flags (void);
 void     obstacle_comms_count_class (uint8_t cls);
 void     obstacle_comms_class_counts (uint32_t * p_counts);
+
+/* Navigation owns this mailbox. A scan is enabled only by the full car;
+ * the standalone sonar bench cannot turn the chassis. */
+#define OBSTACLE_SONAR_FORWARD (0U)
+#define OBSTACLE_SONAR_WAIT    (1U)
+#define OBSTACLE_SONAR_SCAN    (2U)
+#define OBSTACLE_SONAR_SIDE    (3U)
+
+void obstacle_comms_enable_nav_sonar (void);
+bool obstacle_comms_has_nav_sonar (void);
+void obstacle_comms_set_nav_sonar (uint8_t mode, int16_t target_deci);
+uint32_t obstacle_comms_nav_sonar (void);
+uint8_t obstacle_comms_sonar_mode (uint32_t word);
+int16_t obstacle_comms_sonar_target (uint32_t word);
 
 #endif /* OBSTACLE_COMMS_H */
 

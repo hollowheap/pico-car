@@ -105,6 +105,7 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm,
     p_fsm->anchor_dist      = 0U;
     p_fsm->b_anchor         = false;
     p_fsm->b_inconsistent   = false;
+    p_fsm->b_servo_only     = false;
     p_fsm->boot_pings       = 0U;
     p_fsm->boot_hits        = 0U;
     p_fsm->b_beam_blocked   = false;
@@ -187,6 +188,7 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
             {
                 p_fsm->req_id = (uint8_t)req_id;
                 scan_algo_start(&p_fsm->scan);
+                p_fsm->scan.b_body_turn_enabled = !p_fsm->b_servo_only;
                 enter(p_fsm, OBSTACLE_STATE_SCANNING, now_ms);
                 p_out->b_profile_changed = true;
             }
@@ -239,22 +241,29 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
  * @param[in]     now_ms  Current time.
  * @param[out]    p_out   Requests for the task.
  */
-void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
-                               uint16_t dist_mm, uint32_t now_ms,
-                               obstacle_statechart_out_t * p_out)
+static void step_ping (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
+                       uint32_t now_ms, bool b_side, obstacle_statechart_out_t * p_out)
 {
     uint16_t const dist = ranged_dist(cls, dist_mm);
 
     p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
     p_fsm->last_class = cls;
     p_fsm->last_dist  = dist;
-    check_plausibility(p_fsm, cls, dist);
+    if (b_side)
+    {
+        /* The side range and the previous forward range are incomparable. */
+        p_fsm->b_anchor = false;
+    }
+    else
+    {
+        check_plausibility(p_fsm, cls, dist);
+    }
 
     if (check_health(p_fsm, cls, now_ms, p_out))
     {
         /* Fault latched. */
     }
-    else if (check_collision(p_fsm, dist, now_ms, p_out))
+    else if ((OBSTACLE_STATE_STOPPED != p_fsm->state) && check_collision(p_fsm, dist, now_ms, p_out))
     {
         /* Collision latched. */
     }
@@ -275,7 +284,10 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
             break;
 
             case OBSTACLE_STATE_REACQUIRE:
-                ping_reacquire(p_fsm, cls, dist_mm, now_ms, p_out);
+                if (!b_side)
+                {
+                    ping_reacquire(p_fsm, cls, dist_mm, now_ms, p_out);
+                }
             break;
 
             default:
@@ -283,6 +295,20 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
             break;
         }
     }
+}
+
+void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
+                               uint16_t dist_mm, uint32_t now_ms,
+                               obstacle_statechart_out_t * p_out)
+{
+    step_ping(p_fsm, cls, dist_mm, now_ms, false, p_out);
+}
+
+void obstacle_statechart_side_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
+                                    uint16_t dist_mm, uint32_t now_ms,
+                                    obstacle_statechart_out_t * p_out)
+{
+    step_ping(p_fsm, cls, dist_mm, now_ms, true, p_out);
 }
 
 /*!

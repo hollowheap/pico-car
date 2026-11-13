@@ -28,6 +28,7 @@
 #define PHASE_FINE_LEFT  (1U)
 #define PHASE_FINE_RIGHT (2U)
 #define PHASE_DONE       (3U)
+#define PHASE_COARSE_FILL (4U)
 
 /* Coarse stride in slots: 100 deci / 50 deci = 2 slots. */
 #define COARSE_STRIDE ((uint8_t)(OBSTACLE_COARSE_STEP_DECI / OBSTACLE_SLOT_STEP_DECI))
@@ -352,12 +353,15 @@ void scan_algo_start (scan_algo_ctx_t * p_ctx)
     for (idx = 0U; idx < OBSTACLE_SLOT_COUNT; idx++)
     {
         p_ctx->profile[idx] = 0U;
+        p_ctx->body_deg[idx] = 0;
     }
 
     scan_algo_agree_reset(&p_ctx->agree);
     p_ctx->phase        = PHASE_COARSE;
     p_ctx->slot         = CENTRE_FIRST_SLOT;
     p_ctx->body_deci    = 0;
+    p_ctx->b_body_turn_enabled = true;
+    p_ctx->b_slot_retried = false;
     p_ctx->closest_slot = OBSTACLE_SLOT_CENTRE;
     p_ctx->closest_mm   = 0U;
     p_ctx->region_lo    = CENTRE_FIRST_SLOT;
@@ -424,17 +428,31 @@ bool scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
     if ((PHASE_DONE != p_ctx->phase) &&
         (scan_algo_agree_add(&p_ctx->agree, cls, dist_mm, &slot_val)))
     {
+        uint8_t const slot_class = obstacle_pack_slot_class(slot_val);
+
+        if (obstacle_pack_class_is_unresolved(slot_class) && (!p_ctx->b_slot_retried))
+        {
+            /* Stay on the same, settled aim for one more agreement window. */
+            p_ctx->b_slot_retried = true;
+            scan_algo_agree_reset(&p_ctx->agree);
+            return (false);
+        }
+
         p_ctx->profile[p_ctx->slot] = slot_val;
+        /* The configured body aims are 0 or +/-60 degrees. */
+        p_ctx->body_deg[p_ctx->slot] = (int8_t)(p_ctx->body_deci / OBSTACLE_DECI_PER_DEG);
         scan_algo_agree_reset(&p_ctx->agree);
         p_ctx->slots_done++;
-        if (pings >= OBSTACLE_RETRY_PINGS)
+        if (p_ctx->b_slot_retried || (pings >= OBSTACLE_RETRY_PINGS))
         {
             p_ctx->slots_retried++;
         }
+        p_ctx->b_slot_retried = false;
 
         switch (p_ctx->phase)
         {
             case PHASE_COARSE:
+            case PHASE_COARSE_FILL:
                 if ((p_ctx->slot + COARSE_STRIDE) <= CENTRE_LAST_SLOT)
                 {
                     p_ctx->slot = (uint8_t)(p_ctx->slot + COARSE_STRIDE);
@@ -518,7 +536,7 @@ static void note_noise (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm)
 }
 
 /*!
- * @brief Find the closest VALID coarse reading within 600 mm, looking only
+ * @brief Find the closest measured reading within 600 mm, looking only
  *        at slots no further than half_deci from straight ahead.
  *
  * @param[in,out] p_ctx     Scan engine state; closest_slot is set on success.
@@ -533,7 +551,7 @@ static bool find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
     uint32_t slot    = 0U;
     bool     b_found = false;
 
-    for (slot = CENTRE_FIRST_SLOT; slot <= CENTRE_LAST_SLOT; slot += COARSE_STRIDE)
+    for (slot = CENTRE_FIRST_SLOT; slot <= CENTRE_LAST_SLOT; slot++)
     {
         int32_t const  deci     = scan_algo_slot_deci((uint8_t)slot);
         uint16_t const slot_val = p_ctx->profile[slot];
@@ -564,7 +582,13 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
     uint16_t best_mm = 0U;
     bool     b_found = find_closest(p_ctx, OBSTACLE_PATH_HALF_DECI, &best_mm);
 
-    if (!b_found)
+    if ((!b_found) && (PHASE_COARSE == p_ctx->phase))
+    {
+        /* Check the skipped 5-degree bearings before declaring an empty scan. */
+        p_ctx->phase = PHASE_COARSE_FILL;
+        p_ctx->slot = (uint8_t)(CENTRE_FIRST_SLOT + 1U);
+    }
+    else if (!b_found)
     {
         p_ctx->phase     = PHASE_DONE;
         p_ctx->body_deci = 0;
@@ -657,7 +681,7 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
         }
         else if (!slot_in_servo_window(p_ctx->body_deci, slot))
         {
-            if (!p_ctx->b_pivoted[side])
+            if (p_ctx->b_body_turn_enabled && (!p_ctx->b_pivoted[side]))
             {
                 p_ctx->b_pivoted[side] = true;
                 p_ctx->body_deci       = (SCAN_ALGO_LEFT == side)
@@ -681,6 +705,13 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                 result      = WALK_MEASURE;
                 b_more      = false;
             }
+            else if (obstacle_pack_class_is_unresolved(obstacle_pack_slot_class(slot_val)))
+            {
+                /* A later open beam cannot establish clearance through this gap. */
+                *p_miss = (uint8_t)slot;
+                result  = WALK_UNBOUNDED;
+                b_more  = false;
+            }
             else if (scan_algo_is_miss(slot_val, ref_mm))
             {
                 *p_miss = (uint8_t)slot;
@@ -695,7 +726,7 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
             }
             else
             {
-                /* NO_ECHO, GLITCH or STUCK: assume the obstacle goes on. */
+                /* Ranged echo between the region and miss thresholds. */
                 slot += step;
             }
         }

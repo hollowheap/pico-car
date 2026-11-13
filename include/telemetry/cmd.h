@@ -51,12 +51,13 @@ STATIC_ASSERT (sizeof(telemetry_cmd_t) == 8U, "telemetry_cmd_t size");
 
 typedef struct
 {
+    uint32_t last_cmd_ms;
     uint16_t last_cmd_id;
     uint16_t expected_run_id;
     bool     has_last;
 } telemetry_cmd_state_t;
 
-STATIC_ASSERT (sizeof(telemetry_cmd_state_t) == 6U,
+STATIC_ASSERT (sizeof(telemetry_cmd_state_t) == 12U,
                "telemetry_cmd_state_t size");
 
 typedef void (*telemetry_cmd_dispatch_fn_t)(const telemetry_cmd_t * cmd,
@@ -71,7 +72,7 @@ telemetry_cmd_result_t telemetry_cmd_parse (const uint8_t * src, uint16_t len,
 
 telemetry_cmd_result_t telemetry_cmd_accept (telemetry_cmd_state_t * state,
                                              const telemetry_cmd_t * cmd,
-                                             uint16_t now_ms,
+                                             uint32_t now_ms,
                                              telemetry_cmd_dispatch_fn_t
                                                  dispatch,
                                              void * context);

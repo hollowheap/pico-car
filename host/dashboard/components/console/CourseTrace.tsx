@@ -1,15 +1,17 @@
-import { Text, View } from 'react-native';
+import { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, G, Line, Polygon, Polyline, Rect } from 'react-native-svg';
 
 import type { Course } from '../../lib/course';
 import type { EventKind } from '../../lib/events';
 import { useTheme } from '../../lib/theme-provider';
 
-type Props = { course: Course };
+type Props = { course: Course; height?: number; darkCanvas?: boolean };
 
-const WIDTH = 360;
-const HEIGHT = 300;
-const PAD = 28;
+const DEFAULT_WIDTH = 560;
+const PAD = 32;
+const GRID_SPACING = 28;
+
 /** The scale bar is the largest of these that fits in a quarter of the width (mm). */
 const SCALE_STEPS_MM = [100, 200, 500, 1000, 2000, 5000, 10000];
 /** The smallest span the plot fits, so a short run is not blown up (mm). */
@@ -55,62 +57,108 @@ function Mark({ kind, x, y, color }: { kind: EventKind; x: number; y: number; co
  * heading. North is up. It is a trace, not a map: it drifts with the heading
  * error. Marks sit where the event's odometer puts them.
  */
-export function CourseTrace({ course }: Props) {
+export function CourseTrace({ course, height: plotHeight, darkCanvas = false }: Props) {
   const theme = useTheme();
+  const [width, setWidth] = useState(DEFAULT_WIDTH);
+  const height = plotHeight ?? (width < 440 ? 228 : 280);
+  const colors = darkCanvas ? {
+    ...theme.colors,
+    elevated: '#0e1929',
+    card: '#18283e',
+    border: '#27394e',
+    text: '#e8f0ff',
+    muted: '#a8bbd1',
+    accent: '#78b7ff',
+    warning: '#f8bc64',
+    danger: '#ffb4ab',
+  } : theme.colors;
   const { bounds, points, markers } = course;
   const spanX = Math.max(MIN_SPAN_MM, bounds.maxX - bounds.minX);
   const spanY = Math.max(MIN_SPAN_MM, bounds.maxY - bounds.minY);
-  const scale = Math.min((WIDTH - 2 * PAD) / spanX, (HEIGHT - 2 * PAD) / spanY);
-  const originX = PAD + ((WIDTH - 2 * PAD) - (bounds.maxX - bounds.minX) * scale) / 2;
-  const originY = PAD + ((HEIGHT - 2 * PAD) - (bounds.maxY - bounds.minY) * scale) / 2;
+  const scale = Math.min((width - 2 * PAD) / spanX, (height - 2 * PAD) / spanY);
+  const originX = PAD + ((width - 2 * PAD) - (bounds.maxX - bounds.minX) * scale) / 2;
+  const originY = PAD + ((height - 2 * PAD) - (bounds.maxY - bounds.minY) * scale) / 2;
   const sx = (x: number) => originX + (x - bounds.minX) * scale;
-  const sy = (y: number) => HEIGHT - originY - (y - bounds.minY) * scale;
+  const sy = (y: number) => height - originY - (y - bounds.minY) * scale;
   const last = points[points.length - 1];
-  const bar = [...SCALE_STEPS_MM].reverse().find((mm) => mm * scale <= WIDTH / 4) ?? SCALE_STEPS_MM[0] ?? 100;
+  const travelled = bounds.maxX > bounds.minX || bounds.maxY > bounds.minY;
+  const bar = [...SCALE_STEPS_MM].reverse().find((mm) => mm * scale <= width / 4) ?? SCALE_STEPS_MM[0] ?? 100;
 
   return (
-    <View style={{ gap: 4 }}>
-    <Svg
-      accessibilityLabel={`Course trace, ${points.length} points, ${markers.length} marks`}
-      accessibilityRole="image"
-      height={HEIGHT * 1.2}
-      preserveAspectRatio="xMidYMid meet"
-      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-      width="100%"
+    <View
+      onLayout={({ nativeEvent }) => setWidth(Math.max(1, Math.round(nativeEvent.layout.width)))}
+      style={[styles.plot, { backgroundColor: colors.elevated, borderColor: colors.border }]}
+      testID="course-plot"
     >
-      <Rect fill="none" height={HEIGHT - 2} stroke={theme.colors.border} strokeWidth="1" width={WIDTH - 2} x="1" y="1" />
-      {points.length >= 2 ? (
-        <Polyline
-          fill="none"
-          points={points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ')}
-          stroke={theme.colors.muted}
-          strokeLinejoin="round"
-          strokeWidth="2"
+      <Svg
+        accessibilityLabel={`Course trace, ${points.length} points, ${markers.length} marks`}
+        accessibilityRole="image"
+        height={height}
+        preserveAspectRatio="xMidYMid meet"
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+      >
+        <G stroke={colors.border} strokeWidth="1">
+          {Array.from({ length: Math.floor(width / GRID_SPACING) }, (_, index) => {
+            const x = (index + 1) * GRID_SPACING;
+            return <Line key={x} x1={x} x2={x} y1={0} y2={height} />;
+          })}
+          {Array.from({ length: Math.floor(height / GRID_SPACING) }, (_, index) => {
+            const y = (index + 1) * GRID_SPACING;
+            return <Line key={y} x1={0} x2={width} y1={y} y2={y} />;
+          })}
+        </G>
+        {points.length >= 2 ? (
+          <Polyline
+            fill="none"
+            points={points.map((p) => `${sx(p.x).toFixed(1)},${sy(p.y).toFixed(1)}`).join(' ')}
+            stroke={colors.accent}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="3"
+          />
+        ) : null}
+        {points[0] !== undefined ? (
+          <Circle cx={sx(points[0].x)} cy={sy(points[0].y)} fill="none" r="5" stroke={colors.text} strokeWidth="1.5" />
+        ) : null}
+        {markers.map((marker) => (
+          <Mark
+            color={marker.kind === 'fault' ? colors.danger : marker.kind === 'obstacle' ? colors.warning : colors.text}
+            key={`${marker.eventId}-${marker.odometerMm}`}
+            kind={marker.kind}
+            x={sx(marker.x)}
+            y={sy(marker.y)}
+          />
+        ))}
+        {last !== undefined ? <Circle cx={sx(last.x)} cy={sy(last.y)} fill={colors.accent} r="5" /> : null}
+        <Line
+          stroke={colors.muted}
+          strokeWidth="1.5"
+          x1={14}
+          x2={14 + bar * scale}
+          y1={height - 12}
+          y2={height - 12}
         />
-      ) : null}
-      {points[0] !== undefined ? (
-        <Circle cx={sx(points[0].x)} cy={sy(points[0].y)} fill="none" r="5" stroke={theme.colors.text} strokeWidth="1.5" />
-      ) : null}
-      {markers.map((marker) => (
-        <Mark
-          color={marker.kind === 'fault' ? theme.colors.danger : theme.colors.text}
-          key={`${marker.eventId}-${marker.odometerMm}`}
-          kind={marker.kind}
-          x={sx(marker.x)}
-          y={sy(marker.y)}
-        />
-      ))}
-      {last !== undefined ? <Circle cx={sx(last.x)} cy={sy(last.y)} fill={theme.colors.accent} r="5" /> : null}
-      <G>
-        <Line stroke={theme.colors.text} strokeWidth="1.5" x1={PAD} x2={PAD + bar * scale} y1={HEIGHT - 12} y2={HEIGHT - 12} />
-      </G>
-      <G>
-        <Polygon fill={theme.colors.text} points={`${WIDTH - 20},12 ${WIDTH - 25},24 ${WIDTH - 15},24`} />
-      </G>
-    </Svg>
-      <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        Bar at the bottom left: {bar >= 1000 ? `${bar / 1000} m` : `${bar} mm`}. Arrow at the top right: north.
+      </Svg>
+      <Text style={[theme.typography.caption, styles.north, { color: colors.muted }]}>North ↑</Text>
+      <Text style={[theme.typography.caption, styles.scale, { color: colors.muted }]}>
+        {bar >= 1000 ? (bar / 1000) + ' m' : bar + ' mm'}
       </Text>
+      {!travelled && markers.length === 0 ? (
+        <View pointerEvents="none" style={styles.empty}>
+          <Text style={[theme.typography.caption, styles.emptyLabel, { color: colors.muted, backgroundColor: colors.card }]}>
+            No course movement recorded
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  plot: { borderRadius: 16, borderWidth: 1, overflow: 'hidden', position: 'relative' },
+  north: { position: 'absolute', right: 13, top: 12 },
+  scale: { bottom: 18, left: 14, position: 'absolute' },
+  empty: { alignItems: 'center', bottom: 0, justifyContent: 'center', left: 0, position: 'absolute', right: 0, top: 0 },
+  emptyLabel: { borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 },
+});

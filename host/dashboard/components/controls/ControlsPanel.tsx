@@ -8,7 +8,6 @@ import { confirmControl, type ControlAction } from './controls';
 type Props = {
   emergencyLatched: boolean;
   onAction: (action: ControlAction) => void;
-  title?: string;
   disabled?: boolean;
   disabledReason?: string;
   feedback?: string | null;
@@ -30,7 +29,6 @@ const ACTION_WORDS: Record<string, string> = {
 export function ControlsPanel({
   emergencyLatched,
   onAction,
-  title = 'Controls',
   disabled = false,
   disabledReason = 'Link offline. Commands are disabled.',
   feedback = null,
@@ -58,131 +56,98 @@ export function ControlsPanel({
     setPending(null);
   };
 
+  const message = emergencyLatched ? 'Emergency stop is latched. Power-cycle the car to clear it.'
+    : error ?? (disabled ? disabledReason : feedback) ?? '';
+  const warning = emergencyLatched || error !== null || (feedbackError && !disabled);
+
   return (
     <View
+      accessibilityLabel="Mission commands"
       style={[
         styles.card,
         {
           backgroundColor: theme.colors.card,
           borderColor: theme.colors.border,
-          borderRadius: theme.radii.card,
-          padding: theme.spacing.lg,
+          borderRadius: 16,
+          paddingHorizontal: 12,
+          paddingVertical: 9,
         },
       ]}
     >
-      <Text
-        style={[theme.typography.headingSm, { color: theme.colors.text }]}
-      >
-        {title}
-      </Text>
-      {disabled ? (
-        <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
-          {disabledReason}
-        </Text>
-      ) : null}
-      {emergencyLatched ? (
-        <Text
-          style={[
-            theme.typography.body,
-            {
-              backgroundColor: theme.colors.dangerSurface,
-              color: theme.colors.danger,
-            },
-          ]}
-        >
-          Emergency latch engaged. Reset requires a power cycle.
-        </Text>
-      ) : null}
-      {feedback === null ? null : (
-        <Text
-          style={[
-            theme.typography.body,
-            {
-              color: feedbackError
-                ? theme.colors.danger
-                : theme.colors.muted,
-            },
-          ]}
-        >
-          {feedback}
-        </Text>
-      )}
-      {error === null ? null : (
-        <Text
-          style={[
-            theme.typography.body,
-            {
-              backgroundColor: theme.colors.dangerSurface,
-              color: theme.colors.danger,
-            },
-          ]}
-        >
-          {error}
-        </Text>
-      )}
       {pending === null ? (
         <View style={styles.row}>
-          <Button
-            disabled={disabled || emergencyLatched}
-            onPress={() => request('start')}
-          >
-            <Button.Text>Start</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled}
-            variant="secondary"
-            onPress={() => request('stop')}
-          >
-            <Button.Text>Stop</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled}
-            variant="secondary"
-            onPress={() => request('estop')}
-          >
-            <Button.Text>E-stop</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('reset')}
-          >
-            <Button.Text>Clear faults</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('left')}
-          >
-            <Button.Text>Left 90°</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('straight')}
-          >
-            <Button.Text>Straight</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('right')}
-          >
-            <Button.Text>Right 90°</Button.Text>
-          </Button>
-          <Button
-            disabled={disabled || emergencyLatched}
-            variant="secondary"
-            onPress={() => request('uturn')}
-          >
-            <Button.Text>U-turn</Button.Text>
-          </Button>
+          <View style={styles.group}>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              onPress={() => request('start')}
+            >
+              <Button.Text>Start</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled}
+              variant="secondary"
+              onPress={() => request('stop')}
+            >
+              <Button.Text>Stop</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled}
+              variant="danger"
+              onPress={() => request('estop')}
+            >
+              <Button.Text>E-stop</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('reset')}
+            >
+              <Button.Text>Clear faults</Button.Text>
+            </Button>
+          </View>
+          <View style={styles.group}>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('left')}
+            >
+              <Button.Text>Left 90°</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('straight')}
+            >
+              <Button.Text>Straight</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('right')}
+            >
+              <Button.Text>Right 90°</Button.Text>
+            </Button>
+            <Button
+              compact
+              disabled={disabled || emergencyLatched}
+              variant="secondary"
+              onPress={() => request('uturn')}
+            >
+              <Button.Text>U-turn</Button.Text>
+            </Button>
+          </View>
         </View>
       ) : (
         <View style={styles.confirmRow}>
           <View style={styles.confirmActions}>
             <Button
-              disabled={disabled}
               variant="secondary"
               onPress={() => setPending(null)}
             >
@@ -203,13 +168,29 @@ export function ControlsPanel({
           </Text>
         </View>
       )}
+      <View accessibilityLiveRegion="polite" style={styles.message} testID="command-message">
+        <Text
+          accessibilityLabel={message}
+          numberOfLines={2}
+          style={[
+            theme.typography.caption,
+            styles.messageText,
+            { color: warning ? theme.colors.danger : theme.colors.muted },
+          ]}
+        >
+          {message}
+        </Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { gap: 8, borderWidth: 1 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  card: { gap: 5, borderWidth: 1 },
+  message: { minHeight: 16, justifyContent: 'center' },
+  messageText: { lineHeight: 16 },
+  row: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' },
+  group: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 7, maxWidth: '100%' },
   confirmRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -89,6 +89,7 @@ typedef struct
     /* Run length. */
     uint32_t max_ms;
     bool     b_stop_on_monitor;
+    bool     b_inject_line_along_box;
 } sim_cfg_t;
 
 typedef struct
@@ -138,6 +139,8 @@ typedef struct
     bool     b_have_prev_gap;
     bool     b_passed;
     uint8_t  clear_checks;
+    uint8_t  side_clear_count;
+    bool     b_plan_pending;
     uint8_t  side_ping_count;
     uint8_t  side_agree_count;
     uint16_t last_side_dist_mm;
@@ -177,6 +180,7 @@ typedef struct
     uint8_t  last_cause;
     uint32_t stop_ms;
     bool     b_reached_monitor_after_bypass;
+    bool     b_line_hit_injected;
     bool     b_aligned_before_hug;
     uint32_t bypass_count;
 } sim_t;
@@ -521,6 +525,7 @@ static void task_ping(sim_t * p_s)
     uint8_t                   cls  = OBSTACLE_CLASS_OPEN;
     uint16_t                  dist = 0U;
     bool const                b_reacq = (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state);
+    bool const                b_side = b_reacq && (OBSTACLE_PHASE_LOOK_PING == p_s->phase);
 
     sonar(p_s, p_s->servo, &cls, &dist);
 
@@ -535,11 +540,6 @@ static void task_ping(sim_t * p_s)
                 cls  = OBSTACLE_CLASS_OPEN;
                 dist = 0U;
             }
-            p_s->last_trig = p_s->now;
-            p_s->fsm.seq   = (uint8_t)(((uint32_t)p_s->fsm.seq + 1U) & OBSTACLE_ST_SEQ_MK);
-            p_s->fsm.last_class = cls;
-            p_s->fsm.last_dist  = (OBSTACLE_CLASS_VALID == cls) ? dist : 0U;
-            return;
         }
         else
         {
@@ -559,7 +559,14 @@ static void task_ping(sim_t * p_s)
 
     p_s->last_trig = p_s->now;
     obstacle_statechart_out_clear(&out);
-    obstacle_statechart_ping(&p_s->fsm, cls, dist, p_s->now, &out);
+    if (b_side)
+    {
+        obstacle_statechart_side_ping(&p_s->fsm, cls, dist, p_s->now, &out);
+    }
+    else
+    {
+        obstacle_statechart_ping(&p_s->fsm, cls, dist, p_s->now, &out);
+    }
     publish(p_s, &out);
 }
 
@@ -603,10 +610,10 @@ static void task_step(sim_t * p_s)
         }
         else if ((p_s->now - p_s->last_trig) >= OBSTACLE_PING_PERIOD_MS)
         {
-            bool const b_pivoting = (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state) &&
-                                    ((OBSTACLE_PHASE_LOOK_STOP == p_s->phase) ||
-                                     (OBSTACLE_PHASE_LOOK_IN == p_s->phase) ||
-                                     (OBSTACLE_PHASE_LOOK_OUT == p_s->phase));
+            bool const b_pivoting = ((OBSTACLE_STATE_REACQUIRE == p_s->fsm.state) &&
+                                     (OBSTACLE_PHASE_LOOK_PING != p_s->phase) &&
+                                     !obstacle_plan_forward_phase(p_s->phase)) ||
+                                    ((OBSTACLE_STATE_BYPASS == p_s->fsm.state) && !p_s->b_turned);
             int32_t const body_target = (int32_t)obstacle_statechart_body_deci(&p_s->fsm);
             int32_t const body_err = head_deci(p_s) - body_target;
             bool const b_scan_pivoting = (OBSTACLE_STATE_SCANNING == p_s->fsm.state) &&
@@ -641,8 +648,7 @@ static void nav_keep_plan(sim_t * p_s, uint32_t angle, bool b_wall)
 {
     p_s->start_deg = (uint8_t)angle;
     p_s->b_wall    = b_wall;
-    p_s->need_mm   = (int32_t)(((double)p_s->fsm.plan.closest_mm *
-                                obstacle_plan_tan_q14((int32_t)angle * 10)) / 16384.0);
+    p_s->need_mm   = p_s->fsm.plan.need_mm[p_s->side];
 }
 
 static void nav_event(sim_t * p_s, uint32_t evt)
@@ -696,7 +702,7 @@ static void nav_event(sim_t * p_s, uint32_t evt)
                        p_s->fsm.scan.edge_miss[0], p_s->fsm.scan.edge_miss[1],
                        p_s->fsm.scan.closest_mm);
             }
-            nav_post(p_s, OBSTACLE_CMD_ACCEPT, p_s->req_id);
+            p_s->b_plan_pending = true;
         }
     }
     else
@@ -734,7 +740,6 @@ static void nav_report_state(sim_t * p_s, uint32_t status)
         }
         if (OBSTACLE_STATE_BYPASS == state)
         {
-            reset_pose(p_s);
             p_s->bypass_count++;
         }
         if (OBSTACLE_STATE_REACQUIRE == state)
@@ -768,8 +773,7 @@ static void nav_report_state(sim_t * p_s, uint32_t status)
                 p_s->phase = OBSTACLE_PHASE_OUT;
             }
         }
-        if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state) ||
-            (OBSTACLE_STATE_MONITOR == state))
+        if (OBSTACLE_STATE_MONITOR == state)
         {
             p_s->b_servo_wait = true;
             p_s->wait_seq     = seq;
@@ -801,6 +805,7 @@ static void observe_hug(sim_t * p_s, double head)
 
 static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
 {
+    bool const b_line_phase = obstacle_plan_line_phase(p_s->phase, p_s->b_wall);
     int32_t left_um_s = 0;
     int32_t right_um_s = 0;
     uint8_t steer = OBSTACLE_STEER_HOLD;
@@ -818,6 +823,17 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
     if (p_s->b_ir_armed && (!p_s->b_ir_cleared) && (!b_line))
     {
         p_s->b_ir_cleared = true;
+    }
+
+    if (p_s->cfg.b_inject_line_along_box && !p_s->b_line_hit_injected &&
+        !p_s->b_wall && (OBSTACLE_PHASE_ALONG == p_s->phase) &&
+        p_s->b_ir_cleared && !b_line &&
+        ((p_s->now - p_s->reacquire_start) >= OBSTACLE_LINE_GRACE_MS) &&
+        ((p_s->now - p_s->line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS))
+    {
+        /* A dark mat seam seen while the car is still beside the box. */
+        p_s->b_line_hit_injected = true;
+        b_line = true;
     }
 
     switch (p_s->phase)
@@ -917,7 +933,8 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
             obstacle_plan_wheel_pivot(head_deci(p_s), look_head, &left_um_s, &right_um_s, &steer, &b_done);
             if (b_done)
             {
-                p_s->phase              = OBSTACLE_PHASE_LOOK_PING;
+                p_s->phase = OBSTACLE_PHASE_LOOK_PING;
+                p_s->side_clear_count = 0U;
                 p_s->side_ping_count    = 0U;
                 p_s->side_agree_count   = 0U;
                 p_s->last_side_dist_mm  = 0U;
@@ -952,16 +969,22 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
                 if ((OBSTACLE_CLASS_OPEN == cls) ||
                     ((OBSTACLE_CLASS_VALID == cls) && (dist >= OBSTACLE_CORNER_CLEAR_MM)))
                 {
-                    p_s->clear_checks++;
-                    if (p_s->clear_checks >= OBSTACLE_PASS_CLEARS)
+                    p_s->side_agree_count = 0U;
+                    p_s->side_clear_count++;
+                    if (p_s->side_clear_count >= OBSTACLE_ESCAPE_CLEARS)
                     {
-                        p_s->b_passed = true;
+                        p_s->clear_checks++;
+                        if (p_s->clear_checks >= OBSTACLE_PASS_CLEARS)
+                        {
+                            p_s->b_passed = true;
+                        }
+                        p_s->b_have_prev_gap = false;
+                        b_side_done = true;
                     }
-                    p_s->b_have_prev_gap = false;
-                    b_side_done = true;
                 }
                 else if (OBSTACLE_CLASS_VALID == cls)
                 {
+                    p_s->side_clear_count = 0U;
                     if ((p_s->side_agree_count > 0U) &&
                         (geom_abs((int32_t)dist - (int32_t)p_s->last_side_dist_mm) <= (int32_t)OBSTACLE_AGREE_MM))
                     {
@@ -1001,12 +1024,13 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
                 }
                 else
                 {
-                    /* NO_ECHO, GLITCH or STUCK: wait for next ping */
+                    p_s->side_clear_count = 0U;
+                    p_s->side_agree_count = 0U;
                 }
 
                 if ((!b_side_done) && (p_s->side_ping_count >= OBSTACLE_SIDE_PINGS_MAX))
                 {
-                    b_side_done = true;
+                    nav_post(p_s, OBSTACLE_CMD_STOP, p_s->req_id);
                 }
             }
 
@@ -1067,14 +1091,16 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
         {
             int32_t const ret_head = -side_sign(p_s) * (int32_t)OBSTACLE_RETURN_DECI;
 
-            obstacle_plan_wheel_straight(head_deci(p_s), ret_head,
-                                         (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
-                                         &left_um_s, &right_um_s, &steer);
-            observe_hug(p_s, (double)ret_head / 10.0);
-            if (p_s->b_ir_cleared && b_line && ((p_s->now - p_s->line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS))
+            if (obstacle_plan_return_limit(lateral_mm(p_s)))
             {
-                p_s->line_ms = p_s->now;
-                nav_post(p_s, OBSTACLE_CMD_LINE_FOUND, p_s->req_id);
+                nav_post(p_s, OBSTACLE_CMD_STOP, p_s->req_id);
+            }
+            else
+            {
+                obstacle_plan_wheel_straight(head_deci(p_s), ret_head,
+                                             (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
+                                             &left_um_s, &right_um_s, &steer);
+                observe_hug(p_s, (double)ret_head / 10.0);
             }
         }
         break;
@@ -1086,7 +1112,7 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
         break;
     }
 
-    if (p_s->b_wall && (p_s->phase == OBSTACLE_PHASE_ALONG) && p_s->b_ir_cleared && b_line &&
+    if (b_line_phase && p_s->b_ir_cleared && b_line &&
         ((p_s->now - p_s->line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS))
     {
         p_s->line_ms = p_s->now;
@@ -1117,6 +1143,7 @@ static void nav_step(sim_t * p_s)
     if (p_s->b_scan_pending && ((p_s->now - p_s->hold_ms) >= OBSTACLE_NAV_BRAKE_MS))
     {
         p_s->b_scan_pending = false;
+        reset_pose(p_s);
         nav_post(p_s, OBSTACLE_CMD_SCAN_REQ, p_s->req_id);
     }
 
@@ -1144,6 +1171,7 @@ static void nav_step(sim_t * p_s)
         break;
 
         case OBSTACLE_STATE_SCANNING:
+        case OBSTACLE_STATE_PLAN:
         {
             int32_t const target_head = (int32_t)obstacle_statechart_body_deci(&p_s->fsm);
             int32_t left_um_s = 0;
@@ -1152,9 +1180,16 @@ static void nav_step(sim_t * p_s)
             bool b_done = false;
 
             obstacle_plan_wheel_pivot(head_deci(p_s), target_head, &left_um_s, &right_um_s, &steer, &b_done);
+            update_pose(p_s);
             if (b_done)
             {
                 p_s->b_hold = true;
+                if ((OBSTACLE_STATE_PLAN == state) && p_s->b_plan_pending &&
+                    (p_s->servo == 0) && (p_s->now >= p_s->busy_until))
+                {
+                    p_s->b_plan_pending = false;
+                    nav_post(p_s, OBSTACLE_CMD_ACCEPT, p_s->req_id);
+                }
             }
             else
             {
@@ -1364,6 +1399,7 @@ static void cfg_default(sim_cfg_t * p_cfg)
     p_cfg->scale_right       = 1.0;
     p_cfg->max_ms            = 120000U;
     p_cfg->b_stop_on_monitor = false;
+    p_cfg->b_inject_line_along_box = false;
 }
 
 static sim_t * sim_new(sim_cfg_t const * p_cfg)
@@ -1429,7 +1465,7 @@ static void test_wall_follow_to_time_limit(void)
     CHECK(s->b_hug);
 
     /* Pivoted to about +90 before the hug began. */
-    CHECK(s->hug_head_start_deg >= 90.0);
+    CHECK(s->hug_head_start_deg >= 90.0 - ((double)OBSTACLE_PIVOT_TOL_DECI / 10.0));
     CHECK(s->hug_head_start_deg <= 100.0);
 
     /* Heading never leaves the +60..+120 window. */
@@ -1628,6 +1664,48 @@ static void test_box_bypass(void)
     box_run(-90.0, 90.0, 560.0, 300.0, "box-deep", true);
 }
 
+static void test_box_ignores_line_hit_alongside(void)
+{
+    sim_cfg_t cfg;
+    sim_t * s = NULL;
+
+    cfg_default(&cfg);
+    add_rect(&cfg, -90.0, 560.0, 90.0, 740.0);
+    cfg.b_stop_on_monitor = true;
+    cfg.b_inject_line_along_box = true;
+    cfg.max_ms = 60000U;
+    s = sim_new(&cfg);
+    sim_run(s);
+    print_run("box-false-line-hit", s);
+
+    CHECK(s->b_line_hit_injected);
+    CHECK(s->b_reached_monitor_after_bypass);
+    CHECK(OBSTACLE_PHASE_RETURN_DRIVE == s->phase);
+    CHECK(s->body_min_mm > 15.0);
+}
+
+static void test_box_stops_if_ir_misses_return(void)
+{
+    sim_cfg_t cfg;
+    sim_t * s = NULL;
+
+    cfg_default(&cfg);
+    add_rect(&cfg, -90.0, 560.0, 90.0, 740.0);
+    cfg.lines = 0;
+    cfg.max_ms = 60000U;
+    s = sim_new(&cfg);
+    sim_run(s);
+    print_run("box-no-return-line", s);
+
+    CHECK(s->bypass_count == 1U);
+    CHECK(OBSTACLE_PHASE_RETURN_DRIVE == s->phase);
+    CHECK(!s->b_reached_monitor_after_bypass);
+    /* The overall bypass budget can stop the car before the lateral limit. */
+    CHECK((OBSTACLE_CAUSE_EXTERNAL == s->last_cause) ||
+          (OBSTACLE_CAUSE_LINE_TIMEOUT == s->last_cause));
+    CHECK(lateral_mm(s) >= -283);
+}
+
 int main(void)
 {
     test_wall_follow_to_time_limit();
@@ -1637,6 +1715,8 @@ int main(void)
     test_wall_ends_on_line();
     test_wall_corner_ahead();
     test_box_bypass();
+    test_box_ignores_line_hit_alongside();
+    test_box_stops_if_ir_misses_return();
 
     free(g_sim);
 

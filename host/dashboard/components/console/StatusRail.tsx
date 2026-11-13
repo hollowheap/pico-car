@@ -27,11 +27,11 @@ function Metric({
   const theme = useTheme();
 
   return (
-    <View style={styles.metric}>
+    <View accessibilityLabel={`${label}: ${value}`} style={styles.metric}>
       <Text style={[theme.typography.label, { color: theme.colors.muted }]}>
         {label}
       </Text>
-      <Text style={[theme.typography.body, { color }]}>{value}</Text>
+      <Text numberOfLines={1} style={[theme.typography.body, styles.metricValue, { color }]}>{value}</Text>
     </View>
   );
 }
@@ -117,6 +117,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
   },
-  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
-  metric: { gap: 2, minWidth: 64 },
+  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  metric: { flexBasis: 80, flexGrow: 1, gap: 4, minWidth: 76 },
+  metricValue: { fontVariant: ['tabular-nums'], fontWeight: '600' },
 });

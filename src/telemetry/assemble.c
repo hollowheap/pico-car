@@ -269,6 +269,10 @@ telemetry_assemble_physics (telemetry_physics_t * p_out,
         return;
     }
     p_out->pitch_cdeg     = p_physics->pitch_cdeg;
+    p_out->roll_cdeg      = p_physics->roll_cdeg;
+    p_out->az_mg          = p_physics->az_mg;
+    p_out->amag_mg        = p_physics->amag_mg;
+    p_out->attitude_state = p_physics->attitude_state;
     p_out->a_fwd_mg       = p_physics->a_fwd_mg;
     p_out->yaw_rate_cdps  = p_physics->yaw_rate_cdps;
     p_out->hump_peak_mm   = p_physics->hump_peak_mm;

@@ -39,7 +39,7 @@ export function panelStatus(
   if (limit === undefined) return READY;
   const age = Math.max(0, nowMs - packet.timestamp);
   if (age > limit) {
-    return { kind: 'stale', message: `No ${kind} packet for ${(age / 1000).toFixed(1)} s. Values are old.` };
+    return { kind: 'stale', message: 'Last received readings' };
   }
   return READY;
 }

@@ -21,7 +21,8 @@ typedef enum
     MQTT_ERR_ARG,
     MQTT_ERR_STATE,
     MQTT_ERR_TRANSPORT,
-    MQTT_ERR_PROTOCOL
+    MQTT_ERR_PROTOCOL,
+    MQTT_ERR_BUSY  /* Temporary send backpressure; retry on the same stream. */
 } mqtt_result_t;
 
 STATIC_ASSERT (sizeof(mqtt_result_t) <= 4U, "mqtt_result_t size");
@@ -39,11 +40,14 @@ STATIC_ASSERT (sizeof(mqtt_state_t) <= 4U, "mqtt_state_t size");
 typedef struct
 {
     void * context;
+    /* Send is all-or-nothing: len accepted, zero to retry, negative on error. */
     int (*send)(void * context, const uint8_t * data, uint16_t len);
     int (*recv)(void * context, uint8_t * data, uint16_t len);
+    /* On session failure, discard the stream before accepting another CONNECT. */
+    void (*restart)(void * context);
 } mqtt_transport_t;
 
-STATIC_ASSERT (sizeof(mqtt_transport_t) == (3U * sizeof(void *)),
+STATIC_ASSERT (sizeof(mqtt_transport_t) == (4U * sizeof(void *)),
                "mqtt_transport_t size");
 
 typedef struct
@@ -72,6 +76,7 @@ typedef struct
     uint32_t          next_attempt_ms;
     uint32_t          reply_deadline_ms;
     uint32_t          reconnect_delay_ms;
+    uint32_t          last_cmd_ms;
     uint16_t          last_cmd_id;
     bool              has_last_cmd;
     bool              attempt_pending;
@@ -82,7 +87,7 @@ typedef struct
     uint8_t           tx_buffer[MQTT_TX_BUFFER_SIZE];
 } mqtt_client_t;
 
-STATIC_ASSERT (sizeof(mqtt_client_t) == (416U + (10U * sizeof(void *))),
+STATIC_ASSERT (sizeof(mqtt_client_t) == (416U + (12U * sizeof(void *))),
                "mqtt_client_t size");
 
 void mqtt_client_init (mqtt_client_t * client, const mqtt_config_t * config,

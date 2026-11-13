@@ -265,6 +265,8 @@ static void step_lift (attitude_ctx_t * p_ctx, const attitude_output_t * p_out,
         break;
 
         case ATTITUDE_LIFTED:
+        case ATTITUDE_OVERTURNED:
+            /* The supervisor keeps the motor hold latched after set-down. */
             if (b_level)
             {
                 p_ctx->clear_count++;
@@ -281,7 +283,6 @@ static void step_lift (attitude_ctx_t * p_ctx, const attitude_output_t * p_out,
         break;
 
         default:
-            /* OVERTURNED holds until attitude_reset. */
         break;
     }
 }
@@ -319,6 +320,7 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
         if (p_ctx->overturn_count >= p_ctx->cfg.overturn_samples)
         {
             p_ctx->state = ATTITUDE_OVERTURNED;
+            p_ctx->clear_count = 0U;
         }
         else
         {

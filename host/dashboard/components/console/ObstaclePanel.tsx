@@ -47,30 +47,42 @@ export function ObstaclePanel({ obstacle, profile, status, style }: Props) {
           {stopped ? ` · ${cause}` : ''}
         </Text>
       }
+      embedded
+      showPlaceholder
       status={status}
       style={style}
       testID="obstacle-panel"
-      title="Obstacle"
+      title="Sonar scan"
     >
-      <ScanPlot
-        beamHalfDeg={BEAM_HALF_DEG}
-        detectMm={DETECT_MM}
-        points={profile === undefined ? [] : scanPoints(profile.values)}
-        servoDeg={servoDeci === undefined ? null : servoDeci / DECI}
-      />
+      <View style={styles.instrument}>
+        <View style={styles.plot}>
+          <ScanPlot
+            beamHalfDeg={BEAM_HALF_DEG}
+            detectMm={DETECT_MM}
+            height={110}
+            points={profile === undefined ? [] : scanPoints(profile.values)}
+            servoDeg={servoDeci === undefined ? null : servoDeci / DECI}
+          />
+        </View>
+        <View style={styles.readout}>
+          <Text style={[theme.typography.label, { color: theme.colors.muted }]}>RANGE</Text>
+          <Text style={[styles.range, { color: theme.colors.text }]}>
+            {o === undefined ? '—' : o.dist_mm + ' mm'}
+          </Text>
+          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+            {o === undefined ? 'Waiting for sonar' : enumLabel('echoClass', o.echo_class).toLowerCase() + ' echo'}
+          </Text>
+          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+            Servo {servoDeci === undefined ? '—' : degrees(servoDeci)} · Body {bodyDeci === undefined ? '—' : degrees(bodyDeci)}
+          </Text>
+        </View>
+      </View>
       <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        Slots every 5°, rings every 100 mm, dashed ring at {DETECT_MM} mm. Dot: echo. Ring on the edge: open space. Cross: bad echo.
-      </Text>
-      <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        {profile === undefined ? 'No scan yet.' : `Scan from ${formatTime(profile.timestamp)}: closest ${profile.values.closest_mm} mm, width ${profile.values.width_mm} mm.`}
-      </Text>
-      <Text style={[theme.typography.body, { color: theme.colors.text }]}>
-        Range {o?.dist_mm ?? '--'} mm · echo {o === undefined ? '--' : enumLabel('echoClass', o.echo_class).toLowerCase()} · servo{' '}
-        {servoDeci === undefined ? '--' : degrees(servoDeci)} · body {bodyDeci === undefined ? '--' : degrees(bodyDeci)}
+        {profile === undefined ? 'No scan recorded' : 'Scan ' + formatTime(profile.timestamp) + ' · closest ' + profile.values.closest_mm + ' mm · width ' + profile.values.width_mm + ' mm'}
       </Text>
       <View style={[styles.plan, { borderColor: theme.colors.border }]}>
         <Text style={[theme.typography.label, { color: theme.colors.muted }]}>PLAN</Text>
-        <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+        <Text style={[theme.typography.caption, { color: theme.colors.text }]}>
           {o === undefined
             ? '--'
             : `${PLAN_WORDS[planStatus] ?? planStatus}, pass on the ${o.plan_side === 0 ? 'left' : 'right'}, width ${o.plan_width_mm} mm, needs ${o.plan_need_mm} mm, start ${o.plan_start_deg}°, rescans ${o.rescans}`}
@@ -84,5 +96,9 @@ export function ObstaclePanel({ obstacle, profile, status, style }: Props) {
 }
 
 const styles = StyleSheet.create({
-  plan: { borderTopWidth: 1, gap: 2, paddingTop: 8 },
+  instrument: { alignItems: 'center', flexDirection: 'row', gap: 12 },
+  plot: { flex: 1.5, minWidth: 0 },
+  readout: { flex: 1, gap: 5, minWidth: 100 },
+  range: { fontSize: 26, fontVariant: ['tabular-nums'], fontWeight: '600', lineHeight: 31 },
+  plan: { borderTopWidth: 1, gap: 3, paddingTop: 7 },
 });

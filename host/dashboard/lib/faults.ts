@@ -16,12 +16,12 @@ export type FaultMeta = {
 /** Keyed by bit number. A test fails when the schema adds a bit without a row. */
 export const FAULT_META: Record<number, FaultMeta> = {
   0: { label: 'Wi-Fi down', severity: 'warn', hint: 'The car lost its access point.' },
-  1: { label: 'MQTT rejected', severity: 'warn', hint: 'The broker refused a publish.' },
+  1: { label: 'MQTT publish failed', severity: 'warn', hint: 'The Pico could not send a telemetry packet over MQTT.' },
   2: { label: 'Motor stalled', severity: 'critical', hint: 'A wheel is told to turn and has no edges.' },
   3: { label: 'Encoder fault', severity: 'critical', hint: 'An encoder is dead, or the two plugs are swapped.' },
   4: { label: 'Line lost', severity: 'warn', hint: 'The car weaves at reduced speed until a sensor sees the line.' },
   5: { label: 'IMU not answering', severity: 'warn', hint: 'The I2C reads of the accelerometer fail.' },
-  6: { label: 'Stale wheel speed', severity: 'critical', hint: 'The wheel feedback is too old.' },
+  6: { label: 'Stale wheel speed', severity: 'critical', hint: 'Wheel feedback is old or invalid.' },
   7: { label: 'Tilt out of range', severity: 'warn', hint: 'The tilt reading is not valid.' },
   8: { label: 'Sonar silent', severity: 'critical', hint: 'No echo from three pings in a row.' },
   9: { label: 'Emergency stop', severity: 'critical', hint: 'Latched until the car reboots.' },

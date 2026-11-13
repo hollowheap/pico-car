@@ -1,4 +1,5 @@
 #include <string.h>
+#include <tk/smp.h>
 #include <tm/tmonitor.h>
 
 #include "lwip/dns.h"
@@ -43,6 +44,11 @@ static volatile bool           g_resolving;
 static volatile tcp_transport_state_t g_state;
 static uint32_t                g_retry_at_ms;
 static uint32_t                g_connect_started_ms;
+/* Serialize invalidating a stream with enqueue/dequeue on the MQTT core. */
+static T_SPLOCK                g_stream_lock;
+static volatile bool           g_restart_requested;
+static bool                    g_stream_claimed;
+static bool                    g_stream_lost;
 
 static void
 memory_barrier (void)
@@ -98,6 +104,7 @@ ring_pop (byte_ring_t * ring, uint8_t * data, uint16_t len)
     {
         first = len;
     }
+    memory_barrier();
     (void) memcpy(data, &ring->data[index], first);
     if (len > first)
     {
@@ -120,12 +127,21 @@ detach_callbacks (struct tcp_pcb * pcb)
 static void
 fail_attempt (uint32_t now_ms)
 {
-    g_resolving = false;
+    UINT saved = 0u;
+
+    (void) ISpinLock(&g_stream_lock, &saved);
+    /* The MQTT task must see the loss even if a new PCB is already open. */
+    g_stream_lost = g_stream_lost || (g_stream_claimed && !g_restart_requested);
+    g_stream_claimed = false;
+    g_restart_requested = false;
     g_state = TCP_TRANSPORT_FAILED;
-    LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_TCP, "attempt failed, state=%d",
-             (int) g_state);
-    g_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
+    ring_reset(&g_rx);
     ring_reset(&g_tx);
+    (void) ISpinUnlock(&g_stream_lock, saved);
+
+    g_resolving = false;
+    g_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
+    LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_TCP, "connection closed; retry scheduled");
 }
 
 static void
@@ -140,7 +156,6 @@ close_abort (void)
     gp_pcb = 0;
     detach_callbacks(pcb);
     tcp_abort(pcb);
-    ring_reset(&g_tx);
 }
 
 static void
@@ -158,7 +173,6 @@ close_graceful (void)
     {
         tcp_abort(pcb);
     }
-    ring_reset(&g_tx);
 }
 
 static void drain_tx (void);
@@ -174,7 +188,7 @@ on_connected (void * arg, struct tcp_pcb * pcb, err_t err)
         fail_attempt((uint32_t) sys_now());
         detach_callbacks(pcb);
         tcp_abort(pcb);
-        return ERR_OK;
+        return ERR_ABRT;
     }
     tcp_nagle_disable(pcb);
     g_state = TCP_TRANSPORT_CONNECTED;
@@ -192,15 +206,15 @@ on_recv (void * arg, struct tcp_pcb * pcb, struct pbuf * p, err_t err)
 
     if (p == 0)
     {
-        close_graceful();
         fail_attempt((uint32_t) sys_now());
+        close_graceful();
         return ERR_OK;
     }
     if (err != ERR_OK)
     {
         (void) pbuf_free(p);
-        close_abort();
         fail_attempt((uint32_t) sys_now());
+        close_abort();
         return ERR_ABRT;
     }
     if (ring_used(&g_rx) + p->tot_len > TCP_TRANSPORT_RX_CAPACITY)
@@ -281,11 +295,11 @@ on_resolved (const char * name, const ip_addr_t * address, void * arg)
     (void) name;
     (void) arg;
 
-    g_resolving = false;
-    if (!g_desired)
+    if (!g_resolving)
     {
         return;
     }
+    g_resolving = false;
     if (address == 0)
     {
         fail_attempt((uint32_t) sys_now());
@@ -352,6 +366,7 @@ drain_tx (void)
         {
             chunk = sndbuf;
         }
+        memory_barrier();
         if (tcp_write(gp_pcb, &g_tx.data[index], chunk,
                       TCP_WRITE_FLAG_COPY) != ERR_OK)
         {
@@ -383,28 +398,9 @@ tcp_transport_open (const char * host, uint16_t port)
     }
     (void) memcpy(g_host, host, len + 1u);
     g_port = port;
-    ring_reset(&g_rx);
-    ring_reset(&g_tx);
-    g_retry_at_ms = 0u;
-    g_resolving = false;
-    g_state = TCP_TRANSPORT_WAITING;
     memory_barrier();
     g_desired = true;
     return true;
-}
-
-void
-tcp_transport_close (void)
-{
-    g_desired = false;
-    g_resolving = false;
-    g_state = TCP_TRANSPORT_CLOSED;
-}
-
-tcp_transport_state_t
-tcp_transport_state (void)
-{
-    return g_state;
 }
 
 uint32_t
@@ -416,36 +412,69 @@ tcp_transport_now_ms (void)
 int
 tcp_transport_send (void * context, const uint8_t * data, uint16_t len)
 {
+    UINT saved = 0u;
+    int result = 0;
+
     (void) context;
 
-    if ((data == 0) || (len == 0u) || !g_desired)
+    if ((data == 0) || (len == 0u) || (len > TCP_TRANSPORT_TX_CAPACITY))
     {
-        return 0;
+        return -1;
     }
-    if ((uint16_t) (TCP_TRANSPORT_TX_CAPACITY - ring_used(&g_tx)) < len)
+    (void) ISpinLock(&g_stream_lock, &saved);
+    if (g_stream_lost)
     {
-        return 0;
+        result = -1;
     }
-    ring_push(&g_tx, data, len);
-    return (int) len;
+    else if ((g_state == TCP_TRANSPORT_CONNECTED) && !g_restart_requested &&
+             ((uint16_t) (TCP_TRANSPORT_TX_CAPACITY - ring_used(&g_tx)) >= len))
+    {
+        ring_push(&g_tx, data, len);
+        g_stream_claimed = true;
+        result = (int) len;
+    }
+    (void) ISpinUnlock(&g_stream_lock, saved);
+    return result;
 }
 
 int
 tcp_transport_recv (void * context, uint8_t * data, uint16_t len)
 {
+    UINT saved = 0u;
+    int result = -1;
+
     (void) context;
 
     if ((data == 0) || (len == 0u))
     {
         return -1;
     }
-    if ((g_state == TCP_TRANSPORT_FAILED) ||
-        (g_state == TCP_TRANSPORT_CLOSED))
+    (void) ISpinLock(&g_stream_lock, &saved);
+    if ((g_state == TCP_TRANSPORT_CONNECTED) && !g_stream_lost &&
+        !g_restart_requested)
     {
-        ring_reset(&g_rx);
-        return -1;
+        result = (int) ring_pop(&g_rx, data, len);
     }
-    return (int) ring_pop(&g_rx, data, len);
+    (void) ISpinUnlock(&g_stream_lock, saved);
+    return result;
+}
+
+void
+tcp_transport_restart (void * context)
+{
+    UINT saved = 0u;
+
+    (void) context;
+    (void) ISpinLock(&g_stream_lock, &saved);
+    if (g_stream_lost)
+    {
+        g_stream_lost = false;
+    }
+    else if (g_state == TCP_TRANSPORT_CONNECTED)
+    {
+        g_restart_requested = true;
+    }
+    (void) ISpinUnlock(&g_stream_lock, saved);
 }
 
 void
@@ -456,31 +485,35 @@ tcp_transport_poll (void)
 
     if (!g_desired)
     {
-        close_abort();
-        if (g_state != TCP_TRANSPORT_CLOSED)
-        {
-            g_state = TCP_TRANSPORT_IDLE;
-        }
         return;
+    }
+    memory_barrier();
+    now_ms = (uint32_t) sys_now();
+    if (g_restart_requested)
+    {
+        fail_attempt(now_ms);
+        close_abort();
     }
 
     cyw43_utk_get_status(&status);
     if ((status.link_up == 0u) || (status.dhcp_complete == 0u) ||
         (status.dhcp_result != 0))
     {
-        close_abort();
-        g_resolving = false;
+        if ((gp_pcb != 0) || g_resolving)
+        {
+            fail_attempt(now_ms);
+            close_abort();
+        }
         g_state = TCP_TRANSPORT_WAITING;
         return;
     }
 
-    now_ms = (uint32_t) sys_now();
     if ((gp_pcb != 0) && (g_state == TCP_TRANSPORT_CONNECTING) &&
         ((uint32_t) (now_ms - g_connect_started_ms) >=
          TCP_TRANSPORT_CONNECT_TIMEOUT_MS))
     {
-        close_abort();
         fail_attempt(now_ms);
+        close_abort();
         return;
     }
 

@@ -9,6 +9,7 @@ import { Panel } from './Panel';
 import { Sparkline } from './Sparkline';
 
 type Props = {
+  graphHeight?: number;
   motion: LinkPacket | undefined;
   /** Status speeds in mm/s, newest last (about 30 s). */
   speeds: number[];
@@ -34,7 +35,7 @@ function Wheel({ name, speed, target, duty }: WheelProps) {
       <View
         accessibilityLabel={`${name} wheel ${withUnit(speed, 'mm/s')}, target ${withUnit(target, 'mm/s')}`}
         accessibilityRole="progressbar"
-        style={[styles.bar, { backgroundColor: theme.colors.elevated, borderRadius: theme.radii.nav }]}
+        style={[styles.bar, { backgroundColor: theme.colors.elevated, borderRadius: 6 }]}
       >
         <View style={[styles.fill, { backgroundColor: theme.colors.text, width: `${fill * 100}%` }]} />
         {mark !== null ? (
@@ -53,7 +54,7 @@ function Wheel({ name, speed, target, duty }: WheelProps) {
  * Left and right wheel speed against the target, the duty the controller
  * applied, and the speed trace. A speed difference on a straight run is slip.
  */
-export function MotionPanel({ motion, speeds, status, style }: Props) {
+export function MotionPanel({ graphHeight = 40, motion, speeds, status, style }: Props) {
   const theme = useTheme();
   const v = motion?.values;
   const straight =
@@ -70,13 +71,17 @@ export function MotionPanel({ motion, speeds, status, style }: Props) {
           {v === undefined ? '--' : `${enumLabel('motionState', v.motion_state)}${faulty ? ` · ${fault}` : ''}`}
         </Text>
       }
+      embedded
+      showPlaceholder
       status={status}
       style={style}
       testID="motion-panel"
       title="Motion"
     >
-      <Wheel duty={v?.left_duty_pm} name="LEFT" speed={v?.left_mms} target={v?.left_target_mms} />
-      <Wheel duty={v?.right_duty_pm} name="RIGHT" speed={v?.right_mms} target={v?.right_target_mms} />
+      <View style={styles.wheels}>
+        <Wheel duty={v?.left_duty_pm} name="LEFT" speed={v?.left_mms} target={v?.left_target_mms} />
+        <Wheel duty={v?.right_duty_pm} name="RIGHT" speed={v?.right_mms} target={v?.right_target_mms} />
+      </View>
       <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
         Bar: speed. Blue mark: target.{' '}
         {slip === null ? 'Slip shows on a straight run.' : `Wheel difference on this straight run: ${slip} mm/s.`}{' '}
@@ -84,13 +89,14 @@ export function MotionPanel({ motion, speeds, status, style }: Props) {
       </Text>
       <View style={styles.trace}>
         <View style={styles.traceHead}>
-          <Text style={[theme.typography.label, { color: theme.colors.muted }]}>SPEED, LAST {Math.round(speeds.length / 5)} S</Text>
+          <Text style={[theme.typography.label, { color: theme.colors.muted }]}>RECENT SPEED</Text>
           <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
             now {speeds[speeds.length - 1] ?? '--'} mm/s
           </Text>
         </View>
         <Sparkline
-          color={theme.colors.text}
+          color={theme.colors.accent}
+          height={graphHeight}
           label={`Speed trace, ${speeds.length} samples, now ${speeds[speeds.length - 1] ?? '--'} mm/s`}
           range={[0, BAR_FULL_MMS]}
           values={speeds}
@@ -101,12 +107,13 @@ export function MotionPanel({ motion, speeds, status, style }: Props) {
 }
 
 const styles = StyleSheet.create({
-  wheel: { gap: 4 },
+  wheels: { flexDirection: 'row', gap: 15 },
+  wheel: { flex: 1, gap: 4, minWidth: 0 },
   name: { letterSpacing: 1 },
-  bar: { height: 12, position: 'relative' },
-  fill: { bottom: 0, left: 0, position: 'absolute', top: 0 },
+  bar: { height: 8, position: 'relative' },
+  fill: { borderRadius: 6, bottom: 0, left: 0, position: 'absolute', top: 0 },
   target: { bottom: 0, position: 'absolute', top: 0, width: 3 },
   value: { fontVariant: ['tabular-nums'] },
-  trace: { gap: 4 },
+  trace: { gap: 4, marginTop: 'auto' },
   traceHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
 });

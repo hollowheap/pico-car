@@ -110,9 +110,11 @@ add_test(NAME barcode_width COMMAND test_barcode_width)
 
 # GPIO dispatcher: src/platform/isr.c against a kernel shim (D67).
 add_executable(test_isr_dispatch test_isr_dispatch.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/isr.c)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/isr.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/quadrature.c)
 target_include_directories(test_isr_dispatch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_options(test_isr_dispatch PRIVATE -Wall -Wextra -Werror)
 add_test(NAME isr_dispatch COMMAND test_isr_dispatch)

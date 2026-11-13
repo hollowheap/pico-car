@@ -27,14 +27,16 @@ static void reject (run_result_t * p_out, uint8_t reason)
     p_out->reason     = reason;
 }
 
-void run_state_init (run_ctx_t * p_ctx)
+void run_state_init (run_ctx_t * p_ctx, bool b_button_start)
 {
     p_ctx->b_booted   = false;
+    p_ctx->b_wait_button = b_button_start;
     p_ctx->b_operator = false;
     p_ctx->b_barcode  = false;
     p_ctx->b_lift     = false;
     p_ctx->b_overturn = false;
     p_ctx->b_estop    = false;
+    p_ctx->b_motion_fault = false;
 }
 
 run_state_t run_state_of (const run_ctx_t * p_ctx)
@@ -45,7 +47,7 @@ run_state_t run_state_of (const run_ctx_t * p_ctx)
     {
         state = RUN_STATE_BOOT;
     }
-    else if (p_ctx->b_estop || p_ctx->b_overturn)
+    else if (p_ctx->b_estop || p_ctx->b_overturn || p_ctx->b_motion_fault)
     {
         state = RUN_STATE_LATCHED;
     }
@@ -53,7 +55,7 @@ run_state_t run_state_of (const run_ctx_t * p_ctx)
     {
         state = RUN_STATE_HELD;
     }
-    else if (p_ctx->b_operator)
+    else if (p_ctx->b_operator || p_ctx->b_wait_button)
     {
         state = RUN_STATE_STOPPED;
     }
@@ -69,7 +71,7 @@ uint32_t run_state_hold_mask (const run_ctx_t * p_ctx)
 {
     uint32_t mask = 0U;
 
-    if (p_ctx->b_operator)
+    if (p_ctx->b_operator || p_ctx->b_wait_button)
     {
         mask |= MOTION_HOLD_OPERATOR;
     }
@@ -100,11 +102,17 @@ static void command_stop (run_ctx_t * p_ctx, vehicle_cmd_t cmd, run_result_t * p
     p_out->b_obstacle_stop = true;
 }
 
-static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t * p_out)
+static void command_start (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t * p_in,
+                           run_result_t * p_out)
 {
-    if (p_ctx->b_estop || p_ctx->b_overturn)
+    if (p_ctx->b_estop || p_ctx->b_overturn ||
+        p_ctx->b_motion_fault || p_in->b_motion_fault)
     {
         reject (p_out, RUN_REJECT_LATCHED);
+    }
+    else if (p_ctx->b_wait_button && (VEHICLE_SRC_BUTTON != cmd.source))
+    {
+        reject (p_out, RUN_REJECT_SOURCE);
     }
     else if (p_in->b_lifted)
     {
@@ -112,6 +120,7 @@ static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
     }
     else
     {
+        p_ctx->b_wait_button = false;
         p_ctx->b_operator = false;
         p_ctx->b_barcode  = false;
         p_ctx->b_lift     = false;
@@ -124,7 +133,7 @@ static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
 
 static void command_reset (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t * p_out)
 {
-    if (p_ctx->b_estop)
+    if (p_ctx->b_estop || p_ctx->b_motion_fault || p_in->b_motion_fault)
     {
         reject (p_out, RUN_REJECT_LATCHED);
     }
@@ -145,7 +154,11 @@ static void command_reset (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
 static void command_turn (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t * p_in,
                           run_result_t * p_out)
 {
-    if (RUN_STATE_RUNNING != run_state_of (p_ctx))
+    if (p_ctx->b_motion_fault || p_in->b_motion_fault)
+    {
+        reject (p_out, RUN_REJECT_LATCHED);
+    }
+    else if (RUN_STATE_RUNNING != run_state_of (p_ctx))
     {
         reject (p_out, RUN_REJECT_NOT_RUNNING);
     }
@@ -191,7 +204,7 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
             break;
 
             case VEHICLE_CMD_START:
-                command_start (p_ctx, p_in, p_out);
+                command_start (p_ctx, cmd, p_in, p_out);
             break;
 
             case VEHICLE_CMD_RESET:
@@ -216,11 +229,13 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
 
 void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t * p_out)
 {
+    run_state_t const previous = run_state_of (p_ctx);
     bool const b_was_overturn = p_ctx->b_overturn;
 
     clear_result (p_out, p_ctx);
 
     p_ctx->b_booted = true;
+    p_ctx->b_motion_fault = p_ctx->b_motion_fault || p_in->b_motion_fault;
     if (p_in->b_estop)
     {
         p_ctx->b_estop = true;
@@ -239,7 +254,15 @@ void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t 
         /* Level again: the lift hold stays until START. */
     }
 
-    if (p_ctx->b_overturn && !b_was_overturn)
+    run_state_t const current = run_state_of (p_ctx);
+    if ((RUN_STATE_BOOT == previous) && (RUN_STATE_RUNNING == current))
+    {
+        /* Keep automatic start for builds configured without the GP20 gate. */
+        p_out->b_obstacle_reset = true;
+        p_out->b_obstacle_start = true;
+    }
+    if (((RUN_STATE_RUNNING == previous) && (RUN_STATE_RUNNING != current)) ||
+        (p_ctx->b_overturn && !b_was_overturn))
     {
         p_out->b_obstacle_stop = true;
         p_out->b_cancel_turn   = true;

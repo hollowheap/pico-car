@@ -21,9 +21,6 @@ type Props = {
   style?: StyleProp<ViewStyle>;
 };
 
-/** One row is about this tall. A scroller needs an explicit height in this layout: with only a max height it collapses and the rows spill over the next panel. */
-const ROW_PX = 60;
-
 type Filter = 'all' | 'attention' | 'drive' | 'commands';
 
 const FILTERS: { key: Filter; label: string; kinds: EventKind[] | null }[] = [
@@ -71,17 +68,15 @@ export function EventTimeline({ events, limit = 60, maxHeight, title = 'Events',
           </Button>
         ))}
       </View>
-      {rows.length === 0 ? (
-        <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
-          {events.length === 0 ? 'No events yet.' : 'No events in this filter.'}
-        </Text>
-      ) : (
-        <ScrollView
-          nestedScrollEnabled
-          showsVerticalScrollIndicator={false}
-          style={maxHeight ? { height: Math.min(maxHeight, rows.length * ROW_PX) } : undefined}
-        >
-          {rows.map((event) => (
+      <ScrollView
+        nestedScrollEnabled
+        style={maxHeight === undefined ? undefined : { height: maxHeight, flexGrow: 0, flexShrink: 0 }}
+      >
+        {rows.length === 0 ? (
+          <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
+            {events.length === 0 ? 'No events yet.' : 'No events in this filter.'}
+          </Text>
+        ) : rows.map((event) => (
             <View
               key={`${event.eventId}-${event.timestamp}-${event.type}`}
               style={[styles.row, { borderColor: theme.colors.border }]}
@@ -99,9 +94,8 @@ export function EventTimeline({ events, limit = 60, maxHeight, title = 'Events',
                 {event.text.detail === '' ? '' : ` · ${event.text.detail}`}
               </Text>
             </View>
-          ))}
-        </ScrollView>
-      )}
+        ))}
+      </ScrollView>
     </Panel>
   );
 }

@@ -62,6 +62,7 @@ static void     wait_ms (uint32_t delay_ms);
 static void     tick (void);
 static uint32_t settle_ms (int16_t target);
 static bool     is_car_driving (void);
+static bool     scan_body_ready (uint32_t nav);
 static bool     move_servo (void);
 static void     ping (uint8_t * p_cls, uint16_t * p_dist_mm);
 static void     ping_and_step (void);
@@ -152,6 +153,7 @@ static void handle_commands (UINT ptn)
     while (obstacle_comms_pop_cmd(&cmd))
     {
         obstacle_statechart_out_clear(&out);
+        g_fsm.b_servo_only = !obstacle_comms_has_nav_sonar();
         obstacle_statechart_command(&g_fsm, cmd, now, odo_mm, &out);
         obstacle_comms_publish(&out, &g_fsm);
     }
@@ -259,6 +261,13 @@ static bool is_car_driving (void)
             (OBSTACLE_STATE_REACQUIRE == g_fsm.state));
 }
 
+/* Only a settled acknowledgement for this exact body target can arm a ping. */
+static bool scan_body_ready (uint32_t nav)
+{
+    return ((OBSTACLE_SONAR_SCAN == obstacle_comms_sonar_mode(nav)) &&
+            (obstacle_comms_sonar_target(nav) == obstacle_statechart_body_deci(&g_fsm)));
+}
+
 /*!
  * @brief Move the servo if the statechart wants a new angle.
  *
@@ -268,6 +277,15 @@ static bool move_servo (void)
 {
     bool    b_moved = false;
     int16_t target  = obstacle_statechart_servo_deci(&g_fsm);
+
+    if (obstacle_comms_has_nav_sonar() &&
+        ((OBSTACLE_STATE_SCANNING == g_fsm.state) || (OBSTACLE_STATE_PLAN == g_fsm.state)))
+    {
+        if (!scan_body_ready(obstacle_comms_nav_sonar()))
+        {
+            return (false);
+        }
+    }
 
     if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
     {
@@ -348,15 +366,44 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
  */
 static void ping_and_step (void)
 {
+    uint32_t const nav = obstacle_comms_nav_sonar();
+    uint8_t const mode = obstacle_comms_sonar_mode(nav);
+    bool const b_has_nav = obstacle_comms_has_nav_sonar();
     obstacle_statechart_out_t out;
     uint8_t      cls     = OBSTACLE_CLASS_NO_ECHO;
     uint16_t     dist_mm = 0U;
 
+    bool const b_scanning = (OBSTACLE_STATE_SCANNING == g_fsm.state) ||
+                            (OBSTACLE_STATE_PLAN == g_fsm.state);
+    bool const b_bypassing = (OBSTACLE_STATE_BYPASS == g_fsm.state) ||
+                             (OBSTACLE_STATE_REACQUIRE == g_fsm.state);
+
+    if (b_has_nav &&
+        ((b_scanning && !scan_body_ready(nav)) ||
+         (b_bypassing && (OBSTACLE_SONAR_FORWARD != mode) && (OBSTACLE_SONAR_SIDE != mode))))
+    {
+        wait_ms(10U);
+        return;
+    }
+
     obstacle_statechart_set_odometer(&g_fsm, obstacle_comms_odometer_mm(now_ms()));
     ping(&cls, &dist_mm);
+
+    /* A phase change during the echo wait invalidates the reading. */
+    if (b_has_nav && (b_scanning || b_bypassing) && (nav != obstacle_comms_nav_sonar()))
+    {
+        return;
+    }
     obstacle_comms_count_class(cls);
     obstacle_statechart_out_clear(&out);
-    obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
+    if (b_has_nav && (OBSTACLE_STATE_REACQUIRE == g_fsm.state) && (OBSTACLE_SONAR_SIDE == mode))
+    {
+        obstacle_statechart_side_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
+    }
+    else
+    {
+        obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
+    }
     obstacle_comms_publish(&out, &g_fsm);
 }
 

@@ -10,34 +10,35 @@ export type ThemeColors = {
   accent: string;
   onAccent: string;
   danger: string;
+  warning: string;
   dangerSurface: string;
 };
 
-/* Dark is the documented REKKI source. The light set derives a near-white
- * surface stack while keeping Signal Blue as the single accent. */
 const darkColors: ThemeColors = {
-  canvas: '#000000',
-  card: '#0d0d0d',
-  elevated: '#1f1f1f',
-  text: '#ffffff',
-  muted: '#858585',
-  border: 'rgba(255, 255, 255, 0.12)',
-  accent: '#0063e1',
-  onAccent: '#ffffff',
+  canvas: '#101114',
+  card: '#191b20',
+  elevated: '#252830',
+  text: '#f5f6f8',
+  muted: '#aab0be',
+  border: 'rgba(224, 232, 255, 0.14)',
+  accent: '#71aaff',
+  onAccent: '#101a2a',
   danger: '#ffb4ab',
-  dangerSurface: '#2b2c2e',
+  warning: '#f8bc64',
+  dangerSurface: '#352427',
 };
 
 const lightColors: ThemeColors = {
-  canvas: '#f7f7f5',
+  canvas: '#f3f5f8',
   card: '#ffffff',
-  elevated: '#eeeeee',
-  text: '#0d0d0d',
-  muted: '#52525b',
-  border: 'rgba(0, 0, 0, 0.12)',
-  accent: '#0063e1',
+  elevated: '#eef2f7',
+  text: '#182230',
+  muted: '#576579',
+  border: 'rgba(26, 41, 66, 0.11)',
+  accent: '#075dd4',
   onAccent: '#ffffff',
   danger: '#b91c1c',
+  warning: '#9a5107',
   dangerSurface: '#fef2f2',
 };
 
@@ -54,7 +55,7 @@ export const spacing = {
 export const radii = {
   nav: 2,
   input: 8,
-  card: 16,
+  card: 22,
   image: 24,
   button: 59,
 } as const;
@@ -81,14 +82,14 @@ export const typography = {
   headingSm: {
     fontSize: 20,
     lineHeight: 27,
-    letterSpacing: -0.54,
-    fontWeight: '400' as const,
+    letterSpacing: -0.55,
+    fontWeight: '600' as const,
   },
   heading: {
     fontSize: 24,
     lineHeight: 32,
-    letterSpacing: -0.648,
-    fontWeight: '400' as const,
+    letterSpacing: -0.72,
+    fontWeight: '600' as const,
   },
   headingLg: {
     fontSize: 56,

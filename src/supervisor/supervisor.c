@@ -13,6 +13,7 @@
 
 #include <tk/smp.h>
 #include <tk/tkernel.h>
+#include <bsp/libbsp.h>
 
 #include "command_ring.h"
 #include "edge_events.h"
@@ -85,6 +86,40 @@ static uint8_t  g_attitude        = TELEMETRY_ATTITUDE_STATE_OK;
 static bool     g_b_stalled_fault = false;
 static bool     g_b_selftest_done = false;
 
+#if PICO_CAR_BUTTON_START
+#define START_BUTTON_PIN (20U)
+#define START_BUTTON_DEBOUNCE_PASSES (3U)
+#define START_BUTTON_PULL_DOWN (1UL << 2U)
+#define START_BUTTON_PULL_UP   (1UL << 3U)
+#define START_BUTTON_SCHMITT   (1UL << 1U)
+
+static uint8_t g_button_passes = 0U;
+/* A button held through boot must first be released and pressed again. */
+static bool g_b_button_sample_down = true;
+static bool g_b_button_stable_down = true;
+
+static bool start_button_pressed (void)
+{
+    bool const b_down = (0U == gpio_get_val (START_BUTTON_PIN));
+
+    if (b_down != g_b_button_sample_down)
+    {
+        g_b_button_sample_down = b_down;
+        g_button_passes = 0U;
+    }
+    if (g_button_passes < START_BUTTON_DEBOUNCE_PASSES)
+    {
+        g_button_passes++;
+    }
+    if ((START_BUTTON_DEBOUNCE_PASSES == g_button_passes) && (b_down != g_b_button_stable_down))
+    {
+        g_b_button_stable_down = b_down;
+        return b_down;
+    }
+    return false;
+}
+#endif
+
 ER supervisor_init (const supervisor_config_t * p_config)
 {
     ER result = E_PAR;
@@ -94,7 +129,17 @@ ER supervisor_init (const supervisor_config_t * p_config)
         g_config = *p_config;
         (void) InitSpinLock (&g_lock);
         command_ring_init (&g_ring);
-        run_state_init (&g_ctx);
+        run_state_init (&g_ctx, 0 != PICO_CAR_BUTTON_START);
+#if PICO_CAR_BUTTON_START
+        result = gpio_set_pin (START_BUTTON_PIN, GPIO_MODE_IN);
+        if (E_OK != result)
+        {
+            return result;
+        }
+        clr_w (GPIO (START_BUTTON_PIN), START_BUTTON_PULL_DOWN);
+        set_w (GPIO (START_BUTTON_PIN), START_BUTTON_PULL_UP | START_BUTTON_SCHMITT);
+        LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "dev-stack d17f2c0 motion fault latch; waiting for GP20 START");
+#endif
         liveness_init (&g_live, p_config->required_mask);
         progress_init (&g_progress);
         stuck_init (&g_stuck);
@@ -185,7 +230,7 @@ void supervisor_turn_refused (uint8_t opcode)
 
 static run_inputs_t read_inputs (void)
 {
-    run_inputs_t        in = { false, false, false, true };
+    run_inputs_t        in = { .b_follow = true };
     physics_status_t    physics;
     motion_status_t     motion;
     obstacle_status_t   obstacle;
@@ -198,10 +243,12 @@ static run_inputs_t read_inputs (void)
     if (0 == motion_status (&motion))
     {
         in.b_estop = motion.stop_requested;
+        in.b_motion_fault = (MOTION_STATE_FAULT == motion.state);
     }
     if (E_OK == obstacle_snapshot (&obstacle))
     {
         in.b_follow = (TELEMETRY_OBSTACLE_STATE_MONITOR == obstacle.state);
+        in.b_obstacle_stopped = (TELEMETRY_OBSTACLE_STATE_STOPPED == obstacle.state);
     }
     if (g_turning || (SUPERVISOR_NO_TURN != g_turn_pending))
     {
@@ -352,9 +399,14 @@ static void note_attitude (uint8_t state)
             emit (source, (uint8_t) TELEMETRY_EVT_LIFT_END, 0, 0U);
             LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "car set down, START releases the hold");
         }
+        else if ((TELEMETRY_ATTITUDE_STATE_OK == state) &&
+                 (TELEMETRY_ATTITUDE_STATE_OVERTURNED == g_attitude))
+        {
+            LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "car upright, needs RESET then START");
+        }
         else
         {
-            /* CANDIDATE, or back from overturned: no event. */
+            /* No event. */
         }
         g_attitude = state;
     }
@@ -510,6 +562,17 @@ static void pass (void)
     run_state_tick (&g_ctx, &in, &res);
     apply (&res, cmd, false);
 
+#if PICO_CAR_BUTTON_START
+    if (start_button_pressed () &&
+        ((RUN_STATE_RUNNING != run_state_of (&g_ctx)) || in.b_obstacle_stopped))
+    {
+        cmd = (vehicle_cmd_t){VEHICLE_CMD_START, VEHICLE_SRC_BUTTON};
+        run_state_command (&g_ctx, cmd, &in, &res);
+        apply (&res, cmd, true);
+        in = read_inputs ();
+    }
+#endif
+
     while (b_more)
     {
         (void) ISpinLock (&g_lock, &saved);
@@ -541,7 +604,10 @@ static void pass (void)
     }
     if (!b_critical)
     {
-        (void) motion_renew_permit (PERMIT_LEASE_MS);
+        if (!g_ctx.b_wait_button)
+        {
+            (void) motion_renew_permit (PERMIT_LEASE_MS);
+        }
         platform_wdt_feed ();
     }
     if ((SELFTEST_PASSES == g_passes) && !g_b_selftest_done)
@@ -549,9 +615,24 @@ static void pass (void)
         g_b_selftest_done = true;
         selftest ();
     }
-    if ((g_config.p_background != NULL) && (0U == (g_passes % BACKGROUND_PASSES)))
+    if (0U == (g_passes % BACKGROUND_PASSES))
     {
-        g_config.p_background ();
+#if PICO_CAR_BUTTON_START
+        physics_status_t physics;
+
+        if (E_OK == physics_snapshot (&physics))
+        {
+            LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
+                      "IMU ready=%d cal=%d attitude=%d pitch=%d roll=%d magnitude=%d faults=%d",
+                      (int) physics.ready, (int) physics.calibrated, (int) physics.attitude_state,
+                      (int) physics.pitch_cdeg, (int) physics.roll_cdeg,
+                      (int) physics.amag_mg, (int) physics.faults);
+        }
+#endif
+        if (g_config.p_background != NULL)
+        {
+            g_config.p_background ();
+        }
     }
     g_passes++;
 }

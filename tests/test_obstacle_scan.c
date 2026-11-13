@@ -258,6 +258,34 @@ static void test_noise_flags(void)
     CHECK(!scan_algo_echo_noisy(&ctx));
 }
 
+static void test_unresolved_slot_retries_once(void)
+{
+    scan_algo_ctx_t ctx;
+    uint8_t first_slot;
+
+    scan_algo_start(&ctx);
+    first_slot = scan_algo_target(&ctx);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_GLITCH, 0U);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_GLITCH, 0U);
+    CHECK(first_slot == scan_algo_target(&ctx));
+    CHECK(!obstacle_pack_slot_is_measured(ctx.profile[first_slot]));
+
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_VALID, 235U);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_VALID, 240U);
+    CHECK(first_slot != scan_algo_target(&ctx));
+    CHECK(OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(ctx.profile[first_slot]));
+    CHECK(235U == obstacle_pack_slot_dist(ctx.profile[first_slot]));
+    CHECK(1U == ctx.slots_retried);
+
+    scan_algo_start(&ctx);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_GLITCH, 0U);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_GLITCH, 0U);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_GLITCH, 0U);
+    (void)scan_algo_feed(&ctx, OBSTACLE_CLASS_GLITCH, 0U);
+    CHECK(first_slot != scan_algo_target(&ctx));
+    CHECK(obstacle_pack_class_is_unresolved(obstacle_pack_slot_class(ctx.profile[first_slot])));
+}
+
 static void test_region_scan(void)
 {
     scan_algo_ctx_t ctx;
@@ -281,6 +309,35 @@ static void test_region_scan(void)
     CHECK(ctx.closest_mm == 200U);
     CHECK(ctx.edge_state[SCAN_ALGO_LEFT] == SCAN_ALGO_EDGE_BOUNDED);
     CHECK(ctx.edge_state[SCAN_ALGO_RIGHT] == SCAN_ALGO_EDGE_BOUNDED);
+}
+
+/* A small object is visible at +5 degrees but between the coarse beams. */
+static void test_fill_missed_bearings(void)
+{
+    scan_algo_ctx_t ctx;
+    uint32_t passes = 0U;
+    uint8_t const hit_slot = (uint8_t)(OBSTACLE_SLOT_CENTRE + 1U);
+
+    scan_algo_start(&ctx);
+    while ((SCAN_ALGO_NO_SLOT != scan_algo_target(&ctx)) && (passes < 40U))
+    {
+        if (hit_slot == scan_algo_target(&ctx))
+        {
+            (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 235U);
+        }
+        else
+        {
+            (void)feed_pair(&ctx, OBSTACLE_CLASS_OPEN, 0U);
+        }
+        passes++;
+    }
+
+    CHECK(SCAN_ALGO_NO_SLOT == scan_algo_target(&ctx));
+    CHECK(scan_algo_has_region(&ctx));
+    CHECK(hit_slot == ctx.closest_slot);
+    CHECK(235U == ctx.closest_mm);
+    CHECK(SCAN_ALGO_EDGE_BOUNDED == ctx.edge_state[SCAN_ALGO_LEFT]);
+    CHECK(SCAN_ALGO_EDGE_BOUNDED == ctx.edge_state[SCAN_ALGO_RIGHT]);
 }
 
 static void test_receding_edge(void)
@@ -329,7 +386,9 @@ int main(void)
     test_empty_scan();
     test_servo_check();
     test_noise_flags();
+    test_unresolved_slot_retries_once();
     test_region_scan();
+    test_fill_missed_bearings();
     test_receding_edge();
 
     if (g_failures == 0)

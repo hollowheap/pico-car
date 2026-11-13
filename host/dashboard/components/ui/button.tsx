@@ -21,7 +21,7 @@ const BaseButton = createButton({
   Icon: View,
 });
 
-type Variant = 'primary' | 'secondary';
+type Variant = 'primary' | 'secondary' | 'danger';
 type ButtonProps = ComponentProps<typeof BaseButton> & {
   variant?: Variant;
   compact?: boolean;
@@ -56,13 +56,13 @@ function ThemedButton({
     justifyContent: 'center',
     paddingHorizontal: compact ? theme.spacing.md : theme.spacing.xl,
     borderRadius: theme.radii.button,
-    borderWidth: variant === 'secondary' ? 1 : 0,
-    borderColor: theme.colors.border,
+    borderWidth: variant === 'primary' ? 0 : 1,
+    borderColor: variant === 'danger' && !props.disabled ? theme.colors.danger : theme.colors.border,
     backgroundColor: props.disabled
       ? theme.colors.elevated
       : variant === 'primary'
         ? theme.colors.accent
-        : 'transparent',
+        : variant === 'danger' ? theme.colors.dangerSurface : 'transparent',
   };
 
   return (
@@ -101,7 +101,7 @@ function ThemedButtonText({
     ? theme.colors.muted
     : variant === 'primary'
       ? theme.colors.onAccent
-      : theme.colors.text;
+      : variant === 'danger' ? theme.colors.danger : theme.colors.text;
 
   return (
     <BaseButton.Text

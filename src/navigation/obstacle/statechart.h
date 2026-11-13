@@ -55,6 +55,7 @@ typedef struct
     uint8_t                steer_seq;
     obstacle_counters_t    counts;
     bool                   b_reset_ok;
+    bool                   b_servo_only;
     bool                   b_turned;
     uint32_t               since_ms;
     uint32_t               bypass_mm;
@@ -85,6 +86,10 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
 void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
                                uint16_t dist_mm, uint32_t now_ms,
                                obstacle_statechart_out_t * p_out);
+/* Side looks update sensor health, collision protection and telemetry. */
+void obstacle_statechart_side_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
+                                    uint16_t dist_mm, uint32_t now_ms,
+                                    obstacle_statechart_out_t * p_out);
 /* Tell the statechart the wheel travel before a ping, for the P2 check. */
 void obstacle_statechart_set_odometer (obstacle_statechart_t * p_fsm, uint32_t odo_mm);
 void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,

@@ -94,7 +94,7 @@ static void test_ring_full_keeps_stops (void)
 
 static run_inputs_t follow_inputs (void)
 {
-    run_inputs_t in = { false, false, false, true };
+    run_inputs_t in = { .b_follow = true };
 
     return in;
 }
@@ -114,7 +114,7 @@ static void test_boot_and_stop_start (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     CHECK (RUN_STATE_BOOT == run_state_of (&ctx));
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
@@ -142,7 +142,7 @@ static void test_stop_wins_in_a_batch (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     run_state_tick (&ctx, &in, &out);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY), &in, &out);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_LEFT, VEHICLE_SRC_TELEMETRY), &in, &out);
@@ -161,7 +161,7 @@ static void test_turn_rules (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     run_state_tick (&ctx, &in, &out);
 
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_RIGHT, VEHICLE_SRC_BARCODE), &in, &out);
@@ -186,7 +186,7 @@ static void test_barcode_stop (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     run_state_tick (&ctx, &in, &out);
 
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_STOP, VEHICLE_SRC_BARCODE), &in, &out);
@@ -217,7 +217,7 @@ static void test_emergency_stop_latches (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     run_state_tick (&ctx, &in, &out);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY), &in, &out);
     CHECK (out.b_accepted && out.b_motion_estop && out.b_obstacle_stop);
@@ -230,10 +230,41 @@ static void test_emergency_stop_latches (void)
     CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
 
     /* The motion latch seen on a tick latches the state too (the STOP pin). */
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     in.b_estop = true;
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+}
+
+static void test_motion_fault_stops_mission (void)
+{
+    run_ctx_t    ctx;
+    run_result_t out;
+    run_inputs_t in = follow_inputs ();
+
+    run_state_init (&ctx, false);
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+
+    /* A command arriving just before the next supervisor tick is also refused. */
+    in.b_motion_fault = true;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RIGHT, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_LATCHED == out.reason));
+
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    CHECK (out.b_obstacle_stop && out.b_cancel_turn);
+    CHECK (!out.b_motion_estop);
+
+    in.b_motion_fault = false;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_BUTTON), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_LATCHED == out.reason));
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RESET, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_LATCHED == out.reason));
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_accepted && out.b_obstacle_stop);
 }
 
 static void test_lift_and_overturn (void)
@@ -242,7 +273,7 @@ static void test_lift_and_overturn (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     run_state_tick (&ctx, &in, &out);
 
     /* Lifted: the lift hold goes on at once. */
@@ -250,6 +281,7 @@ static void test_lift_and_overturn (void)
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_HELD == run_state_of (&ctx));
     CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+    CHECK (out.b_obstacle_stop && out.b_cancel_turn);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY), &in, &out);
     CHECK (out.b_rejected && (RUN_REJECT_LIFTED == out.reason));
 
@@ -278,6 +310,11 @@ static void test_lift_and_overturn (void)
     CHECK (out.b_rejected);
     in.b_overturned = false;
     in.b_lifted     = false;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_BUTTON), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_LATCHED == out.reason));
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_RESET, VEHICLE_SRC_TELEMETRY), &in, &out);
     CHECK (out.b_accepted && out.b_obstacle_reset);
     CHECK (out.b_physics_recal); /* the IMU calibrates again after an overturn */
@@ -294,7 +331,7 @@ static void test_unknown_opcode (void)
     run_result_t out;
     run_inputs_t in = follow_inputs ();
 
-    run_state_init (&ctx);
+    run_state_init (&ctx, false);
     run_state_tick (&ctx, &in, &out);
     run_state_command (&ctx, cmd_of (99U, VEHICLE_SRC_TELEMETRY), &in, &out);
     CHECK (out.b_rejected && (RUN_REJECT_OPCODE == out.reason));
@@ -659,15 +696,47 @@ static void test_edge_hump_and_run (void)
     CHECK ((TELEMETRY_EVT_RUN_STOP == ev[0].type) && (RUN_STATE_STOPPED == ev[0].p1));
 }
 
+static void test_button_start_holds_until_local_press (void)
+{
+    run_ctx_t ctx;
+    run_inputs_t in = {0};
+    run_result_t result;
+    vehicle_cmd_t cmd = {VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY};
+
+    run_state_init (&ctx, true);
+    CHECK (MOTION_HOLD_OPERATOR == run_state_hold_mask (&ctx));
+    run_state_tick (&ctx, &in, &result);
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+    CHECK (!result.b_obstacle_start && !result.b_obstacle_reset);
+
+    run_state_command (&ctx, cmd, &in, &result);
+    CHECK (result.b_rejected && ctx.b_wait_button);
+    CHECK (MOTION_HOLD_OPERATOR == result.hold_mask);
+
+    cmd.source = VEHICLE_SRC_BUTTON;
+    in.b_lifted = true;
+    run_state_command (&ctx, cmd, &in, &result);
+    CHECK (result.b_rejected && ctx.b_wait_button);
+
+    in.b_lifted = false;
+    run_state_command (&ctx, cmd, &in, &result);
+    CHECK (result.b_accepted && !ctx.b_wait_button);
+    CHECK (result.b_obstacle_start && result.b_obstacle_reset);
+    CHECK (0U == result.hold_mask);
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+}
+
 int main (void)
 {
     test_ring_order_and_source ();
     test_ring_full_keeps_stops ();
     test_boot_and_stop_start ();
+    test_button_start_holds_until_local_press ();
     test_stop_wins_in_a_batch ();
     test_turn_rules ();
     test_barcode_stop ();
     test_emergency_stop_latches ();
+    test_motion_fault_stops_mission ();
     test_lift_and_overturn ();
     test_unknown_opcode ();
     test_liveness ();

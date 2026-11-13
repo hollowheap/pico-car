@@ -5,7 +5,8 @@
  *
  * What the line task does with Buddy 5 (D96):
  *   - OBSTACLE      hold the car, wait OBSTACLE_NAV_BRAKE_MS, send SCAN_REQ(id).
- *   - SCAN_RESULT   OK or CLEAR: send ACCEPT(id), and keep the plan: the
+ *   - SCANNING      pivot to the requested body heading and settle for each look.
+ *   - SCAN_RESULT   OK or CLEAR: return to the scan origin heading and keep the plan:
  *                   side, the start angle and the sideways offset the car
  *                   needs.
  *   - BYPASS        pivot away from the obstacle (inside wheel stopped)
@@ -32,8 +33,7 @@
  *
  * Position frame (dead reckoning from the wheel encoders): x is sideways,
  * positive to the left of the original line; y is along the line; both
- * are for the point midway between the wheels and start at 0 when BYPASS
- * begins. The heading is worked out from the total wheel difference, so
+ * are for the point midway between the wheels and start at 0 before SCANNING. The heading is worked out from the total wheel difference, so
  * it does not drift between passes.
  *
  * Everything that happens is also written to the flight recorder
@@ -60,6 +60,7 @@
 #include "platform/log.h"
 #include "motion/motion.h"
 #include "obstacle_config.h"
+#include "comms.h"
 #include "flight_log.h"
 #include "obstacle_nav.h"
 #include "obstacle_pack.h"
@@ -112,6 +113,11 @@ typedef struct
 {
     bool     b_enabled;
     bool     b_scan_pending;
+    bool     b_plan_pending;
+    bool     b_have_pose;
+    bool     b_wheels_still;
+    bool     b_settling;
+    bool     b_manoeuvre_failed;
     bool     b_turned;
     bool     b_servo_wait;
     bool     b_pausing;
@@ -130,18 +136,20 @@ typedef struct
     uint8_t  clear_checks;
     uint8_t  side_ping_count;
     uint8_t  side_agree_count;
+    uint8_t  side_clear_count;
     uint16_t last_side_dist_mm;
     int32_t  prev_gap_mm;
     int32_t  prev_lean_deci;
     int32_t  wall_trim_deci;
     int32_t  along_head_deci;
     uint32_t look_stop_ms;
+    uint32_t settle_since_ms;
+    int32_t  settle_target_deci;
     int64_t  leg_base_um;
     uint32_t wait_ms;
     uint32_t pause_ms;
     uint32_t last_drive;
     uint32_t hold_ms;
-    uint32_t retry_ms;
     uint32_t line_ms;
     uint32_t trace_ms;
     uint32_t motion_word;
@@ -165,6 +173,11 @@ typedef struct
 static nav_state_t g_nav = {
     .b_enabled          = false,
     .b_scan_pending     = false,
+    .b_plan_pending     = false,
+    .b_have_pose        = false,
+    .b_wheels_still     = false,
+    .b_settling         = false,
+    .b_manoeuvre_failed      = false,
     .b_turned           = false,
     .b_servo_wait       = false,
     .b_pausing          = false,
@@ -183,18 +196,20 @@ static nav_state_t g_nav = {
     .clear_checks       = 0U,
     .side_ping_count    = 0U,
     .side_agree_count   = 0U,
+    .side_clear_count   = 0U,
     .last_side_dist_mm  = 0U,
     .prev_gap_mm        = 0,
     .prev_lean_deci     = 0,
     .wall_trim_deci     = 0,
     .along_head_deci    = 0,
     .look_stop_ms       = 0U,
+    .settle_since_ms    = 0U,
+    .settle_target_deci = 0,
     .leg_base_um        = 0,
     .wait_ms            = 0U,
     .pause_ms           = 0U,
     .last_drive         = NAV_DRIVE_UNSEEN,
     .hold_ms            = 0U,
-    .retry_ms           = 0U,
     .line_ms            = 0U,
     .trace_ms           = 0U,
     .motion_word        = UINT32_MAX,
@@ -216,6 +231,7 @@ static void log_rec (uint8_t kind, uint8_t val_a, uint8_t val_b, uint8_t val_c,
                      int32_t val_d, int32_t val_e, int32_t val_f);
 static void post (uint32_t type, uint8_t req_id);
 static void hold_car (bool b_held);
+static void     stop_manoeuvre (char const * p_reason);
 static int32_t  side_sign (void);
 static int32_t  heading_deci (void);
 static int32_t  lateral_mm (void);
@@ -228,13 +244,16 @@ static void     drive_wheels (uint8_t steer, int32_t left_um_s,
 static bool     is_reverse_pause (int32_t const p_speed[WHEELS]);
 static void     set_phase (uint8_t phase);
 static void     step_pivot (uint32_t now);
+static bool     at_rest (int32_t target_deci, uint32_t now);
+static void     step_scan_turn (uint32_t state, uint32_t status, uint32_t now);
+static void     set_reacquire_sonar (uint32_t now);
 static void     drive_reacquire (uint32_t status, uint32_t now);
 static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now);
 static void     update_ir_gate (bool b_line_seen);
 static bool     is_obstacle_close (uint32_t status);
 static bool     is_servo_moving (uint32_t status, uint32_t now);
 static void     report_state (uint32_t status);
-static void     keep_plan (uint32_t angle, bool b_wall);
+static bool     keep_plan (uint32_t side);
 static void     explain_scan (uint16_t const * p_profile);
 static void     handle_event (uint32_t evt, uint32_t now);
 static void     look_for_line (bool b_line_seen, uint32_t now);
@@ -248,7 +267,7 @@ static ER      nav_stop (void);
 static ER      nav_distance_mm (uint32_t * p_distance_mm);
 
 /*!
- * @brief Start Buddy 5 with the motion links, then RESET and START it.
+ * @brief Initialise Buddy 5. The supervisor authorises the first scan.
  *
  * Call once from the line task on processor 1, after gpio_irq_init(),
  * motion_service_init() and ir_capture_init(). If it fails, obstacle_nav_step()
@@ -266,10 +285,8 @@ ER obstacle_nav_init (void)
 
     if (E_OK == result)
     {
+        obstacle_comms_enable_nav_sonar();
         g_nav.b_enabled = true;
-        g_nav.retry_ms  = now_ms();
-        post(OBSTACLE_CMD_RESET, 0U);
-        post(OBSTACLE_CMD_START, 0U);
     }
 
     return (result);
@@ -303,9 +320,12 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
             handle_event(evt, now);
         }
 
-        if (g_nav.b_scan_pending && ((now - g_nav.hold_ms) >= OBSTACLE_NAV_BRAKE_MS))
+        if (g_nav.b_scan_pending && g_nav.b_wheels_still &&
+            ((now - g_nav.hold_ms) >= OBSTACLE_NAV_BRAKE_MS))
         {
             g_nav.b_scan_pending = false;
+            obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
+            reset_pose();
             post(OBSTACLE_CMD_SCAN_REQ, g_nav.req_id);
         }
 
@@ -322,6 +342,12 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
                 hold_car(b_in_charge);
             break;
 
+            case OBSTACLE_STATE_SCANNING:
+            case OBSTACLE_STATE_PLAN:
+                step_scan_turn(state, status, now);
+                b_in_charge = true;
+            break;
+
             case OBSTACLE_STATE_BYPASS:
                 /* Pivot until Buddy 5 sees the way ahead is clear and the
                  * planned angle is reached (TURNED). NOTE: the
@@ -331,9 +357,9 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
                  * word already says STRAIGHT, which used to jerk the inside
                  * wheel 0 -> 40 -> 0 mm/s in 20 ms. */
                 update_pose();
-                if (is_servo_moving(status, now))
+                if (!g_nav.b_have_pose)
                 {
-                    /* The servo is returning to 0 after the scan. */
+                    obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
                     hold_car(true);
                 }
                 else
@@ -350,23 +376,14 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
             break;
 
             case OBSTACLE_STATE_STOPPED:
+                obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
                 hold_car(true);
-                /* Retry policy: only a start after boot or a transient cause
-                 * restarts by itself. A collision, a scan with no safe path, a
-                 * sensor fault and a STOP wait for an explicit RESET and START. */
-                if (obstacle_pack_cause_may_auto_restart(
-                        obstacle_pack_get(status, OBSTACLE_ST_CAUSE_SH, OBSTACLE_ST_CAUSE_MK)) &&
-                    ((now - g_nav.retry_ms) >= OBSTACLE_NAV_RETRY_MS))
-                {
-                    g_nav.retry_ms = now;
-                    post(OBSTACLE_CMD_RESET, 0U);
-                    post(OBSTACLE_CMD_START, 0U);
-                }
+                /* Only the supervisor can restart navigation after a stop. */
                 b_in_charge = true;
             break;
 
             default:
-                /* WAIT_STOP, SCANNING and PLAN: the car stands still. */
+                /* WAIT_STOP: the car stands still. */
                 hold_car(true);
                 b_in_charge = true;
             break;
@@ -389,20 +406,27 @@ static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
 {
     update_pose();
 
-    if (is_servo_moving(status, now))
+    if ((!g_nav.b_have_pose) || g_nav.b_manoeuvre_failed)
     {
+        obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
         hold_car(true);
     }
     else
     {
-        bool const b_line_active =
-            (OBSTACLE_PHASE_ALONG == g_nav.phase) ||
-            (OBSTACLE_PHASE_RETURN_DRIVE == g_nav.phase);
+        bool const b_line_active = obstacle_plan_line_phase(g_nav.phase, g_nav.b_wall);
 
         hold_car(false);
         update_ir_gate(b_line_seen);
         drive_reacquire(status, now);
-        look_for_line(b_line_active && g_nav.b_ir_cleared && b_line_seen, now);
+        if (g_nav.b_manoeuvre_failed)
+        {
+            hold_car(true);
+        }
+        else
+        {
+            set_reacquire_sonar(now);
+            look_for_line(b_line_active && g_nav.b_ir_cleared && b_line_seen, now);
+        }
     }
 }
 
@@ -503,6 +527,15 @@ static void hold_car (bool b_held)
     (void)motion_set_hold(MOTION_HOLD_OBSTACLE, b_held);
 }
 
+static void stop_manoeuvre (char const * p_reason)
+{
+    g_nav.b_manoeuvre_failed = true;
+    obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
+    hold_car(true);
+    post(OBSTACLE_CMD_STOP, g_nav.req_id);
+    LOG_NOW("ERROR", "line:nav", "%s\n", p_reason);
+}
+
 /*!
  * @brief Sign that turns "away from the obstacle" into left / right.
  *
@@ -514,7 +547,7 @@ static int32_t side_sign (void)
 }
 
 /*!
- * @brief Heading since BYPASS began, from the total wheel difference:
+ * @brief Heading since the scan began, from the total wheel difference:
  *        (right - left) / track, positive = left.
  *
  * @return Heading in deci-degrees.
@@ -555,7 +588,7 @@ static int32_t ahead_mm (void)
 }
 
 /*!
- * @brief Start the dead reckoning when BYPASS begins.
+ * @brief Establish the scan and bypass frame before the first scan ping.
  */
 static void reset_pose (void)
 {
@@ -572,6 +605,8 @@ static void reset_pose (void)
     g_nav.last_cmd[WHEEL_LEFT]  = 0;
     g_nav.last_cmd[WHEEL_RIGHT] = 0;
     g_nav.b_pausing             = false;
+    g_nav.b_settling            = false;
+    g_nav.b_manoeuvre_failed         = false;
     g_nav.b_turned              = false;
     g_nav.b_ir_armed            = false;
     g_nav.b_ir_cleared          = false;
@@ -580,6 +615,7 @@ static void reset_pose (void)
     g_nav.clear_checks          = 0U;
     g_nav.side_ping_count       = 0U;
     g_nav.side_agree_count      = 0U;
+    g_nav.side_clear_count      = 0U;
     g_nav.last_side_dist_mm     = 0U;
     g_nav.prev_gap_mm           = 0;
     g_nav.prev_lean_deci        = 0;
@@ -755,6 +791,8 @@ static void set_phase (uint8_t phase)
 {
     int32_t const heading = side_sign() * heading_deci();
 
+    obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
+    g_nav.b_settling = false;
     g_nav.phase = phase;
     LOG_NOW("INFO", "line:nav", "phase %d: side %d mm, ahead %d mm, heading %d "
                     "deg\n",
@@ -763,7 +801,94 @@ static void set_phase (uint8_t phase)
     log_rec(OBSTACLE_LOG_PHASE, phase, 0U, 0U, lateral_mm(), ahead_mm(), heading);
 }
 
-/*/*!
+/* A new target, wheel movement or a stale sample restarts the settle timer. */
+static bool at_rest (int32_t target_deci, uint32_t now)
+{
+    bool const b_ready = g_nav.b_wheels_still &&
+        (geom_abs(target_deci - heading_deci()) <= OBSTACLE_PIVOT_TOL_DECI);
+
+    if ((!g_nav.b_settling) || (target_deci != g_nav.settle_target_deci) || (!b_ready))
+    {
+        g_nav.b_settling = b_ready;
+        g_nav.settle_target_deci = target_deci;
+        g_nav.settle_since_ms = now;
+    }
+
+    return (b_ready && ((now - g_nav.settle_since_ms) >= OBSTACLE_SCAN_SETTLE_MS));
+}
+
+/* Aim the body first. The scan task then settles the servo and pings.
+ * In PLAN, a fresh centred ping confirms both are home before acceptance. */
+static void step_scan_turn (uint32_t state, uint32_t status, uint32_t now)
+{
+    int16_t const target = obstacle_comms_body_target();
+    uint32_t const seq = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
+    int32_t left = 0;
+    int32_t right = 0;
+    uint8_t steer = OBSTACLE_STEER_HOLD;
+    bool b_done = false;
+
+    update_pose();
+    if (g_nav.b_manoeuvre_failed || ((OBSTACLE_STATE_PLAN == state) && (!g_nav.b_plan_pending)))
+    {
+        obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
+        hold_car(true);
+        return;
+    }
+
+    if (at_rest(target, now))
+    {
+        hold_car(true);
+        obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_SCAN, target);
+        if ((OBSTACLE_STATE_PLAN == state) && (seq != g_nav.wait_seq))
+        {
+            g_nav.b_plan_pending = false;
+            post(OBSTACLE_CMD_ACCEPT, g_nav.req_id);
+        }
+        return;
+    }
+
+    obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
+    obstacle_plan_wheel_pivot(heading_deci(), target, &left, &right, &steer, &b_done);
+    if (b_done || (!g_nav.b_have_pose))
+    {
+        hold_car(true);
+        return;
+    }
+
+    if ((g_nav.obst_mm + (int32_t)OBSTACLE_SONAR_FWD_MM - ahead_mm()) <
+        (int32_t)(OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_SIDE_MARGIN_MM))
+    {
+        stop_manoeuvre("scan turn has too little front clearance");
+        return;
+    }
+
+    hold_car(false);
+    drive_wheels(steer, left, right);
+}
+
+static void set_reacquire_sonar (uint32_t now)
+{
+    uint8_t mode = OBSTACLE_SONAR_WAIT;
+
+    if (obstacle_plan_forward_phase(g_nav.phase))
+    {
+        mode = OBSTACLE_SONAR_FORWARD;
+    }
+    else if (OBSTACLE_PHASE_LOOK_PING == g_nav.phase)
+    {
+        int32_t const target = g_nav.along_head_deci - (side_sign() * OBSTACLE_WALL_PIVOT_DECI);
+
+        if (at_rest(target, now))
+        {
+            mode = OBSTACLE_SONAR_SIDE;
+        }
+    }
+
+    obstacle_comms_set_nav_sonar(mode, 0);
+}
+
+/*!
  * @brief BYPASS: pivot away, and report TURNED once the planned angle is
  *        reached. The statechart ends BYPASS when the beam is also clear.
  *
@@ -777,22 +902,18 @@ static void step_pivot (uint32_t now)
     uint8_t       steer       = OBSTACLE_STEER_HOLD;
     bool          b_done      = false;
 
-    if (g_nav.b_turned)
+    obstacle_plan_wheel_pivot(heading_deci(), target_head, &left_um_s, &right_um_s,
+                              &steer, &b_done);
+    if (b_done && at_rest(target_head, now))
     {
-        obstacle_plan_wheel_straight(heading_deci(), target_head, 0,
-                                     &left_um_s, &right_um_s, &steer);
+        obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_FORWARD, 0);
         note_turned(true, now);
     }
     else
     {
-        obstacle_plan_wheel_pivot(heading_deci(), target_head,
-                                  &left_um_s, &right_um_s, &steer, &b_done);
-        if (b_done)
-        {
-            note_turned(true, now);
-        }
+        g_nav.b_settling = b_done && g_nav.b_settling;
+        obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
     }
-
     drive_wheels(steer, left_um_s, right_um_s);
 }
 
@@ -810,7 +931,8 @@ static bool step_look_ping (uint32_t status)
     uint32_t const seq  = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
     bool           b_side_done = false;
 
-    if (seq != (uint32_t)g_nav.wait_seq)
+    if ((OBSTACLE_SONAR_SIDE == obstacle_comms_sonar_mode(obstacle_comms_nav_sonar())) &&
+        (seq != (uint32_t)g_nav.wait_seq))
     {
         g_nav.wait_seq = (uint8_t)seq;
         g_nav.side_ping_count++;
@@ -818,16 +940,22 @@ static bool step_look_ping (uint32_t status)
         if ((OBSTACLE_CLASS_OPEN == cls) ||
             ((OBSTACLE_CLASS_VALID == cls) && (dist >= (uint32_t)OBSTACLE_CORNER_CLEAR_MM)))
         {
-            g_nav.clear_checks++;
-            if (g_nav.clear_checks >= OBSTACLE_PASS_CLEARS)
+            g_nav.side_agree_count = 0U;
+            g_nav.side_clear_count++;
+            if (g_nav.side_clear_count >= OBSTACLE_ESCAPE_CLEARS)
             {
-                g_nav.b_passed = true;
+                g_nav.clear_checks++;
+                if (g_nav.clear_checks >= OBSTACLE_PASS_CLEARS)
+                {
+                    g_nav.b_passed = true;
+                }
+                g_nav.b_have_prev_gap = false;
+                b_side_done = true;
             }
-            g_nav.b_have_prev_gap = false;
-            b_side_done           = true;
         }
         else if (obstacle_pack_class_is_ranged(cls))
         {
+            g_nav.side_clear_count = 0U;
             if ((g_nav.side_agree_count > 0U) &&
                 (geom_abs((int32_t)dist - (int32_t)g_nav.last_side_dist_mm) <= (int32_t)OBSTACLE_AGREE_MM))
             {
@@ -836,6 +964,12 @@ static bool step_look_ping (uint32_t status)
                 int32_t const lean       = obstacle_plan_side_lean_deci(gap_mm, g_nav.prev_gap_mm,
                                                                         g_nav.b_have_prev_gap, target_gap);
                 int32_t       base_head  = 0;
+
+                if (gap_mm < (int32_t)(OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_PLAN_MARGIN_MM))
+                {
+                    stop_manoeuvre("side look has too little turning clearance");
+                    return (false);
+                }
 
                 if (g_nav.b_wall && g_nav.b_have_prev_gap)
                 {
@@ -873,12 +1007,14 @@ static bool step_look_ping (uint32_t status)
         }
         else
         {
-            /* NO_ECHO, GLITCH or STUCK: wait for next ping. */
+            /* The next confirmation must start with a new usable reading. */
+            g_nav.side_clear_count = 0U;
+            g_nav.side_agree_count = 0U;
         }
 
         if ((!b_side_done) && (g_nav.side_ping_count >= OBSTACLE_SIDE_PINGS_MAX))
         {
-            b_side_done = true;
+            stop_manoeuvre("side look could not confirm a range or clear path");
         }
     }
 
@@ -912,6 +1048,8 @@ static void reacquire_look_cycle (int32_t cur_head, uint32_t status, uint32_t no
         if (b_done)
         {
             set_phase(OBSTACLE_PHASE_LOOK_PING);
+            g_nav.wait_seq = (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
+            g_nav.side_clear_count = 0U;
             g_nav.side_ping_count   = 0U;
             g_nav.side_agree_count  = 0U;
             g_nav.last_side_dist_mm = 0U;
@@ -986,9 +1124,16 @@ static void reacquire_drive_and_return (int32_t cur_head, int64_t mean_um,
     {
         int32_t const return_head = -side_sign() * (int32_t)OBSTACLE_RETURN_DECI;
 
-        obstacle_plan_wheel_straight(cur_head, return_head,
-                                     (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
-                                     p_left, p_right, p_steer);
+        if (obstacle_plan_return_limit(lateral_mm()))
+        {
+            stop_manoeuvre("IR did not find the line inside the return distance");
+        }
+        else
+        {
+            obstacle_plan_wheel_straight(cur_head, return_head,
+                                         (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
+                                         p_left, p_right, p_steer);
+        }
     }
     else
     {
@@ -1062,7 +1207,9 @@ static void drive_reacquire (uint32_t status, uint32_t now)
         obstacle_plan_wheel_straight(cur_head, g_nav.along_head_deci,
                                      (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
                                      &left_um_s, &right_um_s, &steer);
-        if (leg_dist >= (int32_t)OBSTACLE_SIDE_LOOK_MM)
+        if ((leg_dist >= (int32_t)OBSTACLE_SIDE_LOOK_MM) &&
+            (g_nav.b_wall || (ahead_mm() >= (g_nav.obst_mm + (int32_t)OBSTACLE_SONAR_FWD_MM +
+                                            (int32_t)OBSTACLE_BOX_DEPTH_MIN_MM))))
         {
             set_phase(OBSTACLE_PHASE_LOOK_STOP);
             g_nav.look_stop_ms = now;
@@ -1123,8 +1270,7 @@ static bool is_obstacle_close (uint32_t status)
 }
 
 /*!
- * @brief Print and log each Buddy 5 state change. Entering BYPASS also
- *        starts the dead reckoning.
+ * @brief Print and log each Buddy 5 state change.
  *
  * NOTE: States: 0 STOPPED, 1 MONITOR, 2 WAIT_STOP, 3 SCANNING, 4 PLAN,
  * 5 BYPASS, 6 REACQUIRE.
@@ -1147,9 +1293,19 @@ static void report_state (uint32_t status)
         log_rec(OBSTACLE_LOG_STATE, (uint8_t)state, (uint8_t)cause,
                 (uint8_t)obstacle_get_faults(), 0, 0, 0);
 
-        if (OBSTACLE_STATE_BYPASS == state)
+        if (OBSTACLE_STATE_MONITOR == state)
         {
-            reset_pose();
+            obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_FORWARD, 0);
+        }
+        else if (OBSTACLE_STATE_BYPASS == state)
+        {
+            obstacle_comms_set_nav_sonar(OBSTACLE_SONAR_WAIT, 0);
+            g_nav.b_settling = false;
+        }
+        else if (OBSTACLE_STATE_PLAN == state)
+        {
+            g_nav.wait_seq = (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
+            g_nav.b_settling = false;
         }
 
         if (OBSTACLE_STATE_REACQUIRE == state)
@@ -1179,12 +1335,10 @@ static void report_state (uint32_t status)
             }
         }
 
-        if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state) ||
-            (OBSTACLE_STATE_MONITOR == state))
+        if (OBSTACLE_STATE_MONITOR == state)
         {
-            /* The servo turns on entering these states (back to 0 after
-             * the scan, to 45 degrees, or back to 0 after the bypass): wait
-             * for the next ping, which comes only after it has settled.
+            /* At startup the first new ping confirms the servo is centred.
+             * A scan already confirms this before the bypass starts.
              * Cast is safe: the sequence field is 6 bits. */
             g_nav.b_servo_wait = true;
             g_nav.wait_seq =
@@ -1223,49 +1377,26 @@ static bool is_servo_moving (uint32_t status, uint32_t now)
     return (g_nav.b_servo_wait);
 }
 
-/*!
- * @brief Keep the accepted plan: the start angle, the sideways offset the
- *        car needs (closest x tan(start angle), the planner's own offset).
- *        The closest reading comes from the scan profile, as in
- *        scan_algo.c.
- *
- * @param[in] angle  Start angle from SCAN_RESULT, degrees.
- * @param[in] b_wall Wall plan flag from SCAN_RESULT.
- */
-static void keep_plan (uint32_t angle, bool b_wall)
+/* Keep the planner's swept-clearance offset and start heading together. */
+static bool keep_plan (uint32_t side)
 {
-    uint16_t profile[OBSTACLE_SLOT_COUNT];
-    uint32_t slot    = 0U;
-    int32_t  closest = g_nav.obst_mm;
+    obstacle_plan_summary_t plan;
 
-    if (E_OK == obstacle_copy_profile(profile))
+    if ((E_OK != obstacle_copy_plan(&plan)) || (OBSTACLE_RESULT_OK != plan.status) ||
+        (side != plan.side) || (OBSTACLE_PLAN_SIDE_BLOCKED == plan.need_mm))
     {
-        for (slot = 0U; slot < OBSTACLE_SLOT_COUNT; slot++)
-        {
-            /* Cast is safe: slot is 0..24. */
-            int32_t const  deci  = scan_algo_slot_deci((uint8_t)slot);
-            uint16_t const value = profile[slot];
-            int32_t const  dist  = (int32_t)obstacle_pack_slot_dist(value);
-
-            if ((deci >= -OBSTACLE_PATH_HALF_DECI) && (deci <= OBSTACLE_PATH_HALF_DECI) &&
-                (obstacle_pack_slot_is_measured(value)) &&
-                (obstacle_pack_class_is_ranged(obstacle_pack_slot_class(value))) &&
-                (dist <= (int32_t)OBSTACLE_REGION_MAX_MM) && (dist < closest))
-            {
-                closest = dist;
-            }
-        }
+        return (false);
     }
 
-    /* Casts are safe: angle is 0..60 and closest is 0..4095. */
-    g_nav.start_deg = (uint8_t)angle;
-    g_nav.b_wall    = b_wall;
-    g_nav.need_mm =
-        (closest * obstacle_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE;
-    LOG_NOW("INFO", "line:nav", "plan: obstacle %d mm, start %d deg, side "
-                    "offset %d mm, %s\n",
-              (INT)closest, (INT)angle, (INT)g_nav.need_mm,
-              b_wall ? "wall (follow in parallel)" : "box (out and back)");
+    g_nav.side = plan.side;
+    g_nav.start_deg = plan.start_deg;
+    g_nav.b_wall = plan.b_wall;
+    g_nav.obst_mm = (int32_t)plan.closest_mm;
+    g_nav.need_mm = (int32_t)plan.need_mm;
+    LOG_NOW("INFO", "line:nav", "plan: obstacle %d mm, start %d deg, side offset %d mm, %s\n",
+            (INT)plan.closest_mm, (INT)plan.start_deg, (INT)g_nav.need_mm,
+            plan.b_wall ? "wall (follow in parallel)" : "box (out and back)");
+    return (true);
 }
 
 /*!
@@ -1287,8 +1418,7 @@ static void explain_scan (uint16_t const * p_profile)
     /* The 37 readings are not printed here: the flight log prints each
      * stored profile (flight_log.c) and the dashboard plots it. */
 
-    /* Replay: feed each requested slot's stored value twice, so the
-     * agreement rule settles it exactly as before. */
+    /* Replay each stored value until its agreement window is resolved. */
     scan_algo_start(&g_replay);
     while ((!b_done) && (guard < OBSTACLE_SLOT_COUNT))
     {
@@ -1304,8 +1434,14 @@ static void explain_scan (uint16_t const * p_profile)
             uint8_t const  cls   = obstacle_pack_slot_class(value);
             uint16_t const dist  = obstacle_pack_slot_dist(value);
 
-            (void)scan_algo_feed(&g_replay, cls, dist);
-            b_done = scan_algo_feed(&g_replay, cls, dist);
+            uint8_t ping_count = 0U;
+
+            while ((target == scan_algo_target(&g_replay)) &&
+                   (ping_count < (2U * OBSTACLE_MAX_PINGS)))
+            {
+                b_done = scan_algo_feed(&g_replay, cls, dist);
+                ping_count++;
+            }
         }
 
         guard++;
@@ -1367,16 +1503,14 @@ static void handle_event (uint32_t evt, uint32_t now)
         uint32_t const faults =
             obstacle_pack_get(evt, OBSTACLE_EV_FAULTS_SH, OBSTACLE_EV_FAULTS_MK);
 
-        LOG_NOW("ERROR", "line:nav", "FAULT cause=%d: holding, %s\n", (INT)cause,
-                  obstacle_pack_cause_may_auto_restart(cause) ? "retry in 3 s"
-                                                              : "needs RESET and START");
+        LOG_NOW("ERROR", "line:nav", "FAULT cause=%d: holding until START\n", (INT)cause);
 
         /* Casts are safe: the cause is 4 bits. The flight log keeps the low 8
          * fault bits. */
         log_rec(OBSTACLE_LOG_FAULT, (uint8_t)cause, 0U, (uint8_t)faults, 0, 0, 0);
         hold_car(true);
         g_nav.b_scan_pending = false;
-        g_nav.retry_ms       = now;
+        g_nav.b_plan_pending = false;
     }
     else if (OBSTACLE_EVT_SCAN_RESULT == type)
     {
@@ -1384,8 +1518,6 @@ static void handle_event (uint32_t evt, uint32_t now)
         uint32_t const side  = obstacle_pack_get(evt, OBSTACLE_EV_SIDE_SH, OBSTACLE_EV_SIDE_MK);
         uint32_t const width = obstacle_pack_get(evt, OBSTACLE_EV_WIDTH_SH, OBSTACLE_EV_WIDTH_MK);
         uint32_t const angle = obstacle_pack_get(evt, OBSTACLE_EV_ANGLE_SH, OBSTACLE_EV_ANGLE_MK);
-        bool const     b_wall =
-            (0U != obstacle_pack_get(evt, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK));
         uint32_t       index = 0U;
 
         LOG_NOW("INFO", "line:nav", "SCAN_RESULT status=%d side=%d width=%d mm "
@@ -1401,12 +1533,14 @@ static void handle_event (uint32_t evt, uint32_t now)
         log_rec(OBSTACLE_LOG_RESULT, (uint8_t)status, (uint8_t)side, (uint8_t)angle,
                 (int32_t)width, (int32_t)index, 0);
 
-        if ((g_nav.req_id == req_id) && b_go)
+        if (g_nav.req_id == req_id)
         {
-            /* Cast is safe: the side field is 1 bit wide. */
-            g_nav.side = (uint8_t)side;
-            keep_plan(angle, b_wall);
-            post(OBSTACLE_CMD_ACCEPT, g_nav.req_id);
+            g_nav.b_plan_pending = b_go &&
+                ((OBSTACLE_RESULT_CLEAR == status) || keep_plan(side));
+            if (!g_nav.b_plan_pending)
+            {
+                post(OBSTACLE_CMD_REJECT, g_nav.req_id);
+            }
         }
     }
     else
@@ -1416,12 +1550,9 @@ static void handle_event (uint32_t evt, uint32_t now)
 }
 
 /*!
- * @brief In REACQUIRE, tell Buddy 5 when an IR sensor sees the line, once
- *        the car is curving round the obstacle (HUG) and both IR sensors
- *        have been off the line since the end of OUT.
+ * @brief Report a line contact once the bypass phase permits rejoining.
  *
- * @param[in] b_line_seen The car is in HUG, the IR gate is open and an IR
- *                        sensor sees the line.
+ * @param[in] b_line_seen A permitted phase, an open IR gate and a line hit.
  * @param[in] now         Current time, ms.
  */
 static void look_for_line (bool b_line_seen, uint32_t now)
@@ -1511,9 +1642,21 @@ static void update_motion (void)
         }
     }
 
-    if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
+    g_nav.b_have_pose = false;
+    g_nav.b_wheels_still = false;
+    if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh &&
+        (feedback.age_us <= OBSTACLE_NAV_TTL_US))
     {
         uint32_t wheel = 0U;
+
+        /* The totals continue updating after a transient invalid edge.
+         * The sticky odometry_valid flags describe the whole boot; the
+         * settled check uses the current, valid speed samples instead. */
+        g_nav.b_have_pose = true;
+        g_nav.b_wheels_still =
+            feedback.speed_valid[WHEEL_LEFT] && feedback.speed_valid[WHEEL_RIGHT] &&
+            ((geom_abs(feedback.left_speed_um_s) + geom_abs(feedback.right_speed_um_s)) <
+             ((int32_t)OBSTACLE_STILL_UM_PER_MS * UM_PER_MM));
 
         for (wheel = 0U; wheel < WHEELS; wheel++)
         {

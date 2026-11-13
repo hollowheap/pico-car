@@ -23,6 +23,7 @@
 
 static unsigned g_fail;
 static unsigned g_checks;
+static telemetry_publisher_t g_publisher;
 
 #define CHECK(cond)                                                          \
     do                                                                       \
@@ -102,6 +103,7 @@ static void reset (void)
     g_script_len = 0U;
     g_pull_calls = 0U;
     g_pub_calls  = 0U;
+    g_publisher.len = 0U;
 }
 
 static void add (int ret, uint16_t len, uint8_t seed)
@@ -140,7 +142,7 @@ static void test_publishes_until_empty (void)
     add(1, 4U, 20U);
     add(1, FRAME_MAX, 30U);
     add(1, 1U, 40U);
-    telemetry_publisher_run(fake_pull, fake_publish);
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
     CHECK(g_pub_calls == 4U);
     CHECK(pub_got(0U, 8U, 10U));
     CHECK(pub_got(1U, 4U, 20U));
@@ -157,7 +159,7 @@ static void test_any_positive_pull_is_a_frame (void)
     reset();
     add(5, 8U, 1U);
     add(100, 8U, 2U);
-    telemetry_publisher_run(fake_pull, fake_publish);
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
     CHECK(g_pub_calls == 2U);
     pass("publisher_any_positive_pull_is_a_frame", before);
 }
@@ -167,7 +169,7 @@ static void test_empty_pull_does_nothing (void)
     unsigned before = g_fail;
 
     reset();
-    telemetry_publisher_run(fake_pull, fake_publish);
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
     CHECK(g_pull_calls == 1U);
     CHECK(g_pub_calls == 0U);
     pass("publisher_empty_pull_does_nothing", before);
@@ -185,7 +187,7 @@ static void test_stops_on_pull_end_or_error (void)
         add(1, 8U, 1U);
         add(ends[e], 8U, 2U); /* frame data is ignored when ret <= 0 */
         add(1, 8U, 3U);       /* must not be reached */
-        telemetry_publisher_run(fake_pull, fake_publish);
+        telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
         CHECK(g_pub_calls == 1U);
         CHECK(pub_got(0U, 8U, 1U));
         CHECK(g_pull_calls == 2U);
@@ -204,7 +206,7 @@ static void test_rejects_bad_lengths (void)
         reset();
         add(1, bad[b], 1U);
         add(1, 8U, 2U); /* must not be reached */
-        telemetry_publisher_run(fake_pull, fake_publish);
+        telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
         CHECK(g_pub_calls == 0U);
         CHECK(g_pull_calls == 1U);
     }
@@ -213,14 +215,14 @@ static void test_rejects_bad_lengths (void)
     reset();
     add(1, 1U, 1U);
     add(1, FRAME_MAX, 2U);
-    telemetry_publisher_run(fake_pull, fake_publish);
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
     CHECK(g_pub_calls == 2U);
     pass("publisher_rejects_bad_lengths", before);
 }
 
 static void test_failed_publish_returns_without_retry (void)
 {
-    static const int failures[] = {1, -1, 7};
+    static const int failures[] = {-1, 7};
 
     unsigned before = g_fail;
 
@@ -231,7 +233,7 @@ static void test_failed_publish_returns_without_retry (void)
         add(1, 8U, 2U);
         add(1, 8U, 3U);
         g_pub_result[1] = failures[f];
-        telemetry_publisher_run(fake_pull, fake_publish);
+        telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
         /* The run ends at the failure: no retry of the same frame and no
            further pulls, so the caller's loop is not held up. */
         CHECK(g_pub_calls == 2U);
@@ -250,15 +252,34 @@ static void test_next_run_continues_after_failure (void)
     add(1, 8U, 2U);
     add(1, 8U, 3U);
     g_pub_result[0] = -1;
-    telemetry_publisher_run(fake_pull, fake_publish);
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
     CHECK(g_pub_calls == 1U);
     /* The failed frame is gone (already pulled). The next pass publishes the
        rest: the publisher keeps no failed state. */
-    telemetry_publisher_run(fake_pull, fake_publish);
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
     CHECK(g_pub_calls == 3U);
     CHECK(pub_got(1U, 8U, 2U));
     CHECK(pub_got(2U, 8U, 3U));
     pass("publisher_next_run_continues_after_failure", before);
+}
+
+static void test_busy_frame_retries_before_next_pull (void)
+{
+    unsigned before = g_fail;
+
+    reset();
+    add(1, 8U, 1U);
+    add(1, 8U, 2U);
+    g_pub_result[0] = TELEMETRY_PUBLISH_RETRY;
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
+    CHECK(g_pub_calls == 1U);
+    CHECK(g_pull_calls == 1U);
+
+    telemetry_publisher_run(&g_publisher, fake_pull, fake_publish);
+    CHECK(g_pub_calls == 3U);
+    CHECK(pub_got(1U, 8U, 1U));
+    CHECK(pub_got(2U, 8U, 2U));
+    pass("publisher_retries_busy_frame_before_next_pull", before);
 }
 
 static void test_null_publish_discards (void)
@@ -268,7 +289,7 @@ static void test_null_publish_discards (void)
     reset();
     add(1, 8U, 1U);
     add(1, 8U, 2U);
-    telemetry_publisher_run(fake_pull, 0);
+    telemetry_publisher_run(&g_publisher, fake_pull, 0);
     CHECK(g_pull_calls == 3U);
     CHECK(g_pub_calls == 0U);
     pass("publisher_null_publish_discards", before);
@@ -283,6 +304,7 @@ int main (void)
     test_rejects_bad_lengths();
     test_failed_publish_returns_without_retry();
     test_next_run_continues_after_failure();
+    test_busy_frame_retries_before_next_pull();
     test_null_publish_discards();
 
     (void)printf("%u checks, %u failed\n", g_checks, g_fail);

@@ -27,18 +27,13 @@ STATIC_ASSERT (sizeof(tcp_transport_state_t) <= 4U,
 /* Queue a connection request.  The lwIP owner task opens it on the next poll. */
 bool tcp_transport_open (const char * host, uint16_t port);
 
-/* Ask the lwIP owner task to close the connection. */
-void tcp_transport_close (void);
-
-tcp_transport_state_t tcp_transport_state (void);
-
 /* lwIP millisecond clock without dragging lwIP headers into T-Kernel TUs. */
 uint32_t tcp_transport_now_ms (void);
 
-/* mqtt_transport_t send/recv adapters.  Both run on the calling task and only
- * touch the lock-free rings. */
+/* MQTT adapters. Only the lwIP owner task touches the PCB. */
 int tcp_transport_send (void * context, const uint8_t * data, uint16_t len);
 int tcp_transport_recv (void * context, uint8_t * data, uint16_t len);
+void tcp_transport_restart (void * context);
 
 /* Called by the CYW43/lwIP owner task only. */
 void tcp_transport_poll (void);

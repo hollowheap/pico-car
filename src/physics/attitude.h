@@ -11,7 +11,9 @@
  *   amag  acceleration magnitude in g
  *
  * States: OK, CANDIDATE, LIFTED, OVERTURNED. Before the rest calibration the
- * module reports OK and calibrated = false. All limits are placeholders until
+ * module reports OK and calibrated = false. After a stable set-down, the
+ * detector reports OK so the supervisor can accept a reset after an overturn.
+ * All limits are placeholders until
  * tuned on logs from the car (artifacts/notes/imu-lift-overturn.md).
  */
 
@@ -49,7 +51,7 @@ typedef struct
     uint16_t overturn_samples;    /* Held this long: overturned.                */
     float    clear_tilt_deg;      /* Level: tilt under this.                    */
     float    clear_dev_g;         /* Still: | |a| - 1 g | under this.           */
-    uint16_t clear_samples;       /* Level and still this long: lifted clears.  */
+    uint16_t clear_samples;       /* Level and still this long: set-down.       */
 } attitude_config_t;
 
 typedef struct
