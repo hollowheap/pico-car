@@ -94,42 +94,42 @@
         "echo_stuck": 31,
         "line_edges_per_s": 138,
         "line_raw_edges_per_s": 52,
-        "supervisor_passes": 15749
+        "supervisor_passes": 15749,
+        "stack_min_free": 47340,
+        "stack_min_task": 82
       },
-      "hex": "ee607bc89dec9894bce347b6eba439609e5ab111569a342a2ad0d22e891f8a343d85"
+      "hex": "ee607bc89dec9894bce347b6eba439609e5ab111569a342a2ad0d22e891f8a343d85b8ec52"
     },
     "heartbeat": {
       "values": {
-        "uptime_s": 3102537881,
-        "drops": 82,
-        "wifi_rssi": -91,
-        "reset_reason": 48,
-        "link_state": 30
+        "uptime_s": 2777629235,
+        "drops": 48,
+        "wifi_rssi": 30,
+        "reset_reason": 132,
+        "link_state": 202
       },
-      "hex": "b8ecf89952a5301e"
+      "hex": "a58f4233301e84ca"
     },
     "event": {
       "values": {
-        "event_id": 33871,
-        "event_type": 202,
-        "source": 25,
-        "p1": 24134,
-        "p2": 37188,
-        "odometer_mm": 110880827
+        "event_id": 6608,
+        "event_type": 94,
+        "source": 145,
+        "p1": 1691,
+        "p2": 24228,
+        "odometer_mm": 3315182629
       },
-      "hex": "844fca195e469144069be83b"
+      "hex": "19d05e91069b5ea4c599ac25"
     },
     "profile": {
       "values": {
-        "req_id": 94,
-        "status": 197,
-        "side": 79,
-        "flags": 238,
-        "closest_mm": 13956,
-        "width_mm": 60374,
+        "req_id": 79,
+        "status": 238,
+        "side": 54,
+        "flags": 235,
+        "closest_mm": 62283,
+        "width_mm": 45957,
         "slots": [
-          62283,
-          45957,
           13651,
           3701,
           60055,
@@ -164,10 +164,12 @@
           35304,
           1459,
           40177,
-          54836
+          54836,
+          29731,
+          31239
         ]
       },
-      "hex": "5ec54fee3684ebd6f34bb38535530e75ea9775ab85f309670c9b70e36c986d55d38f1ed9e45f78299359b6526c20f3cce177aa9056813f2ea23d0ef3314c058c6f4102e1180467ef4b1489e805b39cf1d634"
+      "hex": "4fee36ebf34bb38535530e75ea9775ab85f309670c9b70e36c986d55d38f1ed9e45f78299359b6526c20f3cce177aa9056813f2ea23d0ef3314c058c6f4102e1180467ef4b1489e805b39cf1d63474237a07"
     }
   }
 }

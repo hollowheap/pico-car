@@ -10,8 +10,8 @@
  * Unlike the telemetry queue, a full net queue never evicts: the new frame is
  * refused with E_TMOUT and counted.
  *
- * NOTE: the project notes (sections 3 and 4.1) says overflow drops
- * the oldest QoS 0 report. The code drops the newest frame. These tests
+ * NOTE: An earlier design said overflow drops the oldest QoS 0 report. The
+ * code drops the newest frame. These tests
  * assert the code.
  */
 #include <stdint.h>

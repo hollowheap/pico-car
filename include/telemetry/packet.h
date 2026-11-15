@@ -6,7 +6,7 @@
 
 /*
  *	packet.h
- *	Big-endian wire serializers for the telemetry packets (schema 2, D110).
+ *	Big-endian wire serializers for the telemetry packets (schema 2).
  *
  *	The layout lives in protocol/telemetry.yaml. The generated header
  *	telemetry/wire_schema.h holds every offset, size, topic and code, and
@@ -134,9 +134,11 @@ typedef struct
     uint8_t  line_edges_per_s;
     uint8_t  line_raw_edges_per_s;
     uint16_t supervisor_passes; /* a frozen value shows a hung supervisor */
+    uint16_t stack_min_free;    /* smallest free stack since boot, bytes */
+    uint8_t  stack_min_task;    /* its task, in main.c stack order */
 } telemetry_diag_t;
 
-STATIC_ASSERT (sizeof(telemetry_diag_t) == 34U, "telemetry_diag_t size");
+STATIC_ASSERT (sizeof(telemetry_diag_t) == 38U, "telemetry_diag_t size");
 
 /* 1 Hz. Sent by the connection task. */
 typedef struct

@@ -185,6 +185,8 @@ telemetry_pack_diag (uint8_t * dst, const telemetry_diag_t * p_src)
     put_u8 (dst, TELEMETRY_DIAG_OFF_LINE_RAW_EDGES_PER_S,
             p_src->line_raw_edges_per_s);
     put_u16 (dst, TELEMETRY_DIAG_OFF_SUPERVISOR_PASSES, p_src->supervisor_passes);
+    put_u16 (dst, TELEMETRY_DIAG_OFF_STACK_MIN_FREE, p_src->stack_min_free);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_STACK_MIN_TASK, p_src->stack_min_task);
 
     return TELEMETRY_DIAG_WIRE_SIZE;
 }
