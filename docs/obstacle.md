@@ -5,9 +5,7 @@ planning and the obstacle statechart. The code is in
 `src/navigation/obstacle/`. Buddy 5 never writes the motors: it only sends events and
 steering words to the line task.
 
-The artifacts are the source of truth: the project notes (S12, S13, S39,
-S40) and the project notes (D95 to D99, D150, D151). This page
-describes the code that implements them.
+This page describes the code.
 
 Other Buddy 5 docs:
 
@@ -21,14 +19,14 @@ Last updated 12 November 2026.
 
 | Step | Work | Current position |
 |---|---|---|
-| 1 | Design (pins, statechart, scan, bypass) | Done; see the artifacts above. |
+| 1 | Design (pins, statechart, scan, bypass) | Done. |
 | 2 | Code in `src/navigation/obstacle/` | Done: six echo classes, the 2-of-3 hit rule, the retry policy, and the plan, flags and class counts in telemetry. |
 | 3 | Host tests | Done: `ctest -R obstacle_` (scan, plan, statechart, bypass simulation). |
 | 4 | BARR-C:2018 pass | Done; `bash tools/lint.sh src/navigation/obstacle include/navigation` reports 0 findings. |
 | 5 | Bench build in the normal team build | Done; `./build.sh` makes `build/obstacle_bench.uf2`. |
 | 6 | Car measurements (**FILL** values) | Pending; see [Numbers to fill in](#numbers-to-fill-in). The sonar edge and incidence measurement (Q56) comes first. |
 | 7 | Hardware checklist H1 to H9 on the car | Pending; see the [checklist](obstacle_hardware_checklist.md). |
-| 8 | Floor test | Pending. Boxes 240 to 340 mm wide are planned too narrow; see wide-box findings. |
+| 8 | Floor test | Pending. Boxes 240 to 340 mm wide are planned too narrow. |
 
 ## Wiring
 
@@ -180,8 +178,7 @@ The states, the time limits and the fault causes are in the
 β = half-cone (9.5 degrees), the planner places an edge between h - β and
 m - β. This assumes the sonar returns an echo when only the edge of its beam
 is on the obstacle. That assumption is not measured (Q56), and the
-simulation does not follow it. See the
- wide-box findings.
+simulation does not follow it.
 
 **Choosing a side.** A side is usable when the sideways offset it needs (edge
 + `OBSTACLE_BOX_GAP_MM`) fits on the free floor, and no other reading on that

@@ -20,3 +20,6 @@ __pycache__/
 
 # local dev-stack logs
 logs/
+
+# host test build
+build-tests/

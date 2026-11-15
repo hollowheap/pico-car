@@ -2,7 +2,7 @@
  *
  * @brief Hump detection and height estimation from accelerometer tilt.
  *
- * Pure logic with no hardware access, following the SE01 PostTri1 design.
+ * Pure logic with no hardware access.
  * The caller supplies one accelerometer sample (in g, board axes) and the
  * latest motion data from Buddy 2 per call, every 20 ms (50 Hz).
  *

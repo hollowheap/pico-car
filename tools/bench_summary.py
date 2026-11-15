@@ -7,7 +7,7 @@ Usage:
 LOGFILE is the raw console capture. The lines that count start with a tag in
 capitals (after the "[SEV](task:module) " prefix): ENC, STEP, STEP_RESULT, SENS,
 SENS_RESULT, LINE_RESULT, DRV, DRV_RESULT and W1_PINS. Other text is ignored.
-Standard library only. docs/bench.md says what each item measures.
+Standard library only.
 """
 
 import re
