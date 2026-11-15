@@ -51,6 +51,10 @@ ER gpio_irq_init (void);
  * In `gpio_mask`, the least significant bit corresponds to GPIO0, the 2nd least
  * significant bit corresponds to GPIO1, etc. The 2 most significant bits are
  * ignored as GPIO30 and GPIO31 do not exist.
+ *
+ * `proc` must be the processor that ran gpio_irq_init(): the bank IRQ is set
+ * up there only. Another processor returns E_PAR. E_OBJ means the
+ * other processor already owns a pin; E_LIMIT means no handler slot is free.
  */
 ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
                          gpio_irq_handler_t handler);

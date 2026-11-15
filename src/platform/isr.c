@@ -216,9 +216,16 @@ LOCAL void gpio_isr (UINT intno)
     }
 }
 
-/* TODO: set interrupt on both cores */
+/* Core whose NVIC has the bank IRQ: the one that ran gpio_irq_init(). */
+LOCAL UW g_irq_prc = 0U;
+
+/* The bank IRQ is defined and enabled on the calling core only: every
+ * handler must belong to that core, or its edges could never arrive. The
+ * startup task runs this, and all handlers, on core 0. */
 EXPORT ER gpio_irq_init (void)
 {
+    (void)InitSpinLock(&g_handlers_lock);
+    g_irq_prc = (UW)THIS_PRC();
     DisableInt(GPIO_INTNO);
     ER result = tk_def_int(GPIO_INTNO, &(T_DINT){
                                            .intatr = TA_HLNG,
@@ -230,13 +237,16 @@ EXPORT ER gpio_irq_init (void)
     }
     ClearInt(GPIO_INTNO);
     EnableInt(GPIO_INTNO, GPIO_INT_PRI);
-    (void)InitSpinLock(&g_handlers_lock);
     return E_OK;
 }
 
 EXPORT ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
                                 gpio_irq_handler_t handler)
 {
+    if (proc != g_irq_prc)
+    {
+        return E_PAR;
+    }
     if (g_handler_count >= MAX_GPIO_IRQ_HANDLERS)
     {
         return E_LIMIT;
@@ -248,7 +258,7 @@ EXPORT ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
 
     (void)SpinLock(&g_handlers_lock);
     /* We must check again as someone else could have added a handler before we
-     * aqquired the lock. */
+     * acquired the lock. */
     if (g_handler_count >= MAX_GPIO_IRQ_HANDLERS)
     {
         (void)SpinUnlock(&g_handlers_lock);
@@ -261,12 +271,15 @@ EXPORT ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
     };
     /* Disable interrupts before enabling interrupts for the pin.
      * Otherwise, the interrupt may fire immediately and `gpio_isr` will not
-     * clear it as the mask has not been commited to `g_handlers`. */
+     * clear it as the mask has not been committed to `g_handlers`. */
     DisableInt(GPIO_INTNO);
     const ER result = enable_pin_interrupts(proc, edge_masks);
     if (result != E_OK)
     {
         (void)SpinUnlock(&g_handlers_lock);
+        /* The bank IRQ is shared: leaving it masked would silence every
+         * handler already registered. */
+        EnableInt(GPIO_INTNO, GPIO_INT_PRI);
         return result;
     }
 
