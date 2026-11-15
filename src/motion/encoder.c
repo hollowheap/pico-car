@@ -92,12 +92,14 @@ static void encoder_isr (const gpio_edge_snapshot_t * p_snapshot)
 
     /* The dispatcher has already acknowledged the edges in the snapshot.
      * Edges after that remain pending for the next entry. */
-    uint32_t const first = in_w(GPIO_IN);
     uint32_t const start = in_w(TIMER_RAW_LOW);
     uint32_t       gpio  = 0U;
 
-    /* Read the levels twice, GLITCH_US apart. A pin that changed in between
-     * was a spike: that wheel is not updated, so a spike counts nothing. */
+    /* Read the levels GLITCH_US after entry, so a spike has ended and counts
+     * nothing. Every wheel with an edge is updated: the snapshot edges are
+     * already acknowledged, so a skipped wheel would lose its edge, and the
+     * next real edge would then look like a skipped state and count as
+     * invalid. */
     while ((in_w(TIMER_RAW_LOW) - start) < GLITCH_US)
     {
         /* Busy wait: a few microseconds inside the interrupt. */
@@ -108,7 +110,7 @@ static void encoder_isr (const gpio_edge_snapshot_t * p_snapshot)
     {
         uint32_t a = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][0]);
         uint32_t b = pin_edge_flags(p_snapshot, g_encoder_pins[wheel][1]);
-        if (((a | b) != 0U) && (pin_state(first, wheel) == pin_state(gpio, wheel)))
+        if ((a | b) != 0U)
         {
             /* Both channels changed, or both polarities on one pin: the
              * sequence is ambiguous. Record loss instead of guessing. */

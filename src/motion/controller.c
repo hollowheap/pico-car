@@ -61,15 +61,51 @@ static void brake (controller_t * p_control, uint32_t now_us, bool latch)
     }
 }
 
+static bool is_encoder_fault (motion_fault_t reason)
+{
+    return (MOTION_FAULT_FEEDBACK == reason) || (MOTION_FAULT_NO_EDGES == reason);
+}
+
 static void fault (controller_t * p_control, uint32_t now_us,
                    motion_fault_t reason)
 {
     p_control->status.state = MOTION_FAULT;
     p_control->status.fault = reason;
+    p_control->fault_us     = now_us;
     reset_pid(p_control);
-    brake(p_control, now_us, true);
+    brake(p_control, now_us, !is_encoder_fault(reason));
     LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE, "fault=%s, stopped",
               fault_name(reason));
+}
+
+/* Clear an encoder fault once the car has stood braked for
+ * MOTION_FAULT_CLEAR_US: count from the present encoder reading and drop the
+ * old command. */
+static void clear_encoder_fault (controller_t * p_control, const motion_input_t * p_input,
+                                 uint32_t now_us)
+{
+    unsigned int wheel = 0U;
+
+    if ((MOTION_FAULT == p_control->status.state) && is_encoder_fault(p_control->status.fault) &&
+        !p_control->status.brake_failed && (p_input != NULL) &&
+        ((uint32_t)(now_us - p_control->fault_us) >= MOTION_FAULT_CLEAR_US) &&
+        odometry_init(&p_control->sampler, &p_control->config.sampling, p_input))
+    {
+        reset_pid(p_control);
+        for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+        {
+            p_control->progress_us[wheel]        = now_us;
+            p_control->last_edges[wheel]         = 0;
+            p_control->bad_samples[wheel]        = 0U;
+            p_control->drive_sign[wheel]         = 0;
+            p_control->command.target_um_s[wheel] = 0;
+            p_control->status.target_um_s[wheel]  = 0;
+        }
+        p_control->previous_tick_us = now_us;
+        p_control->status.state     = MOTION_IDLE;
+        p_control->status.fault     = MOTION_FAULT_NONE;
+        LOG_INFO(LOG_TASK_MOTION, LOG_MOD_NONE, "encoder fault cleared, ready");
+    }
 }
 
 bool controller_config_valid (const controller_config_t * p_config)
@@ -386,6 +422,7 @@ void controller_tick (controller_t *     p_control,
     {
         return;
     }
+    clear_encoder_fault(p_control, p_input, now_us);
     if (!tick_admit(p_control, now_us, stop_requested))
     {
         return;

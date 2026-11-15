@@ -26,6 +26,12 @@ typedef enum
     MOTION_FAULT_OUTPUT
 } motion_fault_t;
 
+/* An encoder fault (FEEDBACK, NO_EDGES) brakes the car without the output
+ * latch, and clears after the car has stood braked this long, so a glitch or
+ * a stalled pivot never stops the car until a reboot. The old command is
+ * dropped: the car drives again only on a new command. [Default] */
+#define MOTION_FAULT_CLEAR_US (500000U)
+
 typedef struct
 {
     uint32_t id;
@@ -87,13 +93,16 @@ typedef struct
     int64_t                 last_edges[ENCODER_WHEELS];
     uint8_t                 bad_samples[ENCODER_WHEELS];
     int8_t                  drive_sign[ENCODER_WHEELS];
+    uint32_t                fault_us;
     bool                    braked;
     bool                    initialised;
 } controller_t;
 
 /* No default speed/gain/timing settings. Init issues brake through the output
  * callback; the hardware owner must already be initialised. One task owns all
- * calls. Stop/fault states are terminal: no public reset/rearm operation. */
+ * calls. Stop and the COMMAND, EXPIRED, GAP and OUTPUT faults are terminal:
+ * no public reset/rearm operation. FEEDBACK and NO_EDGES clear on their own
+ * after MOTION_FAULT_CLEAR_US. */
 bool controller_init (controller_t *              p_control,
                           const controller_config_t * p_config,
                           const motion_input_t *          p_baseline,
