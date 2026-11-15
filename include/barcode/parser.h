@@ -33,7 +33,7 @@ typedef struct
     uint8_t wide_space_count : 1;
     /**
      * Whether we are reading the barcode in reverse.
-     * Only valid after the start charcter has been read.
+     * Only valid after the start character has been read.
      */
     bool is_reverse : 1;
 } barcode_parser_t;

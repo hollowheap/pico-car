@@ -4,7 +4,7 @@
 #include <bsp/libbsp.h>
 
 #include "track/track.h"
-#include "track/line_control.h"
+#include "track/line_task.h"
 #include "motion/motion.h"
 #include "motion/motion_request.h"
 #include "motion/motion_service.h"
@@ -35,15 +35,6 @@
 #define STACK_SZ 4096
 #define STACK_ALIGN 8U
 
-/* Line following. The cruise speed, the search limits and the turn speeds
- * live in track/line_control.h (tune them there on the car). The duty cap in
- * motion_setup() must leave headroom for them. The follower steers by a
- * heading target and never stops a wheel; one-shot turns pivot in place.
- * LINE_POLL_MS is the control period. */
-#define LINE_POLL_MS             (10U)
-/* Upper bound on one turn, so a blocked car cannot pivot for ever. Tune on
- * the car: it must exceed the longest U-turn, including the slow phase. */
-#define LINE_TURN_MAX_MS         (4000U)
 
 /* Width of the fault word (bits 0..15, see platform/faults.h). */
 #define FAULT_WORD_BITS              (16U)
@@ -52,8 +43,8 @@
 #define STARTUP_FLAG_READY           (0x01U)
 #define STARTUP_FLAG_FAILED          (0x02U)
 
-/* Telemetry pacing, in 50 ms passes of telemetry_task (D110): status, motion
- * and physics every 200 ms (5 Hz, R01), obstacle every 500 ms, diag every 1 s.
+/* Telemetry pacing, in 50 ms passes of telemetry_task: status, motion
+ * and physics every 200 ms (5 Hz), obstacle every 500 ms, diag every 1 s.
  * The heartbeat is sent by the connection task. */
 #define TELEMETRY_PASS_MS            (50U)
 #define TELEMETRY_FAST_PASSES        (4U)
@@ -209,300 +200,6 @@ LOCAL void obstacle_task (INT stacd, void * exinf)
     obstacle_run();
 }
 
-typedef enum
-{
-    LINE_TURN_NONE = 0,
-    LINE_TURN_LEFT,
-    LINE_TURN_RIGHT,
-    LINE_TURN_UTURN,
-    LINE_TURN_STRAIGHT
-} line_turn_t;
-
-/* The distance a barcode turn waits after the barcode, so the pivot happens at the
- * junction and not at the first stripe. Tune on the car. 0 turns at once. */
-#define BARCODE_TURN_DELAY_MM        (0U)
-
-/* A turn the supervisor allowed and the line task has not run yet. */
-static line_turn_t g_turn_wait      = LINE_TURN_NONE;
-static uint32_t    g_turn_wait_at_mm = 0U;
-static uint8_t     g_turn_wait_op   = 0U;
-
-LOCAL uint32_t current_odometer_mm (void);
-LOCAL uint16_t clamp_u16 (uint32_t value);
-
-/* Wheel displacement units. */
-#define UM_PER_MM (1000)
-
-/* Map a vehicle command opcode to a turn. */
-static line_turn_t line_turn_of (uint8_t opcode)
-{
-    line_turn_t turn = LINE_TURN_NONE;
-
-    switch (opcode)
-    {
-        case VEHICLE_CMD_LEFT:
-            turn = LINE_TURN_LEFT;
-            break;
-        case VEHICLE_CMD_RIGHT:
-            turn = LINE_TURN_RIGHT;
-            break;
-        case VEHICLE_CMD_UTURN:
-            turn = LINE_TURN_UTURN;
-            break;
-        case VEHICLE_CMD_STRAIGHT:
-            turn = LINE_TURN_STRAIGHT;
-            break;
-        default:
-            break;
-    }
-    return turn;
-}
-
-/* Mean wheel travel divides the sum of both wheels. */
-#define LINE_WHEEL_COUNT         (2)
-
-/* Each speed lease must outlast one loop pass plus scheduling delay. The
- * motion task (priority 1) shares core 0 with line (3), obstacle (4) and
- * physics (5), so a 3-pass lease can be stale by the time the controller
- * validates it and latches MOTION_FAULT_COMMAND. Keep the lease below
- * max_command_ttl_us (200 ms). */
-#define LINE_LEASE_PASSES        (10U)
-#define LINE_US_PER_MS           (1000U)
-#define LINE_LEASE_US \
-    (LINE_LEASE_PASSES * LINE_POLL_MS * LINE_US_PER_MS)
-
-static line_follow_t g_line_follow;
-static bool          g_line_lost;
-static int64_t       g_line_travel_um;
-static int32_t       g_line_heading_deci;
-
-/* Read by the telemetry task (diag packet): line-lost entries since boot, and
- * whether a one-shot turn is running. Written by the line task only. */
-static volatile uint16_t g_line_lost_count;
-static volatile uint16_t g_line_search_mm; /* longest stretch driven while lost */
-static volatile bool     g_turning;
-
-/* Kernel time in ms (low 32 bits; line_control handles the wrap). If the
- * kernel call fails the last good time is reused, so the clock never jumps
- * back to 0. */
-static uint32_t line_now_ms (void)
-{
-    static uint32_t s_last_ms;
-    SYSTIM          tim = {0, 0U};
-
-    if (E_OK == tk_get_otm(&tim))
-    {
-        s_last_ms = tim.lo;
-    }
-
-    return s_last_ms;
-}
-
-/* Mean wheel travel at the start of the present line loss. */
-static int64_t g_line_lost_at_um;
-
-/* Set FAULT_LINE_LOST_BIT on entering line lost, clear it on leaving. The
- * events carry the remembered side and, on leaving, the distance driven while
- * lost. The car never stops for it (D180). */
-static void line_update_fault (bool b_lost)
-{
-    int64_t  const driven_um = g_line_travel_um - g_line_lost_at_um;
-    uint32_t const driven_mm = (uint32_t)(((driven_um < 0) ? -driven_um : driven_um) / UM_PER_MM);
-
-    if (b_lost && !g_line_lost)
-    {
-        system_fault_set(FAULT_LINE_LOST_BIT);
-        g_line_lost_count++;
-        g_line_lost_at_um = g_line_travel_um;
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_LOST,
-                                   (int16_t)g_line_follow.side, 0U, current_odometer_mm());
-    }
-    else if (!b_lost && g_line_lost)
-    {
-        system_fault_clear(FAULT_LINE_LOST_BIT);
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_FOUND,
-                                   (int16_t)g_line_follow.side, clamp_u16(driven_mm),
-                                   current_odometer_mm());
-    }
-    else
-    {
-        /* No change. */
-    }
-    if (b_lost && (clamp_u16(driven_mm) > g_line_search_mm))
-    {
-        g_line_search_mm = clamp_u16(driven_mm);
-    }
-    g_line_lost = b_lost;
-}
-
-/* Forget the search state, e.g. when the obstacle step took the motors. */
-static void line_follow_reset (void)
-{
-    line_follow_init(&g_line_follow);
-    line_update_fault(false);
-}
-
-/* Map the CLI turn request to the line_control turn kind. */
-static bool line_turn_kind (line_turn_t turn, line_turn_kind_t * p_kind)
-{
-    bool b_valid = true;
-
-    switch (turn)
-    {
-        case LINE_TURN_LEFT:
-            *p_kind = LINE_TURN_KIND_LEFT;
-            break;
-        case LINE_TURN_RIGHT:
-            *p_kind = LINE_TURN_KIND_RIGHT;
-            break;
-        case LINE_TURN_UTURN:
-            *p_kind = LINE_TURN_KIND_UTURN;
-            break;
-        case LINE_TURN_STRAIGHT:
-            *p_kind = LINE_TURN_KIND_STRAIGHT;
-            break;
-        default:
-            b_valid = false;
-            break;
-    }
-
-    return b_valid;
-}
-
-/* One-shot pivot by encoder heading (D93). Every pass reads the feedback
- * snapshot and the line sensors, then line_turn_update() decides the wheel
- * targets. The turn ends on line capture, an abort, or LINE_TURN_MAX_MS. */
-static void line_execute_turn (line_turn_t turn)
-{
-    line_turn_kind_t   kind = LINE_TURN_KIND_LEFT;
-    line_turn_state_t  state;
-    line_targets_t     targets = {0, 0};
-    motion_feedback_t  feedback;
-    line_turn_status_t status = LINE_TURN_ABORTED;
-    uint32_t           elapsed_ms = 0U;
-    bool               b_snapshot = false;
-    bool               b_obstacle = false;
-
-    if (!line_turn_kind(turn, &kind))
-    {
-        return;
-    }
-
-    g_turning  = true;
-    supervisor_set_turning(true);
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                               (uint8_t)TELEMETRY_EVT_TURN_START, (int16_t)turn, 0U,
-                               current_odometer_mm());
-    b_snapshot = (E_OK == motion_feedback_snapshot(&feedback));
-    if (b_snapshot)
-    {
-        line_turn_start(&state, kind, feedback.left_displacement_um,
-                        feedback.right_displacement_um);
-        status = LINE_TURN_TURNING;
-    }
-
-    while ((LINE_TURN_TURNING == status) && (elapsed_ms < LINE_TURN_MAX_MS))
-    {
-        ir_sensors_state_t const sensors = ir_get_state();
-
-        /* The obstacle step runs on every pass of a turn (F2). When it takes the
-         * motors, the turn ends and the obstacle task drives. */
-        if (obstacle_line_step(sensors.left, sensors.right))
-        {
-            b_obstacle = true;
-            status     = LINE_TURN_ABORTED;
-            break;
-        }
-
-        b_snapshot = (E_OK == motion_feedback_snapshot(&feedback));
-        status = line_turn_update(&state, feedback.left_displacement_um,
-                                feedback.right_displacement_um,
-                                b_snapshot && feedback.fresh, sensors.left,
-                                sensors.right, &targets);
-        if (LINE_TURN_TURNING == status)
-        {
-            if (E_OK != motion_set_speed(targets.left_um_s, targets.right_um_s,
-                                         LINE_LEASE_US))
-            {
-                status = LINE_TURN_ABORTED;
-            }
-            else
-            {
-                (void)ir_wait_change(IR_TYPE_LINE, (TMO)LINE_POLL_MS);
-                elapsed_ms += LINE_POLL_MS;
-            }
-        }
-    }
-    if (!b_obstacle)
-    {
-        (void)motion_set_speed(0, 0, LINE_LEASE_US);
-    }
-    g_turning = false;
-    supervisor_set_turning(false);
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                               (uint8_t)((LINE_TURN_DONE == status) ? TELEMETRY_EVT_TURN_DONE
-                                                                    : TELEMETRY_EVT_TURN_ABORT),
-                               (int16_t)turn, (uint16_t)elapsed_ms, current_odometer_mm());
-
-    if (b_obstacle)
-    {
-        /* The obstacle task has the motors; forget the search state. */
-        line_follow_reset();
-    }
-    else if (LINE_TURN_DONE == status)
-    {
-        line_follow_set_side(&g_line_follow, line_turn_side(&state));
-        line_update_fault(false);
-    }
-    else
-    {
-        /* Stopped above. The car looks for the line; it does not stay stopped
-         * (D180). The search sets the line-lost fault on the next pass. */
-        line_follow_start_search(&g_line_follow);
-    }
-}
-
-/*!
- * @brief One pass of the line follower (D181). A sensor hit slews a heading
- *        target toward the line and the encoder heading follows it. With
- *        neither sensor the car holds its heading for LINE_GAP_MM, then
- *        weaves at reduced speed. It never stops (D180).
- */
-LOCAL void line_follow_step (ir_sensors_state_t state)
-{
-    line_targets_t       targets = {0, 0};
-    motion_feedback_t    feedback;
-    line_follow_status_t status = LINE_FOLLOW_FOLLOWING;
-
-    if (ir_barcode_recent())
-    {
-        /* Barcode stripes under the line sensors look like a lost line. For 250 ms
-         * after any barcode edge the car drives straight and the search state does
-         * not change (D130). */
-        (void)motion_set_speed(LINE_CRUISE_UM_S, LINE_CRUISE_UM_S, LINE_LEASE_US);
-        return;
-    }
-
-    if (E_OK == motion_feedback_snapshot(&feedback))
-    {
-        g_line_travel_um = (feedback.left_displacement_um +
-                            feedback.right_displacement_um) /
-                           LINE_WHEEL_COUNT;
-        g_line_heading_deci = line_heading_deci(feedback.left_displacement_um,
-                                                feedback.right_displacement_um);
-    }
-
-    status = line_follow_update(&g_line_follow, state.left, state.right,
-                                g_line_heading_deci, g_line_travel_um,
-                                line_now_ms(), &targets);
-    /* Line lost means the gap is over and the car weaves. A sensor hit ends it. */
-    line_update_fault(LINE_FOLLOW_SEARCHING == status);
-    (void)motion_set_speed(targets.left_um_s, targets.right_um_s,
-                           LINE_LEASE_US);
-}
-
 LOCAL void line_task (INT stacd, void * exinf)
 {
     (void)stacd;
@@ -513,55 +210,7 @@ LOCAL void line_task (INT stacd, void * exinf)
         park();
     }
 
-    for (;;)
-    {
-        const ir_sensors_state_t state = ir_get_state();
-        uint8_t                  source = 0U;
-        uint8_t const            taken  = supervisor_take_turn(&source);
-
-        liveness_kick(LIVE_LINE);
-        if (SUPERVISOR_NO_TURN != taken)
-        {
-            obstacle_status_t obstacle;
-
-            /* The supervisor checked before it allowed the turn. Check again: the
-             * obstacle task can have started a scan since (F3). */
-            if ((E_OK == obstacle_snapshot(&obstacle)) &&
-                (TELEMETRY_OBSTACLE_STATE_MONITOR != obstacle.state))
-            {
-                supervisor_turn_refused(taken);
-            }
-            else
-            {
-                g_turn_wait       = line_turn_of(taken);
-                g_turn_wait_op    = taken;
-                g_turn_wait_at_mm = current_odometer_mm() +
-                    ((VEHICLE_SRC_BARCODE == source) ? BARCODE_TURN_DELAY_MM : 0U);
-            }
-        }
-        if ((LINE_TURN_NONE != g_turn_wait) &&
-            ((int32_t)(current_odometer_mm() - g_turn_wait_at_mm) >= 0))
-        {
-            line_turn_t const turn = g_turn_wait;
-
-            g_turn_wait = LINE_TURN_NONE;
-            (void)g_turn_wait_op;
-            line_execute_turn(turn);
-            continue;
-        }
-
-        if (obstacle_line_step(state.left, state.right))
-        {
-            /* obstacle is holding the car or driving round an obstacle. A
-             * search that was running would otherwise time out on return. */
-            line_follow_reset();
-        }
-        else
-        {
-            line_follow_step(state);
-        }
-        ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
-    }
+    line_task_run();
 }
 
 /* Odometer for an event, from the motion snapshot (0 if it is not running). */
@@ -674,12 +323,14 @@ LOCAL void telemetry_send_fast (void)
     bool const           b_diag     = (E_OK == motion_diag_snapshot(&diag));
     bool const           b_physics  = (E_OK == physics_snapshot(&physics));
     bool const           b_obstacle = (E_OK == obstacle_snapshot(&obstacle));
+    line_task_stats_t    line;
 
+    line_task_stats(&line);
     telemetry_assemble_status(&status, b_motion ? &motion : NULL,
                               b_feedback ? &feedback : NULL,
                               b_physics ? &physics : NULL,
                               b_obstacle ? &obstacle : NULL, system_fault_get(),
-                              g_tel.seq, current_line_bits(), g_turning);
+                              g_tel.seq, current_line_bits(), line.b_turning);
     g_tel.seq++;
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_STATUS, packet,
@@ -717,6 +368,11 @@ LOCAL void telemetry_send_obstacle (void)
         telemetry_pack_obstacle(packet, &frame), 0U);
 }
 
+/* Smallest free stack seen by stack_report, and its task (diag packet).
+ * Written by the supervisor task, read whole by the telemetry task. */
+static volatile uint16_t g_stack_min_free = UINT16_MAX;
+static volatile uint8_t  g_stack_min_task = 0U;
+
 /*!
  * @brief Queue the diag frame (1 Hz): counters and health.
  */
@@ -729,11 +385,13 @@ LOCAL void telemetry_send_diag (void)
     uint32_t const    raw_edges = ir_line_raw_edges();
     uint32_t          echo[OBSTACLE_ECHO_CLASSES] = {0};
     barcode_stats_t   bstats;
+    line_task_stats_t lstats;
 
     barcode_stats(&bstats);
+    line_task_stats(&lstats);
     diag.sticky_faults       = system_fault_sticky_get();
-    diag.line_lost_count     = g_line_lost_count;
-    diag.line_search_mm      = g_line_search_mm;
+    diag.line_lost_count     = lstats.lost_count;
+    diag.line_search_mm      = lstats.search_mm;
     diag.barcode_ok          = bstats.ok;
     diag.barcode_bad         = bstats.bad;
     diag.barcode_edge_drops  = clamp_u16(ir_barcode_drops());
@@ -741,6 +399,8 @@ LOCAL void telemetry_send_diag (void)
     diag.last_barcode_action = bstats.last_action;
     diag.task_alive_mask     = supervisor_alive_mask();
     diag.supervisor_passes   = supervisor_pass_count();
+    diag.stack_min_free      = g_stack_min_free;
+    diag.stack_min_task      = g_stack_min_task;
     diag.telem_queue_drops   = clamp_u16((uint32_t)telemetry_queue_drop_count());
     diag.net_queue_drops     = clamp_u16((uint32_t)telemetry_net_queue_drop_count());
     diag.telemetry_overruns  = clamp_u16(g_telemetry_overruns);
@@ -884,10 +544,10 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
 }
 
 /*!
- * @brief Hand a telemetry command to the supervisor (D120).
+ * @brief Hand a telemetry command to the supervisor.
  *
  * The supervisor decides. The emergency stop also acts here, at once: it
- * never waits for the next supervisor pass (D75). The latch needs a reboot.
+ * never waits for the next supervisor pass. The latch needs a reboot.
  */
 LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
 {
@@ -927,7 +587,7 @@ static uint8_t g_connection_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN))
 static uint8_t g_barcode_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
 static uint8_t g_supervisor_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
 
-/* Stack marks (Q25). Before any task exists, every stack is filled with a
+/* Stack marks. Before any task exists, every stack is filled with a
  * known byte. The supervisor reads how much of each stack is still untouched,
  * counted from the deep end, and logs the smallest margins. */
 #define STACK_FILL_BYTE   (0xA5U)
@@ -977,15 +637,24 @@ LOCAL void stack_report (void)
     uint32_t        thin    = 0U;
 
     s_calls++;
-    if (0U != (s_calls % STACK_REPORT_CALLS))
+    /* The first call scans too, so the diag packet has marks after 1 s. */
+    if ((1U != s_calls) && (0U != (s_calls % STACK_REPORT_CALLS)))
     {
         return;
     }
     for (idx = 0U; idx < STACK_COUNT; idx++)
     {
-        if (stack_free(idx) < STACK_MIN_FREE)
+        uint32_t const free_bytes = stack_free(idx);
+
+        if (free_bytes < STACK_MIN_FREE)
         {
             thin |= (1UL << idx);
+        }
+        /* Keep the smallest mark for telemetry (no scan per packet). */
+        if (free_bytes < g_stack_min_free)
+        {
+            g_stack_min_free = (uint16_t)free_bytes;
+            g_stack_min_task = (uint8_t)idx;
         }
     }
     LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
@@ -1246,7 +915,7 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
 {
     bool b_ok = true;
 
-    /* D62/D70: this composition root creates every task. Subsystems only
+    /* This composition root creates every task. Subsystems only
      * prepare their resources and expose a task body. */
     p_tasks->startup_tid = tk_cre_tsk(&g_ctsk_startup);
     if (!made("tsk(startup)", p_tasks->startup_tid))
