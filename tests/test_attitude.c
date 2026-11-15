@@ -1,7 +1,7 @@
 /*
  *	test_attitude.c
- *	Host tests for lift and overturn detection: the eight traces of
- *	the project notes, and a bump that must not count.
+ *	Host tests for lift and overturn detection: eight traces,
+ *	and a bump that must not count.
  */
 
 #include <math.h>
