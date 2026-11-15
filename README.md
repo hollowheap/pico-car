@@ -69,17 +69,16 @@ The opt-in bring-up targets build with `make physics_check` or
 
 ## Ground station
 
-`deploy/ground-station.sh up` builds and starts the MQTT broker, the bridge and
-the dashboard as containers (podman, `deploy/compose.yaml`). It puts the
-dashboard and the bridge on the tailnet, each on the first free port from 8080
-up, and prints both addresses. `down` stops it and removes the mappings;
-`status` shows both. Running `up` again keeps the same addresses. The broker
-config is `host/broker/mosquitto.conf`.
+`podman-compose -f deploy/compose.yaml up -d --build` builds and starts the MQTT
+broker, the bridge and the dashboard as containers. The dashboard is at
+`http://127.0.0.1:5281` and the bridge at `http://127.0.0.1:5280`.
+`podman-compose -f deploy/compose.yaml down` stops them. The broker config is
+`host/broker/mosquitto.conf`.
 
 The broker publishes TCP `1883` on every interface so the car reaches it on the
 Wi-Fi; allow it in the host firewall. The bridge and the dashboard listen on the
-loopback only and are reachable on the tailnet, not on the Wi-Fi. The dashboard
-build holds the bridge address, so `up` rebuilds it when the address changes.
+loopback only. The dashboard build holds the bridge address, so rebuild it with
+`--build` after you change `BRIDGE_LOCAL_PORT`.
 
 ## Telemetry
 
@@ -116,11 +115,9 @@ empty SSID keeps `TM_WIFI_JOIN=0`.
 
 ## Tests
 
-The hardware smoke test plan is in [`docs/smoke-test.md`](docs/smoke-test.md).
 The measurement benches (`car_bench`, `wdt_check`, `physics_check`,
-`obstacle_bench`) are in [`docs/bench.md`](docs/bench.md);
-`tools/bench_summary.py` reads their logs. The supervisor, its commands and its
-health checks are in [`docs/supervisor.md`](docs/supervisor.md).
+`obstacle_bench`) build to `build/*.uf2`; `tools/bench_summary.py` reads their
+logs.
 
 Host tests build out of tree:
 

@@ -77,6 +77,8 @@ add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
 
 add_executable(test_obstacle_bypass_sim test_obstacle_bypass_sim.c
     ${OBSTACLE_SRC}/geometry.c
+    ${OBSTACLE_SRC}/follow.c
+    ${OBSTACLE_SRC}/nav_core.c
     ${OBSTACLE_SRC}/statechart.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
@@ -85,6 +87,26 @@ target_compile_options(test_obstacle_bypass_sim PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_obstacle_bypass_sim PRIVATE m)
 add_test(NAME obstacle_bypass_sim COMMAND test_obstacle_bypass_sim)
+
+add_executable(test_obstacle_nav_core test_obstacle_nav_core.c
+    ${OBSTACLE_SRC}/geometry.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c
+    ${OBSTACLE_SRC}/nav_core.c)
+target_include_directories(test_obstacle_nav_core PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_nav_core PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_nav_core COMMAND test_obstacle_nav_core)
+
+add_executable(test_obstacle_follow test_obstacle_follow.c
+    ${OBSTACLE_SRC}/geometry.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c
+    ${OBSTACLE_SRC}/follow.c)
+target_include_directories(test_obstacle_follow PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_follow PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_follow COMMAND test_obstacle_follow)
 
 # D95: the STEER-word hug law and everything only it used are gone.
 add_test(NAME obstacle_hug_law_removed
@@ -161,6 +183,35 @@ target_compile_options(test_line_control PRIVATE
 target_link_libraries(test_line_control PRIVATE m)
 add_test(NAME line_control COMMAND test_line_control)
 
+add_executable(test_pilot_sim test_pilot_sim.c pilot_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+target_include_directories(test_pilot_sim PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_pilot_sim PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_pilot_sim PRIVATE m)
+add_test(NAME pilot_sim COMMAND test_pilot_sim)
+
+add_executable(test_pilot_drive test_pilot_drive.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c)
+target_include_directories(test_pilot_drive PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_pilot_drive PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME pilot_drive COMMAND test_pilot_drive)
+
+add_executable(test_pilot_avoid test_pilot_avoid.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoid.c
+    ${OBSTACLE_SRC}/geometry.c)
+target_include_directories(test_pilot_avoid PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${OBSTACLE_SRC})
+target_compile_options(test_pilot_avoid PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_pilot_avoid PRIVATE m)
+add_test(NAME pilot_avoid COMMAND test_pilot_avoid)
+
 add_executable(test_line_filter test_line_filter.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_filter.c)
 target_include_directories(test_line_filter PRIVATE
@@ -233,3 +284,14 @@ target_include_directories(test_barcode_action PRIVATE
 target_compile_options(test_barcode_action PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME barcode_action COMMAND test_barcode_action)
+
+add_executable(test_motion_controller test_motion_controller.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/controller.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/pid.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/odometry.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/encoder_math.c)
+target_include_directories(test_motion_controller PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion)
+target_compile_options(test_motion_controller PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME motion_controller COMMAND test_motion_controller)

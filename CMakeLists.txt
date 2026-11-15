@@ -334,7 +334,7 @@ target_include_directories(telemetry PUBLIC include PRIVATE
 target_link_libraries(telemetry PUBLIC platform mtk3smp)
 target_compile_options(telemetry PRIVATE ${FIRMWARE_WARNINGS})
 
-# D120, D160: the supervisor. The first three files are pure and host-tested.
+# the supervisor. The first three files are pure and host-tested.
 add_library(supervisor STATIC
     src/supervisor/command_ring.c
     src/supervisor/health_core.c
@@ -346,10 +346,10 @@ target_include_directories(supervisor PUBLIC include PRIVATE src/supervisor)
 target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle physics mtk3smp)
 target_compile_options(supervisor PRIVATE ${FIRMWARE_WARNINGS})
 
-# The hardware watchdog (D160) is off by default. Turn it on only after you have
-# checked that the H-bridge inputs stay low across a chip reset (docs/supervisor.md,
-# test W1): ./configure.sh -DPICO_CAR_WATCHDOG=ON
-option(PICO_CAR_WATCHDOG "Start the RP2040 watchdog in the supervisor" OFF)
+# The hardware watchdog is on by default. A watchdog reset returns the
+# motor pins to inputs with pull-downs, so the H-bridge inputs read low. Turn it
+# off for a debug build: ./configure.sh -DPICO_CAR_WATCHDOG=OFF
+option(PICO_CAR_WATCHDOG "Start the RP2040 watchdog in the supervisor" ON)
 if(PICO_CAR_WATCHDOG)
     target_compile_definitions(supervisor PRIVATE PICO_CAR_WATCHDOG)
 endif()
@@ -384,10 +384,23 @@ add_library(track STATIC
     src/track/barcode_width.c
     src/track/line_control.c
     src/track/line_filter.c
+    src/track/line_task.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(track PUBLIC platform barcode motion_service telemetry supervisor mtk3smp)
+target_link_libraries(track PUBLIC platform barcode motion_service telemetry supervisor obstacle_nav mtk3smp)
 target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
+
+# The pilot: one owner of the wheels. Pure logic, not linked into main.uf2 yet.
+add_library(pilot STATIC
+    src/pilot/pilot.c
+    src/pilot/drive.c
+    src/pilot/avoid.c
+    src/track/line_control.c
+)
+target_include_directories(pilot PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/src/navigation/obstacle)
+target_link_libraries(pilot PUBLIC platform obstacle)
+target_compile_options(pilot PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(barcode STATIC
     src/barcode/action.c
@@ -445,6 +458,8 @@ add_library(obstacle STATIC
     src/navigation/obstacle/geometry.c
     src/navigation/obstacle/scan_algo.c
     src/navigation/obstacle/planner.c
+    src/navigation/obstacle/follow.c
+    src/navigation/obstacle/nav_core.c
     src/navigation/obstacle/statechart.c
     src/navigation/obstacle/comms.c
     src/navigation/obstacle/scan_hw.c
@@ -486,7 +501,7 @@ target_compile_options(obstacle_nav PRIVATE
 target_link_libraries(main PRIVATE obstacle_nav supervisor)
 
 # Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
-# part of main.uf2. docs/bench.md says what each one measures.
+# part of main.uf2.
 add_executable(car_bench src/bench/car_bench.c)
 target_include_directories(car_bench PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(car_bench PRIVATE track motion_service platform supervisor mtk3smp)
