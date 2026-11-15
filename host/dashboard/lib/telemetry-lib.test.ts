@@ -70,6 +70,26 @@ describe('events', () => {
     expect(describeEvent(0x40, 11, 0).detail).toBe('Car lifted');
   });
 
+  it('names an obstacle stop: the echo for a sonar cause, the reason for a bypass that gave up', () => {
+    expect(describeEvent(0x24, 7, 2).detail).toBe('cause collision; echo too close');
+    expect(describeEvent(0x24, 15, 2).detail).toBe('cause bypass gave up: no progress');
+    expect(describeEvent(0x24, 15, 3).detail).toBe('cause bypass gave up: wheel stall');
+  });
+
+  it('names a block on the track with its length', () => {
+    const text = describeEvent(0x15, 120, 0);
+    expect(text.title).toBe('Block on the track');
+    expect(text.detail).toBe('black for 120 mm; not a barcode');
+    expect(text.kind).toBe('barcode');
+  });
+
+  it('tells the start of a line search from the stop at its end', () => {
+    expect(describeEvent(0x18, 1, 0).detail).toBe('last seen on the left; the car turns on the spot to find it');
+    const stop = describeEvent(0x18, 2, 135);
+    expect(stop.title).toBe('Line search stopped');
+    expect(stop.detail).toBe('no line in a 135 degree turn each way; last seen on the right');
+  });
+
   it('falls back for a type the schema lacks, without inventing a name', () => {
     expect(eventName(0x77)).toBe('unknown');
     expect(describeEvent(0x77, 1, 2).title).toBe('Event 119');
@@ -192,5 +212,13 @@ describe('run summary', () => {
     expect(summary.durationS).toBe(5);
     expect(summary.averageMms).toBe(160);
     expect(summary).toMatchObject({ turns: 1, barcodesOk: 1, barcodesRefused: 1, humps: 1, tallestHumpMm: 55, faults: 1, faultBits: [4] });
+  });
+
+  it('counts a line loss once when the search also stops at its limit', () => {
+    let store = emptyStore();
+    store = reduceStore(store, event(1, 0x02, 0, 0, 0, 1000));
+    store = reduceStore(store, event(2, 0x18, 1, 0, 100, 2000));
+    store = reduceStore(store, event(3, 0x18, 1, 1000, 1000, 9000));
+    expect(summarizeRun(store.trail, store.events).lineLosses).toBe(1);
   });
 });

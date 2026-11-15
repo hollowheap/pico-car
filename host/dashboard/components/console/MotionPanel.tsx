@@ -5,7 +5,7 @@ import type { PanelStatus } from '../../lib/panel-state';
 import { enumLabel } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
 import { withUnit } from './format';
-import { Panel } from './Panel';
+import { Panel, useDense } from './Panel';
 import { StatusPill } from './StatusPill';
 import { Sparkline } from './Sparkline';
 
@@ -17,7 +17,7 @@ type Props = {
   style?: StyleProp<ViewStyle>;
 };
 
-/** The bars stop at this speed (mm/s). The follower caps the wheel targets near 163. */
+/** The bars stop at this speed (mm/s): the follower cruise and the motor target cap. */
 const BAR_FULL_MMS = 300;
 /** Two targets this close count as one straight run, so a speed difference is slip. */
 const STRAIGHT_BAND_MMS = 10;
@@ -56,6 +56,7 @@ function Wheel({ name, speed, target, duty }: WheelProps) {
  */
 export function MotionPanel({ motion, speeds, status, style }: Props) {
   const theme = useTheme();
+  const dense = useDense();
   const v = motion?.values;
   const straight =
     v?.left_target_mms !== undefined && v.right_target_mms !== undefined &&
@@ -81,7 +82,7 @@ export function MotionPanel({ motion, speeds, status, style }: Props) {
       <Wheel duty={v?.left_duty_pm} name="LEFT" speed={v?.left_mms} target={v?.left_target_mms} />
       <Wheel duty={v?.right_duty_pm} name="RIGHT" speed={v?.right_mms} target={v?.right_target_mms} />
       <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        Bar: speed. Blue mark: target.{' '}
+        {dense ? '' : 'Bar: speed. Blue mark: target. '}
         {slip === null ? 'Slip shows on a straight run.' : `Wheel difference on this straight run: ${slip} mm/s.`}{' '}
         Missed control ticks: {v?.overruns ?? '--'}.
       </Text>
@@ -108,7 +109,7 @@ const styles = StyleSheet.create({
   name: { letterSpacing: 1 },
   bar: { height: 12, position: 'relative' },
   fill: { bottom: 0, left: 0, position: 'absolute', top: 0 },
-  target: { bottom: 0, position: 'absolute', top: 0, width: 3 },
+  target: { bottom: 0, position: 'absolute', top: 0, width: 4 },
   value: { fontVariant: ['tabular-nums'] },
   trace: { gap: 4 },
   traceHead: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },

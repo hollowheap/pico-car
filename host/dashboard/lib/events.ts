@@ -1,6 +1,6 @@
 import { COMMANDS, ENUMS } from './schema.generated';
 import { FAULT_META } from './faults';
-import { enumLabel } from './schema';
+import { enumLabel, obstacleCauseLabel } from './schema';
 
 /** What the event row draws, and what the course trace uses for its mark. */
 export type EventKind =
@@ -81,6 +81,8 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     }
     case 'barcodeBad':
       return { kind: 'barcode', title: 'Barcode refused', detail: word(BARCODE_BAD, p1, 'reason ' + p1) };
+    case 'barcodeBlock':
+      return { kind: 'barcode', title: 'Block on the track', detail: `black for ${p1} mm; not a barcode` };
     case 'turnStart':
       return { kind: 'turn', title: `${word(TURNS, p1)} started`, detail: '' };
     case 'turnDone':
@@ -88,7 +90,10 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     case 'turnAbort':
       return { kind: 'turn', title: `${word(TURNS, p1)} aborted`, detail: `after ${p2} ms` };
     case 'lineLost':
-      return { kind: 'line', title: 'Line lost', detail: `last seen on the ${word(SIDES, p1)}; the car weaves` };
+      // Sent again with the search turn in degrees in p2 when the car stops.
+      return p2 === 0
+        ? { kind: 'line', title: 'Line lost', detail: `last seen on the ${word(SIDES, p1)}; the car turns on the spot to find it` }
+        : { kind: 'line', title: 'Line search stopped', detail: `no line in a ${p2} degree turn each way; last seen on the ${word(SIDES, p1)}` };
     case 'lineFound':
       return { kind: 'line', title: 'Line found', detail: `after ${p2} mm; last seen on the ${word(SIDES, p1)}` };
     case 'obstacleSeen':
@@ -100,10 +105,14 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     case 'bypassEnd':
       return { kind: 'obstacle', title: 'Bypass ended', detail: 'back on the line' };
     case 'obstacleStop':
+      // p2 is the give-up reason for cause bypass_gave_up, the echo class for every other cause.
       return {
         kind: 'obstacle',
         title: 'Obstacle stop',
-        detail: `cause ${enumLabel('obstacleCause', p1).toLowerCase()}; echo ${enumLabel('echoClass', p2).toLowerCase()}`,
+        detail:
+          p1 === ENUMS.obstacleCause.bypassGaveUp
+            ? `cause ${obstacleCauseLabel(p1, p2).toLowerCase()}`
+            : `cause ${enumLabel('obstacleCause', p1).toLowerCase()}; echo ${enumLabel('echoClass', p2).toLowerCase()}`,
       };
     case 'humpStart':
       return { kind: 'hump', title: 'Hump started', detail: '' };

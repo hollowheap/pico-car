@@ -16,11 +16,11 @@ export type ThemeColors = {
 /* Dark is the documented REKKI source. The light set derives a near-white
  * surface stack while keeping Signal Blue as the single accent. */
 const darkColors: ThemeColors = {
-  canvas: '#000000',
+  canvas: '#050505',
   card: '#0d0d0d',
   elevated: '#1f1f1f',
-  text: '#ffffff',
-  muted: '#858585',
+  text: '#f7f7f5',
+  muted: '#8a8a8a',
   border: 'rgba(255, 255, 255, 0.12)',
   accent: '#0063e1',
   onAccent: '#ffffff',
@@ -62,7 +62,7 @@ export const radii = {
 export const typography = {
   caption: {
     fontSize: 12,
-    lineHeight: 14,
+    lineHeight: 16,
     letterSpacing: -0.06,
     fontWeight: '400' as const,
   },
@@ -92,7 +92,7 @@ export const typography = {
   },
   headingLg: {
     fontSize: 56,
-    lineHeight: 70,
+    lineHeight: 73,
     letterSpacing: -2.24,
     fontWeight: '400' as const,
   },

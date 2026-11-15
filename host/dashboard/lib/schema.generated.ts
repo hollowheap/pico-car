@@ -87,7 +87,7 @@ export const PACKETS = {
     ],
   },
   diag: {
-    wireSize: 34,
+    wireSize: 37,
     fields: [
         { name: 'sticky_faults', offset: 0, type: 'uint16' },
         { name: 'task_alive_mask', offset: 2, type: 'uint16' },
@@ -111,6 +111,8 @@ export const PACKETS = {
         { name: 'line_edges_per_s', offset: 30, type: 'uint8' },
         { name: 'line_raw_edges_per_s', offset: 31, type: 'uint8' },
         { name: 'supervisor_passes', offset: 32, type: 'uint16' },
+        { name: 'stack_min_free', offset: 34, type: 'uint16' },
+        { name: 'stack_min_task', offset: 36, type: 'uint8' },
     ],
   },
   heartbeat: {
@@ -171,6 +173,7 @@ export const EVENTS = {
   turnStart: 18,
   turnDone: 19,
   turnAbort: 20,
+  barcodeBlock: 21,
   lineLost: 24,
   lineFound: 25,
   obstacleSeen: 32,
@@ -268,6 +271,14 @@ export const ENUMS = {
     lineTimeout: 12,
     initFail: 13,
     echoNoise: 14,
+    bypassGaveUp: 15,
+  },
+  bypassReason: {
+    none: 0,
+    circled: 1,
+    noProgress: 2,
+    wheelStall: 3,
+    echoLost: 4,
   },
   echoClass: {
     valid: 0,
@@ -342,6 +353,7 @@ export const ENUMS = {
     turnStart: 18,
     turnDone: 19,
     turnAbort: 20,
+    barcodeBlock: 21,
     lineLost: 24,
     lineFound: 25,
     obstacleSeen: 32,

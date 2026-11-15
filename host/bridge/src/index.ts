@@ -8,7 +8,7 @@ import { loadProtocolSchema } from "./schema.js";
 
 const config = loadConfig();
 const schema = loadProtocolSchema(config.schemaPath);
-const history = createHistoryStore(config.historyPath, config.historyMaxRecords);
+const history = createHistoryStore(config.historyPath, config.historyMaxRecords, config.historyMaxEvents);
 let live: ReturnType<typeof createLiveServer> | null = null;
 const ingest = createMqttIngest(config, schema, (packet, topic) => {
   const timestamp = Date.now();

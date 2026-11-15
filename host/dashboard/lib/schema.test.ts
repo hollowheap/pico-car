@@ -4,6 +4,9 @@ import {
   decodePacket,
   enumLabel,
   heartbeatAgeMs,
+  obstacleCauseLabel,
+  obstacleFaultBits,
+  obstacleStopReason,
   type PacketName,
 } from './schema';
 import vectors from '../../../protocol/vectors.json';
@@ -67,5 +70,22 @@ describe('wire schema', () => {
     expect(enumLabel('motionClass', 99)).toBe('UNKNOWN 99');
     expect(bitLabels('obstacleFaults', 0b1001)).toEqual(['NO ECHO', 'NO SAFE PATH']);
     expect(bitLabels('physicsFaults', 0)).toEqual([]);
+  });
+
+  it('reads the bypass give-up reason from bits 12 to 14 of the obstacle faults', () => {
+    const faults = (2 << 12) | 0b1001;
+    expect(obstacleStopReason(faults)).toBe(2);
+    expect(obstacleStopReason(undefined)).toBe(0);
+    expect(obstacleFaultBits(faults)).toBe(0b1001);
+    expect(bitLabels('obstacleFaults', obstacleFaultBits(faults))).toEqual(['NO ECHO', 'NO SAFE PATH']);
+  });
+
+  it('names cause 15 with its reason, and other causes without one', () => {
+    expect(obstacleCauseLabel(15, 1)).toBe('BYPASS GAVE UP: CIRCLED');
+    expect(obstacleCauseLabel(15, 4)).toBe('BYPASS GAVE UP: ECHO LOST');
+    expect(obstacleCauseLabel(15, 0)).toBe('BYPASS GAVE UP');
+    expect(obstacleCauseLabel(15, 7)).toBe('BYPASS GAVE UP: UNKNOWN 7');
+    expect(obstacleCauseLabel(7, 3)).toBe('COLLISION');
+    expect(obstacleCauseLabel(undefined, 0)).toBe('--');
   });
 });

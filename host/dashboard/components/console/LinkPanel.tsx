@@ -6,7 +6,7 @@ import { enumLabel, heartbeatAgeMs } from '../../lib/schema';
 import { statusLossPercent, type TelemetryStore } from '../../lib/telemetry-store';
 import { useTheme } from '../../lib/theme-provider';
 import { formatAge } from './format';
-import { Panel } from './Panel';
+import { Panel, useDense } from './Panel';
 
 type Props = {
   snapshot: LinkSnapshot;
@@ -22,10 +22,11 @@ const RSSI_FULL = -30;
 
 function Row({ label, value }: { label: string; value: string }) {
   const theme = useTheme();
+  const text = useDense() ? theme.typography.caption : theme.typography.body;
   return (
     <View style={styles.row}>
-      <Text style={[theme.typography.body, { color: theme.colors.muted }]}>{label}</Text>
-      <Text style={[theme.typography.body, styles.value, { color: theme.colors.text }]}>{value}</Text>
+      <Text style={[text, { color: theme.colors.muted }]}>{label}</Text>
+      <Text style={[text, styles.value, { color: theme.colors.text }]}>{value}</Text>
     </View>
   );
 }
@@ -39,26 +40,41 @@ export function LinkPanel({ snapshot, store, nowMs, status, style }: Props) {
   const rssi = hb?.wifi_rssi;
   const bar = rssi === undefined ? 0 : Math.max(0, Math.min(1, (rssi - RSSI_EMPTY) / (RSSI_FULL - RSSI_EMPTY)));
   const hbAge = store.latest.heartbeat === undefined ? null : heartbeatAgeMs(nowMs, store.latest.heartbeat.timestamp);
+  const dense = useDense();
   const reset = hb === undefined ? '--' : enumLabel('resetReason', hb.reset_reason).toLowerCase();
 
   return (
     <Panel icon="link" status={status} style={style} testID="link-panel" title="Link">
-      <View
-        accessibilityLabel={`Signal ${rssi ?? 'unknown'} dBm`}
-        accessibilityRole="progressbar"
-        style={[styles.bar, { backgroundColor: theme.colors.elevated, borderRadius: theme.radii.nav }]}
-      >
-        <View style={[styles.fill, { backgroundColor: theme.colors.text, width: `${bar * 100}%` }]} />
-      </View>
-      <Row label="Signal" value={rssi === undefined ? '--' : `${rssi} dBm`} />
+      {dense ? null : (
+        <View
+          accessibilityLabel={`Signal ${rssi ?? 'unknown'} dBm`}
+          accessibilityRole="progressbar"
+          style={[styles.bar, { backgroundColor: theme.colors.elevated, borderRadius: theme.radii.nav }]}
+        >
+          <View style={[styles.fill, { backgroundColor: theme.colors.text, width: `${bar * 100}%` }]} />
+        </View>
+      )}
+      {/* The status rail already shows the signal, the links and the heartbeat age. */}
+      {dense ? null : (
+        <>
+          <Row label="Signal" value={rssi === undefined ? '--' : `${rssi} dBm`} />
+          <Row label="Dashboard link" value={snapshot.status} />
+          <Row label="Bridge to MQTT" value={snapshot.bridge?.mqtt ?? 'unknown'} />
+          <Row label="Heartbeat age" value={formatAge(hbAge)} />
+        </>
+      )}
       <Row label="Link state" value={hb === undefined ? '--' : enumLabel('linkState', hb.link_state).toLowerCase()} />
-      <Row label="Dashboard link" value={snapshot.status} />
-      <Row label="Bridge to MQTT" value={snapshot.bridge?.mqtt ?? 'unknown'} />
-      <Row label="Heartbeat age" value={formatAge(hbAge)} />
       <Row label="Frames lost (status)" value={loss === null ? '--' : `${loss.toFixed(1)} %`} />
       <Row label="Car uptime" value={hb === undefined ? '--' : `${hb.uptime_s} s`} />
       <Row label="Last reset" value={reset} />
-      <Row label="Queue drops" value={`${hb?.drops ?? '--'} (since boot, car) · ${diag?.telem_queue_drops ?? '--'} telemetry · ${diag?.net_queue_drops ?? '--'} network`} />
+      {dense ? (
+        <Row
+          label="Queue drops: car, telemetry, network"
+          value={`${hb?.drops ?? '--'} · ${diag?.telem_queue_drops ?? '--'} · ${diag?.net_queue_drops ?? '--'}`}
+        />
+      ) : (
+        <Row label="Queue drops" value={`${hb?.drops ?? '--'} (since boot, car) · ${diag?.telem_queue_drops ?? '--'} telemetry · ${diag?.net_queue_drops ?? '--'} network`} />
+      )}
     </Panel>
   );
 }

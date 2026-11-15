@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { createContext, useContext, type ReactNode } from 'react';
+import { ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { PanelStatus } from '../../lib/panel-state';
 import { PanelIcon, type IconName } from './PanelIcon';
@@ -14,16 +14,35 @@ type Props = {
   status?: PanelStatus;
   testID?: string;
   icon?: IconName;
+  /** In a fill cell: no scroller; the body stretches so a drawing in it can scale to the cell. */
+  stretch?: boolean;
 };
 
 /**
- * A card with a heading. A panel that has no data shows one line that says why
- * instead of zeros. A stale panel keeps its values, dimmed, with STALE in the heading.
+ * True inside a fixed-height grid: a panel then fills its cell and its body
+ * scrolls inside the panel, so the page itself never scrolls.
  */
-export function Panel({ title, right, children, style, status, testID, icon }: Props) {
+export const PanelFill = createContext(false);
+
+/** True inside the one-screen grid: drop captions, use smaller type. */
+export const PanelDense = createContext(false);
+
+export function useDense(): boolean {
+  return useContext(PanelDense);
+}
+
+/**
+ * A card with a heading. A panel that has no data shows one line that says why
+ * instead of zeros. A stale panel keeps its values at full contrast, with STALE in
+ * the heading (dimming the body put muted text below a readable contrast).
+ */
+export function Panel({ title, right, children, style, status, testID, icon, stretch = false }: Props) {
   const theme = useTheme();
   const kind = status?.kind ?? 'ready';
   const showBody = kind === 'ready' || kind === 'stale';
+  const fill = useContext(PanelFill);
+  const dense = useContext(PanelDense);
+  const bodyStyle = [styles.body, dense ? styles.bodyFill : null];
 
   return (
     <View
@@ -35,16 +54,18 @@ export function Panel({ title, right, children, style, status, testID, icon }: P
           backgroundColor: theme.colors.card,
           borderColor: theme.colors.border,
           borderRadius: theme.radii.card,
-          padding: theme.spacing.lg,
+          padding: dense ? theme.spacing.md : theme.spacing.lg,
         },
+        dense ? styles.dense : null,
+        fill ? styles.fill : null,
         style,
       ]}
       testID={testID}
     >
-      <View style={[styles.head, { borderColor: theme.colors.border }]}>
+      <View style={[styles.head, dense ? styles.headFill : null, { borderColor: theme.colors.border }]}>
         <View style={styles.title}>
           {icon ? <PanelIcon name={icon} /> : null}
-          <Text accessibilityRole="header" style={[theme.typography.headingSm, { color: theme.colors.text }]}>
+          <Text accessibilityRole="header" aria-level={2} style={[dense ? theme.typography.subheading : theme.typography.headingSm, { color: theme.colors.text }]}>
             {title}
           </Text>
         </View>
@@ -72,7 +93,13 @@ export function Panel({ title, right, children, style, status, testID, icon }: P
           {status.message}
         </Text>
       ) : null}
-      {showBody ? <View style={[styles.body, kind === 'stale' ? styles.stale : null]}>{children}</View> : null}
+      {showBody && fill && stretch ? <View style={[bodyStyle, styles.scroll]}>{children}</View> : null}
+      {showBody && fill && !stretch ? (
+        <ScrollView contentContainerStyle={bodyStyle} style={styles.scroll}>
+          {children}
+        </ScrollView>
+      ) : null}
+      {showBody && !fill ? <View style={bodyStyle}>{children}</View> : null}
     </View>
   );
 }
@@ -86,10 +113,14 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     borderBottomWidth: 1,
-    paddingBottom: 12,
+    paddingBottom: 16,
   },
   title: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   right: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   body: { gap: 12 },
-  stale: { opacity: 0.5 },
+  bodyFill: { gap: 8 },
+  dense: { gap: 8 },
+  fill: { flex: 1, minHeight: 0 },
+  headFill: { paddingBottom: 8 },
+  scroll: { flex: 1, minHeight: 0 },
 });

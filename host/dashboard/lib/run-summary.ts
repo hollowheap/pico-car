@@ -56,7 +56,8 @@ export function summarizeRun(trail: TrailPoint[], events: EventRow[]): RunSummar
     humps: humps.length,
     tallestHumpMm: humps.reduce((tallest, event) => Math.max(tallest, event.p1), 0),
     lifts: count('liftStart'),
-    lineLosses: count('lineLost'),
+    // A second line_lost with p2 > 0 marks the stop at the end of the search, not a new loss.
+    lineLosses: inRun.filter((event) => event.name === 'lineLost' && event.p2 === 0).length,
     faults: count('faultSet'),
     faultBits: [...bits].sort((a, b) => a - b),
     stops: count('runStop'),

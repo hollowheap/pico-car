@@ -17,6 +17,8 @@ type Props = {
   nowMs: number;
   /** The banner, shown at the right end of the rail so it never pushes the page down. */
   aside?: ReactNode;
+  /** Smaller type and padding, for the one-screen layout. */
+  compact?: boolean;
 };
 
 function Metric({
@@ -40,7 +42,7 @@ function Metric({
   );
 }
 
-export function StatusRail({ snapshot, overview, latest, nowMs, aside }: Props) {
+export function StatusRail({ snapshot, overview, latest, nowMs, aside, compact = false }: Props) {
   const theme = useTheme();
   const lastStatus = latest.status;
   const lastHeartbeat = latest.heartbeat;
@@ -86,6 +88,7 @@ export function StatusRail({ snapshot, overview, latest, nowMs, aside }: Props) 
       accessibilityRole="summary"
       style={[
         styles.rail,
+        compact ? styles.railCompact : null,
         {
           backgroundColor: theme.colors.card,
           borderColor: theme.colors.border,
@@ -93,24 +96,27 @@ export function StatusRail({ snapshot, overview, latest, nowMs, aside }: Props) 
         },
       ]}
     >
-      <View style={styles.hero}>
-        <Text style={[theme.typography.label, { color: theme.colors.muted }]}>MODE</Text>
-        <Text style={[theme.typography.heading, styles.mode, { color: theme.colors.text }]}>
+      <View style={[styles.hero, compact ? styles.heroCompact : null]}>
+        {compact ? null : <Text style={[theme.typography.label, { color: theme.colors.muted }]}>MODE</Text>}
+        <Text
+          accessibilityLabel={`Mode ${lastStatus === undefined ? 'unknown' : mode}`}
+          style={[compact ? theme.typography.headingSm : theme.typography.heading, styles.mode, { color: theme.colors.text }]}
+        >
           {lastStatus === undefined ? '--' : mode}
         </Text>
-        <View style={styles.pills}>
+        <View style={[styles.pills, compact ? styles.pillsCompact : null]}>
           <StatusPill label={lastStatus === undefined ? 'NO DATA' : state} tone={state === 'RUNNING' ? 'active' : 'neutral'} />
           <StatusPill label={overview.health.toUpperCase()} tone={healthTone} />
         </View>
       </View>
-      <View style={[styles.speed, { borderColor: theme.colors.border }]}>
-        <Text style={[theme.typography.label, { color: theme.colors.muted }]}>SPEED</Text>
-        <Text style={[theme.typography.headingLg, styles.number, { color: theme.colors.text }]}>
+      <View style={[styles.speed, compact ? styles.speedCompact : null, { borderColor: theme.colors.border }]}>
+        {compact ? null : <Text style={[theme.typography.label, { color: theme.colors.muted }]}>SPEED</Text>}
+        <Text style={[compact ? theme.typography.heading : theme.typography.headingLg, styles.number, { color: theme.colors.text }]}>
           {speed ?? '--'}
           <Text style={[theme.typography.body, { color: theme.colors.muted }]}> mm/s</Text>
         </Text>
       </View>
-      <View style={styles.metrics}>
+      <View style={[styles.metrics, compact ? styles.metricsCompact : null]}>
         <Metric label="LINK" value={snapshot.status.toUpperCase()} color={linkColor} />
         <Metric label="BRIDGE" value={bridgeValue} color={bridgeColor} />
         <Metric label="HOLD" value={holdText} color={holds.length > 0 ? theme.colors.text : theme.colors.muted} />
@@ -149,4 +155,9 @@ const styles = StyleSheet.create({
   },
   metrics: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 20, minWidth: 260 },
   metric: { gap: 2, minWidth: 84 },
+  railCompact: { gap: 20, paddingHorizontal: 20, paddingVertical: 12 },
+  heroCompact: { alignItems: 'center', flexDirection: 'row', gap: 10, minWidth: 0 },
+  pillsCompact: { marginTop: 0 },
+  speedCompact: { minWidth: 0, paddingLeft: 16 },
+  metricsCompact: { gap: 16 },
 });

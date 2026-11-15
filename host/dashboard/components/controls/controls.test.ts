@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { confirmControl, encodeCommand } from './controls';
+import { confirmControl, encodeCommand, needsConfirm } from './controls';
 
 describe('controls', () => {
   it('requires confirmation', () => {
@@ -14,6 +14,15 @@ describe('controls', () => {
       allowed: false,
       reason: 'emergency latch is set',
     });
+  });
+
+  it('sends an emergency stop on one press, and asks before anything else', () => {
+    expect(needsConfirm('estop')).toBe(false);
+    expect(confirmControl('estop', false, false).allowed).toBe(true);
+    expect(confirmControl('estop', false, true).allowed).toBe(true);
+    for (const action of ['start', 'stop', 'reset', 'left', 'right', 'uturn', 'straight', 'recalibrate'] as const) {
+      expect(needsConfirm(action)).toBe(true);
+    }
   });
 
   it('allows confirmed start and stop', () => {

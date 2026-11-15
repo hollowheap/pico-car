@@ -6,11 +6,11 @@ colors:
   signal-blue: "#0063e1"
   on-accent: "#ffffff"
 
-  dark-canvas: "#000000"
+  dark-canvas: "#050505"
   dark-card: "#0d0d0d"
   dark-elevated: "#1f1f1f"
-  dark-text: "#ffffff"
-  dark-muted: "#858585"
+  dark-text: "#f7f7f5"
+  dark-muted: "#8a8a8a"
   dark-border: "rgba(255, 255, 255, 0.12)"
   dark-danger: "#ffb4ab"
   dark-danger-surface: "#2b2c2e"
@@ -38,7 +38,7 @@ typography:
     fontSize: "3.5rem"
     fontWeight: 400
     letterSpacing: "-0.04em"
-    lineHeight: 1.25
+    lineHeight: 1.3
   heading:
     fontFamily: "system-ui, sans-serif"
     fontSize: "1.5rem"
@@ -129,11 +129,11 @@ The dashboard follows the OS appearance. `app.json` sets
 
 | Role | Dark | Light |
 |---|---|---|
-| Canvas | `#000000` | `#f7f7f5` |
+| Canvas | `#050505` | `#f7f7f5` |
 | Card | `#0d0d0d` | `#ffffff` |
 | Elevated | `#1f1f1f` | `#eeeeee` |
-| Text | `#ffffff` | `#0d0d0d` |
-| Muted | `#858585` | `#52525b` |
+| Text | `#f7f7f5` | `#0d0d0d` |
+| Muted | `#8a8a8a` | `#52525b` |
 | Border | `rgba(255,255,255,0.12)` | `rgba(0,0,0,0.12)` |
 | Accent | `#0063e1` | `#0063e1` |
 | On accent | `#ffffff` | `#ffffff` |
@@ -189,14 +189,23 @@ Base unit: 4px.
 | xxl | 24px |
 | section | 80px |
 
-- One page. From top to bottom: the status rail, the banner, the commands, the
-  live instruments, the run summary, then the course trace and the events.
-  Long lists (the events) scroll inside their panel.
-- Desktop: 1440x900 reference. Three columns (motion, line and link; attitude
-  and obstacle; faults and tasks), then the run summary, then two columns
-  (course trace; events).
-- Mobile: 375x812 reference. Single column. The rail scrolls with the page; the
-  banner is the first thing under the rail.
+- One page.
+- Desktop: 1440x900 reference. From 1360 px of width the console uses a grid of
+  three columns of unequal width (5 : 4 : 3). It fits one screen at 1920x1080;
+  a shorter window scrolls the page.
+  - Header row: brand, status rail with the notice as plain text at its right
+    end, theme toggle. Then all the commands in one row, at the left.
+  - Column 1: motion beside attitude; then line and link beside obstacle.
+    Column 2: course trace, run summary, tasks. Column 3: faults, events.
+  - A panel takes the height of its content. A plot keeps its shape and is not
+    stretched. Only the event list takes the height that is left.
+  - Panels use the dense form: smaller type, no explanation captions.
+  - In each column one panel takes the height that is left. The scan plot and
+    the course trace scale to it. Only the event list scrolls, inside its panel.
+- A smaller window gets the scrolling page: rail, banner, commands, then every
+  panel in one column.
+- Mobile: 375x812 reference. The scrolling page. The banner sits inside the
+  rail.
 - A stale panel shows STALE in its heading and keeps its values, dimmed.
 - Page padding: 24px on mobile, 32px to 40px on desktop.
 - Group related items at 8px to 12px. Separate sections at 32px or 80px.
@@ -224,7 +233,8 @@ Base unit: 4px.
 
 ### Status pill
 
-- Short label, 12px 600, 59px pill radius, 4px by 12px padding.
+- Short label, 12px 600, with a 6px dot. No fill and no border: a filled pill
+  inside a panel is a card inside a card.
 - Always pair the color with text: `HEALTHY`, `FAULT`, `STALE`, `OFFLINE`,
   `READY`, `RUNNING`, `STOPPED`.
 - Do not use color alone. Do not add a decorative pulsing dot.
@@ -333,7 +343,6 @@ Base unit: 4px.
 
 ## 9. Impeccable anti-patterns
 
-The full negative prompt is in
-the project notes. It covers all 62 Impeccable
-detector rules: 31 slop and 31 quality. This file defines the positive system.
-The negative prompt defines what not to do. Both apply.
+The negative prompt covers all 62 Impeccable detector rules: 31 slop and 31
+quality. This file defines the positive system. The negative prompt defines
+what not to do. Both apply.

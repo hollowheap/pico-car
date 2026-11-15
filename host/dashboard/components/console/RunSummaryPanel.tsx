@@ -4,7 +4,7 @@ import { FAULT_META } from '../../lib/faults';
 import type { PanelStatus } from '../../lib/panel-state';
 import type { RunSummary } from '../../lib/run-summary';
 import { useTheme } from '../../lib/theme-provider';
-import { Panel } from './Panel';
+import { Panel, useDense } from './Panel';
 
 type Props = {
   summary: RunSummary;
@@ -21,10 +21,11 @@ function duration(seconds: number): string {
 
 function Item({ label, value }: { label: string; value: string }) {
   const theme = useTheme();
+  const dense = useDense();
   return (
-    <View style={styles.item}>
+    <View style={[styles.item, dense ? styles.itemDense : null]}>
       <Text style={[theme.typography.label, { color: theme.colors.muted }]}>{label}</Text>
-      <Text style={[theme.typography.heading, { color: theme.colors.text }]}>{value}</Text>
+      <Text style={[dense ? theme.typography.caption : theme.typography.heading, { color: theme.colors.text }]}>{value}</Text>
     </View>
   );
 }
@@ -36,11 +37,12 @@ function Item({ label, value }: { label: string; value: string }) {
  */
 export function RunSummaryPanel({ summary, status, style }: Props) {
   const theme = useTheme();
+  const dense = useDense();
   const faultNames = summary.faultBits.map((bit) => FAULT_META[bit]?.label ?? `bit ${bit}`);
 
   return (
     <Panel icon="run" status={status} style={style} testID="run-summary" title="Latest run">
-      <View style={styles.grid}>
+      <View style={[styles.grid, dense ? styles.gridDense : null]}>
         <Item label="DISTANCE" value={`${(summary.distanceMm / 1000).toFixed(2)} m`} />
         <Item label="TIME" value={duration(summary.durationS)} />
         <Item label="AVERAGE" value={`${Math.round(summary.averageMms)} mm/s`} />
@@ -52,7 +54,7 @@ export function RunSummaryPanel({ summary, status, style }: Props) {
         <Item label="LIFTED" value={`${summary.lifts} times`} />
         <Item label="STOPS" value={String(summary.stops)} />
       </View>
-      <Text style={[theme.typography.body, { color: summary.faults > 0 ? theme.colors.text : theme.colors.muted }]}>
+      <Text style={[dense ? theme.typography.caption : theme.typography.body, { color: summary.faults > 0 ? theme.colors.text : theme.colors.muted }]}>
         {summary.faults === 0 ? 'No fault was set.' : `${summary.faults} fault events: ${faultNames.join(', ')}.`}
       </Text>
     </Panel>
@@ -62,4 +64,6 @@ export function RunSummaryPanel({ summary, status, style }: Props) {
 const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
   item: { flexBasis: 150, flexGrow: 1, gap: 2 },
+  gridDense: { columnGap: 12, rowGap: 6 },
+  itemDense: { flexBasis: 90, gap: 0 },
 });

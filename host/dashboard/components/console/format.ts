@@ -1,5 +1,5 @@
 import type { LinkPacket } from '../../lib/link';
-import { enumLabel, headingDegrees } from '../../lib/schema';
+import { enumLabel, headingDegrees, obstacleCauseLabel, obstacleStopReason } from '../../lib/schema';
 
 export function faultHex(mask: number | undefined): string {
   if (mask === undefined) {
@@ -48,7 +48,7 @@ export function packetSummary(packet: LinkPacket): string {
     case 'obstacle':
       return (
         `obstacle ${enumLabel('obstacleState', values.state)}  dist ${values.dist_mm ?? '--'} mm  ` +
-        `cause ${enumLabel('obstacleCause', values.cause)}  echo ${enumLabel('echoClass', values.echo_class)}`
+        `cause ${obstacleCauseLabel(values.cause, obstacleStopReason(values.faults))}  echo ${enumLabel('echoClass', values.echo_class)}`
       );
     case 'diag':
       return (

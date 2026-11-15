@@ -14,6 +14,15 @@ describe('packet summaries', () => {
     expect(summary).toContain('echo TOO CLOSE');
   });
 
+  it('names the reason of a bypass that gave up', () => {
+    const summary = packetSummary({
+      timestamp: 1,
+      packet: 'obstacle',
+      values: { state: 0, cause: 15, echo_class: 1, dist_mm: 0, faults: 4 << 12 },
+    });
+    expect(summary).toContain('cause BYPASS GAVE UP: ECHO LOST');
+  });
+
   it('names the physics packet codes', () => {
     const summary = packetSummary({
       timestamp: 1,

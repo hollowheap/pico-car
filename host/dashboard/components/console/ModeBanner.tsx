@@ -8,6 +8,8 @@ type Props = {
   faults: number | undefined;
   /** Seconds since the last status packet, for the stale text. */
   statusAgeMs: number | null;
+  /** One short block for the status rail. */
+  compact?: boolean;
 };
 
 const BIT_ESTOP = 9;
@@ -45,8 +47,8 @@ export function bannerMessage(overview: Overview, faults: number | undefined): B
   return null;
 }
 
-/** A persistent banner for offline, stale, emergency, lift and overturn. Never a toast. It sits at the right end of the status rail. */
-export function ModeBanner({ overview, faults }: Props) {
+/** A persistent notice for offline, stale, emergency, lift and overturn. Never a toast. It sits at the right end of the status rail. */
+export function ModeBanner({ overview, faults, compact = false }: Props) {
   const theme = useTheme();
   const message = bannerMessage(overview, faults);
   if (message === null) return null;
@@ -58,20 +60,21 @@ export function ModeBanner({ overview, faults }: Props) {
       accessibilityRole="alert"
       style={[
         styles.banner,
-        {
-          backgroundColor: critical ? theme.colors.dangerSurface : theme.colors.elevated,
-          borderColor: critical ? theme.colors.danger : theme.colors.border,
-          borderRadius: theme.radii.card,
-        },
+        compact ? styles.bannerCompact : null,
       ]}
       testID="mode-banner"
     >
-      <Text style={[theme.typography.label, { color: critical ? theme.colors.danger : theme.colors.text }]}>{message.title}</Text>
-      <Text style={[theme.typography.body, { color: theme.colors.text }]}>{message.action}</Text>
+      <Text style={[theme.typography.label, { color: critical ? theme.colors.danger : theme.colors.muted }]}>{message.title}</Text>
+      <Text numberOfLines={compact ? 2 : undefined} style={[compact ? theme.typography.caption : theme.typography.body, { color: theme.colors.text }]}>
+        {message.action}
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  banner: { borderWidth: 1, flexBasis: 320, flexGrow: 1, gap: 2, maxWidth: 420, padding: 12 },
+  // Plain text at the end of the rail: a box here is a card inside a card.
+  banner: { flexBasis: 320, flexGrow: 1, gap: 2, maxWidth: 420 },
+  // In the wide header the notice must not take width from the metrics.
+  bannerCompact: { flexBasis: 260, flexGrow: 0, flexShrink: 1 },
 });

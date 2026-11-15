@@ -4,7 +4,7 @@ import { faultTiles, STATE_WORD, summarizeFaults, type FaultTile } from '../../l
 import type { PanelStatus } from '../../lib/panel-state';
 import { useTheme } from '../../lib/theme-provider';
 import { faultHex } from './format';
-import { Panel } from './Panel';
+import { Panel, useDense } from './Panel';
 import { StatusPill } from './StatusPill';
 
 type Props = {
@@ -22,6 +22,7 @@ function Tile({ tile }: { tile: FaultTile }) {
   const set = tile.state === 'set';
   const color = critical ? theme.colors.danger : set ? theme.colors.text : theme.colors.muted;
   const word = set ? `${STATE_WORD[tile.state]} · ${tile.severity.toUpperCase()}` : STATE_WORD[tile.state];
+  const dense = useDense();
 
   return (
     <View
@@ -29,6 +30,7 @@ function Tile({ tile }: { tile: FaultTile }) {
       accessible
       style={[
         styles.tile,
+        dense ? styles.tileDense : null,
         {
           backgroundColor: critical ? theme.colors.dangerSurface : set ? theme.colors.elevated : 'transparent',
           borderRadius: theme.radii.input,
@@ -36,8 +38,10 @@ function Tile({ tile }: { tile: FaultTile }) {
       ]}
       testID={`fault-tile-${tile.bit}`}
     >
-      <Text style={[theme.typography.caption, { color: set ? theme.colors.text : theme.colors.muted }]}>bit {tile.bit}</Text>
-      <Text style={[theme.typography.body, { color: set ? color : theme.colors.text, fontWeight: set ? '600' : '400' }]}>
+      {dense ? null : (
+        <Text style={[theme.typography.caption, { color: set ? theme.colors.text : theme.colors.muted }]}>bit {tile.bit}</Text>
+      )}
+      <Text style={[dense ? theme.typography.caption : theme.typography.body, { color: set ? color : theme.colors.text, fontWeight: set ? '600' : '400' }]}>
         {tile.label}
       </Text>
       <Text style={[theme.typography.label, { color }]}>{word}</Text>
@@ -54,6 +58,7 @@ export function FaultGrid({ level, sticky, status, style }: Props) {
   const tiles = faultTiles(level, sticky);
   const summary = summarizeFaults(tiles);
   const active = tiles.filter((tile) => tile.state === 'set');
+  const dense = useDense();
 
   return (
     <Panel
@@ -74,20 +79,20 @@ export function FaultGrid({ level, sticky, status, style }: Props) {
           <Tile key={tile.bit} tile={tile} />
         ))}
       </View>
-      {active.length === 0 ? (
+      {active.length === 0 && dense ? null : active.length === 0 ? (
         <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
           {level === undefined ? 'No fault word yet.' : 'No active faults'}
         </Text>
       ) : (
         <View style={styles.todo}>
           {active.map((tile) => (
-            <Text key={tile.bit} style={[theme.typography.body, { color: theme.colors.text }]}>
+            <Text key={tile.bit} style={[dense ? theme.typography.caption : theme.typography.body, { color: theme.colors.text }]}>
               <Text style={{ fontWeight: '600' }}>{tile.label}.</Text> {tile.hint}
             </Text>
           ))}
         </View>
       )}
-      {summary.wasSet > 0 ? (
+      {summary.wasSet > 0 && !dense ? (
         <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
           Tiles that say WAS SET were set since the last RESET and are clear now.
         </Text>
@@ -97,7 +102,8 @@ export function FaultGrid({ level, sticky, status, style }: Props) {
 }
 
 const styles = StyleSheet.create({
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tile: { flexBasis: '22%', flexGrow: 1, gap: 2, minWidth: 110, padding: 8 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  tile: { flexBasis: '22%', flexGrow: 1, gap: 2, minWidth: 110, paddingHorizontal: 16, paddingVertical: 8 },
+  tileDense: { gap: 0, minWidth: 64, paddingHorizontal: 6, paddingVertical: 4 },
   todo: { gap: 4 },
 });

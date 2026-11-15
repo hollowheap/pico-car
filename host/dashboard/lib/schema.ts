@@ -97,6 +97,31 @@ export function bitLabels(
     .map(([label]) => labelName(label));
 }
 
+/**
+ * Bits 12 to 14 of the obstacle `faults` field carry the reason of a bypass
+ * that gave up (OBSTACLE_STOP_REASON_SH and _MK in
+ * include/navigation/obstacle_flags.h). They are not fault bits.
+ */
+const STOP_REASON_SHIFT = 12;
+const STOP_REASON_MASK = 0x7;
+
+export function obstacleStopReason(faults: number | undefined): number {
+  return ((faults ?? 0) >> STOP_REASON_SHIFT) & STOP_REASON_MASK;
+}
+
+/** The obstacle `faults` field without the reason bits. */
+export function obstacleFaultBits(faults: number | undefined): number {
+  return (faults ?? 0) & ~(STOP_REASON_MASK << STOP_REASON_SHIFT);
+}
+
+/** The cause name; cause `bypass_gave_up` also names its reason. */
+export function obstacleCauseLabel(cause: number | undefined, reason: number): string {
+  const label = enumLabel('obstacleCause', cause);
+  return cause === ENUMS.obstacleCause.bypassGaveUp && reason !== 0
+    ? `${label}: ${enumLabel('bypassReason', reason)}`
+    : label;
+}
+
 export function heartbeatAgeMs(nowMs: number, lastHeartbeatMs: number): number | null {
   if (!Number.isFinite(nowMs) || !Number.isFinite(lastHeartbeatMs)) return null;
   const age = nowMs - lastHeartbeatMs;

@@ -10,12 +10,17 @@ export type ControlDecision = {
 
 const OPCODES: Record<ControlAction, number> = COMMANDS;
 
+/** An emergency stop must act on one press; every other command is confirmed first. */
+export function needsConfirm(action: ControlAction): boolean {
+  return action !== 'estop';
+}
+
 export function confirmControl(
   action: ControlAction,
   confirmed: boolean,
   emergencyLatched: boolean,
 ): ControlDecision {
-  if (!confirmed) {
+  if (!confirmed && needsConfirm(action)) {
     return { allowed: false, reason: 'confirmation required' };
   }
   if (action === 'reset' && emergencyLatched) {
