@@ -1,6 +1,6 @@
 /*
  *	supervisor.c
- *	The supervisor task: mission control and health (D120, D160).
+ *	The supervisor task: mission control and health.
  *	See supervisor/supervisor.h.
  *
  *	The decisions are in run_state.c and health_core.c, which a host test
@@ -103,7 +103,7 @@ ER supervisor_init (const supervisor_config_t * p_config)
         stuck_init (&g_stuck);
         drive_init (&g_drive);
         edge_init (&g_edge);
-        /* No motion before the first rest calibration (D165). */
+        /* No motion before the first rest calibration. */
         calhold_start (&g_cal, false);
 
         if (PLATFORM_RESET_WATCHDOG == platform_reset_reason ())
@@ -305,7 +305,7 @@ static void emit_edges (uint8_t source, const edge_event_t * p_events, uint8_t c
     }
 }
 
-/* Run start and stop, the obstacle cycle and the humps (D163). */
+/* Run start and stop, the obstacle cycle and the humps. */
 static void watch_edges (void)
 {
     edge_event_t      ev[EDGE_EVENTS_MAX];
@@ -322,7 +322,12 @@ static void watch_edges (void)
         (void) obstacle_copy_plan (&plan);
         in.state          = obstacle.state;
         in.cause          = obstacle.cause;
-        in.echo_class     = obstacle.echo_class;
+        /* The stop event's p2 is the give-up reason for BYPASS_GAVE_UP,
+           else the echo class. */
+        in.echo_class     = (TELEMETRY_OBSTACLE_CAUSE_BYPASS_GAVE_UP == obstacle.cause)
+                                ? (uint8_t) (((uint32_t) obstacle.faults >> OBSTACLE_STOP_REASON_SH) &
+                                             OBSTACLE_STOP_REASON_MK)
+                                : obstacle.echo_class;
         in.distance_mm    = obstacle.distance_mm;
         in.plan_status    = plan.status;
         in.plan_side      = plan.side;
@@ -451,6 +456,7 @@ static bool health_check (void)
     motion_diag_t     diag;
     bool              b_moving_expected = false;
     bool              b_progress_stall  = false;
+    bool              b_motion_timing   = false;
 
     liveness_check (&g_live, liveness_take (), &fresh, &back);
     for (idx = 0U; idx < LIVE_TASKS; idx++)
@@ -474,6 +480,7 @@ static bool health_check (void)
         bool const    b_free   = (RUN_STATE_RUNNING == run_state_of (&g_ctx)) &&
                               (0U == motion.hold_mask) && !motion.stop_requested;
 
+        b_motion_timing = health_motion_timing_fault (motion.state, motion.fault);
         b_moving_expected = b_driven && b_free && feedback.fresh;
         if (progress_update (&g_progress, b_moving_expected, travel_abs_mm (&feedback),
                              HEALTH_CHECK_MS))
@@ -493,8 +500,13 @@ static bool health_check (void)
 
     g_b_stalled_fault = (0U != g_live.stalled) || b_progress_stall;
     system_fault_assign (FAULT_TASK_STALLED_BIT, g_b_stalled_fault ? FAULT_TASK_STALLED_BIT : 0U);
+    if (b_motion_timing)
+    {
+        LOG_ERROR (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "motion timing fault %d: no watchdog feed",
+                   (int) motion.fault);
+    }
 
-    return liveness_critical_stalled (&g_live);
+    return liveness_critical_stalled (&g_live) || b_motion_timing;
 }
 
 /* The boot self-test: what can be checked without moving the car. */

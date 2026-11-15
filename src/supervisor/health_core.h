@@ -1,6 +1,6 @@
 /*
  *	health_core.h
- *	The health checks of the supervisor (D160). Pure C: no kernel call, so a
+ *	The health checks of the supervisor. Pure C: no kernel call, so a
  *	host test drives them.
  *
  *	liveness   Each task kicks a bit every pass. A task that misses its bit
@@ -50,6 +50,12 @@ void liveness_check (liveness_t * p_live, uint16_t taken, uint16_t * p_new,
 
 bool liveness_critical_stalled (const liveness_t * p_live);
 
+/* True when motion_status_t reports a terminal timing fault: the drive lease
+   lapsed (EXPIRED) or the control loop missed its period (GAP). The
+   controller never clears them, so the supervisor stops feeding the watchdog
+   and the car reboots. state is MOTION_STATE_*, fault the wire code. */
+bool health_motion_timing_fault (uint8_t state, uint8_t fault);
+
 /* Progress: the car is told to move but the wheels do not turn. */
 #define PROGRESS_STALL_MS (3000U)
 /* Travel below this (in mm, both wheels added) is no progress. */
@@ -87,7 +93,7 @@ void stuck_init (stuck_t * p_stuck);
    STUCK_TRAVEL_MM of driving. b_active is false while the car is held. */
 bool stuck_update (stuck_t * p_stuck, bool b_active, uint32_t edges, uint32_t travel_mm);
 
-/* Drive check (D161). It reads the wheel targets, speeds and duty.
+/* Drive check. It reads the wheel targets, speeds and duty.
  *
  *   crossed   The wheel told to go faster does not turn faster. The encoder
  *             plugs are swapped, or a wheel turns the wrong way.
@@ -147,7 +153,7 @@ void drive_init (drive_t * p_drive);
 /* One check every dt_ms. Returns true once, when b_crossed turns on. */
 bool drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms);
 
-/* Encoder probe (D162). The bench drives one wheel alone and reads how far each
+/* Encoder probe. The bench drives one wheel alone and reads how far each
  * encoder moved, in mm with the car-forward sign. The verdict says whether the
  * encoder of the driven wheel answers. */
 typedef enum
@@ -168,7 +174,7 @@ typedef enum
 
 drive_probe_t drive_probe_verdict (int32_t driven_mm, int32_t other_mm);
 
-/* Calibration hold (D165). The car stays still while the IMU takes its rest
+/* Calibration hold. The car stays still while the IMU takes its rest
  * reference: at boot, after START on level ground, and after RECAL. A started
  * request first waits for physics to drop the old reference, then for the new
  * one. A timeout releases the car and reports it. One step per supervisor pass. */

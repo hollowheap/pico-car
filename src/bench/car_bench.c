@@ -1,6 +1,6 @@
 /** @file car_bench.c
  *
- * @brief Measurement bench for the car (D162). It collects the numbers that
+ * @brief Measurement bench for the car. It collects the numbers that
  *        only the car can give. Standalone application with its own usermain.
  *
  * The bench starts the motion service and the line sensors, nothing else: no
@@ -62,6 +62,7 @@
 #define USB_UP         (2U)
 #define COUNTDOWN_S    (3U)
 #define MS_PER_S       (1000U)
+#define US_PER_MS      (1000U)
 #define UM_PER_MM      (1000)
 #define LEASE_US       (200000U)
 #define PROBE_UM_S     (100000)
@@ -153,6 +154,9 @@ static bool abort_requested (void)
 
 static void drive (int32_t left_um_s, int32_t right_um_s)
 {
+    /* The bench has no supervisor: it renews the run permit itself, or the
+       motion service holds the wheels (the permit fails closed). */
+    (void)motion_renew_permit (LEASE_US / US_PER_MS);
     (void)motion_set_speed (left_um_s, right_um_s, LEASE_US);
 }
 

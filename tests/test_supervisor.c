@@ -253,13 +253,41 @@ static void test_lift_and_overturn (void)
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY), &in, &out);
     CHECK (out.b_rejected && (RUN_REJECT_LIFTED == out.reason));
 
-    /* Set down: the hold stays until START. */
+    /* Set down: START ends the hold at once. */
     in.b_lifted = false;
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_HELD == run_state_of (&ctx));
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY), &in, &out);
     CHECK (out.b_accepted && (0U == out.hold_mask));
     CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+
+    /* With no START, the hold ends on its own once the car has stood level
+       for RUN_LIFT_SETTLE_PASSES, and the IMU calibrates again. A new lift
+       restarts the count. */
+    {
+        uint32_t pass = 0U;
+
+        in.b_lifted = true;
+        run_state_tick (&ctx, &in, &out);
+        in.b_lifted = false;
+        for (pass = 1U; pass < RUN_LIFT_SETTLE_PASSES; pass++)
+        {
+            run_state_tick (&ctx, &in, &out);
+        }
+        in.b_lifted = true;
+        run_state_tick (&ctx, &in, &out);
+        in.b_lifted = false;
+        for (pass = 1U; pass < RUN_LIFT_SETTLE_PASSES; pass++)
+        {
+            run_state_tick (&ctx, &in, &out);
+            CHECK (RUN_STATE_HELD == run_state_of (&ctx));
+            CHECK (!out.b_physics_recal);
+        }
+        run_state_tick (&ctx, &in, &out);
+        CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+        CHECK (0U == out.hold_mask);
+        CHECK (out.b_physics_recal);
+    }
 
     /* Overturned: latched, the obstacle task is stopped once, START refused. */
     in.b_overturned = true;
@@ -729,6 +757,20 @@ static void test_calhold (void)
     CHECK (hold.b_timed_out);
 }
 
+/* Only the lease and gap faults reboot; a stall from the wheels or a
+   stop by request does not. */
+static void test_motion_timing_fault (void)
+{
+    CHECK (health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_EXPIRED));
+    CHECK (health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_GAP));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_FEEDBACK));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_NO_EDGES));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_COMMAND));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_OUTPUT));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_STOPPED, TELEMETRY_MOTION_FAULT_EXPIRED));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_RUNNING, TELEMETRY_MOTION_FAULT_NONE));
+}
+
 int main (void)
 {
     test_ring_order_and_source ();
@@ -741,6 +783,7 @@ int main (void)
     test_lift_and_overturn ();
     test_unknown_opcode ();
     test_liveness ();
+    test_motion_timing_fault ();
     test_liveness_boot_allowance ();
     test_progress ();
     test_stuck_sensor ();
