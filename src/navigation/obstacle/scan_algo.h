@@ -78,9 +78,10 @@ void    scan_algo_start (scan_algo_ctx_t * p_ctx);
 uint8_t scan_algo_target (scan_algo_ctx_t const * p_ctx);
 bool    scan_algo_feed (scan_algo_ctx_t * p_ctx, uint8_t cls, uint16_t dist_mm);
 bool    scan_algo_has_region (scan_algo_ctx_t const * p_ctx);
+bool    scan_algo_finish_partial (scan_algo_ctx_t * p_ctx);
 bool    scan_algo_echo_noisy (scan_algo_ctx_t const * p_ctx);
 
-/* Servo travel check (D162). A square wall straight ahead returns d(angle) =
+/* Servo travel check. A square wall straight ahead returns d(angle) =
  * d0 / cos(angle). The ratio of the readings at the slots of the servo limit
  * (+-15 degrees) to the reading straight ahead gives the angle the servo
  * really reached. */

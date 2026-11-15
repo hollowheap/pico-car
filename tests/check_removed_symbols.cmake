@@ -1,4 +1,4 @@
-# D95: fail if the removed STEER-word hug law (or anything only it used) is
+# Fail if a removed bypass law (or anything only it used) is
 # still named anywhere under src/ or include/. Run as:
 #   cmake -DROOT=<repo root> -P check_removed_symbols.cmake
 # It also fails if the one remaining hug law has no caller, so a rename of
@@ -13,7 +13,21 @@ set(REMOVED_SYMBOLS
     obstacle_plan_hug_steer
     obstacle_plan_steer_toward
     OBSTACLE_HUG_FAR_MM
-    OBSTACLE_NAV_GUARD_HEAD_MAX_DECI)
+    OBSTACLE_NAV_GUARD_HEAD_MAX_DECI
+    # The stop-and-look bypass is replaced by the Bug2 face follow.
+    obstacle_plan_side_lean_deci
+    obstacle_plan_side_trim_deci
+    OBSTACLE_PHASE_TURN
+    OBSTACLE_PHASE_LOOK_PING
+    OBSTACLE_PHASE_RETURN_DRIVE
+    reacquire_look_cycle
+    step_look_ping
+    OBSTACLE_SIDE_LOOK_MM
+    OBSTACLE_SIDE_PIVOT_DECI
+    OBSTACLE_WALL_HOLD_MM
+    OBSTACLE_CORNER_CLEAR_MM
+    OBSTACLE_RETURN_DECI
+    OBSTACLE_LEAN_GAIN_PCT)
 
 file(GLOB_RECURSE SOURCES
     "${ROOT}/src/*.c" "${ROOT}/src/*.h" "${ROOT}/include/*.h")

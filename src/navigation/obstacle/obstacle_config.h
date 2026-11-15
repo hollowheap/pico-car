@@ -42,8 +42,10 @@
  * Ping timing [Spec] [HC-SR04 datasheet].
  * ------------------------------------------------------------------ */
 
-/* At least 60 ms between triggers, so old echoes die out. */
-#define OBSTACLE_PING_PERIOD_MS (60U)
+/* The datasheet asks for 60 ms between triggers so old echoes die out. 50 ms
+ * still leaves 10 ms after the longest echo wait; an echo that returns later
+ * comes from more than 8 m away, which no indoor track has. */
+#define OBSTACLE_PING_PERIOD_MS (50U)
 
 /* The task waits at most this long for the end of an echo. */
 #define OBSTACLE_ECHO_WAIT_MS (40U)
@@ -94,7 +96,7 @@
  * Monitor ahead and the collision guard.
  * ------------------------------------------------------------------ */
 
-/* [Default] The Tribunal stops the car about 200 mm away; 50 mm more
+/* [Default] The car must stop about 200 mm away; 50 mm more
  * leaves room for two pings and braking. */
 #define OBSTACLE_DETECT_MM (250U)
 
@@ -127,13 +129,17 @@
 /* FILL: microseconds per 10 degrees (a safe 5.6 us per degree guess). */
 #define OBSTACLE_SERVO_US_PER_10DEG (56U)
 
-/* FILL: +1 if a longer pulse turns the sensor left, -1 otherwise. */
-#define OBSTACLE_SERVO_DIR (1)
+/* +1 if a longer pulse turns the sensor to the car's left, -1 otherwise.
+ * -1 on the car: with +1 a scan that turned the body right (as the wheel
+ * odometry and the line sensors count it) was seen to turn the car the
+ * other way from where the sonar looked, so the plan took the wrong side.
+ * The servo must turn the same way as the wheels count a turn. */
+#define OBSTACLE_SERVO_DIR (-1)
 
-/* [Measured 2026-11-13] The servo mounting only allows +-15 degrees from the
- * car's front: the 45 mm board has about 10 mm of room behind it. Nothing may
- * ask for more; the scan task and scan_hw.c clamp it. */
-#define OBSTACLE_SERVO_LIMIT_DECI (150)
+/* The servo turns at most +-30 degrees from the car's front (user, 2026-11-15;
+ * the first mounting allowed only +-15). Nothing may ask for more; the scan
+ * task and scan_hw.c clamp it. */
+#define OBSTACLE_SERVO_LIMIT_DECI (300)
 
 /* Never command a pulse outside the datasheet range. */
 #define OBSTACLE_SERVO_MIN_US (500U)
@@ -165,17 +171,16 @@
 #define OBSTACLE_SLOT_STEP_DECI  (50)
 #define OBSTACLE_SLOT_FIRST_DECI (-900)
 
-/* Coarse sweep: every 5 degrees over the +-15 degree servo range (7 pings).
+/* Coarse sweep: every 5 degrees over the +-30 degree servo range (13 pings).
  * The fine walk uses the same 5 degree grid. */
 #define OBSTACLE_COARSE_STEP_DECI (50)
 
 /* The body pivots in steps of this size toward a side whose edge is not yet
- * found, up to OBSTACLE_SCAN_PIVOT_MAX_DECI. Each step shifts the +-15 degree
- * servo window by its full width, so the windows meet: 0, 30, 60, then 75
- * degrees, which reaches 90 degrees. A box of any width up to about 1.5 m at
- * the stop distance gets a found edge instead of a wall plan. */
-#define OBSTACLE_SCAN_PIVOT_DECI     (300)
-#define OBSTACLE_SCAN_PIVOT_MAX_DECI (750)
+ * found, up to OBSTACLE_SCAN_PIVOT_MAX_DECI. Each step shifts the +-30 degree
+ * servo window by its full width, so the windows meet: 0, then 60 degrees,
+ * which reaches 90 degrees with one body turn per side. */
+#define OBSTACLE_SCAN_PIVOT_DECI     (600)
+#define OBSTACLE_SCAN_PIVOT_MAX_DECI (600)
 
 /* [Spec 3c] The region is the closest VALID return within 600 mm plus
  * neighbouring readings within closest + 250 mm. */
@@ -294,7 +299,7 @@
  * echo). */
 #define OBSTACLE_FREE_FLOOR_MM (500U)
 
-/* [Tribunal] Assumed obstacle depth, used to size the corridor check. */
+/* [Default] Assumed obstacle depth, used to size the corridor check. */
 #define OBSTACLE_DEPTH_ASSUMED_MM (180U)
 
 /* [Chat] Bypass speed. [Measured] 160 mm/s was asked for at first, but at
@@ -308,77 +313,115 @@
  * on its right. */
 #define OBSTACLE_WALL_PIVOT_DECI (900)
 
-/* [Chat] Stop-and-look: every 250 mm along the obstacle the car stops,
- * pivots toward it by 75 degrees and aims the servo at its limit (15
- * degrees), so the sonar ray is normal to the face (75 + 15 = 90). */
-#define OBSTACLE_SIDE_LOOK_MM    (250U)
-#define OBSTACLE_SIDE_PIVOT_DECI (750)
-
-/* [Chat] The wall is held at this distance from the axle line, plus or
- * minus the tolerance. A box side is held at OBSTACLE_BOX_GAP_MM. */
-#define OBSTACLE_WALL_HOLD_MM (300U)
-#define OBSTACLE_HOLD_TOL_MM  (50U)
-
-/* [Default] Two clear side checks in a row mean the obstacle is passed. A
- * face followed as a wall needs four (about 1 m of open space) before the car
- * takes it as the end of a wide box and turns the corner (D166): a few
- * dropped echoes on a real wall must not turn the car in. */
-#define OBSTACLE_PASS_CLEARS   (2U)
-#define OBSTACLE_CORNER_CLEARS (4U)
-
-/* [Default] After the passed decision the car drives on this far, so that
- * its tail clears the rear face (sonar to tail is 170 mm, and the cone
- * sees 50 mm ahead of the ray) before it turns back to the line. */
-#define OBSTACLE_PASS_EXTRA_MM (160U)
-
-/* [Default] A box side check only counts after the sonar is this far past
- * the front face; before that the ray passes in front of the box. */
-#define OBSTACLE_BOX_DEPTH_MIN_MM (30U)
-
-/* [Default] After a wall ends the car does not know how far it is from
- * the end face. A reading beyond this axle gap counts as clear: the gap
- * can be up to the pivot circle, the margin, one look leg and the extra
- * drive. */
-#define OBSTACLE_CORNER_CLEAR_MM (580U)
-
-/* [Chat] D19: the car turns back toward the line at 45 degrees and ends
- * on IR capture. The return may be this much longer than the straight
- * way to the line before the car stops. */
-#define OBSTACLE_RETURN_DECI     (450)
-#define OBSTACLE_RETURN_EXTRA_MM (400U)
-
-/* [Default] Heading correction from the side checks. The slope of the gap
- * between two checks shows the real direction of travel; the gap error is
- * removed over OBSTACLE_LEAN_REF_MM of travel. The correction is capped,
- * and only OBSTACLE_LEAN_GAIN_PCT percent of a measured slope is applied
- * per leg, so noise cannot wind it up. */
-#define OBSTACLE_LEAN_REF_MM   (500U)
-#define OBSTACLE_LEAN_MAX_DECI (150)
-#define OBSTACLE_LEAN_GAIN_PCT (70U)
-
 /* [Default] Limits. All of them stop the car (cause BYPASS_LIMIT or
  * LINE_TIMEOUT) instead of letting it drive blind.
- *   HUG_MAX_MS        wall following, from the first leg (the distance
- *                     budget does not end it);
- *   BOX_MAX_MS        a box bypass, from the first pivot away;
+ *   HUG_MAX_MS        face following, from the start of REACQUIRE (the
+ *                     distance budget does not end a wall);
  *   BOX_ALONG_MAX_MM  distance along a box before it is called too deep;
- *   SIDE_FAIL_MAX     failed side checks in a row;
- *   SIDE_PINGS_MAX    pings a side check may take to find two that agree;
- *   RESCAN_MAX        stationary scans in one episode. */
+ *   ESCAPE_CLEARS     clear forward pings that end the escape turn;
+ *   ESCAPE_STEP_*     once the planned angle is reached and the beam still
+ *                     sees the obstacle, the turn target moves on by
+ *                     STEP_DECI every STEP_MS, so the car keeps turning
+ *                     away instead of standing still;
+ *   ESCAPE_TURN_MAX_DECI the furthest the escape turns from the line. */
 #define OBSTACLE_HUG_MAX_MS       (60000U)
-#define OBSTACLE_BOX_MAX_MS       (60000U)
 #define OBSTACLE_BOX_ALONG_MAX_MM (2500U)
-#define OBSTACLE_SIDE_FAIL_MAX    (3U)
-#define OBSTACLE_SIDE_PINGS_MAX   (8U)
-#define OBSTACLE_RESCAN_MAX       (8U)
 #define OBSTACLE_HUG_EXTRA_MM     (100U)
 #define OBSTACLE_HUG_MIN_MM       (200U)
 #define OBSTACLE_HUG_MAX_MM       (5000U)
 #define OBSTACLE_WAIT_STOP_MS     (500U)
 #define OBSTACLE_PLAN_ACCEPT_MS   (200U)
-#define OBSTACLE_ESCAPE_MAX_MS    (4000U)
-#define OBSTACLE_ESCAPE_CLEARS    OBSTACLE_PASS_CLEARS
+#define OBSTACLE_ESCAPE_MAX_MS    (6000U)
+#define OBSTACLE_ESCAPE_CLEARS    (2U)
+#define OBSTACLE_ESCAPE_STEP_DECI (150)
+#define OBSTACLE_ESCAPE_STEP_MS   (500U)
+#define OBSTACLE_ESCAPE_TURN_MAX_DECI (1200)
 #define OBSTACLE_LINE_GRACE_MS    (250U)
+
+/* [Default] Bug2 face follow (follow.c). Tune on the car.
+ *   ECHO_INCIDENCE_MAX  assumed echo limit off the face normal;
+ *   FOLLOW_TOWARD       glance heading into the face: 90 - 45 - 15 (servo)
+ *                       = 30 degrees off the normal;
+ *   FOLLOW_HOLD         axle to face on a leg; a glance arc and the 80 mm
+ *                       collision guard must both fit inside it;
+ *   FOLLOW_LEG          leg length between two glances;
+ *   FOLLOW_ARC          wheel speed difference of a glance arc (radius
+ *                       about 7490 / ARC mm);
+ *   FOLLOW_LOOK         speed once the glance heading is reached;
+ *   FOLLOW_SEEN_MAX     the longest echo that counts as the face;
+ *   FOLLOW_MISS_MAX     glance pings in a row without the face: a corner;
+ *   FOLLOW_INNER        echo during a leg that means a face ahead;
+ *   FOLLOW_SAME_FACE    an echo point further than this off the face line,
+ *                       on the car's side, is a face across the path; a
+ *                       30 degree slant moves about 100 mm per glance;
+ *   FOLLOW_CORNER_PAST  axle past the corner reference before the wrap, so
+ *                       the next face starts at the hold distance;
+ *   FOLLOW_TRIM_*       leg heading correction per mm of gap error, cap.
+ *                       One glance (arc in, arc back) closes about
+ *                       0.59 x arc radius on the face; a leg at the cap
+ *                       must win it back (120 mm x sin 30 = 60 mm);
+ *   FOLLOW_SLANT_*      face point spacing for a new direction, the
+ *                       largest change one glance may measure, and the
+ *                       divisor that blends it in (noise on a flat face);
+ *   FOLLOW_LEAVE_AHEAD  tape counts only this far past the hit point;
+ *   FOLLOW_LINE_LEAD    creep onto the tape before the last turn;
+ *   FOLLOW_LINE_WINDOW  the tape counts only this close to the original
+ *                       line (x of the scan frame); odometry drifts about
+ *                       200 mm over a bypass with 1 % wheel error. The IMU
+ *                       has no gyroscope, so the heading stays on the
+ *                       encoders. */
+#define OBSTACLE_ECHO_INCIDENCE_MAX_DECI (300)
+#define OBSTACLE_FOLLOW_TOWARD_DECI      (450)
+/* The face follow looks this far to the side of the car's front. It stays at
+ * 15 degrees, where its geometry was tuned, when the servo can turn further. */
+#define OBSTACLE_FOLLOW_LOOK_DECI        (150)
+#define OBSTACLE_FOLLOW_HOLD_MM          (280)
+#define OBSTACLE_FOLLOW_LEG_MM           (120)
+#define OBSTACLE_FOLLOW_ARC_MM_S         (100)
+#define OBSTACLE_FOLLOW_LOOK_MM_S        (60)
+#define OBSTACLE_FOLLOW_SEEN_MAX_MM      (500U)
+#define OBSTACLE_FOLLOW_MISS_MAX         (3U)
+#define OBSTACLE_FOLLOW_INNER_MM         (250U)
+#define OBSTACLE_FOLLOW_SAME_FACE_MM     (150)
+#define OBSTACLE_FOLLOW_CORNER_PAST_MM   (OBSTACLE_FOLLOW_HOLD_MM)
+#define OBSTACLE_FOLLOW_TRIM_PER_MM      (5)
+#define OBSTACLE_FOLLOW_TRIM_MAX_DECI    (300)
+#define OBSTACLE_FOLLOW_SLANT_MIN_MM     (150)
+#define OBSTACLE_FOLLOW_SLANT_GAIN_DIV   (2)
+#define OBSTACLE_FOLLOW_SLANT_MAX_DECI   (450)
+#define OBSTACLE_FOLLOW_LEAVE_AHEAD_MM   (150)
+#define OBSTACLE_FOLLOW_LINE_LEAD_MM     (70)
+#define OBSTACLE_FOLLOW_LINE_WINDOW_MM   (250)
+
+/* [Default] Bug2 hard stops and the echo-loss retry.
+ *   FOLLOW_BACKUP       reverse this far before a deeper look;
+ *   FOLLOW_DEEPER       the deeper look turns this much further into the
+ *                       face (15 degrees off the normal);
+ *   FOLLOW_TRIES_MAX    echo-loss recoveries on one face before giving up;
+ *   FOLLOW_HIT_RADIUS   back this close to the hit point after
+ *                       FOLLOW_CIRCLE_MIN of travel: the obstacle cannot be
+ *                       passed;
+ *   FOLLOW_NO_PROGRESS  travel with no gain along the original line;
+ *   BUMP_*              virtual bumper (from Buddy 5, B5_BUMP_*): a wheel
+ *                       told BUMP_MIN or more that measures under
+ *                       BUMP_PERCENT for BUMP_MS, not within BUMP_SETTLE
+ *                       of a command change of more than BUMP_CHANGE. The
+ *                       back-up and the look creep run under BUMP_MIN, so
+ *                       only the 60 mm back-up goes unwatched. On a leg the
+ *                       car is guarded by the servo-side beam, the
+ *                       collision window on non-turning pings and the
+ *                       bumper; there is no forward rescan. */
+#define OBSTACLE_FOLLOW_BACKUP_MM        (60)
+#define OBSTACLE_FOLLOW_DEEPER_DECI      (150)
+#define OBSTACLE_FOLLOW_TRIES_MAX        (3U)
+#define OBSTACLE_FOLLOW_HIT_RADIUS_MM    (150)
+#define OBSTACLE_FOLLOW_CIRCLE_MIN_MM    (800U)
+#define OBSTACLE_FOLLOW_NO_PROGRESS_MM   (2500U)
+#define OBSTACLE_BUMP_MIN_MM_S           (70)
+#define OBSTACLE_BUMP_PERCENT            (40)
+#define OBSTACLE_BUMP_MS                 (150U)
+#define OBSTACLE_BUMP_SETTLE_MS          (300U)
+#define OBSTACLE_BUMP_CHANGE_MM_S        (20)
 
 /* ------------------------------------------------------------------ *
  * Driving [Default]: how the brain turns decisions into wheel speeds.
@@ -386,9 +429,13 @@
 
 /* Spin on the spot: both wheels run at up to this speed, one backwards.
  * The speed falls with the remaining angle down to the minimum, and the
- * pivot ends inside the tolerance. */
+ * pivot ends inside the tolerance. On the car a spin scrubs both tyres: at a
+ * 35 mm/s minimum the 30 degree scan pivot stalled near 15 degrees, so the
+ * scan never finished. The minimum is 90 mm/s. The tolerance stays 2
+ * degrees: the wall follow also turns to it, and a wider band changes how
+ * the follow judges progress. */
 #define OBSTACLE_PIVOT_SPEED_MM_S (140U)
-#define OBSTACLE_PIVOT_MIN_MM_S   (35U)
+#define OBSTACLE_PIVOT_MIN_MM_S   (90U)
 #define OBSTACLE_PIVOT_RAMP_DECI  (450)
 #define OBSTACLE_PIVOT_TOL_DECI   (20)
 
@@ -443,7 +490,7 @@
  * ------------------------------------------------------------------ */
 
 /* Records kept in RAM (16 bytes each; must be a power of two). */
-#define OBSTACLE_LOG_RECORDS (1024U)
+#define OBSTACLE_LOG_RECORDS (512U) /* 8 KiB: about 50 s of bypass at one trace per 100 ms */
 
 /* Scan profiles kept in RAM. */
 #define OBSTACLE_LOG_PROFILES (8U)
@@ -490,7 +537,7 @@
 #define OBSTACLE_SLOT_BITS      (6U)
 #define OBSTACLE_STATE_COUNT    (7U)
 #define OBSTACLE_STATE_BITS     (3U)
-#define OBSTACLE_CAUSE_COUNT    (15U)
+#define OBSTACLE_CAUSE_COUNT    (16U)
 #define OBSTACLE_CAUSE_BITS     (4U)
 #define OBSTACLE_SEQ_BITS       (5U)
 #define OBSTACLE_ECHO_WIDTH_BITS (16U)
@@ -528,15 +575,13 @@ OBSTACLE_CT_ASSERT(slot_grid_symmetric,
 OBSTACLE_CT_ASSERT(slot_grid_ends,
              (OBSTACLE_SLOT_FIRST_DECI +
               (((int32_t)OBSTACLE_SLOT_COUNT - 1) * OBSTACLE_SLOT_STEP_DECI)) == -OBSTACLE_SLOT_FIRST_DECI);
-OBSTACLE_CT_ASSERT(servo_limit_15, OBSTACLE_SERVO_LIMIT_DECI == 150);
+OBSTACLE_CT_ASSERT(servo_limit_30, OBSTACLE_SERVO_LIMIT_DECI == 300);
 OBSTACLE_CT_ASSERT(view_reaches_90,
              (OBSTACLE_SCAN_PIVOT_MAX_DECI + OBSTACLE_SERVO_LIMIT_DECI) == -OBSTACLE_SLOT_FIRST_DECI);
 OBSTACLE_CT_ASSERT(windows_meet, OBSTACLE_SCAN_PIVOT_DECI == (2 * OBSTACLE_SERVO_LIMIT_DECI));
 OBSTACLE_CT_ASSERT(coarse_on_grid, 0 == (OBSTACLE_COARSE_STEP_DECI % OBSTACLE_SLOT_STEP_DECI));
 OBSTACLE_CT_ASSERT(coarse_divides_range,
              0 == (OBSTACLE_SERVO_LIMIT_DECI % OBSTACLE_COARSE_STEP_DECI));
-OBSTACLE_CT_ASSERT(side_ray_normal,
-             (OBSTACLE_SIDE_PIVOT_DECI + OBSTACLE_SERVO_LIMIT_DECI) == OBSTACLE_WALL_PIVOT_DECI);
 OBSTACLE_CT_ASSERT(ping_after_wait, OBSTACLE_ECHO_WAIT_MS < OBSTACLE_PING_PERIOD_MS);
 OBSTACLE_CT_ASSERT(fwd_guard_above_detect, OBSTACLE_FWD_GUARD_MM > OBSTACLE_DETECT_MM);
 OBSTACLE_CT_ASSERT(fwd_guard_above_collision, OBSTACLE_FWD_GUARD_MM > OBSTACLE_COLLISION_MM);
@@ -550,11 +595,6 @@ OBSTACLE_CT_ASSERT(pivot_radius_covers_tail,
                   (OBSTACLE_CAR_HALF_W_MM * OBSTACLE_CAR_HALF_W_MM)));
 OBSTACLE_CT_ASSERT(box_gap_clears_pivot,
              OBSTACLE_BOX_GAP_MM >= (OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_SIDE_MARGIN_MM));
-OBSTACLE_CT_ASSERT(wall_hold_clears_pivot,
-             (OBSTACLE_WALL_HOLD_MM - OBSTACLE_HOLD_TOL_MM) >=
-                 (OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_SIDE_MARGIN_MM));
-OBSTACLE_CT_ASSERT(box_near_clears_pivot,
-             (OBSTACLE_BOX_GAP_MM - OBSTACLE_HOLD_TOL_MM) > OBSTACLE_PIVOT_RADIUS_MM);
 OBSTACLE_CT_ASSERT(free_floor_fits_gap,
              OBSTACLE_FREE_FLOOR_MM > (OBSTACLE_BOX_GAP_MM + OBSTACLE_SIDE_MARGIN_MM));
 OBSTACLE_CT_ASSERT(out_angles_ordered,
@@ -562,19 +602,12 @@ OBSTACLE_CT_ASSERT(out_angles_ordered,
                  (OBSTACLE_OUT_ANGLE_B_DECI < OBSTACLE_OUT_ANGLE_C_DECI) &&
                  (OBSTACLE_OUT_ANGLE_C_DECI < OBSTACLE_OUT_ANGLE_D_DECI) &&
                  (OBSTACLE_OUT_ANGLE_D_DECI <= 900));
-OBSTACLE_CT_ASSERT(pass_clears_fit, OBSTACLE_PASS_CLEARS >= 2U);
-OBSTACLE_CT_ASSERT(corner_clear_covers_gap,
-             OBSTACLE_CORNER_CLEAR_MM >=
-                 (OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_SIDE_MARGIN_MM + OBSTACLE_SIDE_LOOK_MM +
-                  OBSTACLE_PASS_EXTRA_MM));
-OBSTACLE_CT_ASSERT(lean_caps, (OBSTACLE_LEAN_MAX_DECI > 0) && (OBSTACLE_LEAN_MAX_DECI < 450) &&
-                                  (OBSTACLE_LEAN_GAIN_PCT <= 100U));
+OBSTACLE_CT_ASSERT(escape_clears_fit, OBSTACLE_ESCAPE_CLEARS >= 2U);
 OBSTACLE_CT_ASSERT(pivot_speeds, (OBSTACLE_PIVOT_MIN_MM_S < OBSTACLE_PIVOT_SPEED_MM_S) &&
                                      (OBSTACLE_PIVOT_SPEED_MM_S <= 300U));
 OBSTACLE_CT_ASSERT(pivot_tol, (OBSTACLE_PIVOT_TOL_DECI > 0) &&
                                   (OBSTACLE_PIVOT_TOL_DECI < OBSTACLE_PIVOT_RAMP_DECI));
 OBSTACLE_CT_ASSERT(bypass_speed_in_range, OBSTACLE_BYPASS_SPEED_MM_S <= 300U);
-OBSTACLE_CT_ASSERT(side_fail_fits, OBSTACLE_SIDE_FAIL_MAX >= 1U);
 OBSTACLE_CT_ASSERT(side_far_fits, OBSTACLE_SIDE_FAR_MM == OBSTACLE_DIST_MAX);
 OBSTACLE_CT_ASSERT(hug_limit_order, OBSTACLE_HUG_MIN_MM < OBSTACLE_HUG_MAX_MM);
 OBSTACLE_CT_ASSERT(nav_ttl_in_range, OBSTACLE_NAV_TTL_US <= 200000U);
@@ -582,6 +615,24 @@ OBSTACLE_CT_ASSERT(settle_covers_reverse_pause,
              OBSTACLE_STOP_SETTLE_MS <= OBSTACLE_NAV_REVERSE_PAUSE_MS);
 OBSTACLE_CT_ASSERT(log_pow2, 0U == (OBSTACLE_LOG_RECORDS & (OBSTACLE_LOG_RECORDS - 1U)));
 OBSTACLE_CT_ASSERT(log_fits_16bit, OBSTACLE_LOG_RECORDS <= 65536U);
+OBSTACLE_CT_ASSERT(follow_toward_incidence,
+             (900 - OBSTACLE_FOLLOW_TOWARD_DECI - OBSTACLE_FOLLOW_LOOK_DECI) <=
+                 OBSTACLE_ECHO_INCIDENCE_MAX_DECI);
+OBSTACLE_CT_ASSERT(follow_hold_clears_pivot,
+             OBSTACLE_FOLLOW_HOLD_MM >= (int)(OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_SIDE_MARGIN_MM));
+OBSTACLE_CT_ASSERT(follow_corner_clears_pivot,
+             OBSTACLE_FOLLOW_CORNER_PAST_MM >= (int)(OBSTACLE_PIVOT_RADIUS_MM + OBSTACLE_SIDE_MARGIN_MM));
+OBSTACLE_CT_ASSERT(follow_misses_fit_2_bits, OBSTACLE_FOLLOW_MISS_MAX <= 3U);
+OBSTACLE_CT_ASSERT(follow_tries_fit_2_bits, OBSTACLE_FOLLOW_TRIES_MAX <= 3U);
+OBSTACLE_CT_ASSERT(follow_deeper_incidence,
+             (900 - OBSTACLE_FOLLOW_TOWARD_DECI - OBSTACLE_FOLLOW_DEEPER_DECI - OBSTACLE_FOLLOW_LOOK_DECI) >= 0);
+OBSTACLE_CT_ASSERT(follow_look_in_servo_range, OBSTACLE_FOLLOW_LOOK_DECI <= OBSTACLE_SERVO_LIMIT_DECI);
+OBSTACLE_CT_ASSERT(follow_backup_clears_pivot,
+             (OBSTACLE_FOLLOW_HOLD_MM - OBSTACLE_FOLLOW_BACKUP_MM) >= 0);
+OBSTACLE_CT_ASSERT(bump_below_bypass_speed, OBSTACLE_BUMP_MIN_MM_S < (int)OBSTACLE_BYPASS_SPEED_MM_S);
+/* spins drive both wheels at the full bypass speed, not half of it. */
+OBSTACLE_CT_ASSERT(spin_at_bypass_speed, OBSTACLE_PIVOT_SPEED_MM_S == OBSTACLE_BYPASS_SPEED_MM_S);
+OBSTACLE_CT_ASSERT(follow_arc_below_speed, OBSTACLE_FOLLOW_ARC_MM_S < (int)OBSTACLE_BYPASS_SPEED_MM_S);
 
 #endif /* OBSTACLE_CFG_H */
 

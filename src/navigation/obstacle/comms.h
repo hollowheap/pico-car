@@ -37,11 +37,17 @@ uint8_t  obstacle_comms_flags (void);
 void     obstacle_comms_count_class (uint8_t cls);
 
 /* Navigation tells the scan task that the body is turning (a scan pivot or a
- * side look). The sonar keeps pinging, but only the collision and health
+ * spin of the face follow). The sonar keeps pinging, but only the collision and health
  * checks use those pings: they point at the wrong angle for a scan slot or the
- * forward guard (D167). */
+ * forward guard. */
 void     obstacle_comms_set_pivoting (bool b_pivoting);
 bool     obstacle_comms_is_pivoting (void);
+
+/* Navigation asks for the servo angle in REACQUIRE: the face follow looks at
+ * the face. Both tasks run on core 0; the value is one aligned
+ * 16-bit word, so it is written and read whole. */
+void     obstacle_comms_set_look (int16_t deci);
+int16_t  obstacle_comms_look (void);
 void     obstacle_comms_class_counts (uint32_t * p_counts);
 
 #endif /* OBSTACLE_COMMS_H */

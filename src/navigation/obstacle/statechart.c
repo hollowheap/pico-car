@@ -1,6 +1,6 @@
 /** @file statechart.c
  *
- * @brief Obstacle statechart (S40, D96), pure C99.
+ * @brief Obstacle statechart, pure C99.
  *
  *   STOPPED --RESET (cause cleared), then START--> MONITOR
  *   MONITOR --2 VALID readings <= 250 mm--> WAIT_STOP     (event OBSTACLE)
@@ -48,10 +48,10 @@ static void     ping_monitor (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
                               uint32_t now_ms, obstacle_statechart_out_t * p_out);
 static void     ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                                uint32_t now_ms, obstacle_statechart_out_t * p_out);
+static void     scan_finished (obstacle_statechart_t * p_fsm, uint32_t now_ms,
+                               obstacle_statechart_out_t * p_out);
 static void     ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                              uint32_t now_ms, obstacle_statechart_out_t * p_out);
-static void     ping_reacquire (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
-                                uint32_t now_ms, obstacle_statechart_out_t * p_out);
 
 /*!
  * @brief Clear an output record before a step.
@@ -118,6 +118,8 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm,
     p_fsm->plan.closest_mm                   = 0U;
     p_fsm->plan.b_wall                       = false;
     p_fsm->b_turned                          = false;
+    p_fsm->escape_deci                       = 0;
+    p_fsm->escape_ms                         = now_ms;
     p_fsm->plan.need_mm[OBSTACLE_SIDE_LEFT]  = OBSTACLE_PLAN_SIDE_BLOCKED;
     p_fsm->plan.need_mm[OBSTACLE_SIDE_RIGHT] = OBSTACLE_PLAN_SIDE_BLOCKED;
 }
@@ -170,6 +172,7 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
             {
                 p_fsm->faults     = 0U;
                 p_fsm->cause      = OBSTACLE_CAUSE_NONE;
+                p_fsm->reason     = 0U;
                 p_fsm->b_reset_ok = true;
             }
         break;
@@ -204,6 +207,17 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
             {
                 enter_stopped(p_fsm, OBSTACLE_CAUSE_PLAN_REJECTED, now_ms, p_out);
             }
+            else if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state))
+            {
+                /* The navigation gave the bypass up; the id field carries the
+                 * reason. */
+                p_fsm->reason = (uint8_t)(req_id & OBSTACLE_EV_REASON_MK);
+                enter_stopped(p_fsm, OBSTACLE_CAUSE_BYPASS_GAVE_UP, now_ms, p_out);
+            }
+            else
+            {
+                /* Not valid now. */
+            }
         break;
 
         case OBSTACLE_CMD_LINE_FOUND:
@@ -216,6 +230,15 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
             }
             else if ((OBSTACLE_STATE_BYPASS == state) && b_our_id)
             {
+                if (!p_fsm->b_turned)
+                {
+                    /* The car reached the escape target. The clear pings and
+                     * the next step count from this heading, and reaching it
+                     * is progress, so the time budget starts again. */
+                    p_fsm->escape_ms    = now_ms;
+                    p_fsm->since_ms     = now_ms;
+                    p_fsm->counts.clear = 0U;
+                }
                 p_fsm->b_turned = true;
             }
             else
@@ -274,12 +297,10 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
                 ping_bypass(p_fsm, cls, dist_mm, now_ms, p_out);
             break;
 
-            case OBSTACLE_STATE_REACQUIRE:
-                ping_reacquire(p_fsm, cls, dist_mm, now_ms, p_out);
-            break;
-
             default:
-                /* No ping action in other states. */
+                /* No ping action in other states. In REACQUIRE the face
+                 * follow turns away from a close face; only the
+                 * collision guard above stops the car. */
             break;
         }
     }
@@ -294,7 +315,10 @@ void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
     p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
     p_fsm->last_class = cls;
     p_fsm->last_dist  = dist;
-    if (!check_health(p_fsm, cls, now_ms, p_out))
+    /* A spin of the face follow sweeps the beam across the face it turns
+     * beside, which is never the car driving into it: in REACQUIRE
+     * those pings feed only the health checks. */
+    if ((!check_health(p_fsm, cls, now_ms, p_out)) && (OBSTACLE_STATE_REACQUIRE != p_fsm->state))
     {
         (void)check_collision(p_fsm, dist, now_ms, p_out);
     }
@@ -314,7 +338,9 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
 {
     uint32_t const elapsed_ms  = now_ms - p_fsm->since_ms;
     uint32_t const scan_age_ms = now_ms - p_fsm->scan_progress_ms;
-    uint32_t const hugged_mm   = odo_mm - p_fsm->bypass_mm;
+    /* The odometer can fall below the bypass start (a backward move or a
+     * stale sample); wrapping would end the bypass at once. */
+    uint32_t const hugged_mm   = (odo_mm > p_fsm->bypass_mm) ? (odo_mm - p_fsm->bypass_mm) : 0U;
     uint8_t        cause       = OBSTACLE_CAUSE_NONE;
 
     switch (p_fsm->state)
@@ -329,7 +355,18 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
         case OBSTACLE_STATE_SCANNING:
             if (scan_age_ms > OBSTACLE_SCAN_STALL_MS)
             {
-                cause = OBSTACLE_CAUSE_SCAN_TIMEOUT;
+                /* Mostly a body pivot that stalls on the floor. Once the
+                 * centre window is measured, a leg on what the scan has
+                 * beats a stop: a stop restarts the same scan, which stalls
+                 * again, and the car never moves on. */
+                if (scan_algo_finish_partial(&p_fsm->scan))
+                {
+                    scan_finished(p_fsm, now_ms, p_out);
+                }
+                else
+                {
+                    cause = OBSTACLE_CAUSE_SCAN_TIMEOUT;
+                }
             }
         break;
 
@@ -367,7 +404,7 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
 }
 
 /*!
- * @brief Where the servo must point for the next ping (S40, D96).
+ * @brief Where the servo must point for the next ping.
  *
  * @param[in] p_fsm Statechart.
  *
@@ -404,7 +441,8 @@ int16_t obstacle_statechart_servo_deci (obstacle_statechart_t const * p_fsm)
 }
 
 /*!
- * @brief Body pivot angle required by the stationary scan (S40, D96).
+ * @brief Body angle the car must turn to: the scan window while SCANNING
+ *, the escape turn in BYPASS, 0 otherwise.
  *
  * @param[in] p_fsm Statechart.
  *
@@ -417,6 +455,10 @@ int16_t obstacle_statechart_body_deci (obstacle_statechart_t const * p_fsm)
     if (OBSTACLE_STATE_SCANNING == p_fsm->state)
     {
         deci = scan_algo_body_deci(&p_fsm->scan);
+    }
+    else if (OBSTACLE_STATE_BYPASS == p_fsm->state)
+    {
+        deci = p_fsm->escape_deci;
     }
     else
     {
@@ -661,6 +703,11 @@ static uint16_t fault_bit (uint8_t cause)
             bit = (uint16_t)OBSTACLE_FAULT_COLLISION;
         break;
 
+        case OBSTACLE_CAUSE_BYPASS_GAVE_UP:
+            /* A bypass that cannot finish is a bypass limit. */
+            bit = (uint16_t)OBSTACLE_FAULT_BYPASS_LIMIT;
+        break;
+
         case OBSTACLE_CAUSE_ECHO_NOISE:
             bit = (uint16_t)OBSTACLE_FAULT_ECHO_NOISE;
         break;
@@ -695,10 +742,15 @@ static void enter_stopped (obstacle_statechart_t * p_fsm, uint8_t cause,
     p_fsm->cause      = cause;
     p_fsm->faults    |= bit;
     p_fsm->b_reset_ok = false;
+    if (OBSTACLE_CAUSE_BYPASS_GAVE_UP != cause)
+    {
+        p_fsm->reason = 0U;
+    }
 
     word = event_base(OBSTACLE_EVT_FAULT, p_fsm->req_id);
     word = obstacle_pack_put(word, OBSTACLE_EV_CAUSE_SH, OBSTACLE_EV_CAUSE_MK, cause);
     word = obstacle_pack_put(word, OBSTACLE_EV_FAULTS_SH, OBSTACLE_EV_FAULTS_MK, p_fsm->faults);
+    word = obstacle_pack_put(word, OBSTACLE_EV_REASON_SH, OBSTACLE_EV_REASON_MK, p_fsm->reason);
     emit(p_out, word);
 
     p_out->b_call_stop = (0U != bit);
@@ -719,6 +771,10 @@ static void accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms,
     else
     {
         p_fsm->b_turned     = false;
+        /* Heading is positive to the left. */
+        p_fsm->escape_deci  = (int16_t)(((OBSTACLE_SIDE_LEFT == p_fsm->plan.side) ? 1 : -1) *
+                                        (int32_t)p_fsm->plan.start_deg * OBSTACLE_DECI_PER_DEG);
+        p_fsm->escape_ms    = now_ms;
         p_fsm->bypass_mm    = odo_mm;
         p_fsm->hug_limit_mm = obstacle_plan_hug_limit_mm(&p_fsm->plan, &p_fsm->cfg);
         enter(p_fsm, OBSTACLE_STATE_BYPASS, now_ms);
@@ -805,27 +861,33 @@ static void ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls,
 
     if (b_done)
     {
-        uint32_t word = 0U;
-
-        obstacle_plan_build(&p_fsm->scan, &p_fsm->cfg, &p_fsm->plan);
-        enter(p_fsm, OBSTACLE_STATE_PLAN, now_ms);
-
-        word = event_base(OBSTACLE_EVT_SCAN_RESULT, p_fsm->req_id);
-        word = obstacle_pack_put(word, OBSTACLE_EV_STATUS_SH, OBSTACLE_EV_STATUS_MK,
-                                 p_fsm->plan.status);
-        word = obstacle_pack_put(word, OBSTACLE_EV_SIDE_SH, OBSTACLE_EV_SIDE_MK,
-                                 p_fsm->plan.side);
-        word = obstacle_pack_put(word, OBSTACLE_EV_WIDTH_SH, OBSTACLE_EV_WIDTH_MK,
-                                 p_fsm->plan.width_mm);
-        word = obstacle_pack_put(word, OBSTACLE_EV_ANGLE_SH, OBSTACLE_EV_ANGLE_MK,
-                                 p_fsm->plan.start_deg);
-        word = obstacle_pack_put(word, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK,
-                                 p_fsm->plan.b_wall ? 1U : 0U);
-        emit(p_out, word);
-
-        /* The finished profile and plan are what the profile telemetry shows. */
-        p_out->b_profile_changed = true;
+        scan_finished(p_fsm, now_ms, p_out);
     }
+}
+
+static void scan_finished (obstacle_statechart_t * p_fsm, uint32_t now_ms,
+                           obstacle_statechart_out_t * p_out)
+{
+    uint32_t word = 0U;
+
+    obstacle_plan_build(&p_fsm->scan, &p_fsm->cfg, &p_fsm->plan);
+    enter(p_fsm, OBSTACLE_STATE_PLAN, now_ms);
+
+    word = event_base(OBSTACLE_EVT_SCAN_RESULT, p_fsm->req_id);
+    word = obstacle_pack_put(word, OBSTACLE_EV_STATUS_SH, OBSTACLE_EV_STATUS_MK,
+                             p_fsm->plan.status);
+    word = obstacle_pack_put(word, OBSTACLE_EV_SIDE_SH, OBSTACLE_EV_SIDE_MK,
+                             p_fsm->plan.side);
+    word = obstacle_pack_put(word, OBSTACLE_EV_WIDTH_SH, OBSTACLE_EV_WIDTH_MK,
+                             p_fsm->plan.width_mm);
+    word = obstacle_pack_put(word, OBSTACLE_EV_ANGLE_SH, OBSTACLE_EV_ANGLE_MK,
+                             p_fsm->plan.start_deg);
+    word = obstacle_pack_put(word, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK,
+                             p_fsm->plan.b_wall ? 1U : 0U);
+    emit(p_out, word);
+
+    /* The finished profile and plan are what the profile telemetry shows. */
+    p_out->b_profile_changed = true;
 }
 
 static void ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls,
@@ -848,29 +910,26 @@ static void ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls,
     }
     else
     {
+        int32_t const sign = (OBSTACLE_SIDE_LEFT == p_fsm->plan.side) ? 1 : -1;
+        int32_t const away = sign * (int32_t)p_fsm->escape_deci;
+
         p_fsm->counts.clear = 0U;
         emit_steer(p_fsm, p_out, obstacle_plan_steer_away(p_fsm->plan.side));
-    }
-}
+        /* Turned and still blocked: turn on further, not stand still. */
+        if (p_fsm->b_turned && ((now_ms - p_fsm->escape_ms) >= OBSTACLE_ESCAPE_STEP_MS) &&
+            (away < OBSTACLE_ESCAPE_TURN_MAX_DECI))
+        {
+            int32_t next = away + OBSTACLE_ESCAPE_STEP_DECI;
 
-static void ping_reacquire (obstacle_statechart_t * p_fsm, uint8_t cls,
-                            uint16_t dist_mm, uint32_t now_ms,
-                            obstacle_statechart_out_t * p_out)
-{
-    /* S40, D96: While moving, the sonar faces forward (0 deg). Any VALID or
-     * TOO_CLOSE reading under OBSTACLE_FWD_GUARD_MM (300 mm) stops the car and
-     * rescans. */
-    uint16_t const dist = ranged_dist(cls, dist_mm);
-
-    if ((0U != dist) && (dist < OBSTACLE_FWD_GUARD_MM))
-    {
-        uint32_t word = 0U;
-
-        enter(p_fsm, OBSTACLE_STATE_WAIT_STOP, now_ms);
-        word = event_base(OBSTACLE_EVT_OBSTACLE, p_fsm->req_id);
-        word = obstacle_pack_put(word, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK, dist);
-        emit(p_out, word);
-        emit_steer(p_fsm, p_out, OBSTACLE_STEER_HOLD);
+            if (next > OBSTACLE_ESCAPE_TURN_MAX_DECI)
+            {
+                next = OBSTACLE_ESCAPE_TURN_MAX_DECI;
+            }
+            p_fsm->escape_deci = (int16_t)(sign * next);
+            p_fsm->escape_ms   = now_ms;
+            /* Wait for the car to reach the new target before the next step. */
+            p_fsm->b_turned = false;
+        }
     }
 }
 

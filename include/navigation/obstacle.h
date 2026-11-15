@@ -30,7 +30,7 @@
 /* Slots in the scan profile that obstacle_copy_profile() fills. */
 #define OBSTACLE_PROFILE_SLOTS (37U)
 
-/* Echo classes: VALID, OPEN, TOO_CLOSE, NO_ECHO, GLITCH, STUCK (D97). */
+/* Echo classes: VALID, OPEN, TOO_CLOSE, NO_ECHO, GLITCH, STUCK. */
 #define OBSTACLE_ECHO_CLASSES (6U)
 
 /* Index of each class in obstacle_echo_counts(). */

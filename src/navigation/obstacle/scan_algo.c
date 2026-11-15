@@ -3,7 +3,7 @@
  * @brief Echo classification, ping agreement and the ±30° servo scan with
  *        body-pivot windows. Pure C99 and integer only.
  *
- * Scan order (D96, S40):
+ * Scan order:
  *   1. Coarse centre window: 10 degree steps over +-30 degrees (slots 12,
  *      14, ... 24, from right to left).
  *   2. Region: the closest VALID reading within 600 mm inside the path
@@ -80,7 +80,7 @@ uint16_t scan_algo_dist_mm (uint32_t width_us)
 }
 
 /*!
- * @brief Classify one ping (D97). A missing echo is never OPEN, and every
+ * @brief Classify one ping. A missing echo is never OPEN, and every
  *        outcome has a class of its own.
  *
  * VALID and OPEN need a clean rise and fall. A clean echo shorter than the
@@ -399,6 +399,43 @@ bool scan_algo_has_region (scan_algo_ctx_t const * p_ctx)
 {
     return ((SCAN_ALGO_EDGE_NONE != p_ctx->edge_state[SCAN_ALGO_LEFT]) ||
             (SCAN_ALGO_EDGE_NONE != p_ctx->edge_state[SCAN_ALGO_RIGHT]));
+}
+
+/*!
+ * @brief End a fine scan that can no longer measure (the body pivot stalled).
+ *        An edge that is still open counts as unbounded, as at the end of the
+ *        widest window, so the planner treats the obstacle as a wall there.
+ *
+ * @param[in,out] p_ctx Scan engine state.
+ *
+ * @return True when the scan is now finished. False in the coarse phase:
+ *         without the centre window there is no region to plan from.
+ */
+bool scan_algo_finish_partial (scan_algo_ctx_t * p_ctx)
+{
+    uint8_t side = 0U;
+
+    if ((PHASE_FINE_LEFT == p_ctx->phase) || (PHASE_FINE_RIGHT == p_ctx->phase))
+    {
+        if (PHASE_FINE_LEFT == p_ctx->phase)
+        {
+            /* The right walk never started; it starts from the region's
+             * right end, as in run_fine(). */
+            p_ctx->edge_hit[SCAN_ALGO_RIGHT] = p_ctx->region_lo;
+        }
+        for (side = 0U; side < SCAN_ALGO_SIDES; side++)
+        {
+            if (SCAN_ALGO_EDGE_NONE == p_ctx->edge_state[side])
+            {
+                p_ctx->edge_state[side] = SCAN_ALGO_EDGE_UNBOUNDED;
+                p_ctx->edge_miss[side]  = (SCAN_ALGO_LEFT == side) ? (uint8_t)LAST_SLOT : 0U;
+            }
+        }
+        p_ctx->phase     = PHASE_DONE;
+        p_ctx->body_deci = 0;
+    }
+
+    return (PHASE_DONE == p_ctx->phase);
 }
 
 /*!

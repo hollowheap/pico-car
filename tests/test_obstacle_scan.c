@@ -46,7 +46,7 @@ static void test_classify(void)
     CHECK(scan_algo_classify(OBSTACLE_ECHO_RISE, true, true, false) == OBSTACLE_CLASS_OPEN);
 }
 
-/* D97: every outcome has its own class. */
+/* every outcome has its own class. */
 static void test_classify_each_class(void)
 {
     uint32_t const done_rise = OBSTACLE_ECHO_DONE | OBSTACLE_ECHO_RISE;
@@ -183,8 +183,11 @@ static void test_servo_check(void)
     wall_profile(profile, 300.0, 100.0);
     scan_algo_servo_check(profile, &check);
     CHECK(SERVO_CHECK_OK == check.verdict);
-    CHECK(check.left_deci > 120 && check.left_deci < 180);
-    CHECK(check.right_deci > 120 && check.right_deci < 180);
+    /* Both ends read the servo limit, within 6 degrees. */
+    CHECK(check.left_deci > (OBSTACLE_SERVO_LIMIT_DECI - 60) &&
+          check.left_deci < (OBSTACLE_SERVO_LIMIT_DECI + 60));
+    CHECK(check.right_deci > (OBSTACLE_SERVO_LIMIT_DECI - 60) &&
+          check.right_deci < (OBSTACLE_SERVO_LIMIT_DECI + 60));
 
     wall_profile(profile, 300.0, 1.0);
     scan_algo_servo_check(profile, &check);
@@ -193,10 +196,12 @@ static void test_servo_check(void)
     wall_profile(profile, 300.0, 60.0);
     scan_algo_servo_check(profile, &check);
     CHECK(SERVO_CHECK_SCALE == check.verdict);
-    CHECK(check.left_deci > 60 && check.left_deci < 120);
+    CHECK(check.left_deci > ((OBSTACLE_SERVO_LIMIT_DECI * 6) / 10 - 60) &&
+          check.left_deci < ((OBSTACLE_SERVO_LIMIT_DECI * 6) / 10 + 60));
 
     wall_profile(profile, 300.0, 100.0);
-    profile[OBSTACLE_SLOT_CENTRE - 3U] = (uint16_t)(profile[OBSTACLE_SLOT_CENTRE - 3U] + 30U);
+    profile[OBSTACLE_SLOT_CENTRE - (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI)] =
+        (uint16_t)(profile[OBSTACLE_SLOT_CENTRE - (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI)] + 30U);
     scan_algo_servo_check(profile, &check);
     CHECK(SERVO_CHECK_ASYMMETRIC == check.verdict);
 
@@ -212,7 +217,8 @@ static void test_empty_scan(void)
     uint32_t        guard = 0U;
 
     scan_algo_start(&ctx);
-    CHECK(scan_algo_target(&ctx) == 15U); /* -15 degrees, the right end of the servo window */
+    /* The right end of the servo window. */
+    CHECK(scan_algo_target(&ctx) == (OBSTACLE_SLOT_CENTRE - (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI)));
     while ((scan_algo_target(&ctx) != SCAN_ALGO_NO_SLOT) && (guard < 100U))
     {
         (void)feed_pair(&ctx, OBSTACLE_CLASS_OPEN, 0U);
@@ -290,25 +296,26 @@ static void test_receding_edge(void)
 
     scan_algo_start(&ctx);
 
-    /* Coarse pass over +-15 degrees (slots 15 to 21, every slot): the obstacle
-     * at the centre, then a surface that recedes by 120 mm per 5-degree slot
-     * on the left. It must not be mistaken for an edge: each slot is only
-     * 120 mm beyond the last hit, so the walk steps over them and runs on
-     * past the servo window, which needs the first body pivot. */
+    /* Coarse pass over the servo window (every slot): the obstacle
+     * at the centre, then a surface that recedes by 60 mm per 5-degree slot
+     * on the left. It must not be mistaken for an edge: no slot is far
+     * beyond the last hit, so the walk steps over them and runs on past the
+     * servo window, which needs the first body pivot. */
     while ((scan_algo_target(&ctx) != SCAN_ALGO_NO_SLOT) && (0 == ctx.body_deci) && (guard < 100U))
     {
         const uint8_t  slot = scan_algo_target(&ctx);
-        const bool     b_hit = (slot >= OBSTACLE_SLOT_CENTRE) && (slot <= 21U);
-        const uint16_t dist  = b_hit ? (uint16_t)(200U + (120U * (uint16_t)(slot - OBSTACLE_SLOT_CENTRE)))
+        const bool     b_hit = (slot >= OBSTACLE_SLOT_CENTRE) &&
+                               (slot <= (OBSTACLE_SLOT_CENTRE + (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI)));
+        const uint16_t dist  = b_hit ? (uint16_t)(200U + (60U * (uint16_t)(slot - OBSTACLE_SLOT_CENTRE)))
                                      : (uint16_t)0U;
 
         (void)feed_pair(&ctx, b_hit ? (uint8_t)OBSTACLE_CLASS_VALID : (uint8_t)OBSTACLE_CLASS_OPEN, dist);
         guard++;
     }
     CHECK(ctx.closest_mm == 200U);
-    CHECK(ctx.edge_hit[SCAN_ALGO_LEFT] == 20U); /* slot 21 (560 mm) is stepped over, not a hit */
+    CHECK(ctx.edge_hit[SCAN_ALGO_LEFT] == 22U); /* slots 23 and 24 (500, 560 mm) are stepped over, not hits */
     CHECK(ctx.body_deci == OBSTACLE_SCAN_PIVOT_DECI);
-    CHECK(scan_algo_target(&ctx) == 22U);
+    CHECK(scan_algo_target(&ctx) == (OBSTACLE_SLOT_CENTRE + (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI) + 1U));
 }
 
 int main(void)

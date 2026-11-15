@@ -1,6 +1,6 @@
 /** @file planner.c
  *
- * @brief Obstacle planner and stop-and-look bypass control laws (D96, S40).
+ * @brief Obstacle planner and stop-and-look bypass control laws.
  *        Pure C99, integer only, no libm and no kernel calls.
  */
 
@@ -401,88 +401,6 @@ void obstacle_plan_wheel_straight (int32_t cur_head_deci, int32_t target_head_de
 }
 
 /*!
- * @brief Compute the heading correction (deci-degrees away from the obstacle)
- *        after a stationary side check.
- *
- * @param[in] gap_mm        Measured axle-to-face gap in mm.
- * @param[in] prev_gap_mm   Previous check's axle-to-face gap in mm.
- * @param[in] b_have_prev   True if prev_gap_mm is valid.
- * @param[in] target_gap_mm Target axle-to-face gap in mm.
- *
- * @return Heading correction in deci-degrees (positive = away from obstacle),
- *         clamped to +-OBSTACLE_LEAN_MAX_DECI.
- */
-int32_t obstacle_plan_side_lean_deci (int32_t gap_mm, int32_t prev_gap_mm,
-                                      bool b_have_prev, int32_t target_gap_mm)
-{
-    int32_t const pos_err_mm = target_gap_mm - gap_mm;
-    int32_t       lean_deci  = geom_atan_deci(pos_err_mm, (int32_t)OBSTACLE_LEAN_REF_MM);
-
-    if (b_have_prev)
-    {
-        int32_t const dg_mm      = gap_mm - prev_gap_mm;
-        int32_t const slope_deci = geom_atan_deci(-dg_mm, (int32_t)OBSTACLE_SIDE_LOOK_MM);
-
-        lean_deci += (slope_deci * (int32_t)OBSTACLE_LEAN_GAIN_PCT) / PERCENT_FULL;
-    }
-
-    if (lean_deci > OBSTACLE_LEAN_MAX_DECI)
-    {
-        lean_deci = OBSTACLE_LEAN_MAX_DECI;
-    }
-    else if (lean_deci < -OBSTACLE_LEAN_MAX_DECI)
-    {
-        lean_deci = -OBSTACLE_LEAN_MAX_DECI;
-    }
-    else
-    {
-        /* Within lean cap. */
-    }
-
-    return (lean_deci);
-}
-
-/*!
- * @brief Heading drift trim (deci-degrees outward) from two side checks
- *        separated by OBSTACLE_SIDE_LOOK_MM.
- *
- * @param[in] gap_mm         Latest axle-to-face gap in mm.
- * @param[in] prev_gap_mm    Previous check's axle-to-face gap in mm.
- * @param[in] prev_lean_deci Outward lean commanded during the leg.
- *
- * @return Outward heading drift to subtract from the reference heading,
- *         clamped to +-OBSTACLE_LEAN_MAX_DECI.
- */
-int32_t obstacle_plan_side_trim_deci (int32_t gap_mm, int32_t prev_gap_mm,
-                                      int32_t prev_lean_deci)
-{
-    int32_t const dg_mm           = gap_mm - prev_gap_mm;
-    int32_t const actual_out_deci = geom_atan_deci(dg_mm, (int32_t)OBSTACLE_SIDE_LOOK_MM);
-    int32_t const drift_deci      = actual_out_deci - prev_lean_deci;
-    int32_t       trim_deci       = 0;
-
-    if (geom_abs(drift_deci) > (int32_t)OBSTACLE_PIVOT_TOL_DECI)
-    {
-        trim_deci = drift_deci;
-    }
-
-    if (trim_deci > OBSTACLE_LEAN_MAX_DECI)
-    {
-        trim_deci = OBSTACLE_LEAN_MAX_DECI;
-    }
-    else if (trim_deci < -OBSTACLE_LEAN_MAX_DECI)
-    {
-        trim_deci = -OBSTACLE_LEAN_MAX_DECI;
-    }
-    else
-    {
-        /* Within trim cap. */
-    }
-
-    return (trim_deci);
-}
-
-/*!
  * @brief Sign of an edge's outward direction (+1 left, -1 right).
  */
 static int32_t side_sign (uint8_t side)
@@ -555,7 +473,7 @@ static bool corridor_blocked (scan_algo_ctx_t const * p_scan,
  * @brief Work out one side: its middle edge point (for the width) and the
  *        sideways offset it needs.
  *
- * S40: an apparent edge whose beam-corrected bearing exceeds
+ * an apparent edge whose beam-corrected bearing exceeds
  * +-p_cfg->edge_trust_deci is not trusted as a bounded edge because a flat
  * face seen beyond the trusted incidence angle loses its echo.
  */
@@ -711,7 +629,7 @@ static uint8_t pick_start_deg (obstacle_plan_cfg_t const * p_cfg,
     int32_t const front_y  = (int32_t)closest_mm + (int32_t)OBSTACLE_SONAR_FWD_MM;
     /* The car pivots (ALIGN) at the end of the leg, next to the corner, so the
      * leg must clear the corner by the pivot circle, not only the half width
-     * (D166). With the half width a 280 mm box kept only 43 mm. */
+     *. With the half width a 280 mm box kept only 43 mm. */
     int32_t const min_perp = (int32_t)OBSTACLE_PIVOT_RADIUS_MM + (int32_t)OBSTACLE_PLAN_MARGIN_MM;
     int32_t       chosen   = OBSTACLE_OUT_ANGLE_D_DECI;
     uint32_t      idx      = 0U;

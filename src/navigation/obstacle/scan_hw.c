@@ -437,20 +437,20 @@ static void echo_fall (uint32_t echo_result, uint32_t now_us)
 static void echo_isr (const gpio_edge_snapshot_t * p_snapshot)
 {
     uint32_t const now_us = p_snapshot->timestamp_us;
-    uint32_t const echo_result    = g_echo.result;
-    bool const     b_high = scan_hw_is_echo_high();
+    bool const     b_rise = (0U != (p_snapshot->rise_mask & ECHO_BIT));
+    bool const     b_fall = (0U != (p_snapshot->fall_mask & ECHO_BIT));
 
-    if (0U != (echo_result & OBSTACLE_ECHO_DONE))
+    /* The edges come from the dispatcher's snapshot, not from the pin level
+     * now: the pin may have changed again since the snapshot. Both edges in
+     * one snapshot are a pulse shorter than the ISR latency, so rise then
+     * fall at one time stamp, which classifies as a glitch. */
+    if (b_rise && (0U == (g_echo.result & OBSTACLE_ECHO_DONE)))
     {
-        /* This ping is finished; later edges wait for the next re-arm. */
+        echo_rise(g_echo.result, now_us);
     }
-    else if (b_high)
+    if (b_fall && (0U == (g_echo.result & OBSTACLE_ECHO_DONE)))
     {
-        echo_rise(echo_result, now_us);
-    }
-    else
-    {
-        echo_fall(echo_result, now_us);
+        echo_fall(g_echo.result, now_us);
     }
 }
 

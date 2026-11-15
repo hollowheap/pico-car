@@ -248,26 +248,57 @@ static uint32_t settle_ms (int16_t target)
 
 /*!
  * @brief Tell whether the car may be driving in the current state (line
- *        following in MONITOR, or the bypass).
+ *        following in MONITOR, the body turns of a scan, or the bypass).
  *
- * @return True in MONITOR, BYPASS and REACQUIRE.
+ * @return True in MONITOR, SCANNING, PLAN, BYPASS and REACQUIRE.
  */
 static bool is_car_driving (void)
 {
     return ((OBSTACLE_STATE_MONITOR == g_fsm.state) ||
+            (OBSTACLE_STATE_SCANNING == g_fsm.state) ||
+            (OBSTACLE_STATE_PLAN == g_fsm.state) ||
             (OBSTACLE_STATE_BYPASS == g_fsm.state) ||
             (OBSTACLE_STATE_REACQUIRE == g_fsm.state));
 }
 
 /*!
- * @brief Move the servo if the statechart wants a new angle.
+ * @brief The servo angle for the next ping: the face follow's look in
+ *        REACQUIRE, the statechart's angle in every other state.
+ *
+ * @return Angle in deci-degrees, inside +-OBSTACLE_SERVO_LIMIT_DECI.
+ */
+static int16_t servo_target (void)
+{
+    int16_t target = obstacle_statechart_servo_deci(&g_fsm);
+
+    if (OBSTACLE_STATE_REACQUIRE == g_fsm.state)
+    {
+        target = obstacle_comms_look();
+        if (target > (int16_t)OBSTACLE_SERVO_LIMIT_DECI)
+        {
+            target = (int16_t)OBSTACLE_SERVO_LIMIT_DECI;
+        }
+        else if (target < -(int16_t)OBSTACLE_SERVO_LIMIT_DECI)
+        {
+            target = -(int16_t)OBSTACLE_SERVO_LIMIT_DECI;
+        }
+        else
+        {
+            /* Within the limit. */
+        }
+    }
+    return (target);
+}
+
+/*!
+ * @brief Move the servo if the target angle changed.
  *
  * @return True if the servo moved (and has now settled).
  */
 static bool move_servo (void)
 {
     bool    b_moved = false;
-    int16_t target  = obstacle_statechart_servo_deci(&g_fsm);
+    int16_t target  = servo_target();
 
     if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
     {
@@ -275,7 +306,7 @@ static bool move_servo (void)
          * swing while a motor drives disturbs the wheel encoders. The
          * target may change meanwhile, so read it again. */
         wait_ms(OBSTACLE_SERVO_PREDELAY_MS);
-        target = obstacle_statechart_servo_deci(&g_fsm);
+        target = servo_target();
     }
 
     if ((!g_servo.b_known) || (target != g_servo.deci))

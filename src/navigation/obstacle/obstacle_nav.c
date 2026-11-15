@@ -3,37 +3,28 @@
  * @brief Buddy 5 Phase 2 glue between the obstacle statechart, the line
  *        task in main.c and the motion service.
  *
- * What the line task does with Buddy 5 (D96):
+ * What the line task does with Buddy 5:
  *   - OBSTACLE      hold the car, wait OBSTACLE_NAV_BRAKE_MS, send SCAN_REQ(id).
  *   - SCAN_RESULT   OK or CLEAR: send ACCEPT(id), and keep the plan: the
- *                   side, the start angle and the sideways offset the car
- *                   needs.
- *   - BYPASS        pivot away from the obstacle (inside wheel stopped)
- *                   until Buddy 5 sees the way ahead is clear AND the
- *                   planned start angle is reached; this task reports the
- *                   angle with TURNED (same opcode as LINE_FOUND). A box
- *                   plan turns to its start angle, a wall plan to +90.
- *   - REACQUIRE     drive the rest of the bypass via stop-and-look side checks:
- *                     TURN          keep pivoting until the planned angle;
- *                     OUT           box plan: straight on until planned lateral offset;
- *                     ALIGN         box plan: turn back to parallel with original line;
- *                     ALONG         drive forward with forward-only sonar;
- *                     LOOK_STOP     stop before rotating to side;
- *                     LOOK_IN       pivot body to face obstacle/wall;
- *                     LOOK_PING     take stationary side checks;
- *                     LOOK_OUT      pivot back to along heading;
- *                     EXTRA         extra forward travel once passed;
- *                     RETURN_PIVOT  pivot back towards line;
- *                     RETURN_DRIVE  drive forward to line until IR triggers.
- *   - FAULT         hold the car; retry RESET + START every 3 s.
+ *                   side, the start angle and the closest reading.
+ *   - BYPASS        pivot away from the obstacle until Buddy 5 sees the way
+ *                   ahead is clear AND the planned start angle is reached;
+ *                   this task reports the angle with TURNED (same opcode as
+ *                   LINE_FOUND).
+ *   - REACQUIRE     the Bug2 face follow (follow.c): follow the obstacle face
+ *                   on the plan side while moving, ask for the servo angle,
+ *                   and send LINE_FOUND once the car is back on the tape past
+ *                   the hit point and faces the original heading.
+ *   - FAULT         hold the car; retry RESET + START every 3 s for the
+ *                   transient causes only.
  *   - MONITOR       release the hold and let the line follower drive,
  *                   except while Buddy 5's latest reading is a VALID echo
  *                   within the detection distance.
  *
  * Position frame (dead reckoning from the wheel encoders): x is sideways,
  * positive to the left of the original line; y is along the line; both
- * are for the point midway between the wheels and start at 0 when BYPASS
- * begins. The heading is worked out from the total wheel difference, so
+ * are for the point midway between the wheels and start at 0 when the
+ * stationary scan begins. The heading is worked out from the total wheel difference, so
  * it does not drift between passes.
  *
  * Everything that happens is also written to the flight recorder
@@ -61,6 +52,8 @@
 #include "motion/motion.h"
 #include "obstacle_config.h"
 #include "flight_log.h"
+#include "follow.h"
+#include "nav_core.h"
 #include "obstacle_nav.h"
 #include "obstacle_pack.h"
 #include "planner.h"
@@ -73,6 +66,7 @@
 
 /* Micrometres per millimetre. */
 #define UM_PER_MM (1000)
+#define MS_PER_S  (1000)
 
 /* Deci-degrees per degree. */
 #define DECI_PER_DEG (10)
@@ -106,60 +100,39 @@
 /* Largest value logged in a 16-bit field. */
 #define LOG_I16_MAX (32767)
 
-/* Maximum clamp for heading drift trim in deci-degrees. */
-#define WALL_TRIM_MAX_DECI (800)
-
 /* Navigation state; only the line task touches it. NOTE: Booleans are b_
  * members of a g_ struct, which satisfies both BARR-C 7.1.m/7.1.o and the
  * team .clang-tidy. */
 typedef struct
 {
+    nav_core_t core; /* pose, servo wait, IR gate, ping freshness (nav_core.c) */
+    int64_t  wheel_um[WHEELS]; /* 8-byte fields first: no padding */
     bool     b_enabled;
     bool     b_scan_pending;
     bool     b_turned;
-    bool     b_servo_wait;
     bool     b_pausing;
-    bool     b_ir_armed;
-    bool     b_ir_cleared;
     bool     b_wall;
-    bool     b_corner; /* the front face of a wide box ended: turn its corner */
     bool     b_scan_turning; /* the body turns to a scan window */
-    bool     b_have_prev_gap;
-    bool     b_passed;
+    bool     b_follow_turning; /* the face follow turns the body on the spot */
     uint8_t  req_id;
     uint8_t  next_id;
     uint8_t  last_state;
     uint8_t  start_deg;
     uint8_t  side;
-    uint8_t  phase;
-    uint8_t  wait_seq;
-    uint8_t  clear_checks;
-    uint8_t  side_ping_count;
-    uint8_t  side_agree_count;
-    uint16_t last_side_dist_mm;
-    int32_t  prev_gap_mm;
-    int32_t  prev_lean_deci;
-    int32_t  wall_trim_deci;
-    int32_t  along_head_deci;
-    uint32_t look_stop_ms;
-    int64_t  leg_base_um;
-    uint32_t wait_ms;
     uint32_t pause_ms;
     uint32_t last_drive;
     uint32_t hold_ms;
     uint32_t retry_ms;
-    uint32_t line_ms;
     uint32_t trace_ms;
     uint32_t motion_word;
-    int32_t  need_mm;
+    int16_t  need_mm;  /* side offset of the plan, for the log      */
+    int16_t  hit_mm;   /* closest reading of the accepted plan      */
     int32_t  obst_mm;
     int32_t  wheel_mm[WHEELS];
     int32_t  last_cmd[WHEELS];
-    int64_t  wheel_um[WHEELS];
-    int64_t  base_um[WHEELS];
-    int64_t  prev_um[WHEELS];
-    int64_t  x_um;
-    int64_t  y_um;
+    uint32_t bump_ms;  /* time of the last bumper check               */
+    follow_t follow;
+    follow_bump_t bump;
 } nav_state_t;
 
 /* Last good odometer reading; only the Buddy 5 task touches it. */
@@ -172,49 +145,28 @@ static nav_state_t g_nav = {
     .b_enabled          = false,
     .b_scan_pending     = false,
     .b_turned           = false,
-    .b_servo_wait       = false,
     .b_pausing          = false,
-    .b_ir_armed         = false,
-    .b_ir_cleared       = false,
     .b_wall             = false,
-    .b_corner           = false,
     .b_scan_turning     = false,
-    .b_have_prev_gap    = false,
-    .b_passed           = false,
+    .b_follow_turning   = false,
     .req_id             = 0U,
     .next_id            = 0U,
     .last_state         = NAV_UNSEEN,
     .start_deg          = 0U,
     .side               = OBSTACLE_SIDE_LEFT,
-    .phase              = OBSTACLE_PHASE_TURN,
-    .wait_seq           = 0U,
-    .clear_checks       = 0U,
-    .side_ping_count    = 0U,
-    .side_agree_count   = 0U,
-    .last_side_dist_mm  = 0U,
-    .prev_gap_mm        = 0,
-    .prev_lean_deci     = 0,
-    .wall_trim_deci     = 0,
-    .along_head_deci    = 0,
-    .look_stop_ms       = 0U,
-    .leg_base_um        = 0,
-    .wait_ms            = 0U,
     .pause_ms           = 0U,
     .last_drive         = NAV_DRIVE_UNSEEN,
     .hold_ms            = 0U,
     .retry_ms           = 0U,
-    .line_ms            = 0U,
     .trace_ms           = 0U,
     .motion_word        = UINT32_MAX,
     .need_mm            = 0,
     .obst_mm            = 0,
+    .hit_mm             = 0,
     .wheel_mm           = {0, 0},
     .last_cmd           = {0, 0},
     .wheel_um           = {0, 0},
-    .base_um            = {0, 0},
-    .prev_um            = {0, 0},
-    .x_um               = 0,
-    .y_um               = 0,
+    .bump_ms            = 0U,
 };
 static nav_odo_t g_odo = {0U};
 
@@ -226,21 +178,17 @@ static void post (uint32_t type, uint8_t req_id);
 static void hold_car (bool b_held);
 static int32_t  side_sign (void);
 static int32_t  heading_deci (void);
-static int32_t  lateral_mm (void);
-static int32_t  ahead_mm (void);
 static void     reset_pose (void);
-static void     step_scan_body (void);
+static void     step_scan_body (uint32_t status, uint32_t now);
 static void     update_pivoting (uint32_t state);
 static void     update_pose (void);
 static void     note_turned (bool b_turned, uint32_t now);
 static void     drive_wheels (uint8_t steer, int32_t left_um_s,
                               int32_t right_um_s);
 static bool     is_reverse_pause (int32_t const p_speed[WHEELS]);
-static void     set_phase (uint8_t phase);
 static void     step_pivot (uint32_t now);
-static void     drive_reacquire (uint32_t status, uint32_t now);
 static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now);
-static void     update_ir_gate (bool b_line_seen);
+static void     give_up (uint8_t reason, uint32_t now);
 static bool     is_obstacle_close (uint32_t status);
 static bool     is_servo_moving (uint32_t status, uint32_t now);
 static void     report_state (uint32_t status);
@@ -378,9 +326,9 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
             case OBSTACLE_STATE_SCANNING:
             case OBSTACLE_STATE_PLAN:
                 /* Turn the body to the scan window the statechart asks for
-                 * (D167). It is 0 after the scan, so PLAN turns back. */
+                 *. It is 0 after the scan, so PLAN turns back. */
                 update_pose();
-                step_scan_body();
+                step_scan_body(status, now);
                 b_in_charge = true;
             break;
 
@@ -399,7 +347,7 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
 
 /*!
  * @brief Tell the scan task whether the body is turning: a scan pivot, or a
- *        side look in REACQUIRE (D167).
+ *        spin of the face follow in REACQUIRE.
  *
  * @param[in] state Current Buddy 5 state.
  */
@@ -407,20 +355,19 @@ static void update_pivoting (uint32_t state)
 {
     bool const b_scan = g_nav.b_scan_turning &&
                         ((OBSTACLE_STATE_SCANNING == state) || (OBSTACLE_STATE_PLAN == state));
-    bool const b_look = (OBSTACLE_STATE_REACQUIRE == state) &&
-                        ((OBSTACLE_PHASE_LOOK_STOP == g_nav.phase) ||
-                         (OBSTACLE_PHASE_LOOK_IN == g_nav.phase) ||
-                         (OBSTACLE_PHASE_LOOK_PING == g_nav.phase) ||
-                         (OBSTACLE_PHASE_LOOK_OUT == g_nav.phase));
+    bool const b_look = (OBSTACLE_STATE_REACQUIRE == state) && g_nav.b_follow_turning;
 
     obstacle_comms_set_pivoting(b_scan || b_look);
 }
 
 /*!
  * @brief SCANNING and PLAN: pivot the body to the target of the scan. The car
- *        stands still once it is there.
+ *        stands still once it is there, and while the servo swings.
+ *
+ * @param[in] status Packed Buddy 5 status word.
+ * @param[in] now    Current time, ms.
  */
-static void step_scan_body (void)
+static void step_scan_body (uint32_t status, uint32_t now)
 {
     int32_t const target = (int32_t)(int16_t)(uint16_t)(obstacle_comms_aim() >> AIM_BODY_SHIFT);
     int32_t       left   = 0;
@@ -430,8 +377,11 @@ static void step_scan_body (void)
 
     obstacle_plan_wheel_pivot(heading_deci(), target, &left, &right, &steer, &b_done);
     g_nav.b_scan_turning = !b_done;
-    if (b_done)
+    if (b_done || is_servo_moving(status, now))
     {
+        /* Also stand still while the servo swings: a swing while a motor
+         * drives disturbs the wheel encoders and can latch a motion
+         * FEEDBACK fault. */
         hold_car(true);
     }
     else
@@ -443,8 +393,8 @@ static void step_scan_body (void)
 
 /*!
  * @brief One line-task pass in REACQUIRE: stand still while the servo
- *        settles, otherwise drive the stop-and-look bypass and look for
- *        the line.
+ *        settles, otherwise run one step of the Bug2 face follow and
+ *        hand the line back once it is on the tape past the hit point.
  *
  * @param[in] status      Packed Buddy 5 status word.
  * @param[in] b_line_seen An IR sensor sees the line.
@@ -452,6 +402,16 @@ static void step_scan_body (void)
  */
 static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
 {
+    uint32_t const dt_ms = now - g_nav.bump_ms;
+    /* Measured speeds from this pass's travel; true_wheel_um already undid
+     * any crossed encoder plugs. Casts are safe: one pass moves the car far
+     * less than 2 km. */
+    int32_t const meas_um_s[WHEELS] = {
+        (dt_ms > 0U) ? (int32_t)(((g_nav.wheel_um[WHEEL_LEFT] - g_nav.core.prev_um[WHEEL_LEFT]) * MS_PER_S) / (int64_t)dt_ms) : 0,
+        (dt_ms > 0U) ? (int32_t)(((g_nav.wheel_um[WHEEL_RIGHT] - g_nav.core.prev_um[WHEEL_RIGHT]) * MS_PER_S) / (int64_t)dt_ms) : 0,
+    };
+
+    g_nav.bump_ms = now;
     update_pose();
 
     if (is_servo_moving(status, now))
@@ -460,14 +420,63 @@ static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
     }
     else
     {
-        bool const b_line_active =
-            (OBSTACLE_PHASE_ALONG == g_nav.phase) ||
-            (OBSTACLE_PHASE_RETURN_DRIVE == g_nav.phase);
+        follow_in_t  in;
+        follow_out_t out;
 
         hold_car(false);
-        update_ir_gate(b_line_seen);
-        drive_reacquire(status, now);
-        look_for_line(b_line_active && g_nav.b_ir_cleared && b_line_seen, now);
+        if (nav_core_follow_input(&g_nav.core, status, g_nav.wheel_um, b_line_seen, &in))
+        {
+            LOG_NOW("INFO", "line:nav", "IR clear of the line: the next line "
+                            "contact ends the bypass\n");
+        }
+
+        {
+            uint8_t const before = (uint8_t)g_nav.follow.phase;
+
+            follow_step(&g_nav.follow, &in, &out);
+            if (before != (uint8_t)g_nav.follow.phase)
+            {
+                /* Casts are safe: the phase field is 4 bits. */
+                log_rec(OBSTACLE_LOG_PHASE, (uint8_t)g_nav.follow.phase, 0U, 0U, in.x_mm, in.y_mm,
+                        in.head_deci);
+            }
+        }
+        g_nav.b_follow_turning = out.b_turning;
+        obstacle_comms_set_look(out.servo_deci);
+        if ((FOLLOW_RUN == out.result) &&
+            follow_bump_update(&g_nav.bump, g_nav.last_cmd, meas_um_s,
+                               (dt_ms > (uint32_t)MS_PER_S) ? (uint32_t)MS_PER_S : dt_ms))
+        {
+            /* A driven wheel does not turn: the car touches something. */
+            out.result = FOLLOW_GAVE_UP;
+            out.reason = FOLLOW_REASON_WHEEL_STALL;
+        }
+        if (FOLLOW_GAVE_UP == out.result)
+        {
+            hold_car(true);
+            give_up(out.reason, now);
+        }
+        else
+        {
+            drive_wheels(out.steer, out.left_um_s, out.right_um_s);
+            look_for_line(FOLLOW_LINE == out.result, now);
+        }
+    }
+}
+
+/*!
+ * @brief Tell Buddy 5 the bypass gave up (REJECT, the id field carries the
+ *        reason), every OBSTACLE_NAV_LINE_REPEAT_MS until it stops.
+ *
+ * @param[in] reason FOLLOW_REASON_*.
+ * @param[in] now    Current time, ms.
+ */
+static void give_up (uint8_t reason, uint32_t now)
+{
+    if (nav_core_repeat_due(&g_nav.core, now))
+    {
+        LOG_NOW("WARN", "line:nav", "bypass gave up, reason %d\n", (INT)reason);
+        post(OBSTACLE_CMD_REJECT, reason);
     }
 }
 
@@ -586,37 +595,7 @@ static int32_t side_sign (void)
  */
 static int32_t heading_deci (void)
 {
-    int64_t const left_um =
-        g_nav.wheel_um[WHEEL_LEFT] - g_nav.base_um[WHEEL_LEFT];
-    int64_t const right_um =
-        g_nav.wheel_um[WHEEL_RIGHT] - g_nav.base_um[WHEEL_RIGHT];
-    int64_t const track_um = (int64_t)OBSTACLE_WHEEL_TRACK_MM * UM_PER_MM;
-
-    /* Cast is safe: a bypass turns the car far less than 2^31 deci-deg. */
-    return ((int32_t)(((right_um - left_um) * OBSTACLE_NAV_DECI_PER_RAD) / track_um));
-}
-
-/*!
- * @brief Sideways distance from the original line, towards the side being
- *        passed (so it grows as the car moves away from the obstacle).
- *
- * @return Distance in mm.
- */
-static int32_t lateral_mm (void)
-{
-    /* Cast is safe: a bypass moves the car far less than 2 km. */
-    return (side_sign() * (int32_t)(g_nav.x_um / UM_PER_MM));
-}
-
-/*!
- * @brief Distance travelled along the original line.
- *
- * @return Distance in mm.
- */
-static int32_t ahead_mm (void)
-{
-    /* Cast is safe: a bypass moves the car far less than 2 km. */
-    return ((int32_t)(g_nav.y_um / UM_PER_MM));
+    return (nav_core_heading_deci(&g_nav.core, g_nav.wheel_um));
 }
 
 /*!
@@ -624,35 +603,11 @@ static int32_t ahead_mm (void)
  */
 static void reset_pose (void)
 {
-    uint32_t wheel = 0U;
-
-    for (wheel = 0U; wheel < WHEELS; wheel++)
-    {
-        g_nav.base_um[wheel] = g_nav.wheel_um[wheel];
-        g_nav.prev_um[wheel] = g_nav.wheel_um[wheel];
-    }
-
-    g_nav.x_um                  = 0;
-    g_nav.y_um                  = 0;
+    nav_core_reset_pose(&g_nav.core, g_nav.wheel_um);
     g_nav.last_cmd[WHEEL_LEFT]  = 0;
     g_nav.last_cmd[WHEEL_RIGHT] = 0;
     g_nav.b_pausing             = false;
     g_nav.b_turned              = false;
-    g_nav.b_ir_armed            = false;
-    g_nav.b_ir_cleared          = false;
-    g_nav.b_have_prev_gap       = false;
-    g_nav.b_passed              = false;
-    g_nav.clear_checks          = 0U;
-    g_nav.side_ping_count       = 0U;
-    g_nav.side_agree_count      = 0U;
-    g_nav.last_side_dist_mm     = 0U;
-    g_nav.prev_gap_mm           = 0;
-    g_nav.prev_lean_deci        = 0;
-    g_nav.wall_trim_deci        = 0;
-    g_nav.along_head_deci       = 0;
-    g_nav.look_stop_ms          = 0U;
-    g_nav.leg_base_um           = 0;
-    g_nav.phase                 = OBSTACLE_PHASE_TURN;
 }
 
 /*!
@@ -661,18 +616,7 @@ static void reset_pose (void)
  */
 static void update_pose (void)
 {
-    int64_t const left_um =
-        g_nav.wheel_um[WHEEL_LEFT] - g_nav.prev_um[WHEEL_LEFT];
-    int64_t const right_um =
-        g_nav.wheel_um[WHEEL_RIGHT] - g_nav.prev_um[WHEEL_RIGHT];
-    int64_t const step_um = (left_um + right_um) / (int64_t)WHEELS;
-    int32_t const heading = heading_deci();
-
-    /* x grows to the left: sin of a left (positive) heading. */
-    g_nav.x_um += (step_um * obstacle_plan_sin_q14(heading)) / Q14_ONE;
-    g_nav.y_um += (step_um * obstacle_plan_cos_q14(heading)) / Q14_ONE;
-    g_nav.prev_um[WHEEL_LEFT]  = g_nav.wheel_um[WHEEL_LEFT];
-    g_nav.prev_um[WHEEL_RIGHT] = g_nav.wheel_um[WHEEL_RIGHT];
+    nav_core_update_pose(&g_nav.core, g_nav.wheel_um);
 }
 
 /*!
@@ -697,9 +641,8 @@ static void note_turned (bool b_turned, uint32_t now)
             log_rec(OBSTACLE_LOG_TURNED, 0U, 0U, 0U, turned, (int32_t)g_nav.start_deg, 0);
         }
 
-        if ((now - g_nav.line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS)
+        if (nav_core_repeat_due(&g_nav.core, now))
         {
-            g_nav.line_ms = now;
             post(OBSTACLE_CMD_TURNED, g_nav.req_id);
         }
     }
@@ -812,379 +755,25 @@ static bool is_reverse_pause (int32_t const p_speed[WHEELS])
 }
 
 /*!
- * @brief Move to a new bypass phase, and print and log where the car is.
- *
- * @param[in] phase PHASE_*.
- */
-static void set_phase (uint8_t phase)
-{
-    int32_t const heading = side_sign() * heading_deci();
-
-    g_nav.phase = phase;
-    LOG_NOW("INFO", "line:nav", "phase %d: side %d mm, ahead %d mm, heading %d "
-                    "deg\n",
-              (INT)phase, (INT)lateral_mm(), (INT)ahead_mm(),
-              (INT)(heading / DECI_PER_DEG));
-    log_rec(OBSTACLE_LOG_PHASE, phase, 0U, 0U, lateral_mm(), ahead_mm(), heading);
-}
-
-/*/*!
- * @brief BYPASS: pivot away, and report TURNED once the planned angle is
- *        reached. The statechart ends BYPASS when the beam is also clear.
+ * @brief BYPASS: pivot away to the statechart's escape target, and report
+ *        TURNED once it is reached. While the beam still sees the obstacle
+ *        the statechart moves the target on, so the car turns further; it
+ *        ends BYPASS when the beam is clear.
  *
  * @param[in] now Current time, ms.
  */
 static void step_pivot (uint32_t now)
 {
-    int32_t const target_head = side_sign() * (int32_t)g_nav.start_deg * DECI_PER_DEG;
+    int32_t const target_head = (int32_t)(int16_t)(uint16_t)(obstacle_comms_aim() >> AIM_BODY_SHIFT);
     int32_t       left_um_s   = 0;
     int32_t       right_um_s  = 0;
     uint8_t       steer       = OBSTACLE_STEER_HOLD;
     bool          b_done      = false;
 
-    if (g_nav.b_turned)
-    {
-        obstacle_plan_wheel_straight(heading_deci(), target_head, 0,
-                                     &left_um_s, &right_um_s, &steer);
-        note_turned(true, now);
-    }
-    else
-    {
-        obstacle_plan_wheel_pivot(heading_deci(), target_head,
-                                  &left_um_s, &right_um_s, &steer, &b_done);
-        if (b_done)
-        {
-            note_turned(true, now);
-        }
-    }
-
+    obstacle_plan_wheel_pivot(heading_deci(), target_head,
+                              &left_um_s, &right_um_s, &steer, &b_done);
+    note_turned(b_done, now);
     drive_wheels(steer, left_um_s, right_um_s);
-}
-
-/*!
- * @brief Process one side ping in LOOK_PING phase.
- *
- * @param[in] status Packed status word from Buddy 5.
- *
- * @return True when side check cycle is complete.
- */
-static bool step_look_ping (uint32_t status)
-{
-    uint32_t const cls  = obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK);
-    uint32_t const dist = obstacle_pack_get(status, OBSTACLE_ST_DIST_SH, OBSTACLE_ST_DIST_MK);
-    uint32_t const seq  = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
-    bool           b_side_done = false;
-
-    if (seq != (uint32_t)g_nav.wait_seq)
-    {
-        g_nav.wait_seq = (uint8_t)seq;
-        g_nav.side_ping_count++;
-
-        if ((OBSTACLE_CLASS_OPEN == cls) ||
-            ((OBSTACLE_CLASS_VALID == cls) && (dist >= (uint32_t)OBSTACLE_CORNER_CLEAR_MM)))
-        {
-            g_nav.clear_checks++;
-            if (g_nav.clear_checks >= (g_nav.b_wall ? OBSTACLE_CORNER_CLEARS : OBSTACLE_PASS_CLEARS))
-            {
-                g_nav.b_passed = true;
-            }
-            g_nav.b_have_prev_gap = false;
-            b_side_done           = true;
-        }
-        else if (obstacle_pack_class_is_ranged(cls))
-        {
-            if ((g_nav.side_agree_count > 0U) &&
-                (geom_abs((int32_t)dist - (int32_t)g_nav.last_side_dist_mm) <= (int32_t)OBSTACLE_AGREE_MM))
-            {
-                int32_t const gap_mm     = (int32_t)dist + (int32_t)OBSTACLE_SONAR_FWD_MM;
-                int32_t const target_gap = g_nav.b_wall ? (int32_t)OBSTACLE_WALL_HOLD_MM : (int32_t)OBSTACLE_BOX_GAP_MM;
-                int32_t const lean       = obstacle_plan_side_lean_deci(gap_mm, g_nav.prev_gap_mm,
-                                                                        g_nav.b_have_prev_gap, target_gap);
-                int32_t       base_head  = 0;
-
-                if (g_nav.b_wall && g_nav.b_have_prev_gap)
-                {
-                    int32_t const trim = obstacle_plan_side_trim_deci(gap_mm, g_nav.prev_gap_mm,
-                                                                      g_nav.prev_lean_deci);
-
-                    g_nav.wall_trim_deci += trim;
-                    if (g_nav.wall_trim_deci > WALL_TRIM_MAX_DECI)
-                    {
-                        g_nav.wall_trim_deci = WALL_TRIM_MAX_DECI;
-                    }
-                    else if (g_nav.wall_trim_deci < -WALL_TRIM_MAX_DECI)
-                    {
-                        g_nav.wall_trim_deci = -WALL_TRIM_MAX_DECI;
-                    }
-                    else
-                    {
-                        /* In range. */
-                    }
-                }
-
-                base_head = g_nav.b_wall ? ((int32_t)OBSTACLE_WALL_PIVOT_DECI - g_nav.wall_trim_deci) : 0;
-                g_nav.along_head_deci = base_head + (side_sign() * lean);
-                g_nav.prev_lean_deci  = lean;
-                g_nav.prev_gap_mm     = gap_mm;
-                g_nav.b_have_prev_gap = true;
-                g_nav.clear_checks    = 0U;
-                b_side_done           = true;
-            }
-            else
-            {
-                g_nav.last_side_dist_mm = (uint16_t)dist;
-                g_nav.side_agree_count++;
-            }
-        }
-        else
-        {
-            /* NO_ECHO, GLITCH or STUCK: wait for next ping. */
-        }
-
-        if ((!b_side_done) && (g_nav.side_ping_count >= OBSTACLE_SIDE_PINGS_MAX))
-        {
-            b_side_done = true;
-        }
-    }
-
-    return (b_side_done);
-}
-
-/*!
- * @brief Handle stop-and-look phases: LOOK_STOP, LOOK_IN, LOOK_PING, LOOK_OUT.
- */
-static void reacquire_look_cycle (int32_t cur_head, uint32_t status, uint32_t now,
-                                  int64_t mean_um, int32_t * p_left, int32_t * p_right,
-                                  uint8_t * p_steer)
-{
-    bool b_done = false;
-
-    if (OBSTACLE_PHASE_LOOK_STOP == g_nav.phase)
-    {
-        *p_left  = 0;
-        *p_right = 0;
-        *p_steer = OBSTACLE_STEER_HOLD;
-        if ((now - g_nav.look_stop_ms) >= OBSTACLE_STOP_SETTLE_MS)
-        {
-            set_phase(OBSTACLE_PHASE_LOOK_IN);
-        }
-    }
-    else if (OBSTACLE_PHASE_LOOK_IN == g_nav.phase)
-    {
-        int32_t const look_head = g_nav.along_head_deci - (side_sign() * (int32_t)OBSTACLE_WALL_PIVOT_DECI);
-
-        obstacle_plan_wheel_pivot(cur_head, look_head, p_left, p_right, p_steer, &b_done);
-        if (b_done)
-        {
-            set_phase(OBSTACLE_PHASE_LOOK_PING);
-            g_nav.side_ping_count   = 0U;
-            g_nav.side_agree_count  = 0U;
-            g_nav.last_side_dist_mm = 0U;
-            *p_left                 = 0;
-            *p_right                = 0;
-            *p_steer                = OBSTACLE_STEER_HOLD;
-        }
-    }
-    else if (OBSTACLE_PHASE_LOOK_PING == g_nav.phase)
-    {
-        *p_left  = 0;
-        *p_right = 0;
-        *p_steer = OBSTACLE_STEER_HOLD;
-        if (step_look_ping(status))
-        {
-            set_phase(OBSTACLE_PHASE_LOOK_OUT);
-        }
-    }
-    else if (OBSTACLE_PHASE_LOOK_OUT == g_nav.phase)
-    {
-        obstacle_plan_wheel_pivot(cur_head, g_nav.along_head_deci, p_left, p_right, p_steer, &b_done);
-        if (b_done)
-        {
-            g_nav.leg_base_um = mean_um;
-            if (g_nav.b_passed)
-            {
-                /* A box passes for good. A face followed as a wall that ends
-                 * is the front of a wide box (D166): drive on past the corner,
-                 * then turn and pass the box side as a box. */
-                g_nav.b_corner = g_nav.b_wall;
-                set_phase(OBSTACLE_PHASE_EXTRA);
-            }
-            else
-            {
-                set_phase(OBSTACLE_PHASE_ALONG);
-            }
-        }
-    }
-    else
-    {
-        /* Not in look cycle. */
-    }
-}
-
-/*!
- * @brief Handle return phases: EXTRA, RETURN_PIVOT, RETURN_DRIVE.
- */
-static void reacquire_drive_and_return (int32_t cur_head, int64_t mean_um,
-                                        int32_t * p_left, int32_t * p_right,
-                                        uint8_t * p_steer)
-{
-    int32_t const leg_dist = (int32_t)((mean_um - g_nav.leg_base_um) / UM_PER_MM);
-    bool          b_done   = false;
-
-    if (OBSTACLE_PHASE_EXTRA == g_nav.phase)
-    {
-        obstacle_plan_wheel_straight(cur_head, g_nav.along_head_deci,
-                                     (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
-                                     p_left, p_right, p_steer);
-        if ((leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM) && g_nav.b_corner)
-        {
-            g_nav.b_corner        = false;
-            g_nav.b_wall          = false;
-            g_nav.b_passed        = false;
-            g_nav.clear_checks    = 0U;
-            g_nav.b_have_prev_gap = false;
-            LOG_NOW("INFO", "line:nav", "front face ended: turn the corner, pass the side\n");
-            set_phase(OBSTACLE_PHASE_ALIGN);
-        }
-        else if (leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM)
-        {
-            set_phase(OBSTACLE_PHASE_RETURN_PIVOT);
-        }
-        else
-        {
-            /* Still driving past the face. */
-        }
-    }
-    else if (OBSTACLE_PHASE_RETURN_PIVOT == g_nav.phase)
-    {
-        int32_t const return_head = -side_sign() * (int32_t)OBSTACLE_RETURN_DECI;
-
-        obstacle_plan_wheel_pivot(cur_head, return_head, p_left, p_right, p_steer, &b_done);
-        if (b_done)
-        {
-            set_phase(OBSTACLE_PHASE_RETURN_DRIVE);
-        }
-    }
-    else if (OBSTACLE_PHASE_RETURN_DRIVE == g_nav.phase)
-    {
-        int32_t const return_head = -side_sign() * (int32_t)OBSTACLE_RETURN_DECI;
-
-        obstacle_plan_wheel_straight(cur_head, return_head,
-                                     (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
-                                     p_left, p_right, p_steer);
-    }
-    else
-    {
-        /* Not in return phases. */
-    }
-}
-
-/*!
- * @brief REACQUIRE: execute stop-and-look bypass phases and drive wheels.
- *
- * @param[in] status Packed Buddy 5 status word (latest ping).
- * @param[in] now    Current time, ms.
- */
-static void drive_reacquire (uint32_t status, uint32_t now)
-{
-    int32_t const cur_head   = heading_deci();
-    int64_t const mean_um    = (g_nav.wheel_um[WHEEL_LEFT] + g_nav.wheel_um[WHEEL_RIGHT]) / 2;
-    int32_t       left_um_s  = 0;
-    int32_t       right_um_s = 0;
-    uint8_t       steer      = OBSTACLE_STEER_HOLD;
-    bool          b_done     = false;
-
-    if (OBSTACLE_PHASE_TURN == g_nav.phase)
-    {
-        int32_t const target_head = side_sign() * (int32_t)g_nav.start_deg * DECI_PER_DEG;
-
-        obstacle_plan_wheel_pivot(cur_head, target_head, &left_um_s, &right_um_s, &steer, &b_done);
-        if (b_done)
-        {
-            if (g_nav.b_wall)
-            {
-                set_phase(OBSTACLE_PHASE_ALONG);
-                g_nav.along_head_deci = (int32_t)OBSTACLE_WALL_PIVOT_DECI;
-                g_nav.leg_base_um     = mean_um;
-                g_nav.b_ir_armed      = true;
-                g_nav.b_ir_cleared    = false;
-            }
-            else
-            {
-                set_phase(OBSTACLE_PHASE_OUT);
-            }
-        }
-    }
-    else if (OBSTACLE_PHASE_OUT == g_nav.phase)
-    {
-        int32_t const target_head = side_sign() * (int32_t)g_nav.start_deg * DECI_PER_DEG;
-
-        obstacle_plan_wheel_straight(cur_head, target_head, (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
-                                     &left_um_s, &right_um_s, &steer);
-        if (lateral_mm() >= g_nav.need_mm)
-        {
-            set_phase(OBSTACLE_PHASE_ALIGN);
-        }
-    }
-    else if (OBSTACLE_PHASE_ALIGN == g_nav.phase)
-    {
-        obstacle_plan_wheel_pivot(cur_head, 0, &left_um_s, &right_um_s, &steer, &b_done);
-        if (b_done)
-        {
-            set_phase(OBSTACLE_PHASE_ALONG);
-            g_nav.along_head_deci = 0;
-            g_nav.leg_base_um     = mean_um;
-            g_nav.b_ir_armed      = true;
-            g_nav.b_ir_cleared    = false;
-        }
-    }
-    else if (OBSTACLE_PHASE_ALONG == g_nav.phase)
-    {
-        int32_t const leg_dist = (int32_t)((mean_um - g_nav.leg_base_um) / UM_PER_MM);
-
-        obstacle_plan_wheel_straight(cur_head, g_nav.along_head_deci,
-                                     (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
-                                     &left_um_s, &right_um_s, &steer);
-        if (leg_dist >= (int32_t)OBSTACLE_SIDE_LOOK_MM)
-        {
-            set_phase(OBSTACLE_PHASE_LOOK_STOP);
-            g_nav.look_stop_ms = now;
-            left_um_s          = 0;
-            right_um_s         = 0;
-            steer              = OBSTACLE_STEER_HOLD;
-        }
-    }
-    else if ((g_nav.phase >= OBSTACLE_PHASE_LOOK_STOP) && (g_nav.phase <= OBSTACLE_PHASE_LOOK_OUT))
-    {
-        reacquire_look_cycle(cur_head, status, now, mean_um, &left_um_s, &right_um_s, &steer);
-    }
-    else if ((g_nav.phase >= OBSTACLE_PHASE_EXTRA) && (g_nav.phase <= OBSTACLE_PHASE_RETURN_DRIVE))
-    {
-        reacquire_drive_and_return(cur_head, mean_um, &left_um_s, &right_um_s, &steer);
-    }
-    else
-    {
-        /* Unknown phase. */
-    }
-
-    drive_wheels(steer, left_um_s, right_um_s);
-}
-
-/*!
- * @brief Note when both IR sensors have been off the line since the car
- *        reached its offset (end of OUT); only after that may an IR line
- *        contact end the bypass.
- *
- * @param[in] b_line_seen An IR sensor sees the line.
- */
-static void update_ir_gate (bool b_line_seen)
-{
-    if (g_nav.b_ir_armed && (!g_nav.b_ir_cleared) && (!b_line_seen))
-    {
-        g_nav.b_ir_cleared = true;
-        LOG_NOW("INFO", "line:nav", "IR clear of the line: the next line "
-                        "contact ends the bypass\n");
-    }
 }
 
 /*!
@@ -1233,35 +822,25 @@ static void report_state (uint32_t status)
         if (OBSTACLE_STATE_SCANNING == state)
         {
             /* The stop point is the reference for the scan pivots and the
-             * whole bypass (D167). */
+             * whole bypass. */
             reset_pose();
         }
 
         if (OBSTACLE_STATE_REACQUIRE == state)
         {
-            int64_t const mean_um =
-                (g_nav.wheel_um[WHEEL_LEFT] + g_nav.wheel_um[WHEEL_RIGHT]) / 2;
+            follow_in_t in;
 
-            g_nav.clear_checks    = 0U;
-            g_nav.b_have_prev_gap = false;
-            g_nav.b_passed        = false;
-
-            if (g_nav.b_wall)
-            {
-                set_phase(OBSTACLE_PHASE_ALONG);
-                g_nav.along_head_deci = (int32_t)OBSTACLE_WALL_PIVOT_DECI;
-                g_nav.leg_base_um     = mean_um;
-                g_nav.b_ir_armed      = true;
-                g_nav.b_ir_cleared    = false;
-                g_nav.prev_gap_mm     = (int32_t)OBSTACLE_WALL_HOLD_MM;
-                g_nav.b_have_prev_gap = true;
-                g_nav.prev_lean_deci  = 0;
-                g_nav.wall_trim_deci  = 0;
-            }
-            else
-            {
-                set_phase(OBSTACLE_PHASE_OUT);
-            }
+            nav_core_follow_begin(&g_nav.core, status, g_nav.wheel_um, &in);
+            /* The reading that stopped the car is the first face point. */
+            follow_start(&g_nav.follow, OBSTACLE_SIDE_LEFT == g_nav.side, &in,
+                         (int32_t)g_nav.hit_mm + (int32_t)OBSTACLE_SONAR_FWD_MM);
+            g_nav.b_follow_turning = false;
+            g_nav.bump.cmd_mm_s[WHEEL_LEFT]  = 0;
+            g_nav.bump.cmd_mm_s[WHEEL_RIGHT] = 0;
+            g_nav.bump.settle_ms             = 0U;
+            g_nav.bump.low_ms                = 0U;
+            g_nav.bump_ms                    = now_ms();
+            obstacle_comms_set_look((int16_t)(-side_sign() * (int32_t)OBSTACLE_FOLLOW_LOOK_DECI));
         }
 
         if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state) ||
@@ -1269,12 +848,8 @@ static void report_state (uint32_t status)
         {
             /* The servo turns on entering these states (back to 0 after
              * the scan, to 45 degrees, or back to 0 after the bypass): wait
-             * for the next ping, which comes only after it has settled.
-             * Cast is safe: the sequence field is 6 bits. */
-            g_nav.b_servo_wait = true;
-            g_nav.wait_seq =
-                (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
-            g_nav.wait_ms = now_ms();
+             * for the next ping, which comes only after it has settled. */
+            nav_core_servo_wait(&g_nav.core, status, now_ms());
         }
     }
 }
@@ -1297,21 +872,13 @@ static void report_state (uint32_t status)
  */
 static bool is_servo_moving (uint32_t status, uint32_t now)
 {
-    uint32_t const seq = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
-
-    if (g_nav.b_servo_wait && ((seq != g_nav.wait_seq) ||
-                               ((now - g_nav.wait_ms) >= OBSTACLE_NAV_SERVO_WAIT_MS)))
-    {
-        g_nav.b_servo_wait = false;
-    }
-
-    return (g_nav.b_servo_wait);
+    return (nav_core_servo_moving(&g_nav.core, status, now));
 }
 
 /*!
  * @brief Keep the accepted plan: the start angle and the sideways offset the
  *        car needs. The offset is the planner's side room (the box edge plus
- *        OBSTACLE_BOX_GAP_MM, D166). It used to be closest x tan(start
+ *        OBSTACLE_BOX_GAP_MM). It used to be closest x tan(start
  *        angle), which ignored the box width: with a 45 degree start every
  *        box got the same offset, and boxes wider than 240 mm were brushed.
  *        That formula stays as the lower bound.
@@ -1347,21 +914,25 @@ static void keep_plan (uint32_t angle, bool b_wall)
     /* Casts are safe: angle is 0..60 and closest is 0..4095. */
     g_nav.start_deg = (uint8_t)angle;
     g_nav.b_wall    = b_wall;
+    g_nav.hit_mm    = (int16_t)closest;
+    /* Aim the servo at the face side now: the scan task enters REACQUIRE on
+     * its own and must not take the first ping at an old angle. */
+    obstacle_comms_set_look((int16_t)(-side_sign() * (int32_t)OBSTACLE_FOLLOW_LOOK_DECI));
     g_nav.need_mm =
-        (closest * obstacle_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE;
+        clamp_i16((closest * obstacle_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE);
     {
         obstacle_plan_summary_t plan;
 
         if ((E_OK == obstacle_copy_plan(&plan)) && (plan.need_mm < OBSTACLE_PLAN_SIDE_BLOCKED) &&
-            ((int32_t)plan.need_mm > g_nav.need_mm))
+            ((int32_t)plan.need_mm > (int32_t)g_nav.need_mm))
         {
-            g_nav.need_mm = (int32_t)plan.need_mm;
+            g_nav.need_mm = clamp_i16((int32_t)plan.need_mm);
         }
     }
     LOG_NOW("INFO", "line:nav", "plan: obstacle %d mm, start %d deg, side "
                     "offset %d mm, %s\n",
               (INT)closest, (INT)angle, (INT)g_nav.need_mm,
-              b_wall ? "wall (follow in parallel)" : "box (out and back)");
+              b_wall ? "wall" : "box");
 }
 
 /*!
@@ -1522,9 +1093,8 @@ static void handle_event (uint32_t evt, uint32_t now)
  */
 static void look_for_line (bool b_line_seen, uint32_t now)
 {
-    if (b_line_seen && ((now - g_nav.line_ms) >= OBSTACLE_NAV_LINE_REPEAT_MS))
+    if (b_line_seen && nav_core_repeat_due(&g_nav.core, now))
     {
-        g_nav.line_ms = now;
         post(OBSTACLE_CMD_LINE_FOUND, g_nav.req_id);
     }
 }
