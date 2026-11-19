@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "obstacle_config.h"
 #include "statechart.h"
@@ -84,6 +85,9 @@ static void test_obstacle_to_scan(void)
     start_monitor(&fsm, &out);
 
     obstacle_statechart_out_clear(&out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 3U), 5U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+    CHECK(!out.b_profile_changed);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 10U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 20U, &out);
@@ -437,7 +441,9 @@ static void test_handover_timeout(void)
     CHECK(fsm.state == OBSTACLE_STATE_WAIT_STOP);
 
     obstacle_statechart_out_clear(&out);
-    obstacle_statechart_tick(&fsm, 20U + OBSTACLE_WAIT_STOP_MS + 1U, 0U, &out);
+    obstacle_statechart_tick(&fsm, 520U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_WAIT_STOP);
+    obstacle_statechart_tick(&fsm, 521U, 0U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
     CHECK(fsm.cause == OBSTACLE_CAUSE_HANDOVER);
     CHECK((fsm.faults & OBSTACLE_FAULT_HANDOVER) != 0U);
@@ -896,9 +902,48 @@ static void test_escape_without_progress_hits_limit(void)
     obstacle_statechart_out_t out;
 
     to_bypass(&fsm, &out, false);
-    obstacle_statechart_tick(&fsm, 60U + OBSTACLE_ESCAPE_MAX_MS + 1U, 0U, &out);
+    obstacle_statechart_tick(&fsm, 6060U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
+    obstacle_statechart_tick(&fsm, 6061U, 0U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
     CHECK(fsm.cause == OBSTACLE_CAUSE_BYPASS_LIMIT);
+}
+
+static void test_plan_timeout_boundary(void)
+{
+    obstacle_statechart_t fsm;
+    obstacle_statechart_out_t out;
+    unsigned ping = 0U;
+
+    new_monitor(&fsm);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 10U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 20U, &out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 5U), 30U, 0U, &out);
+    while (OBSTACLE_STATE_SCANNING == fsm.state && ping < 100U)
+    {
+        obstacle_statechart_out_clear(&out);
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 40U, &out);
+        ++ping;
+    }
+    CHECK(OBSTACLE_STATE_PLAN == fsm.state);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_tick(&fsm, 240U, 0U, &out);
+    CHECK(OBSTACLE_STATE_PLAN == fsm.state);
+    obstacle_statechart_tick(&fsm, 241U, 0U, &out);
+    CHECK(OBSTACLE_STATE_STOPPED == fsm.state);
+    CHECK(OBSTACLE_CAUSE_PLAN_TIMEOUT == fsm.cause);
+    CHECK(1U == out.evt_count);
+    CHECK(OBSTACLE_CAUSE_PLAN_TIMEOUT == obstacle_pack_get(out.evt[0], OBSTACLE_EV_CAUSE_SH,
+                                                           OBSTACLE_EV_CAUSE_MK));
+}
+
+/* Select explicitly while the implementation and the recorded timing differ. */
+static void test_recorded_ping_budget(void)
+{
+    CHECK(60U == OBSTACLE_PING_PERIOD_MS);
+    CHECK(40U == OBSTACLE_ECHO_WAIT_MS);
+    CHECK(OBSTACLE_ECHO_WAIT_MS < OBSTACLE_PING_PERIOD_MS);
 }
 
 /* TURNED does not leak into the next bypass. */
@@ -1165,6 +1210,46 @@ static void test_ping_health_records_word(void)
     CHECK(fsm.last_dist == 680U);
 }
 
+static void test_guard_pings_leave_scan_target(void)
+{
+    obstacle_statechart_t fsm;
+    obstacle_statechart_out_t out;
+    int16_t target;
+
+    new_monitor(&fsm);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 10U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 20U, &out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 4U), 30U, 0U, &out);
+    CHECK(OBSTACLE_STATE_SCANNING == fsm.state);
+    target = obstacle_statechart_servo_deci(&fsm);
+
+    obstacle_statechart_ping_guard(&fsm, OBSTACLE_CLASS_VALID, 300U, 90U, &out);
+    obstacle_statechart_ping_guard(&fsm, OBSTACLE_CLASS_VALID, 300U, 150U, &out);
+    CHECK(target == obstacle_statechart_servo_deci(&fsm));
+
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 300U, 210U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 300U, 270U, &out);
+    CHECK(target != obstacle_statechart_servo_deci(&fsm));
+}
+
+static void test_guard_pings_keep_echo_health(void)
+{
+    obstacle_statechart_t fsm;
+    obstacle_statechart_out_t out;
+    unsigned ping;
+
+    new_monitor(&fsm);
+    obstacle_statechart_out_clear(&out);
+    for (ping = 0U; ping < OBSTACLE_STUCK_COUNT; ++ping)
+    {
+        obstacle_statechart_ping_guard(&fsm, OBSTACLE_CLASS_STUCK, 0U,
+                                       60U + (ping * 60U), &out);
+    }
+    CHECK(OBSTACLE_STATE_STOPPED == fsm.state);
+    CHECK(OBSTACLE_CAUSE_ECHO_STUCK == fsm.cause);
+}
+
 /* The wall plan reaches REACQUIRE through the same pivot rule. */
 static void test_wall_reacquire(void)
 {
@@ -1290,8 +1375,54 @@ static void test_estop_survives_health_recovery(void)
     CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
 }
 
-int main(void)
+int main(int argc, char * argv[])
 {
+    static const struct
+    {
+        char const * name;
+        void (*test)(void);
+    } selectable[] = {
+        {"coarse-stall", test_scan_stall},
+        {"fine-pivot-stall", test_pivot_stall_still_plans},
+        {"two-of-three", test_detect_two_of_three},
+        {"too-close", test_too_close_is_a_hit},
+        {"collision-window", test_collision_two_of_three},
+        {"retry-policy", test_retry_policy},
+        {"spin-pings", test_spin_pings_skip_collision},
+        {"health-pings", test_ping_health_records_word},
+        {"guard-keeps-scan-target", test_guard_pings_leave_scan_target},
+        {"guard-keeps-health", test_guard_pings_keep_echo_health},
+        {"rescue-escape-turn", test_blocked_escape_turns_further},
+        {"no-escape-progress", test_escape_without_progress_hits_limit},
+        {"bypass-budgets", test_hug_budget},
+        {"bypass-odometer-wrap", test_hug_odometer_wraps},
+        {"publish-gave-up-reason", test_reject_in_reacquire_gives_up},
+        {"handover-timeout", test_handover_timeout},
+        {"plan-timeout", test_plan_timeout_boundary},
+        {"recorded-ping-budget", test_recorded_ping_budget},
+        {"scan-handshake", test_obstacle_to_scan},
+        {"echo-fault-causes", test_echo_fault_causes},
+        {"no-echo-fault", test_no_echo_fault},
+    };
+    size_t i;
+
+    if (2 == argc)
+    {
+        for (i = 0U; i < sizeof(selectable) / sizeof(selectable[0]); ++i)
+        {
+            if (0 == strcmp(argv[1], selectable[i].name))
+            {
+                selectable[i].test();
+                return (0 == g_failures) ? 0 : 1;
+            }
+        }
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+
     test_init_and_status();
     test_obstacle_to_scan();
     test_no_echo_fault();
@@ -1307,6 +1438,7 @@ int main(void)
     test_scan_stall();
     test_blocked_escape_turns_further();
     test_escape_without_progress_hits_limit();
+    test_plan_timeout_boundary();
     test_pivot_stall_still_plans();
     test_wall_reaches_bypass();
     test_wall_flag();
@@ -1328,6 +1460,8 @@ int main(void)
     test_spin_pings_skip_collision();
     test_ping_health_skips_collision();
     test_ping_health_records_word();
+    test_guard_pings_leave_scan_target();
+    test_guard_pings_keep_echo_health();
     test_wall_reacquire();
     test_reacquire_no_steer();
     test_health_fault_ends_when_cause_clears();
