@@ -37,7 +37,7 @@ static look_pose_t const g_origin = {0, 0, 0};
 static bool edge_of(look_t const * p_look, look_face_t const * p_face, look_side_t side,
                     look_edge_t * p_edge)
 {
-    look_edge_t edge[2];
+    look_edge_t edge[2] = {0};
     bool        have[2];
 
     look_edges(p_look, p_face, edge, have);
@@ -109,8 +109,8 @@ static void test_narrow_face_has_both_edges(void)
 {
     look_t      look;
     look_face_t face;
-    look_edge_t left;
-    look_edge_t right;
+    look_edge_t left = {0};
+    look_edge_t right = {0};
 
     look_clear(&look);
     sweep(&look, 60.0, -250, 250);
@@ -130,7 +130,7 @@ static void test_wide_face_has_no_edge(void)
 {
     look_t      look;
     look_face_t face;
-    look_edge_t edge;
+    look_edge_t edge = {0};
 
     /* Corners at 21.8 degrees: the first OPEN ray is at 35, past the trust. */
     look_clear(&look);
@@ -144,7 +144,7 @@ static void test_wall_has_no_edge(void)
 {
     look_t      look;
     look_face_t face;
-    look_edge_t edge;
+    look_edge_t edge = {0};
 
     look_clear(&look);
     sweep(&look, 5000.0, -250, 250);
@@ -157,7 +157,7 @@ static void test_open_past_trust_is_not_an_edge(void)
 {
     look_t            look;
     look_face_t       face;
-    look_edge_t       edge;
+    look_edge_t       edge = {0};
     look_pose_t const pose = car();
 
     look_clear(&look);
@@ -188,7 +188,7 @@ static void test_valid_reading_beyond_step_is_an_edge(void)
 {
     look_t            look;
     look_face_t       face;
-    look_edge_t       edge;
+    look_edge_t       edge = {0};
     look_pose_t const pose = car();
     double const      c20  = cos(200.0 * RAD_PER_DECI);
 

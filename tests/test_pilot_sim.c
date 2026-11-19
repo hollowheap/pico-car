@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "pilot/hug.h"
 #include "telemetry/hug_word.h"
@@ -2182,6 +2183,297 @@ static void test_touch_slip(void)
     }
 }
 
+/* A range just outside the normal hug trigger first falls, then stops
+ * changing even as both encoders keep counting. The pilot gets only its
+ * usual samples: no chassis position or physical contact flag. */
+static void test_continuous_slip(bool b_check_restart)
+{
+    uint32_t const approach_ms = 1200U;
+    uint32_t const reverse_deadline_ms = approach_ms + 110000U;
+    uint32_t const look_window_ms = 15000U;
+    uint16_t const plateau_mm = HUG_STANDOFF_MM + 20U;
+    pilot_state_t pilot;
+    drive_state_t drive;
+    pilot_cmd_t command = {0};
+    pilot_meas_t meas = fresh_meas(1000U);
+    uint32_t reverse_at_ms = 0U;
+    bool b_new_look = false;
+    int32_t left_um_s = 0;
+    int32_t right_um_s = 0;
+
+    pilot_init(&pilot);
+    drive_init(&drive);
+    meas.b_line_right = true;
+    meas.ping_echo = LOOK_ECHO_VALID;
+    for (uint32_t elapsed_ms = 0U;
+         elapsed_ms <= ((reverse_at_ms == 0U) ? reverse_deadline_ms
+                                             : (reverse_at_ms + look_window_ms));
+         elapsed_ms += TICK_MS)
+    {
+        uint8_t const old_request = command.b_ping_req;
+        uint8_t const old_sequence = command.ping_seq;
+
+        meas.now_ms = 1000U + elapsed_ms;
+        meas.stamp_ms = meas.now_ms;
+        if ((elapsed_ms % 60U) == 0U)
+        {
+            uint32_t const remaining_ms = (elapsed_ms < approach_ms) ?
+                                           (approach_ms - elapsed_ms) : 0U;
+
+            meas.ping_mm = (uint16_t)(plateau_mm + (remaining_ms / 10U));
+            meas.ping_seq = (uint8_t)((meas.ping_seq + 1U) & 0x3FU);
+        }
+        if (elapsed_ms == approach_ms)
+        {
+            check(left_um_s > 0 && right_um_s > 0 && meas.left_um > 0 && meas.right_um > 0,
+                  "both wheels were moving as the forward range stopped falling");
+        }
+        pilot_step(&pilot, &meas, &command);
+        if (elapsed_ms >= approach_ms && reverse_at_ms == 0U && command.speed_mm_s < 0)
+        {
+            reverse_at_ms = elapsed_ms;
+            if (!b_check_restart)
+            {
+                break;
+            }
+        }
+        else if (reverse_at_ms != 0U && command.speed_mm_s >= 0 &&
+                 command.behaviour == PILOT_BEHAVIOUR_HUG && command.b_ping_req != 0U &&
+                 (old_request == 0U || old_sequence != command.ping_seq))
+        {
+            b_new_look = true;
+            break;
+        }
+        pilot_drive(&drive, &command, TICK_MS, &left_um_s, &right_um_s);
+        meas.left_um += ((int64_t)left_um_s * TICK_MS) / 1000;
+        meas.right_um += ((int64_t)right_um_s * TICK_MS) / 1000;
+    }
+
+    if (b_check_restart)
+    {
+        check(b_new_look, "unchanged obstacle range and rolling wheels did not yield reverse then a new hug ping request");
+    }
+    else
+    {
+        check(reverse_at_ms != 0U,
+              "fresh, unchanged obstacle range and rolling wheels did not trigger reverse within 110 seconds");
+    }
+}
+
+static void test_unseen_face_approach(bool b_check_retry)
+{
+    double first_speed = 0.0;
+    double first_time_s = 0.0;
+    double retry_speed = 0.0;
+    bool b_reversed = false;
+    bool b_released = false;
+
+    pilot_sim_init(&g_sim, g_crs_straight, 1U);
+    check(pilot_sim_add_blind_wall(&g_sim, OBS_FACE_X_MM, -NEAR_BLIND_HALF_MM,
+                                  OBS_FACE_X_MM, NEAR_BLIND_HALF_MM),
+          "install the unseen face across the track");
+    while ((g_sim.t_s < CRS_RUN_S) && (retry_speed <= 0.0))
+    {
+        unsigned const contacts = g_sim.contacts;
+        double const approach_speed = pilot_sim_speed_mm_s(&g_sim);
+
+        pilot_sim_step(&g_sim);
+        if (g_sim.contacts != contacts)
+        {
+            if (first_speed <= 0.0)
+            {
+                first_speed = approach_speed;
+                first_time_s = g_sim.t_s - 0.001;
+            }
+            else if (b_released)
+            {
+                retry_speed = approach_speed;
+            }
+        }
+        b_reversed = b_reversed || (g_sim.cmd.speed_mm_s < 0);
+        b_released = b_released || (b_reversed && (g_sim.cmd.speed_mm_s > 0) &&
+            (PILOT_BEHAVIOUR_FOLLOW_LINE == g_sim.cmd.behaviour));
+    }
+    (void)printf("unseen face: first impact %.1f mm/s, second impact %.1f mm/s\n",
+                 first_speed, retry_speed);
+    check(first_speed > 0.0, "the car did not drive to the unseen face");
+    if (b_check_retry)
+    {
+        check(b_released && (retry_speed > 0.0), "the car did not reapproach the unseen face");
+        check(retry_speed + 1.0 < first_speed, "the second impact was at normal cruise speed");
+    }
+    else
+    {
+        pilot_sim_init(&g_sim, g_crs_straight, 1U);
+        run_to(first_time_s);
+        check(fabs(first_speed - pilot_sim_speed_mm_s(&g_sim)) < 1.0,
+              "the unseen face altered the first approach before contact");
+        check(first_speed > 0.8 * (double)LINE_CRUISE_UM_S / 1000.0,
+              "the first approach did not reach normal driving speed");
+    }
+}
+
+static void test_stale_forward_ping(bool b_check_latch)
+{
+    pilot_state_t state;
+    pilot_cmd_t command = {0};
+    pilot_meas_t meas = fresh_meas(1000U);
+    bool b_stopped = false;
+
+    pilot_init(&state);
+    meas.b_line_right = true;
+    meas.ping_echo = LOOK_ECHO_OPEN;
+    meas.ping_seq = 1U;
+    pilot_step(&state, &meas, &command);
+    check(command.speed_mm_s > 0, "fresh forward data should permit motion");
+
+    /* The wheel source stays fresh, and the sonar task emits no fault. Its
+     * last sequence is republished unchanged while the car approaches. */
+    for (uint32_t elapsed = 10U; elapsed <= 4000U; elapsed += 10U)
+    {
+        meas.now_ms = 1000U + elapsed;
+        meas.stamp_ms = meas.now_ms;
+        meas.left_um += 1250;
+        meas.right_um += 1250;
+        pilot_step(&state, &meas, &command);
+        b_stopped = b_stopped || ((PILOT_REASON_SONAR == command.reason ||
+                                   PILOT_REASON_SONAR_LATCHED == command.reason) &&
+                                  0 == command.speed_mm_s && 0 == command.turn_deci_s);
+    }
+    if (b_check_latch)
+    {
+        meas.now_ms += 10U;
+        meas.stamp_ms = meas.now_ms;
+        meas.ping_seq++;
+        pilot_step(&state, &meas, &command);
+        check((PILOT_REASON_SONAR_LATCHED == command.reason) &&
+              (0 == command.speed_mm_s) && (0 == command.turn_deci_s),
+              "a new forward ping did not leave a long dropout latched");
+    }
+    else
+    {
+        check(b_stopped, "the car drove with a silent forward sonar for four seconds");
+    }
+}
+
+static void test_do_not_release_on_approach(void)
+{
+    bool b_hug_started = false;
+    double const front_x = OBS_FACE_X_MM;
+    double const back_x = front_x + 200.0;
+
+    pilot_sim_init(&g_sim, g_crs_straight, 1U);
+    check(pilot_sim_add_box(&g_sim, front_x + 100.0, 0.0, 200.0, 200.0, 0.0),
+          "install the obstacle across the line");
+    while (g_sim.t_s < OBS_RUN_S)
+    {
+        pilot_sim_step(&g_sim);
+        if (b_hug_started && (PILOT_BEHAVIOUR_FOLLOW_LINE == g_sim.cmd.behaviour))
+        {
+            check(g_sim.x > back_x, "the hug released to the approach line");
+            (void)printf("Hug released past the box at %.0f mm\n", g_sim.x);
+            return;
+        }
+        b_hug_started = b_hug_started || (PILOT_BEHAVIOUR_HUG == g_sim.cmd.behaviour);
+    }
+    check(false, "the hug did not release to the line after the box");
+}
+
+static int run_isolated_case(char const * p_name)
+{
+    if (0 == strcmp(p_name, "slip-reverse"))
+    {
+        test_continuous_slip(false);
+    }
+    else if (0 == strcmp(p_name, "slip-restart"))
+    {
+        test_continuous_slip(true);
+    }
+    else if (0 == strcmp(p_name, "initial-approach"))
+    {
+        test_unseen_face_approach(false);
+    }
+    else if (0 == strcmp(p_name, "crawl-reapproach"))
+    {
+        test_unseen_face_approach(true);
+    }
+    else if (0 == strcmp(p_name, "stale-forward-ping"))
+    {
+        test_stale_forward_ping(false);
+    }
+    else if (0 == strcmp(p_name, "stale-forward-ping-latches"))
+    {
+        test_stale_forward_ping(true);
+    }
+    else if (0 == strcmp(p_name, "hug-timeout"))
+    {
+        test_hug_timeout();
+    }
+    else if (0 == strcmp(p_name, "hug-silent-stop"))
+    {
+        test_sonar_silent(false, 1U);
+    }
+    else if (0 == strcmp(p_name, "near-sonar-contact"))
+    {
+        near_run(1U, false);
+    }
+    else if (0 == strcmp(p_name, "near-blind-contact"))
+    {
+        near_run(1U, true);
+    }
+    else if (0 == strcmp(p_name, "recoverable-slip"))
+    {
+        touch_run("slip then stall", TOUCH_SLIP_STALL, 45.0, 1U, false, true);
+        return (0U == g_soft_fails) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (0 == strcmp(p_name, "box-60"))
+    {
+        obs_run(&g_obs[0], 1U, &g_obs_plain);
+        return (0U == g_soft_fails && 0U == g_budget_overruns) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (0 == strcmp(p_name, "box-60-off-centre"))
+    {
+        obs_run(&g_obs[1], 12345U, &g_obs_plain);
+        return (0U == g_soft_fails && 0U == g_budget_overruns) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (0 == strcmp(p_name, "box-200"))
+    {
+        obs_run(&g_obs[4], 1U, &g_obs_plain);
+        return (0U == g_soft_fails && 0U == g_budget_overruns) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (0 == strcmp(p_name, "box-300-off-centre"))
+    {
+        obs_run(&g_obs[7], 1U, &g_obs_plain);
+        return (0U == g_soft_fails && 0U == g_budget_overruns) ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    else if (0 == strcmp(p_name, "blocked-wheel"))
+    {
+        test_blocked(1U);
+    }
+    else if (0 == strcmp(p_name, "approach-line-release"))
+    {
+        test_do_not_release_on_approach();
+    }
+    else if (0 == strcmp(p_name, "nearer-edge-within-reach"))
+    {
+        obs_run(&g_obs[1], 1U, &g_obs_plain);
+    }
+    else if (0 == strcmp(p_name, "nearer-edge-out-of-reach"))
+    {
+        obs_run(&g_obs[7], 1U, &g_obs_plain);
+    }
+    else if (0 == strcmp(p_name, "release-note-expiry"))
+    {
+        test_note();
+    }
+    else
+    {
+        (void)fprintf(stderr, "Unknown pilot sim case: %s\n", p_name);
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
 static void test_obstacles(void)
 {
     unsigned o, s;
@@ -2225,8 +2517,16 @@ static void test_obstacles(void)
     test_touch();
 }
 
-int main(void)
+int main(int argc, char * argv[])
 {
+    if (2 == argc)
+    {
+        return run_isolated_case(argv[1]);
+    }
+    if (1 != argc)
+    {
+        return EXIT_FAILURE;
+    }
     test_sonar();
     static pilot_sim_seg_t const straight[] = {
         {8000.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};

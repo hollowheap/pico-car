@@ -3,6 +3,8 @@
  */
 
 #include <assert.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -143,13 +145,13 @@ static void test_encoder_cleared(void)
     assert(pilot_log_note(&log, &cmd));
 
     pilot_clear_latches(&st);
-    assert(0U == st.b_encoder);
     tick(&st, &cmd);
     assert((uint8_t)PILOT_REASON_ENCODER != cmd.reason);
     /* The decision event fires when the reason leaves ENCODER. */
     assert(pilot_log_note(&log, &cmd));
     assert((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour);
     assert(0 != cmd.speed_mm_s);
+    assert(0U == st.b_encoder);
 }
 
 static void test_timeout_cleared(void)
@@ -166,10 +168,10 @@ static void test_timeout_cleared(void)
     assert(pilot_log_note(&log, &cmd));
 
     pilot_clear_latches(&st);
-    assert(0U == st.b_timeout);
     tick(&st, &cmd);
     assert((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour);
     assert(pilot_log_note(&log, &cmd));
+    assert(0U == st.b_timeout);
 }
 
 static void test_estop_kept(void)
@@ -553,8 +555,55 @@ static void test_count_moved(void)
     assert(reset_seen == 0U);
 }
 
-int main(void)
+static int run_isolated_case(char const * p_name)
 {
+    if (strcmp(p_name, "reset-encoder") == 0)
+    {
+        test_encoder_cleared();
+    }
+    else if (strcmp(p_name, "reset-hug-timeout") == 0)
+    {
+        test_timeout_cleared();
+    }
+    else if (strcmp(p_name, "short-sonar-fault") == 0)
+    {
+        test_short_bad_resumes(true, PILOT_REASON_SONAR);
+    }
+    else if (strcmp(p_name, "sonar-window-boundary") == 0)
+    {
+        test_window_edge_resumes();
+        test_window_edge_latches();
+    }
+    else if (strcmp(p_name, "latched-sonar-fault") == 0)
+    {
+        test_long_bad_latches(true);
+    }
+    else if (strcmp(p_name, "held-is-not-sonar-fault") == 0)
+    {
+        test_fault_after_hold_has_own_window();
+    }
+    else if (strcmp(p_name, "start-releases-sonar") == 0)
+    {
+        test_release_sonar(true);
+    }
+    else
+    {
+        (void)fprintf(stderr, "Unknown pilot latch case: %s\n", p_name);
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(int argc, char * argv[])
+{
+    if (2 == argc)
+    {
+        return run_isolated_case(argv[1]);
+    }
+    if (1 != argc)
+    {
+        return EXIT_FAILURE;
+    }
     test_encoder_cleared();
     test_timeout_cleared();
     test_estop_kept();
