@@ -6,6 +6,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "attitude.h"
 
@@ -363,8 +364,62 @@ static void test_hump_ending_mid_candidate_is_not_a_lift (void)
     CHECK (ATTITUDE_LIFTED == rig.out.state);
 }
 
-int main (void)
+static void test_hump_keeps_wheels_free_candidate (void)
 {
+    rig_t rig;
+
+    rig_init (&rig);
+    rig.in.b_on_hump = true;
+    rig.in.b_wheels_free = true;
+    run (&rig, 60U, 1.0f, 12.0f, 0.0f, 0.0f);
+    CHECK (ATTITUDE_CANDIDATE == rig.out.state);
+}
+
+static void test_hump_keeps_tilt_breach (void)
+{
+    rig_t rig;
+
+    rig_init (&rig);
+    rig.in.b_on_hump = true;
+    run (&rig, 40U, 1.0f, 30.0f, 0.0f, 0.0f);
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+}
+
+int main (int argc, char * argv[])
+{
+    static const struct
+    {
+        char const * name;
+        void (*test) (void);
+    } selectable[] = {
+        {"hump-flag", test_hump_flag_mutes_unsettled_cue},
+        {"hump-ends-mid-candidate", test_hump_ending_mid_candidate_is_not_a_lift},
+        {"hump-wheels-free", test_hump_keeps_wheels_free_candidate},
+        {"hump-tilt", test_hump_keeps_tilt_breach},
+        {"lift-set-down", test_lift_carry_level},
+        {"overturn-tilt", test_tip_on_side},
+        {"uncalibrated-placement", test_placement_by_hand},
+        {"invalid-acceleration", test_failed_read_keeps_state},
+    };
+    size_t i;
+
+    if (2 == argc)
+    {
+        for (i = 0U; i < (sizeof (selectable) / sizeof (selectable[0])); ++i)
+        {
+            if (0 == strcmp (argv[1], selectable[i].name))
+            {
+                selectable[i].test ();
+                return (0U == g_fail) ? 0 : 1;
+            }
+        }
+    }
+    if (1 != argc)
+    {
+        (void)fprintf (stderr, "usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+
     test_flat_run ();
     test_hump_is_not_a_lift ();
     test_lift_carry_level ();
@@ -380,6 +435,8 @@ int main (void)
     test_wheels_free_only_candidate ();
     test_hump_flag_mutes_unsettled_cue ();
     test_hump_ending_mid_candidate_is_not_a_lift ();
+    test_hump_keeps_wheels_free_candidate ();
+    test_hump_keeps_tilt_breach ();
 
     if (g_fail != 0U)
     {

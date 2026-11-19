@@ -843,8 +843,38 @@ static void test_speed_ok_output (void)
     CHECK (out.speed_ok);
 }
 
-int main (void)
+int main (int argc, char * argv[])
 {
+    static const struct
+    {
+        char const * name;
+        void (*test) (void);
+    } selectable[] = {
+        {"single-hump", test_single_hump},
+        {"rest-calibration", test_calibration},
+        {"stale-motion", test_motion_stale},
+        {"shock-impulse", test_median_rejects_spike},
+        {"acceleration-correction", test_accel_subtraction},
+    };
+    size_t i;
+
+    if (2 == argc)
+    {
+        for (i = 0U; i < sizeof (selectable) / sizeof (selectable[0]); ++i)
+        {
+            if (0 == strcmp (argv[1], selectable[i].name))
+            {
+                selectable[i].test ();
+                return (0 == g_failures) ? 0 : 1;
+            }
+        }
+    }
+    if (1 != argc)
+    {
+        (void)fprintf (stderr, "usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+
     test_init_validation ();
     test_update_rejects_bad_input ();
     test_calibration ();

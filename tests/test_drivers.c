@@ -1700,39 +1700,118 @@ static void test_stale_fault_holds_through_flicker (void)
     CHECK (out.to_nav);
 }
 
-int main (void)
+static bool calibration_at_pose (const float acc[3])
 {
-    test_counts ();
-    test_init_ok ();
-    test_init_failures ();
-    test_reads ();
-    test_retries ();
-    test_counters_survive_reinit ();
-    test_config_readback ();
-    test_read_after_latch ();
-    test_glitch_after_failed_cycle_is_retried ();
-    test_adapter ();
-    test_adapter_glitch_between_reads ();
-    test_pipeline_lift ();
-    test_pipeline_imu_lost ();
-    test_lost_attitude_unknown ();
-    test_config_readback_budget ();
-    test_imu_lost_edges ();
-    test_attitude_publish_gate ();
-    test_attitude_unknown_without_reference ();
-    test_pipeline ();
-    test_pipeline_hump_mutes_bumps ();
-    test_pipeline_lift_at_rest_on_hump_state ();
-    test_pipeline_wheels_free_on_hump_state ();
-    test_pipeline_lasting_hump_state_ends_at_cap ();
-    test_pipeline_hump_limits ();
-    test_pipeline_valid_humps_are_masked ();
-    test_pipeline_tall_humps_are_not_valid ();
-    test_pipeline_steep_ramp_is_not_valid ();
-    test_pipeline_rejection_clears_after_hump ();
-    test_pipeline_wheels_free_descent_is_not_lifted ();
-    test_glitch_between_reads_sets_stale_fault ();
-    test_stale_fault_holds_through_flicker ();
+    hump_config_t        hcfg;
+    imu_motion_config_t  mcfg;
+    pipeline_t           pipe;
+    pipeline_step_t      out = {0};
+    motion_input_t const m   = { .valid = true, .wheels_valid = true, .age_s = 0.005f };
+    uint32_t             i   = 0U;
+
+    hump_default_config (&hcfg);
+    imu_motion_default_config (&mcfg);
+    mcfg.mag_enabled = false;
+    CHECK (pipeline_init (&pipe, &hcfg, &mcfg, 10U));
+    for (i = 0U; i < 300U; i++)
+    {
+        CHECK (pipeline_step (&pipe, acc, NULL, &m, DT_S, false, &out));
+    }
+    CHECK (out.calibrated != out.attitude_unknown);
+    return out.calibrated;
+}
+
+static void test_calibration_tilt_boundary (void)
+{
+    float const below = 9.9f * DEG_TO_RAD;
+    float const above = 10.1f * DEG_TO_RAD;
+    float const mild_pitch[3] = { sinf (below), 0.0f, cosf (below) };
+    float const steep_pitch[3] = { -sinf (above), 0.0f, cosf (above) };
+    float const steep_roll[3] = { 0.0f, sinf (above), cosf (above) };
+
+    CHECK (calibration_at_pose (mild_pitch));
+    CHECK (!calibration_at_pose (steep_pitch));
+    CHECK (!calibration_at_pose (steep_roll));
+}
+
+static void test_calibration_inverted_pose (void)
+{
+    float const inverted[3] = { 0.0f, 0.0f, -1.0f };
+
+    CHECK (!calibration_at_pose (inverted));
+}
+
+typedef struct
+{
+    const char * name;
+    void (*run) (void);
+} test_case_t;
+
+#define CASE(name) { #name, test_ ## name }
+
+static const test_case_t cases[] = {
+    CASE(counts),
+    CASE(init_ok),
+    CASE(init_failures),
+    CASE(reads),
+    CASE(retries),
+    CASE(counters_survive_reinit),
+    CASE(config_readback),
+    CASE(read_after_latch),
+    CASE(glitch_after_failed_cycle_is_retried),
+    CASE(adapter),
+    CASE(adapter_glitch_between_reads),
+    CASE(pipeline_lift),
+    CASE(pipeline_imu_lost),
+    CASE(lost_attitude_unknown),
+    CASE(config_readback_budget),
+    CASE(imu_lost_edges),
+    CASE(attitude_publish_gate),
+    CASE(attitude_unknown_without_reference),
+    CASE(pipeline),
+    CASE(pipeline_hump_mutes_bumps),
+    CASE(pipeline_lift_at_rest_on_hump_state),
+    CASE(pipeline_wheels_free_on_hump_state),
+    CASE(pipeline_lasting_hump_state_ends_at_cap),
+    CASE(pipeline_hump_limits),
+    CASE(pipeline_valid_humps_are_masked),
+    CASE(pipeline_tall_humps_are_not_valid),
+    CASE(pipeline_steep_ramp_is_not_valid),
+    CASE(pipeline_rejection_clears_after_hump),
+    CASE(pipeline_wheels_free_descent_is_not_lifted),
+    CASE(glitch_between_reads_sets_stale_fault),
+    CASE(stale_fault_holds_through_flicker),
+    CASE(calibration_tilt_boundary),
+    CASE(calibration_inverted_pose),
+};
+
+int main (int argc, char ** argv)
+{
+    size_t idx = 0U;
+
+    if (2 == argc)
+    {
+        for (idx = 0U; idx < (sizeof (cases) / sizeof (cases[0])); idx++)
+        {
+            if (0 == strcmp (argv[1], cases[idx].name))
+            {
+                cases[idx].run ();
+                return (g_failures == 0) ? 0 : 1;
+            }
+        }
+
+        (void)fprintf (stderr, "Unknown case: %s\n", argv[1]);
+        return 2;
+    }
+    if (1 != argc)
+    {
+        (void)fprintf (stderr, "Usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+    for (idx = 0U; idx < (sizeof (cases) / sizeof (cases[0])); idx++)
+    {
+        cases[idx].run ();
+    }
 
     if (0 == g_failures)
     {
