@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "command_ring.h"
 #include "edge_events.h"
@@ -670,6 +671,61 @@ static void test_running_car_is_not_held_by_time (void)
     }
     CHECK (!b_held);
     CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+}
+
+static void test_remote_stop_after_silent_run (void)
+{
+    run_ctx_t    ctx;
+    run_result_t out;
+    run_inputs_t in   = follow_inputs ();
+    uint32_t     pass = 0U;
+
+    start_running (&ctx, &in);
+    for (pass = 0U; pass < (70000U / RUN_PASS_MS); pass++)
+    {
+        run_state_tick (&ctx, &in, &out);
+    }
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY),
+                       &in, &out);
+    CHECK (out.b_accepted && (MOTION_HOLD_OPERATOR == out.hold_mask));
+}
+
+static void test_single_estop_sample_survives_release (void)
+{
+    run_ctx_t    ctx;
+    run_result_t out;
+    run_inputs_t in = follow_inputs ();
+
+    start_running (&ctx, &in);
+    in.b_estop = true;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    in.b_estop = false;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+
+    run_state_init (&ctx);
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+}
+
+static void test_lift_reading_holds_on_first_tick (void)
+{
+    run_ctx_t     ctx;
+    run_result_t  out;
+    run_inputs_t  in   = follow_inputs ();
+    run_physics_t phys = {
+        .b_ready = true,
+        .b_calibrated = true,
+        .attitude_state = TELEMETRY_ATTITUDE_STATE_LIFTED,
+    };
+
+    start_running (&ctx, &in);
+    run_state_read_physics (&in, &phys);
+    run_state_tick (&ctx, &in, &out);
+    CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
 }
 
 /* RESET reads the overturn now, not only the latch: a car that turned over
@@ -1594,52 +1650,91 @@ static void test_motion_timing_fault (void)
     CHECK (!health_motion_timing_fault (MOTION_STATE_RUNNING, TELEMETRY_MOTION_FAULT_NONE));
 }
 
-int main (void)
+typedef struct
 {
-    test_ring_order_and_source ();
-    test_ring_full_keeps_stops ();
-    test_ring_keeps_ids ();
-    test_boot_and_stop_start ();
-    test_reset_while_running_holds_until_start ();
-    test_boot_holds_until_start ();
-    test_reboot_holds_until_start ();
-    test_stop_wins_in_a_batch ();
-    test_turn_rules ();
-    test_barcode_stop ();
-    test_start_refused_when_overturned ();
-    test_emergency_stop_latches ();
-    test_lift_and_overturn ();
-    test_reset_in_a_lift_waits_for_start ();
-    test_stall_holds_until_start ();
-    test_reset_refused_upside_down_without_tick ();
-    test_attitude_unknown ();
-    test_attitude_unknown_keeps_lift_hold ();
-    test_start_refused_while_permit_lapsed ();
-    test_permit_lapse_rule ();
-    test_permit_skipped_rule ();
-    test_start_reset_counts ();
-    test_physics_inputs ();
-    test_running_car_is_not_held_by_time ();
-    test_obstacle_post_retry ();
-    test_unknown_opcode ();
-    test_liveness ();
-    test_motion_timing_fault ();
-    test_liveness_boot_allowance ();
-    test_liveness_kick_range ();
-    test_liveness_wait_fits_budget ();
-    test_progress ();
-    test_stuck_sensor ();
-    test_drive_crossed ();
-    test_drive_counts_saturate ();
-    test_drive_free_wheels ();
-    test_drive_probe ();
-    test_recalibrate ();
-    test_calhold ();
-    test_calhold_ignores_a_lost_reference ();
-    test_calhold_timeout_edge ();
-    test_edge_obstacle_cycle ();
-    test_edge_obstacle_stop_and_clear ();
-    test_edge_hump_and_run ();
+    const char * name;
+    void (*run) (void);
+} test_case_t;
+
+#define CASE(name) { #name, test_ ## name }
+
+static const test_case_t cases[] = {
+    CASE(ring_order_and_source),
+    CASE(ring_full_keeps_stops),
+    CASE(ring_keeps_ids),
+    CASE(boot_and_stop_start),
+    CASE(reset_while_running_holds_until_start),
+    CASE(boot_holds_until_start),
+    CASE(reboot_holds_until_start),
+    CASE(stop_wins_in_a_batch),
+    CASE(turn_rules),
+    CASE(barcode_stop),
+    CASE(start_refused_when_overturned),
+    CASE(emergency_stop_latches),
+    CASE(lift_and_overturn),
+    CASE(reset_in_a_lift_waits_for_start),
+    CASE(stall_holds_until_start),
+    CASE(reset_refused_upside_down_without_tick),
+    CASE(attitude_unknown),
+    CASE(attitude_unknown_keeps_lift_hold),
+    CASE(start_refused_while_permit_lapsed),
+    CASE(permit_lapse_rule),
+    CASE(permit_skipped_rule),
+    CASE(start_reset_counts),
+    CASE(physics_inputs),
+    CASE(running_car_is_not_held_by_time),
+    CASE(obstacle_post_retry),
+    CASE(unknown_opcode),
+    CASE(liveness),
+    CASE(motion_timing_fault),
+    CASE(liveness_boot_allowance),
+    CASE(liveness_kick_range),
+    CASE(liveness_wait_fits_budget),
+    CASE(progress),
+    CASE(stuck_sensor),
+    CASE(drive_crossed),
+    CASE(drive_counts_saturate),
+    CASE(drive_free_wheels),
+    CASE(drive_probe),
+    CASE(recalibrate),
+    CASE(calhold),
+    CASE(calhold_ignores_a_lost_reference),
+    CASE(calhold_timeout_edge),
+    CASE(edge_obstacle_cycle),
+    CASE(edge_obstacle_stop_and_clear),
+    CASE(edge_hump_and_run),
+    CASE(remote_stop_after_silent_run),
+    CASE(single_estop_sample_survives_release),
+    CASE(lift_reading_holds_on_first_tick),
+};
+
+int main (int argc, char ** argv)
+{
+    size_t idx = 0U;
+
+    if (2 == argc)
+    {
+        for (idx = 0U; idx < (sizeof (cases) / sizeof (cases[0])); idx++)
+        {
+            if (0 == strcmp (argv[1], cases[idx].name))
+            {
+                cases[idx].run ();
+                return (g_fail == 0) ? 0 : 1;
+            }
+        }
+
+        (void)fprintf (stderr, "Unknown case: %s\n", argv[1]);
+        return 2;
+    }
+    if (1 != argc)
+    {
+        (void)fprintf (stderr, "Usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+    for (idx = 0U; idx < (sizeof (cases) / sizeof (cases[0])); idx++)
+    {
+        cases[idx].run ();
+    }
 
     if (g_fail != 0U)
     {
