@@ -1,12 +1,15 @@
 /*
  *	supervisor.h
- *	Supervisor public interface (D120, D160).
+ *	Supervisor public interface.
  *
  *	One task owns the run state and watches the other tasks. It has two roles.
  *	Mission control drains the command ring and decides which command is
- *	allowed. Health collects the liveness bits, checks that the car moves,
- *	renews the run permit and feeds the hardware watchdog. It never drives a
- *	wheel: the line task drives, and does what the supervisor allows.
+ *	allowed. The car starts only on an operator START, except that a pilot
+ *	stop for a short sonar or stale-feedback fault resumes by itself (see
+ *	PILOT_SONAR_RESUME_MS). Health collects the liveness bits, checks
+ *	that the car moves, renews the run permit and feeds the hardware
+ *	watchdog. It never drives a wheel: the line task drives, and does
+ *	what the supervisor allows.
  */
 
 #ifndef SUPERVISOR_SUPERVISOR_H
@@ -28,7 +31,7 @@
 /* Event parameter p1 of a task_stall event for a check that is not a task. */
 #define SUPERVISOR_STALL_PROGRESS (0x80U) /* the car is told to move and does not */
 #define SUPERVISOR_STALL_SENSOR   (0x81U) /* the line sensors never change         */
-#define SUPERVISOR_STALL_ENCODERS (0x82U) /* the wheels answer crosswise (D161)    */
+#define SUPERVISOR_STALL_ENCODERS (0x82U) /* the wheels answer crosswise */
 
 /* The pass period of the task. The composition root wakes the task with a
    cyclic handler of this period. */
@@ -61,10 +64,29 @@ void supervisor_run (void);
    ring is full and the command was dropped. */
 ER vehicle_command_post (uint8_t opcode, uint8_t source);
 
+/* The same with the ids of a telemetry command frame, so its cmd_accept or
+   cmd_reject event names the command. vehicle_command_post passes 0 for both. */
+ER vehicle_command_post_ids (uint8_t opcode, uint8_t source, uint16_t cmd_id,
+                             uint16_t run_id);
+
+/* Commands the ring dropped since boot. The count wraps. */
+uint16_t supervisor_cmd_drops (void);
+
 /* The line task takes a turn the supervisor allowed: VEHICLE_CMD_LEFT, _RIGHT or
    _UTURN, _STRAIGHT, or SUPERVISOR_NO_TURN. A turn is returned once. *p_source gets the
    VEHICLE_SRC_* of the command that asked for it. */
 uint8_t supervisor_take_turn (uint8_t * p_source);
+
+/* Accepted RESET commands since boot, wrapping at 8 bits. The line task
+   compares it with the last value it saw and clears the pilot's latches when it
+   differs. A RESET of a running car also sets the operator hold (as a STOP
+   does) before the count moves, and a RESET of a lifted car keeps the lift
+   hold, so the car stays still until START. */
+uint8_t supervisor_reset_count (void);
+
+/* Accepted START commands since boot, wrapping at 8 bits. The line task
+   releases the pilot's sonar and stale latches when it changes. */
+uint8_t supervisor_start_count (void);
 
 /* The line task tells the supervisor while a one-shot turn runs. */
 void supervisor_set_turning (bool b_turning);

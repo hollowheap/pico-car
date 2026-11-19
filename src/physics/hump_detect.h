@@ -15,8 +15,9 @@
  *   6. Height = sum of ds * sin(pitch - theta_0), ds from encoder distance.
  *
  * Calibration: after init (or hump_recalibrate) the first cal_samples samples
- * taken at rest set theta_0. Any sample that is not at rest restarts the
- * count. No hump is detected until calibration is done.
+ * taken at rest and upright (up_axis reads positive, within cal_max_tilt_deg
+ * of vertical) set theta_0. Any sample that is not at rest or not upright
+ * restarts the count. No hump is detected until calibration is done.
  *
  * Limits: the accelerometer sees vibration and bumps as well as tilt. The
  * dv/dt correction only removes acceleration along the direction of travel.
@@ -60,6 +61,7 @@ typedef struct
 {
     uint8_t  fwd_axis;           /* HUMP_AXIS_X, _Y or _Z: points along travel. */
     int8_t   fwd_sign;           /* +1 or -1: sign that makes nose-up positive. */
+    uint8_t  up_axis;            /* HUMP_AXIS_X, _Y or _Z: reads up at rest. */
     uint8_t  median_len;         /* Median window: 1, 3 or 5 samples.          */
     float    alpha;              /* EMA weight of the new value, 0 < a <= 1.   */
     float    enter_deg;          /* Pitch magnitude that starts a slope.       */
@@ -72,6 +74,7 @@ typedef struct
     uint16_t cal_samples;        /* Rest samples needed to set theta_0.        */
     float    cal_max_dev_g;      /* At rest: | |a| - 1 g | at most this.       */
     float    cal_max_spread_deg; /* At rest: max - min raw pitch at most this. */
+    float    cal_max_tilt_deg;   /* At rest: tilt from up axis, at most this. */
 } hump_config_t;
 
 typedef struct
@@ -102,6 +105,8 @@ typedef struct
     bool  height_valid;          /* False if any motion sample was unusable.   */
     bool  complete;              /* On FINISHED: full climb and descent seen.  */
     bool  motion_stale;          /* Motion data invalid or too old this call.  */
+    bool  speed_ok;              /* Fresh motion data at min_speed_mps or more
+                                    this call: the car is driving forward. */
 } hump_output_t;
 
 typedef struct

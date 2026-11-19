@@ -50,6 +50,7 @@ typedef struct
     bool     speed_valid[MOTION_WHEELS];
     bool     odometry_valid[MOTION_WHEELS];
     bool     fresh;
+    uint8_t  invalid_samples[MOTION_WHEELS]; /* Wraps; see motion_wheel_sample_t. */
 } motion_feedback_t;
 
 STATIC_ASSERT (sizeof(motion_feedback_t) == 40U, "motion_feedback_t size");
@@ -61,7 +62,7 @@ typedef struct
     bool     ready;
     bool     stop_requested; /* Direct emergency latch. */
     uint32_t hold_mask;      /* MOTION_HOLD_* */
-    int      init_error;
+    int      init_error; /* an ER code; this header stays kernel-free */
 } motion_status_t;
 
 STATIC_ASSERT (sizeof(motion_status_t) == 12U, "motion_status_t size");
@@ -83,6 +84,9 @@ STATIC_ASSERT (sizeof(motion_diag_t) == 16U, "motion_diag_t size");
 int motion_feedback_snapshot (motion_feedback_t * p_feedback);
 int motion_status (motion_status_t * p_status);
 int motion_diag_snapshot (motion_diag_t * p_diag);
+/* All three from one controller pass, for frames that must agree. */
+int motion_snapshot (motion_status_t * p_status, motion_feedback_t * p_feedback,
+                     motion_diag_t * p_diag);
 
 int motion_set_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us);
 int motion_set_hold (uint32_t reason, bool held);
@@ -93,6 +97,9 @@ int motion_request_stop (void);
  * even if the supervisor hangs. The permit is not enforced until the first
  * renewal. */
 int motion_renew_permit (uint32_t lease_ms);
+/* Whole ms since the last renewal, rounded up, on the motion clock that holds
+ * the wheels. UINT32_MAX before the first renewal. */
+uint32_t motion_permit_age_ms (void);
 
 /* The supervisor tells the motion task that the encoders answer crosswise
  * (D161). The motion task adds the encoder_dead fault bit while it is true. */

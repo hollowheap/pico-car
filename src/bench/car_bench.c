@@ -40,6 +40,7 @@
 #include "motion/motion.h"
 #include "motion/motor_setup.h"
 #include "../motion/motion_service.h"
+#include "platform/chassis.h"
 #include "platform/isr.h"
 #include "platform/log.h"
 #include "platform/watchdog.h"
@@ -225,7 +226,7 @@ static void run_enc (void)
                                       : (after.right_displacement_um - before.right_displacement_um));
         other  = mm_of ((0U == wheel) ? (after.right_displacement_um - before.right_displacement_um)
                                       : (after.left_displacement_um - before.left_displacement_um));
-        verdict = drive_probe_verdict (driven, other);
+        verdict = health_drive_probe_verdict (driven, other);
         LOG_NOW ("DATA", "bench:enc", "ENC,%s,driven_mm=%d,other_mm=%d,verdict=%d\n", names[wheel],
                  (int) driven, (int) other, (int) verdict);
         LOG_INFO (LOG_TASK_BOOT, LOG_MOD_NONE,
@@ -383,6 +384,9 @@ static void run_line (bool b_new_law)
         }
         if (b_new_law)
         {
+            /* The search statistics (searching_ms, the travel and heading range and
+               the zero-wheel count) include the reverse of a retry, which drives
+               backward at LINE_SEARCH_UM_S. */
             line_follow_status_t const st = line_follow_update (&follow, s.left, s.right, heading,
                                                                 end_travel, now_ms (), &t);
 
@@ -443,7 +447,7 @@ static void run_lift (void)
     uint32_t next_log = 0U;
     bool     b_was_free = false;
 
-    drive_init (&cue);
+    health_drive_init (&cue);
     while (((now_ms () - start) < LIFT_RUN_MS) && !abort_requested ())
     {
         uint32_t const    t = now_ms () - start;
@@ -463,7 +467,7 @@ static void run_lift (void)
             in.target_um_s[0] = diag.left_target_um_s;
             in.target_um_s[1] = diag.right_target_um_s;
             in.b_judge        = fb.fresh;
-            (void) drive_update (&cue, &in, LIFT_LOG_MS);
+            (void) health_drive_update (&cue, &in, LIFT_LOG_MS);
             LOG_NOW ("DATA", "bench:lift", "DRV,%u,%d,%d,%d,%d,%d,%d,%d\n", (unsigned) t,
                      (int) in.duty_pm[0], (int) in.duty_pm[1], (int) (in.speed_um_s[0] / UM_PER_MM),
                      (int) (in.speed_um_s[1] / UM_PER_MM), (int) (in.target_um_s[0] / UM_PER_MM),
@@ -494,8 +498,6 @@ static void run_lift (void)
 /* ODO: no motor command; print what the encoders count while the car is moved by hand. */
 #define ODO_RUN_MS   (30000U)
 #define ODO_PRINT_MS (500U)
-#define ODO_TRAVEL_UM_PER_REV (204204)
-#define ODO_EDGES_PER_REV     (2530)
 
 static void run_odo (void)
 {
@@ -520,8 +522,8 @@ static void run_odo (void)
             /* The edges the firmware counted, from its own scale: um * edges / travel. */
             LOG_NOW ("DATA", "bench:odo", "ODO,%u,left_mm=%d,right_mm=%d,left_edges=%d,right_edges=%d\n",
                      (unsigned) t, (int) mm_of (left_um), (int) mm_of (right_um),
-                     (int) ((left_um * ODO_EDGES_PER_REV) / ODO_TRAVEL_UM_PER_REV),
-                     (int) ((right_um * ODO_EDGES_PER_REV) / ODO_TRAVEL_UM_PER_REV));
+                     (int) ((left_um * (int64_t)CHASSIS_EDGES_PER_REV) / (int64_t)CHASSIS_WHEEL_TRAVEL_UM),
+                     (int) ((right_um * (int64_t)CHASSIS_EDGES_PER_REV) / (int64_t)CHASSIS_WHEEL_TRAVEL_UM));
             next += ODO_PRINT_MS;
         }
         (void) tk_dly_tsk (LOOP_MS);

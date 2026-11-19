@@ -1,6 +1,6 @@
 import { COMMANDS, ENUMS } from './schema.generated';
 import { FAULT_META } from './faults';
-import { enumLabel, obstacleCauseLabel } from './schema';
+import { enumLabel } from './schema';
 
 /** What the event row draws, and what the course trace uses for its mark. */
 export type EventKind =
@@ -20,7 +20,7 @@ export type EventText = { title: string; detail: string; kind: EventKind };
 const SOURCES = ['', 'telemetry', 'barcode', 'button'];
 const TURNS = ['', 'Turn left', 'Turn right', 'U-turn', 'Straight'];
 const SIDES = ['none', 'left', 'right'];
-const REJECT = ['', 'not running', 'busy', 'latched', 'lifted', 'source not allowed', 'unknown command', 'on a hump'];
+const REJECT = ['', 'not running', 'busy', 'latched', 'lifted', 'source not allowed', 'unknown command', 'on a hump', 'stalled', 'lean unknown'];
 const BARCODE_BAD = ['', 'bad element', 'parity', 'delimiter', 'speed out of range', 'same code twice'];
 const PLAN_STATUS = ['ok', 'clear', 'no safe path', 'failed'];
 const RUN_STATES = ['boot', 'running', 'stopped', 'held', 'latched'];
@@ -29,6 +29,20 @@ const STALLS: Record<number, string> = {
   0x81: 'line sensors never change',
   0x82: 'wheels answer crosswise (encoder plugs)',
 };
+const PILOT_BEHAVIOURS = ['none', 'safety', 'hug', 'follow line'];
+const PILOT_REASONS = [
+  'none',
+  'stale wheel feedback',
+  'emergency stop',
+  'line lost',
+  'stuck',
+  'encoder',
+  'sonar',
+  'held',
+  'hug move timeout',
+  'sonar (latched)',
+  'stale wheel feedback (latched)',
+];
 const TASKS = ['motion', 'line', 'obstacle', 'physics', 'telemetry', 'connection', 'barcode'];
 const BOOT_CHECKS: [number, string][] = [[1, 'IMU'], [2, 'sonar'], [4, 'sonar beam blocked'], [8, 'IMU not calibrated']];
 
@@ -41,6 +55,9 @@ const commandName = (opcode: number) => {
   const found = Object.entries(COMMANDS).find(([, code]) => code === opcode);
   return found === undefined ? `command ${opcode}` : found[0];
 };
+/** "opcode from source" out of a cmd_accept or cmd_reject p1. */
+const commandWho = (p1: number) => `${commandName(p1 & 0xff)} from ${word(SOURCES, (p1 >> 8) & 0xf)}`;
+const commandId = (cmdId: number) => (cmdId === 0 ? '' : ` (command ${cmdId})`);
 
 /** The schema name of an event type, `unknown` for a code the schema lacks. */
 export function eventName(type: number): string {
@@ -65,14 +82,18 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
       return { kind: 'system', title: 'Run started', detail: '' };
     case 'runStop':
       return { kind: 'system', title: 'Run stopped', detail: `state: ${word(RUN_STATES, p1)}` };
+    // p1 = reason << 12 | source << 8 | opcode (reason 0 when accepted),
+    // p2 = cmd_id of a telemetry command, 0 from a barcode or the button.
     case 'cmdAccept':
-      return { kind: 'command', title: 'Command accepted', detail: `${commandName(p1)} from ${word(SOURCES, p2)}` };
-    case 'cmdReject':
+      return { kind: 'command', title: 'Command accepted', detail: `${commandWho(p1)}${commandId(p2)}` };
+    case 'cmdReject': {
+      const reason = (p1 >> 12) & 0xf;
       return {
         kind: 'command',
         title: 'Command refused',
-        detail: `${commandName(p1)} from ${word(SOURCES, p2 >> 8)}: ${word(REJECT, p2 & 0xff, 'reason ' + (p2 & 0xff))}`,
+        detail: `${commandWho(p1)}: ${word(REJECT, reason, 'reason ' + reason)}${commandId(p2)}`,
       };
+    }
     case 'barcode': {
       const letter = String.fromCharCode(p1 & 0x7f);
       const action = enumLabel('barcodeAction', p2 & 0x7);
@@ -90,10 +111,15 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     case 'turnAbort':
       return { kind: 'turn', title: `${word(TURNS, p1)} aborted`, detail: `after ${p2} ms` };
     case 'lineLost':
-      // Sent again with the search turn in degrees in p2 when the car stops.
-      return p2 === 0
-        ? { kind: 'line', title: 'Line lost', detail: `last seen on the ${word(SIDES, p1)}; the car turns on the spot to find it` }
-        : { kind: 'line', title: 'Line search stopped', detail: `no line in a ${p2} degree turn each way; last seen on the ${word(SIDES, p1)}` };
+      // p2 = 0 when the search starts; 0x8000 | n for retry n (the car backed up and searches
+      // again); the search turn in degrees when the car stops.
+      if (p2 === 0) {
+        return { kind: 'line', title: 'Line lost', detail: `last seen on the ${word(SIDES, p1)}; the car turns on the spot to find it` };
+      }
+      if ((p2 & 0x8000) !== 0) {
+        return { kind: 'line', title: `Line search retry ${p2 & 0x7fff}`, detail: `backed up and searching again; last seen on the ${word(SIDES, p1)}` };
+      }
+      return { kind: 'line', title: 'Line search stopped', detail: `no line in a ${p2} degree turn each way; last seen on the ${word(SIDES, p1)}` };
     case 'lineFound':
       return { kind: 'line', title: 'Line found', detail: `after ${p2} mm; last seen on the ${word(SIDES, p1)}` };
     case 'obstacleSeen':
@@ -101,18 +127,14 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     case 'scanDone':
       return { kind: 'obstacle', title: 'Scan done', detail: `plan ${word(PLAN_STATUS, p1)}; width ${p2} mm` };
     case 'bypassStart':
-      return { kind: 'obstacle', title: 'Bypass started', detail: `pass on the ${p1 === 0 ? 'left' : 'right'}; start angle ${p2}°` };
+      return { kind: 'obstacle', title: 'Bypass started', detail: `hugging the ${enumLabel('hugSide', p1).toLowerCase()} side` };
     case 'bypassEnd':
-      return { kind: 'obstacle', title: 'Bypass ended', detail: 'back on the line' };
+      return { kind: 'obstacle', title: 'Bypass ended', detail: `back on the line; width ${p1 === 0 ? 'unknown' : `${p1} mm`}, breadth ${p2 === 0 ? 'unknown' : `${p2} mm`}` };
     case 'obstacleStop':
-      // p2 is the give-up reason for cause bypass_gave_up, the echo class for every other cause.
       return {
         kind: 'obstacle',
         title: 'Obstacle stop',
-        detail:
-          p1 === ENUMS.obstacleCause.bypassGaveUp
-            ? `cause ${obstacleCauseLabel(p1, p2).toLowerCase()}`
-            : `cause ${enumLabel('obstacleCause', p1).toLowerCase()}; echo ${enumLabel('echoClass', p2).toLowerCase()}`,
+        detail: `cause ${enumLabel('obstacleCause', p1).toLowerCase()}; echo ${enumLabel('echoClass', p2).toLowerCase()}`,
       };
     case 'humpStart':
       return { kind: 'hump', title: 'Hump started', detail: '' };
@@ -134,6 +156,17 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
         title: 'Stall',
         detail: STALLS[p1] ?? `${word(TASKS, p1, 'task ' + p1)} task missed its heartbeat`,
       };
+    // p1 = speed mm/s (signed), p2 = behaviour << 8 | reason.
+    case 'pilotDecision': {
+      const behaviour = (p2 >> 8) & 0xff;
+      const reason = p2 & 0xff;
+      const speed = ((p1 & 0xffff) << 16) >> 16;
+      return {
+        kind: 'system',
+        title: 'Pilot decision',
+        detail: `${word(PILOT_BEHAVIOURS, behaviour, 'behaviour ' + behaviour)}; reason ${word(PILOT_REASONS, reason, String(reason))}; ${speed} mm/s`,
+      };
+    }
     case 'linkUp':
       return { kind: 'link', title: 'Link up', detail: '' };
     case 'linkDown':

@@ -192,6 +192,37 @@ int32_t geom_mul_q14 (int32_t value, int32_t q14)
 }
 
 /*!
+ * @brief Dot product of a vector with a unit vector given as Q14 cosine and sine.
+ *
+ * @param[in] cos_q14 Unit vector x, Q14.
+ * @param[in] sin_q14 Unit vector y, Q14.
+ * @param[in] dx_mm   Vector x.
+ * @param[in] dy_mm   Vector y.
+ *
+ * @return dx * cos + dy * sin, rounded toward zero.
+ */
+int32_t geom_dot_q14 (int32_t cos_q14, int32_t sin_q14, int32_t dx_mm, int32_t dy_mm)
+{
+    int64_t const sum = ((int64_t)cos_q14 * dx_mm) + ((int64_t)sin_q14 * dy_mm);
+
+    return ((int32_t)(sum / (int64_t)GEOM_Q14_ONE));
+}
+
+/*!
+ * @brief Dot product of a vector with the unit vector at an angle.
+ *
+ * @param[in] angle_deci Angle of the unit vector.
+ * @param[in] dx_mm      Vector x.
+ * @param[in] dy_mm      Vector y.
+ *
+ * @return dx * cos + dy * sin, rounded toward zero.
+ */
+int32_t geom_dot_mm (int32_t angle_deci, int32_t dx_mm, int32_t dy_mm)
+{
+    return (geom_dot_q14(geom_cos_q14(angle_deci), geom_sin_q14(angle_deci), dx_mm, dy_mm));
+}
+
+/*!
  * @brief Integer square root.
  *
  * @param[in] value Number to take the root of.
@@ -264,7 +295,7 @@ void geom_pose_update (geom_pose_t * p_pose, int64_t left_um, int64_t right_um)
     int64_t const tot_l   = left_um - p_pose->base_um[GEOM_WHEEL_LEFT];
     int64_t const tot_r   = right_um - p_pose->base_um[GEOM_WHEEL_RIGHT];
     int64_t const diff_um = tot_r - tot_l;
-    int64_t const den_um  = (int64_t)OBSTACLE_WHEEL_TRACK_MM * (int64_t)UM_PER_MM;
+    int64_t const den_um  = (int64_t)CHASSIS_WHEEL_TRACK_MM * (int64_t)UM_PER_MM;
     int32_t const new_head =
         (int32_t)((diff_um * (int64_t)OBSTACLE_NAV_DECI_PER_RAD) / den_um);
     int32_t const mid_head = (p_pose->head_deci + new_head) / HALF_DIVISOR;

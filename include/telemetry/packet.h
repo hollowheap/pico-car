@@ -59,12 +59,12 @@ typedef struct
     uint16_t overruns;
     uint8_t  motion_state;
     uint8_t  motion_fault;
+    uint8_t  seq;          /* low byte of the status seq of the same pass */
 } telemetry_motion_t;
 
-STATIC_ASSERT (sizeof(telemetry_motion_t) == 16U, "telemetry_motion_t size");
+STATIC_ASSERT (sizeof(telemetry_motion_t) == 18U, "telemetry_motion_t size");
 
-/* 5 Hz. IMU, hump and attitude. The wire reserved byte is written as 0, so
-   the struct has one byte of padding. */
+/* 5 Hz. IMU, hump and attitude. */
 typedef struct
 {
     int16_t  pitch_cdeg;
@@ -81,18 +81,23 @@ typedef struct
     uint8_t  physics_faults;
     uint8_t  flags;
     uint8_t  attitude_state;
+    uint8_t  seq;          /* low byte of the status seq of the same pass */
 } telemetry_physics_t;
 
 STATIC_ASSERT (sizeof(telemetry_physics_t) == 24U, "telemetry_physics_t size");
 
-/* 2 Hz and on change. Sonar, scan and plan. */
+/* 2 Hz and on change. Sonar and hug. hug_seq is a 2-bit count that steps on
+ * every change of the hug snapshot, including the heading while the hug
+ * drives (every tick), so a changed value is a new hug sample. It repeats
+ * after four steps, so an unchanged value does not mean that no sample came. */
 typedef struct
 {
     uint16_t faults;
     uint16_t dist_mm;
     uint16_t closest_mm;
-    uint16_t plan_width_mm;
-    uint16_t plan_need_mm;
+    uint16_t width_mm;
+    uint16_t breadth_mm;
+    uint16_t face_mm;
     int16_t  servo_deci;
     int16_t  body_deci;
     uint8_t  state;
@@ -100,11 +105,9 @@ typedef struct
     uint8_t  echo_class;
     uint8_t  flags;
     uint8_t  seq;
-    uint8_t  req_id;
-    uint8_t  plan_status;
-    uint8_t  plan_side;
-    uint8_t  plan_start_deg;
-    uint8_t  rescans;
+    uint8_t  hug_state;
+    uint8_t  hug_side;
+    uint8_t  hug_seq;
 } telemetry_obstacle_t;
 
 STATIC_ASSERT (sizeof(telemetry_obstacle_t) == 24U, "telemetry_obstacle_t size");
@@ -136,9 +139,17 @@ typedef struct
     uint16_t supervisor_passes; /* a frozen value shows a hung supervisor */
     uint16_t stack_min_free;    /* smallest free stack since boot, bytes */
     uint8_t  stack_min_task;    /* its task, in main.c stack order */
+    uint8_t  cmd_ring_drops;    /* low byte of the supervisor inbox drops */
+    uint16_t cmd_last_id;       /* last accepted command id, 0 before one */
+    uint8_t  cmd_rej_length;    /* refused commands per cause: low bytes */
+    uint8_t  cmd_rej_opcode;
+    uint8_t  cmd_rej_run;
+    uint8_t  cmd_rej_old_id;
+    uint8_t  cmd_rej_age;
 } telemetry_diag_t;
 
-STATIC_ASSERT (sizeof(telemetry_diag_t) == 38U, "telemetry_diag_t size");
+/* 45 B of fields and one byte of tail padding. */
+STATIC_ASSERT (sizeof(telemetry_diag_t) == 46U, "telemetry_diag_t size");
 
 /* 1 Hz. Sent by the connection task. */
 typedef struct
@@ -148,9 +159,10 @@ typedef struct
     int8_t   wifi_rssi;
     uint8_t  reset_reason;
     uint8_t  link_state;
+    uint16_t run_id;       /* commands must carry it */
 } telemetry_heartbeat_t;
 
-STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 8U, "telemetry_heartbeat_t size");
+STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 12U, "telemetry_heartbeat_t size");
 
 /* On event. */
 typedef struct

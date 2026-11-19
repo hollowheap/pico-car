@@ -20,6 +20,8 @@
 #define MAG_BITS           (16U)
 #define WRITE_REG_LEN      (2U)       /* Register address + value.        */
 #define ACC_REG_COUNT      (2U)
+#define ACC_CTRL_LEN       (4U)       /* CTRL_REG1 to CTRL_REG4.           */
+#define ACC_CTRL_REG4_INDEX (3U)
 #define MAG_REG_COUNT      (3U)
 #define MAG_ID_LEN         (3U)       /* IRA, IRB, IRC.                   */
 #define MAG_ID_IRA         (0x48U)    /* 'H'                              */
@@ -76,6 +78,7 @@ static bool transfer (lsm303_t * p_dev, uint8_t addr7,
     for (attempt = 0U; (attempt < p_dev->max_attempts) && !ok; attempt++)
     {
         i2c_bus_result_t result = I2C_BUS_OK;
+        bool b_recover = false;
 
         if (attempt > 0U)
         {
@@ -96,17 +99,21 @@ static bool transfer (lsm303_t * p_dev, uint8_t addr7,
 
             case I2C_BUS_TIMEOUT:
                 p_dev->stats.timeouts++;
-                /* A slave holding SDA low can block every later transfer:
-                 * clock it free before the next attempt. */
-                if (NULL != p_dev->bus.recover)
-                {
-                    p_dev->bus.recover (p_dev->bus.p_ctx);
-                }
+                b_recover = true;
                 break;
 
             default:
                 p_dev->stats.errors++;
+                b_recover = true;
                 break;
+        }
+
+        /* A slave left holding SDA low (after a timeout or a lost
+         * arbitration) can block every later transfer: clock it free
+         * before the next attempt. */
+        if (b_recover && (NULL != p_dev->bus.recover))
+        {
+            p_dev->bus.recover (p_dev->bus.p_ctx);
         }
     }
 
@@ -159,12 +166,6 @@ lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
     p_dev->max_attempts = max_attempts;
     p_dev->ready = false;
     p_dev->fault = false;
-    p_dev->stats.transactions = 0U;
-    p_dev->stats.retries = 0U;
-    p_dev->stats.nacks = 0U;
-    p_dev->stats.timeouts = 0U;
-    p_dev->stats.errors = 0U;
-    p_dev->stats.failures = 0U;
 
     /* Identity. The registers are consecutive and the magnetometer
      * auto-increments without a flag bit. */
@@ -280,6 +281,29 @@ lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out)
     p_out->value[LSM303_AXIS_Z] = (float)p_out->raw[LSM303_AXIS_Z]
                                   / MAG_Z_LSB_PER_G;
 
+    return LSM303_OK;
+}
+
+lsm303_result_t lsm303_check_config (lsm303_t * p_dev)
+{
+    uint8_t back[ACC_CTRL_LEN];
+
+    if ((NULL == p_dev) || !p_dev->ready)
+    {
+        return LSM303_BAD_ARG;
+    }
+    if (!read_regs (p_dev, LSM303_ACC_ADDR,
+                    (uint8_t)(LSM303_CTRL_REG1_A | LSM303_AUTO_INC_A), back,
+                    ACC_CTRL_LEN))
+    {
+        return LSM303_BUS_FAULT;
+    }
+    if ((back[0] != LSM303_CTRL_REG1_A_VAL)
+        || (back[ACC_CTRL_REG4_INDEX] != LSM303_CTRL_REG4_A_VAL))
+    {
+        p_dev->ready = false;
+        return LSM303_CONFIG_MISMATCH;
+    }
     return LSM303_OK;
 }
 

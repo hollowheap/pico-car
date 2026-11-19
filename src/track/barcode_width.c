@@ -60,12 +60,14 @@ uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t 
 }
 
 bool barcode_width_um (uint32_t                  interval_us,
+                       uint32_t                  end_us,
                        motion_feedback_t const * p_feedback,
                        uint16_t                * p_width_um)
 {
     int64_t  mean_speed_um_s = 0;
     uint64_t width           = 0ULL;
     size_t   i               = 0U;
+    uint32_t start_us        = end_us - interval_us;
 
     if ((NULL == p_feedback) || (NULL == p_width_um))
     {
@@ -73,6 +75,14 @@ bool barcode_width_um (uint32_t                  interval_us,
     }
 
     if (!p_feedback->fresh)
+    {
+        return false;
+    }
+
+    /* Modular time: after the start by at most the element plus the slack,
+     * or before it by at most the slack. */
+    if (((p_feedback->timestamp_us - start_us) > ((uint64_t)interval_us + BARCODE_SPEED_SLACK_US)) &&
+        ((start_us - p_feedback->timestamp_us) > BARCODE_SPEED_SLACK_US))
     {
         return false;
     }

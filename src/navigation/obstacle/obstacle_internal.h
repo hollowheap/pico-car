@@ -29,7 +29,7 @@ uint32_t obstacle_get_status (void);
 /* Latest STEER word; its sequence field changes on every decision. */
 uint32_t obstacle_get_steer (void);
 
-/* Events dropped because an inbox or the outbox was full. */
+/* Commands and events dropped because an inbox or the outbox was full. */
 uint8_t obstacle_dropped_events (void);
 
 #endif /* OBSTACLE_INTERNAL_H */

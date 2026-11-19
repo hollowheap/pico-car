@@ -4,14 +4,12 @@
 #include "platform/isr.h"
 
 #define GPIO_INTNO     13
-#define GPIO_INT_PRI   2
 #define GPIO_IRQ_COUNT 30U
 #define ALL_GPIO_MASK  ((1U << GPIO_IRQ_COUNT) - 1U)
 
 #define INT_REG_COUNT 4U
 #define BITS_PER_BYTE 8U
 #define NIBBLE_BITS   4U
-#define TIMER_RAWL    (TIMER_BASE + 0x28U)
 #define INTR          (IO_BANK0_BASE + 0xF0U)
 #define PROC1_INTE    (IO_BANK0_BASE + 0x100U)
 #define PROC1_INTS    (IO_BANK0_BASE + 0x120U)
@@ -161,6 +159,8 @@ LOCAL ER enable_pin_interrupts (const UW       proc,
     }
     for (uint8_t idx = 0; idx < INT_REG_COUNT; idx++)
     {
+        /* An edge latched while the pin was not enabled would fire at once. */
+        out_w(INTR + (idx * sizeof(UW)), enable_masks[idx]);
         set_w(enable_base + (idx * sizeof(UW)), enable_masks[idx]);
     }
     return E_OK;
@@ -199,7 +199,7 @@ LOCAL void gpio_isr (UINT intno)
 
     /* Read after the status, so the timestamp is not earlier than any edge in
      * the snapshot. */
-    const uint32_t timestamp_us = in_w(TIMER_RAWL);
+    const uint32_t timestamp_us = in_w(TIMER_TIMERAWL);
 
     for (uint8_t idx = 0; idx < g_handler_count; idx++)
     {
@@ -236,7 +236,7 @@ EXPORT ER gpio_irq_init (void)
         return result;
     }
     ClearInt(GPIO_INTNO);
-    EnableInt(GPIO_INTNO, GPIO_INT_PRI);
+    EnableInt(GPIO_INTNO, GPIO_IRQ_PRI);
     return E_OK;
 }
 
@@ -279,7 +279,7 @@ EXPORT ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
         (void)SpinUnlock(&g_handlers_lock);
         /* The bank IRQ is shared: leaving it masked would silence every
          * handler already registered. */
-        EnableInt(GPIO_INTNO, GPIO_INT_PRI);
+        EnableInt(GPIO_INTNO, GPIO_IRQ_PRI);
         return result;
     }
 
@@ -289,7 +289,7 @@ EXPORT ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
     g_handler_count++;
 
     (void)SpinUnlock(&g_handlers_lock);
-    EnableInt(GPIO_INTNO, GPIO_INT_PRI);
+    EnableInt(GPIO_INTNO, GPIO_IRQ_PRI);
 
     return E_OK;
 }

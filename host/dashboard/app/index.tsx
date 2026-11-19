@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AttitudePanel } from '../components/console/AttitudePanel';
 import { Brand, ConsoleNav, ThemeToggle } from '../components/console/ConsoleNav';
-import { CourseTrace, MARK_LEGEND } from '../components/console/CourseTrace';
+import { CourseTrace, MARK_LEGEND, OBSTACLE_LEGEND } from '../components/console/CourseTrace';
 import { EventTimeline } from '../components/console/EventTimeline';
 import { FaultGrid } from '../components/console/FaultGrid';
 import { HealthPanel } from '../components/console/HealthPanel';
@@ -41,8 +41,8 @@ const EVENT_LIST_PX = 520;
 export default function ConsoleScreen() {
   const linkUrl = getLinkUrl();
   const serviceUrl = getServiceUrl();
-  const { snapshot, packets, store } = useTelemetry();
-  const { feedback, feedbackError, send } = useCommand(serviceUrl, packets);
+  const { snapshot, store } = useTelemetry();
+  const { feedback, feedbackError, send } = useCommand(serviceUrl);
   const nowMs = useNow(250);
   const overview = buildOverview(snapshot, nowMs);
   const latest = store.latest;
@@ -59,7 +59,10 @@ export default function ConsoleScreen() {
   const state = (kind: string) => panelStatus(snapshot.status, latest[kind], nowMs, kind);
 
   // The store is seeded from the bridge history by useLink, so it also holds the run so far.
-  const course = useMemo(() => buildCourse(store.trail, store.events), [store.trail, store.events]);
+  const course = useMemo(
+    () => buildCourse(store.trail, store.events, store.obstacle, store.trailStart),
+    [store.trail, store.events, store.obstacle, store.trailStart],
+  );
   const summary = useMemo(() => summarizeRun(store.trail, store.events), [store.trail, store.events]);
   const runStatus: PanelStatus | undefined =
     store.trail.length < 2 && store.events.length === 0
@@ -83,15 +86,16 @@ export default function ConsoleScreen() {
     <Panel key="trace" status={runStatus} testID="course-trace" icon="trace" title="Course trace">
       <CourseTrace course={course} height={wide ? TRACE_PX : undefined} />
       {wide ? null : (
-        <>
-          <Text style={[theme.typography.caption, styles.prose, { color: theme.colors.muted }]}>
-            Dead-reckoned from the odometer and the compass heading, north up. It drifts with the heading error and is not a map.
-            Open ring: start. Blue dot: the car now.
-          </Text>
-          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-            Marks: {MARK_LEGEND.map((item) => item.label).join(', ')}.
-          </Text>
-        </>
+        <Text style={[theme.typography.caption, styles.prose, { color: theme.colors.muted }]}>
+          Dead-reckoned from the odometer and the compass heading, north up. It drifts with the heading error and is not a map.
+          Open ring: start. Blue dot: the car now.
+        </Text>
+      )}
+      <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+        Marks: {MARK_LEGEND.map((item) => item.label).join(', ')}.
+      </Text>
+      {course.obstacle === null ? null : (
+        <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>{OBSTACLE_LEGEND}</Text>
       )}
     </Panel>
   );

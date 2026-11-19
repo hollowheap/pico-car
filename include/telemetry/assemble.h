@@ -47,10 +47,19 @@ void telemetry_assemble_physics (telemetry_physics_t * p_out,
                                  const physics_status_t * p_physics);
 
 /* 2 Hz obstacle frame. A NULL plan leaves the plan fields at zero (no scan
-   has finished yet). */
+   has finished yet). p_hug points to the two hug words of
+   telemetry/hug_word.h, or is NULL. A NULL or never-published snapshot leaves
+   the hug fields idle, none and 0 and the servo as the obstacle snapshot
+   gives it; a published one sets them, and the servo of the latest ping. */
 void telemetry_assemble_obstacle (telemetry_obstacle_t * p_out,
                                   const obstacle_status_t * p_obstacle,
-                                  const obstacle_plan_summary_t * p_plan);
+                                  const obstacle_plan_summary_t * p_plan,
+                                  const uint32_t * p_hug);
+
+/* Profile header from the plan of the same scan. The caller copies the
+   slots. */
+void telemetry_assemble_profile (telemetry_profile_t * p_out,
+                                 const obstacle_plan_summary_t * p_plan);
 
 /* Mean wheel travel in whole millimetres, never negative. */
 uint32_t telemetry_odometer_mm (const motion_feedback_t * p_feedback);

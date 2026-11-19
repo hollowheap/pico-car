@@ -86,6 +86,9 @@ typedef struct
     uint32_t open_from_ms;
     uint32_t open_to_ms;
     uint32_t drop_every;
+    /* Pings while the face follow turns read the face at 200 mm: the beam
+     * sweeps across it mid-turn, off the look line the follow asked for. */
+    bool b_guard_sweep;
 
     /* Wheel scale errors: true travel = odometry travel * scale. */
     double scale_left;
@@ -161,6 +164,7 @@ typedef struct
     uint32_t stop_ms;
     bool     b_reached_monitor_after_bypass;
     uint32_t bypass_count;
+    uint32_t turn_pings; /* pings the guard path took in REACQUIRE */
 } sim_t;
 
 /* ---------------------------------------------------------------- */
@@ -527,6 +531,7 @@ static void task_ping(sim_t * p_s)
 
     p_s->last_trig = p_s->now;
     obstacle_statechart_out_clear(&out);
+    obstacle_statechart_set_look(&p_s->fsm, p_s->servo);
     obstacle_statechart_ping(&p_s->fsm, cls, dist, p_s->now, &out);
     publish(p_s, &out);
 }
@@ -541,6 +546,15 @@ static void task_ping_guard(sim_t * p_s, bool b_turning)
         uint16_t                  dist = 0U;
 
         sonar(p_s, p_s->servo, &cls, &dist);
+        if (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state)
+        {
+            p_s->turn_pings++;
+        }
+        if (p_s->cfg.b_guard_sweep && (OBSTACLE_STATE_REACQUIRE == p_s->fsm.state))
+        {
+            cls  = OBSTACLE_CLASS_VALID;
+            dist = 200U;
+        }
         p_s->last_trig = p_s->now;
         obstacle_statechart_out_clear(&out);
         obstacle_statechart_ping_guard(&p_s->fsm, cls, dist, p_s->now, &out);
@@ -684,6 +698,15 @@ static void nav_event(sim_t * p_s, uint32_t evt)
             }
             nav_post(p_s, OBSTACLE_CMD_ACCEPT, p_s->req_id);
         }
+        else if (p_s->req_id == id)
+        {
+            /* As obstacle_nav.c: no way round, answer at once. */
+            nav_post(p_s, OBSTACLE_CMD_REJECT, p_s->req_id);
+        }
+        else
+        {
+            /* A result for an older request. */
+        }
     }
     else
     {
@@ -721,7 +744,7 @@ static void nav_report_state(sim_t * p_s, uint32_t status)
             follow_in_t in;
 
             (void)memset(&in, 0, sizeof(in));
-            nav_core_follow_begin(&p_s->core, status, wheel, &in);
+            nav_core_follow_begin(&p_s->core, p_s->fsm.ping, wheel, &in);
             /* As obstacle_nav.c: the stop reading is the first face point. */
             follow_start(&p_s->follow, OBSTACLE_SIDE_LEFT == p_s->side, &in,
                          (int32_t)p_s->fsm.plan.closest_mm + (int32_t)OBSTACLE_SONAR_FWD_MM);
@@ -754,7 +777,7 @@ static void nav_follow(sim_t * p_s, uint32_t status, bool b_line)
     p_s->b_hold = false;
     wheel_um(p_s, wheel);
     (void)memset(&in, 0, sizeof(in));
-    (void)nav_core_follow_input(&p_s->core, status, wheel, b_line, &in);
+    (void)nav_core_follow_input(&p_s->core, p_s->fsm.ping, p_s->follow_servo, wheel, b_line, &in);
 
     {
         unsigned const before = p_s->follow.phase;
@@ -925,7 +948,7 @@ static void physics_step(sim_t * p_s)
         double const tl = dl * p_s->cfg.scale_left;
         double const tr = dr * p_s->cfg.scale_right;
         double const ds = (tl + tr) / 2.0;
-        double const dth = (tr - tl) / OBSTACLE_WHEEL_TRACK_MM;
+        double const dth = (tr - tl) / CHASSIS_WHEEL_TRACK_MM;
 
         p_s->x  += ds * sin(p_s->th + (dth / 2.0));
         p_s->y  += ds * cos(p_s->th + (dth / 2.0));
@@ -1033,6 +1056,7 @@ static void cfg_default(sim_cfg_t * p_cfg)
     p_cfg->open_from_ms      = 0U;
     p_cfg->open_to_ms        = 0U;
     p_cfg->drop_every        = 0U;
+    p_cfg->b_guard_sweep     = false;
     p_cfg->scale_left        = 1.0;
     p_cfg->scale_right       = 1.0;
     p_cfg->max_ms            = 120000U;
@@ -1292,6 +1316,26 @@ static void test_dropped_echoes_still_rejoin(void)
     check_rejoined(s, 740.0);
 }
 
+/* Pings taken while the follow turns sweep across the face. The follow
+ * must not read them as face pings: it keeps the face and rejoins the line. */
+static void test_turn_pings_do_not_lose_face(void)
+{
+    sim_cfg_t cfg;
+    sim_t *   s = NULL;
+
+    cfg_default(&cfg);
+    add_rect(&cfg, -150.0, 560.0, 150.0, 740.0);
+    cfg.b_stop_on_monitor = true;
+    cfg.max_ms            = 90000U;
+    cfg.b_guard_sweep     = true;
+    s = sim_new(&cfg);
+    sim_run(s);
+    print_run("turn pings", s);
+    CHECK(s->turn_pings > 0U);
+    CHECK(s->gave_up_reason != FOLLOW_REASON_ECHO_LOST);
+    check_rejoined(s, 740.0);
+}
+
 int main(void)
 {
     test_box_widths();
@@ -1303,6 +1347,7 @@ int main(void)
     test_inner_corner();
     test_circled_box_gives_up();
     test_dropped_echoes_still_rejoin();
+    test_turn_pings_do_not_lose_face();
 
     free(g_sim);
 

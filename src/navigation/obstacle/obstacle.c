@@ -96,7 +96,8 @@ ER obstacle_init (obstacle_links_t const * p_links)
  *
  * @param[in] cmd Packed command byte.
  *
- * @return E_OK; E_LIMIT if the 4-slot queue is full; E_OBJ before init.
+ * @return E_OK; E_LIMIT if the 4-slot queue is full (counted in
+ *         obstacle_dropped_events()); E_OBJ before init.
  */
 ER obstacle_post_cmd (uint8_t cmd)
 {
@@ -105,26 +106,6 @@ ER obstacle_post_cmd (uint8_t cmd)
     if (g_obstacle.b_ready)
     {
         result = obstacle_comms_post_cmd(cmd);
-    }
-
-    return (result);
-}
-
-/*!
- * @brief Next event, when Navigation did not supply an inbox.
- *
- * @param[out] p_evt The event.
- * @param[in]  tmout How long to wait.
- *
- * @return E_OK, E_TMOUT if none in time, or E_OBJ before init.
- */
-ER obstacle_get_event (uint32_t * p_evt, TMO tmout)
-{
-    ER result = E_OBJ;
-
-    if (g_obstacle.b_ready)
-    {
-        result = obstacle_comms_get_event(p_evt, tmout);
     }
 
     return (result);
@@ -157,7 +138,10 @@ uint32_t obstacle_get_status (void)
  */
 uint16_t obstacle_get_faults (void)
 {
-    return (obstacle_comms_faults());
+    uint32_t const reason_bits = OBSTACLE_STOP_REASON_MK << OBSTACLE_STOP_REASON_SH;
+
+    /* Cast is safe: the result keeps the low 16 bits of a 16-bit word. */
+    return ((uint16_t)((uint32_t)obstacle_comms_faults() & ~reason_bits));
 }
 
 /*!
@@ -172,9 +156,11 @@ uint16_t obstacle_get_faults (void)
  */
 ER obstacle_snapshot (obstacle_status_t * p_status)
 {
-    uint32_t word = 0U;
-    uint32_t aim  = 0U;
-    ER       result = E_PAR;
+    uint32_t const           reason_bits = OBSTACLE_STOP_REASON_MK << OBSTACLE_STOP_REASON_SH;
+    obstacle_comms_scalars_t pub;
+    uint32_t                 word   = 0U;
+    uint32_t                 aim    = 0U;
+    ER                       result = E_PAR;
 
     if (NULL != p_status)
     {
@@ -182,14 +168,19 @@ ER obstacle_snapshot (obstacle_status_t * p_status)
 
         if (g_obstacle.b_ready)
         {
-            word = obstacle_get_status();
+            obstacle_comms_copy_scalars(&pub);
+            word = pub.status;
 
             p_status->ready = true;
             p_status->state = (uint8_t)obstacle_pack_get(
                 word, OBSTACLE_ST_STATE_SH, OBSTACLE_ST_STATE_MK);
             p_status->cause = (uint8_t)obstacle_pack_get(
                 word, OBSTACLE_ST_CAUSE_SH, OBSTACLE_ST_CAUSE_MK);
-            p_status->faults = obstacle_get_faults();
+            /* Cast is safe: the result keeps the low 16 bits of a 16-bit word. */
+            p_status->faults      = (uint16_t)((uint32_t)pub.faults & ~reason_bits);
+            p_status->stop_reason = (uint8_t)(((uint32_t)pub.faults >>
+                                               OBSTACLE_STOP_REASON_SH) &
+                                              OBSTACLE_STOP_REASON_MK);
             p_status->echo_class = (uint8_t)obstacle_pack_get(
                 word, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK);
             p_status->distance_mm = (uint16_t)obstacle_pack_get(
@@ -198,9 +189,9 @@ ER obstacle_snapshot (obstacle_status_t * p_status)
                 word, OBSTACLE_ST_ID_SH, OBSTACLE_ST_ID_MK);
             p_status->seq = (uint8_t)obstacle_pack_get(
                 word, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
-            p_status->dropped_events = obstacle_dropped_events();
-            p_status->flags          = obstacle_comms_flags();
-            aim                      = obstacle_comms_aim();
+            p_status->dropped_events = pub.drops;
+            p_status->flags          = pub.flags;
+            aim                      = pub.aim;
             p_status->servo_deci     = (int16_t)(uint16_t)(aim & AIM_HALF_MASK);
             p_status->body_deci      = (int16_t)(uint16_t)(aim >> AIM_BODY_SHIFT);
 
@@ -212,7 +203,8 @@ ER obstacle_snapshot (obstacle_status_t * p_status)
 }
 
 /*!
- * @brief Events dropped because an inbox or the outbox was full.
+ * @brief Events dropped because an inbox or the outbox was full, plus
+ *        commands dropped because the command queue was full.
  *
  * @return The count, saturating at 255.
  */

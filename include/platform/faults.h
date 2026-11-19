@@ -6,18 +6,22 @@
 
 /*
  *	faults.h
- *	Shared 16-bit system fault register (D110, S46).
+ *	Shared system fault register.
  *
  *	Core 0 and Core 1 (and tasks and ISRs on either core) may assert or clear
  *	bits concurrently.  Every operation takes the kernel's SMP atomic path,
  *	which runs on SIO Spinlock 1, so no bit update is lost and no reader sees
  *	a torn value.
  *
- *	There are two words.  The level word shows what is wrong now: a setter
+ *	There are two words.  The level word shows what is wrong now: the owner
  *	asserts a bit and clears it when the condition ends.  The sticky word
  *	records every bit asserted since the last system_fault_sticky_clear(), so
  *	a fault that came and went is still visible.  Bit positions match the
  *	fault_bits list in protocol/telemetry.yaml.
+ *
+ *	The words are 32 bits wide; 16 bits are defined, and the telemetry wire
+ *	carries 16 bits until a seventeenth bit is defined.  Each bit has one
+ *	owner, and only that owner can change it.
  */
 
 #ifndef PLATFORM_FAULTS_H
@@ -46,26 +50,35 @@
 /* Every defined fault bit.  Bits outside this mask are ignored by the accessors. */
 #define FAULT_ALL_MASK            (0xFFFFU)
 
-/* Set the bits in fault_bit in the level word and the sticky word.  Bits
-   already set stay set. */
-void system_fault_set(uint16_t fault_bit);
+/* The task that reports each bit.  The masks are in faults.c. */
+typedef enum
+{
+    FAULT_OWNER_LINK = 0,   /* Wi-Fi down, MQTT publish refused        */
+    FAULT_OWNER_MOTION,     /* stall, dead encoder, emergency latch    */
+    FAULT_OWNER_LINE,       /* line lost                               */
+    FAULT_OWNER_PHYSICS,    /* IMU, stale speed, tilt, lift, overturn  */
+    FAULT_OWNER_OBSTACLE,   /* no echo, echo line, obstacle stop       */
+    FAULT_OWNER_SUPERVISOR, /* task stalled, abnormal reset            */
+    FAULT_OWNER_COUNT
+} fault_owner_t;
 
-/* Clear the bits in fault_bit in the level word.  Bits already clear stay
-   clear.  The sticky word keeps them. */
-void system_fault_clear(uint16_t fault_bit);
+/* Return the bits owner may change; 0 for an unknown owner. */
+uint32_t system_fault_owner_mask(fault_owner_t owner);
 
 /* Report the bits an owner controls: set the bits of mask that are also in
-   active, and clear the other bits of mask.  Bits outside mask are not touched,
-   so each owner passes only its own bits. */
-void system_fault_assign(uint16_t mask, uint16_t active);
+   active, and clear the other bits of mask.  A set bit also goes into the
+   sticky word.  Bits outside mask, and bits that owner does not own, are not
+   touched. */
+void system_fault_assign(fault_owner_t owner, uint32_t mask, uint32_t active);
 
-/* Return the current 16-bit fault mask (the level word). */
-uint16_t system_fault_get(void);
+/* Return the current fault mask (the level word). */
+uint32_t system_fault_get(void);
 
 /* Return every bit asserted since the last system_fault_sticky_clear(). */
-uint16_t system_fault_sticky_get(void);
+uint32_t system_fault_sticky_get(void);
 
-/* Clear the bits in fault_bit in the sticky word. */
-void system_fault_sticky_clear(uint16_t fault_bit);
+/* Clear the bits in fault_bit in the sticky word.  A bit still set in the
+   level word stays: it is asserted now. */
+void system_fault_sticky_clear(uint32_t fault_bit);
 
 #endif /* PLATFORM_FAULTS_H */

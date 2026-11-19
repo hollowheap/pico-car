@@ -21,6 +21,8 @@ void command_ring_init (command_ring_t * p_ring)
 
     for (idx = 0U; idx < COMMAND_RING_LEN; idx++)
     {
+        p_ring->item[idx].cmd_id = 0U;
+        p_ring->item[idx].run_id = 0U;
         p_ring->item[idx].opcode = 0U;
         p_ring->item[idx].source = 0U;
     }
@@ -29,7 +31,7 @@ void command_ring_init (command_ring_t * p_ring)
     p_ring->dropped = 0U;
 }
 
-bool command_ring_push (command_ring_t * p_ring, uint8_t opcode, uint8_t source)
+bool command_ring_push (command_ring_t * p_ring, vehicle_cmd_t cmd)
 {
     bool    b_stored = true;
     uint8_t offset   = 0U;
@@ -65,10 +67,7 @@ bool command_ring_push (command_ring_t * p_ring, uint8_t opcode, uint8_t source)
 
     if (b_stored)
     {
-        uint8_t const slot = slot_of (p_ring, p_ring->count);
-
-        p_ring->item[slot].opcode = opcode;
-        p_ring->item[slot].source = source;
+        p_ring->item[slot_of (p_ring, p_ring->count)] = cmd;
         p_ring->count++;
     }
 

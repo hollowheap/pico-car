@@ -6,7 +6,7 @@
 
 static uint8_t g_queue_buffer[TELEMETRY_NET_QUEUE_BYTES]
     __attribute__((aligned(QUEUE_BUFFER_ALIGN)));
-ID g_mbf_net_tx_id;
+static ID g_mbf_net_tx_id;
 static UW g_drop_count;
 
 ER telemetry_net_queue_create (void)
@@ -53,7 +53,12 @@ ER telemetry_net_queue_push (const uint8_t * payload, uint16_t len)
 
 UW telemetry_net_queue_drop_count (void)
 {
-    return g_drop_count;
+    return atomic_add(&g_drop_count, 0u);
+}
+
+void telemetry_net_queue_test_reset (void)
+{
+    g_mbf_net_tx_id = 0;
 }
 
 INT telemetry_net_queue_pop (uint8_t * payload, TMO tmout)

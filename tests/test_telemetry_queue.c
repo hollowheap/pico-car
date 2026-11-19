@@ -23,9 +23,10 @@
 #define BUFFER_BYTES   1024U
 #define MSG_MAX        83U
 #define FRAME_MAX      83U
-#define FRAME_HEARTBEAT 9U
+#define FRAME_HEARTBEAT 11U
 #define FRAME_EVENT    13U
 #define FRAME_STATUS   17U
+#define FRAME_MOTION   18U /* same cost as status: both round to 20 B */
 #define FRAME_PHYSICS  25U
 #define FRAME_PROFILE  83U
 #define CAP_PHYSICS    32U
@@ -36,7 +37,7 @@
 #define COST_EVENT     20U
 #define COST_STATUS    24U
 #define COST_PHYSICS   32U
-#define COST_DIAG      44U /* 37 B diag + topic byte = 38, rounded to 40, + 4 */
+#define COST_DIAG      52U /* 45 B diag + topic byte = 46, rounded to 48, + 4 */
 #define COST_PROFILE   88U
 #define FILL_LEN       28U /* kernel math only: a 28 B message costs 32 B */
 #define CAP_FILL       32U
@@ -48,6 +49,9 @@
 #define LCG_MUL        1103515245U
 #define LCG_ADD        12345U
 #define BAD_ID         9
+/* setup() resets the fake before it creates the queue, so the queue's buffer
+   takes the fake's first slot. */
+#define QUEUE_ID       1
 
 static unsigned g_fail;
 static unsigned g_checks;
@@ -81,8 +85,9 @@ static uint16_t frame_len (uint8_t topic)
         case 'e':
             return FRAME_EVENT;
         case 's':
-        case 'm':
             return FRAME_STATUS;
+        case 'm':
+            return FRAME_MOTION;
         case 'p':
         case 'o':
             return FRAME_PHYSICS;
@@ -161,10 +166,21 @@ static int queue_empty (void)
     return telemetry_queue_pop(msg, TMO_POL) == E_TMOUT;
 }
 
+/* True when the queue holds no buffer id: pop answers E_NOEXS without asking
+   the kernel. */
+static int queue_unset (void)
+{
+    uint8_t        msg[MSG_MAX];
+    const unsigned calls = g_mbf_fake.recv_calls;
+
+    return (telemetry_queue_pop(msg, TMO_POL) == E_NOEXS) &&
+           (g_mbf_fake.recv_calls == calls);
+}
+
 static void setup (void)
 {
     mbf_fake_reset();
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
     CHECK(telemetry_queue_create() == E_OK);
 }
 
@@ -297,7 +313,7 @@ static void test_create_failure_paths (void)
     unsigned       before = g_fail;
 
     mbf_fake_reset();
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
 
     /* Nothing created yet. */
     CHECK(push_t((uint8_t)'s', 0U, 0U) == E_NOEXS);
@@ -308,13 +324,13 @@ static void test_create_failure_paths (void)
     /* Kernel refuses: the error is returned and the id stays unset. */
     g_mbf_fake.create_error = E_NOMEM;
     CHECK(telemetry_queue_create() == E_NOMEM);
-    CHECK(g_mbf_telem_id == 0);
+    CHECK(queue_unset());
     CHECK(push_t((uint8_t)'s', 0U, 0U) == E_NOEXS);
     CHECK(telemetry_queue_pop(msg, TMO_POL) == E_NOEXS);
 
     g_mbf_fake.create_error = E_LIMIT;
     CHECK(telemetry_queue_create() == E_LIMIT);
-    CHECK(g_mbf_telem_id == 0);
+    CHECK(queue_unset());
 
     /* No free control block (all kernel slots taken by other buffers). */
     cfg.mbfatr = TA_USERBUF;
@@ -324,12 +340,12 @@ static void test_create_failure_paths (void)
     CHECK(tk_cre_mbf(&cfg) > 0);
     CHECK(tk_cre_mbf(&cfg) > 0);
     CHECK(telemetry_queue_create() == E_LIMIT);
-    CHECK(g_mbf_telem_id == 0);
+    CHECK(queue_unset());
 
     /* Retry after the failure succeeds. */
     mbf_fake_reset();
     CHECK(telemetry_queue_create() == E_OK);
-    CHECK(g_mbf_telem_id > 0);
+    CHECK(!queue_unset());
     CHECK(g_mbf_fake.create_calls == 1U);
     CHECK(push_t((uint8_t)'s', 0U, 0U) == E_OK);
 
@@ -354,7 +370,7 @@ static void test_create_parameters (void)
     CHECK(g_mbf_fake.last_cmbf.maxmsz == (INT)MSG_MAX);
     CHECK(g_mbf_fake.last_cmbf.bufptr != 0);
     CHECK((((uintptr_t)g_mbf_fake.last_cmbf.bufptr) % 4U) == 0U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)BUFFER_BYTES);
+    CHECK(mbf_fake_free(QUEUE_ID) == (int32_t)BUFFER_BYTES);
     pass("create_parameters", before);
 }
 
@@ -375,7 +391,7 @@ static void test_pop_arguments (void)
     CHECK(g_mbf_fake.last_rcv_tmout == TMO_FEVR);
 
     /* NULL is rejected before a missing queue is. */
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
     CHECK(telemetry_queue_pop(0, TMO_POL) == E_PAR);
     pass("pop_arguments", before);
 }
@@ -401,7 +417,7 @@ static void test_push_arguments (void)
     CHECK(telemetry_queue_push(frame, 2U, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, FRAME_STATUS, 0U) == E_PAR); /* topic 0 */
     CHECK(g_mbf_fake.send_calls == sent); /* nothing reached the kernel */
-    CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)BUFFER_BYTES);
+    CHECK(mbf_fake_free(QUEUE_ID) == (int32_t)BUFFER_BYTES);
 
     /* The command topic is not a queue topic. */
     CHECK(push_seed(FRAME_STATUS, (uint8_t)'c', 0U, 1U) == E_PAR);
@@ -409,7 +425,7 @@ static void test_push_arguments (void)
     CHECK(push_seed(FRAME_PHYSICS, (uint8_t)'t', 0U, 1U) == E_PAR);
 
     /* Bad arguments are reported before a missing queue is. */
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
     CHECK(telemetry_queue_push(0, FRAME_STATUS, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 0U, 0U) == E_PAR);
     CHECK(telemetry_queue_push(frame, 15U, 0U) == E_PAR);
@@ -460,7 +476,7 @@ static void test_topic_length_validation (void)
             }
         }
     }
-    CHECK(mbf_fake_free(g_mbf_telem_id) == (int32_t)BUFFER_BYTES);
+    CHECK(mbf_fake_free(QUEUE_ID) == (int32_t)BUFFER_BYTES);
     CHECK(telemetry_queue_drop_count() == drops);
     pass("topic_length_validation", before);
 }
@@ -481,13 +497,13 @@ static void test_stored_lengths_and_content (void)
 
         setup();
         make_frame(frame, g_topics[t], 0x30U);
-        free_before = mbf_fake_free(g_mbf_telem_id);
+        free_before = mbf_fake_free(QUEUE_ID);
         CHECK(telemetry_queue_push(frame, frame_len(g_topics[t]), 0U) == E_OK);
-        CHECK(tk_ref_mbf(g_mbf_telem_id, &info) == E_OK);
+        CHECK(tk_ref_mbf(QUEUE_ID, &info) == E_OK);
         CHECK(info.msgsz == (INT)frame_len(g_topics[t]));
-        CHECK((free_before - mbf_fake_free(g_mbf_telem_id)) ==
+        CHECK((free_before - mbf_fake_free(QUEUE_ID)) ==
               (int32_t)cost_of(g_topics[t]));
-        CHECK(tk_rcv_mbf(g_mbf_telem_id, raw, TMO_POL) ==
+        CHECK(tk_rcv_mbf(QUEUE_ID, raw, TMO_POL) ==
               (INT)frame_len(g_topics[t]));
         CHECK(memcmp(raw, frame, frame_len(g_topics[t])) == 0);
         CHECK(raw[0] == g_topics[t]);
@@ -536,14 +552,14 @@ static void test_foreign_length (void)
 
     setup();
     drops = telemetry_queue_drop_count();
-    CHECK(tk_snd_mbf(g_mbf_telem_id, raw, 5, TMO_POL) == E_OK);
+    CHECK(tk_snd_mbf(QUEUE_ID, raw, 5, TMO_POL) == E_OK);
     CHECK(telemetry_queue_pop(msg, TMO_POL) == E_OBJ);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
     CHECK(queue_empty());
 
     /* A known topic with the wrong length is foreign too. */
     raw[0] = (uint8_t)'s';
-    CHECK(tk_snd_mbf(g_mbf_telem_id, raw, 5, TMO_POL) == E_OK);
+    CHECK(tk_snd_mbf(QUEUE_ID, raw, 5, TMO_POL) == E_OK);
     CHECK(telemetry_queue_pop(msg, TMO_POL) == E_OBJ);
     CHECK(telemetry_queue_drop_count() == drops + 2U);
     CHECK(queue_empty());
@@ -551,7 +567,7 @@ static void test_foreign_length (void)
     /* An unknown message in the queue is evicted and counted. It costs 32
        bytes; 41 status frames cost 984. */
     raw[0] = 1U;
-    CHECK(tk_snd_mbf(g_mbf_telem_id, raw, 25, TMO_POL) == E_OK);
+    CHECK(tk_snd_mbf(QUEUE_ID, raw, 25, TMO_POL) == E_OK);
     CHECK(fill_with((uint8_t)'s', CAP_STATUS - 1U) == CAP_STATUS - 1U);
     drops = telemetry_queue_drop_count();
     CHECK(push_t((uint8_t)'s', 0U, 0x55U) == E_OK);
@@ -592,13 +608,13 @@ static void test_push_packet (void)
 
     setup();
     make_frame(want, (uint8_t)'m', 0x21U);
-    memcpy(packet, &want[1], FRAME_STATUS - 1U);
+    memcpy(packet, &want[1], FRAME_MOTION - 1U);
     CHECK(telemetry_queue_push_packet((uint8_t)'m', packet,
-                                      (uint16_t)(FRAME_STATUS - 1U), 0U) == E_OK);
-    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)FRAME_STATUS);
-    CHECK(memcmp(msg, want, FRAME_STATUS) == 0);
+                                      (uint16_t)(FRAME_MOTION - 1U), 0U) == E_OK);
+    CHECK(telemetry_queue_pop(msg, TMO_POL) == (INT)FRAME_MOTION);
+    CHECK(memcmp(msg, want, FRAME_MOTION) == 0);
 
-    CHECK(telemetry_queue_push_packet((uint8_t)'m', 0, 16U, 0U) == E_PAR);
+    CHECK(telemetry_queue_push_packet((uint8_t)'m', 0, 17U, 0U) == E_PAR);
     CHECK(telemetry_queue_push_packet((uint8_t)'m', packet, 0U, 0U) == E_PAR);
     CHECK(telemetry_queue_push_packet((uint8_t)'m', packet,
                                       TELEMETRY_WIRE_MAX + 1U, 0U) == E_PAR);
@@ -617,14 +633,14 @@ static void test_capacity_of_1024_bytes (void)
 
     setup();
     CHECK(fill_with((uint8_t)'p', CAP_PHYSICS + 4U) == CAP_PHYSICS);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
+    CHECK(mbf_fake_free(QUEUE_ID) == 0);
     setup();
     CHECK(fill_with((uint8_t)'s', CAP_STATUS + 4U) == CAP_STATUS);
     setup();
     CHECK(fill_with((uint8_t)'e', CAP_EVENT + 4U) == CAP_EVENT);
     setup();
     CHECK(fill_with((uint8_t)'h', CAP_HEARTBEAT + 4U) == CAP_HEARTBEAT);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
+    CHECK(mbf_fake_free(QUEUE_ID) == 0);
     setup();
     CHECK(fill_with((uint8_t)'f', 20U) == (BUFFER_BYTES / COST_PROFILE));
     CHECK((CAP_STATUS * COST_STATUS) <= BUFFER_BYTES);
@@ -665,18 +681,19 @@ static void test_nonzero_qos_rejected_when_full (void)
     drops = telemetry_queue_drop_count();
 
     CHECK(push_t((uint8_t)'e', 1U, 99U) == E_TMOUT);
+    CHECK(telemetry_queue_drop_count() == drops + 1U); /* a rejection counts */
     CHECK(push_t((uint8_t)'e', 2U, 99U) == E_TMOUT);
     CHECK(push_t((uint8_t)'e', 255U, 99U) == E_TMOUT);
-    CHECK(telemetry_queue_drop_count() == drops); /* a rejection is no drop */
+    CHECK(telemetry_queue_drop_count() == drops + 3U);
     CHECK(g_mbf_fake.recv_calls == 0U);           /* and nothing is evicted */
     CHECK(g_mbf_fake.ref_calls == 0U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
+    CHECK(mbf_fake_free(QUEUE_ID) == 0);
 
     for (unsigned i = 0U; i < CAP_PHYSICS; i++)
     {
         CHECK(pop_t((uint8_t)'p', (uint8_t)i));
     }
-    CHECK(telemetry_queue_drop_count() == drops);
+    CHECK(telemetry_queue_drop_count() == drops + 3U);
     pass("nonzero_qos_rejected_when_full", before);
 }
 
@@ -742,7 +759,7 @@ static void test_small_frame_evicts_larger_oldest (void)
     /* Evicting one 32-byte message frees room for a 16-byte one. */
     CHECK(push_t((uint8_t)'h', 0U, 9U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 1U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) ==
+    CHECK(mbf_fake_free(QUEUE_ID) ==
           (int32_t)(COST_PHYSICS - COST_HEARTBEAT));
     pass("small_frame_evicts_larger_oldest", before);
 }
@@ -784,7 +801,7 @@ static void fill_status_event_statuses (uint8_t event_seed)
     {
         CHECK(push_t((uint8_t)'s', 1U, (uint8_t)i) == E_OK);
     }
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 20);
+    CHECK(mbf_fake_free(QUEUE_ID) == 20);
 }
 
 /* An event that becomes the oldest during eviction stops it. Frames evicted
@@ -834,7 +851,7 @@ static void test_qos0_evicts_several_to_fit (void)
     CHECK(push_t((uint8_t)'f', 0U, 0x77U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 3U);
     CHECK(g_mbf_fake.recv_calls == 3U);
-    CHECK(mbf_fake_free(g_mbf_telem_id) == 0);
+    CHECK(mbf_fake_free(QUEUE_ID) == 0);
     for (unsigned i = 3U; i < CAP_STATUS; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
@@ -989,17 +1006,17 @@ static void test_producer_mutex (void)
 
     /* Mutex creation fails: error returned, no buffer created, retry works. */
     mbf_fake_reset();
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
     g_mbf_fake.mtx_create_error = E_LIMIT;
     CHECK(telemetry_queue_create() == E_LIMIT);
     CHECK(g_mbf_fake.create_calls == 0U);
-    CHECK(g_mbf_telem_id == 0);
+    CHECK(queue_unset());
     CHECK(telemetry_queue_create() == E_OK);
     CHECK(g_mbf_fake.mtx_used == 1);
 
     /* Buffer creation fails: the mutex is deleted, retry creates both. */
     mbf_fake_reset();
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
     g_mbf_fake.create_error = E_NOMEM;
     CHECK(telemetry_queue_create() == E_NOMEM);
     CHECK(g_mbf_fake.mtx_used == 0);
@@ -1080,7 +1097,7 @@ static unsigned model_cost (const model_t * m, unsigned count)
 /* Random pushes (qos 0 and 1, all topics) and pops against a model of the
    documented behavior: FIFO order, eviction only of qos 0 frames at the head,
    and pushed = popped + dropped + queued (+ rejected qos 1, which the caller
-   sees as E_TMOUT and the queue does not count). */
+   sees as E_TMOUT and the queue counts as a drop too). */
 static void test_mixed_traffic_fuzz (void)
 {
     static const uint8_t topics[] = {'h', 'e', 's', 'p', 's', 's', 'e', 'p',
@@ -1164,9 +1181,9 @@ static void test_mixed_traffic_fuzz (void)
         {
             CHECK(queue_empty());
         }
-        CHECK(mbf_fake_free(g_mbf_telem_id) ==
+        CHECK(mbf_fake_free(QUEUE_ID) ==
               (int32_t)(BUFFER_BYTES - model_cost(model, count)));
-        CHECK(telemetry_queue_drop_count() == (base + dropped));
+        CHECK(telemetry_queue_drop_count() == (base + dropped + qos1_rejected));
         CHECK(pushed == (popped + dropped + count + qos1_rejected));
     }
     CHECK(stopped_by_event > 0U); /* an event at the head did stop eviction */

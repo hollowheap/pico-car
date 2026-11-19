@@ -58,7 +58,7 @@ and starts one startup task that initialises the shared hardware.
 | `include/physics/physics.h`                 | Buddy 4 facade: telemetry snapshot                                   |
 | `src/navigation/obstacle/`                  | Buddy 5 scan, planner, statechart, comms, flight log                 |
 | `src/physics/`                              | Buddy 4 IMU, hump detection, pipeline, task                          |
-| `src/motion/`                               | Motor owner, encoders, PID                                           |
+| `src/motion/`                               | Motor owner, PIO quadrature encoders, PID                            |
 | `src/track/`, `src/platform/`               | Line sensors and the shared GPIO IRQ dispatcher                      |
 | `src/telemetry/`                            | lwIP transport, MQTT client, queues, command ingress                 |
 | `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and JSON bridge                               |
@@ -88,6 +88,23 @@ STOP/START/RESET commands. Broker settings are CMake cache values:
 `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`, `PICO_CAR_MQTT_USERNAME`,
 `PICO_CAR_MQTT_PASSWORD`, `PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.
 
+The run state never starts the car by itself, with one exception: a pilot stop
+for a short sonar or stale-feedback fault resumes on its own when the fault
+clears within PILOT_SONAR_RESUME_MS (1 s). After a boot, a watchdog reset, a
+lift, an overturn or a lapsed motion permit (a stall or a long gap) it holds the
+wheels until an operator START from the dashboard or the CLI. A barcode turn is
+refused until then. START is refused while the attitude reads LIFTED or
+OVERTURNED, while the permit has lapsed, and while the lean is unknown. Once the
+attitude reads OK again (50 level samples, tilt under 5 deg), START is accepted,
+even while the car is held level in the air, because the operator chose to send
+it. RECAL is refused while the lean is unknown, and a running car keeps driving
+then. The car counts as upright when its lean is known, it is calibrated and its
+roll is within 60 deg. RESET is refused while the car is overturned and not upright, and is
+accepted once it is upright.
+
+A link outage never stops the car. The `wifi_disconn` fault bit is set after 3 s
+without an MQTT session, for telemetry only.
+
 The status, motion and physics packets go out at 5 Hz. The obstacle packet goes
 out at 2 Hz and on change, and the diag and heartbeat packets at 1 Hz. Events go
 out when they happen, and the scan profile once per scan. The layout of every
@@ -112,6 +129,30 @@ stays off and the script warns. Override with `-DPICO_CAR_WIFI_SSID`,
 
 The generated credentials header stays in `build/` and is never committed. An
 empty SSID keeps `TM_WIFI_JOIN=0`.
+
+## Calibration and attitude
+
+The rest reference is set from 50 samples (1 s) taken with the car at rest. Each
+sample needs the total acceleration within 0.05 g of 1 g, the pitch varying by
+less than 2 deg across the window, the up axis (z) reading positive and the tilt
+from vertical within 10 deg. A sample that breaks any of these starts the count
+again, so an upside down car or one tilted past 10 deg never sets the reference.
+Calibration runs by itself while the car is uncalibrated: the supervisor's
+calibration hold releases as soon as `physics.calibrated` turns true, so no
+START is needed to finish it.
+
+The attitude reads unknown (`attitude_unknown`) until a rest reference is set:
+at boot, after a new run (RECAL) and after the IMU is lost. The supervisor
+refuses START and RECAL while it is unknown, and the attitude fields keep their
+last known values. A single failed accelerometer read does not make it unknown;
+the IMU counts as lost after 25 failed reads in a row (0.5 s), and then the
+reference is dropped.
+
+Every 2 s the accelerometer configuration is read back. A mismatch means the
+sensor has reset, so it is initialised again. The readback is skipped on the
+cycle after a failed read and uses two attempts per transaction. The
+magnetometer configuration is checked only at init, so a magnetometer reset is
+not caught by the readback and affects the heading only.
 
 ## Tests
 

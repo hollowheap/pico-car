@@ -51,7 +51,7 @@ int32_t nav_core_heading_deci (nav_core_t const * p_core,
 {
     int64_t const left_um  = p_wheel_um[NAV_CORE_LEFT] - p_core->base_um[NAV_CORE_LEFT];
     int64_t const right_um = p_wheel_um[NAV_CORE_RIGHT] - p_core->base_um[NAV_CORE_RIGHT];
-    int64_t const track_um = (int64_t)OBSTACLE_WHEEL_TRACK_MM * UM_PER_MM;
+    int64_t const track_um = (int64_t)CHASSIS_WHEEL_TRACK_MM * UM_PER_MM;
 
     /* Cast is safe: a bypass turns the car far less than 2^31 deci-deg. */
     return ((int32_t)(((right_um - left_um) * OBSTACLE_NAV_DECI_PER_RAD) / track_um));
@@ -106,7 +106,7 @@ bool nav_core_repeat_due (nav_core_t * p_core, uint32_t now)
     return (b_due);
 }
 
-void nav_core_follow_begin (nav_core_t * p_core, uint32_t status,
+void nav_core_follow_begin (nav_core_t * p_core, uint32_t ping,
                             int64_t const p_wheel_um[NAV_CORE_WHEELS], follow_in_t * p_in)
 {
     fill_pose(p_core, p_wheel_um, p_in);
@@ -114,17 +114,21 @@ void nav_core_follow_begin (nav_core_t * p_core, uint32_t status,
     p_in->cls     = OBSTACLE_CLASS_OPEN;
     p_in->b_ping  = false;
     p_in->b_line  = false;
-    /* Cast is safe: the sequence field is 5 bits. */
+    /* Cast is safe: the sequence field is 6 bits. */
     p_core->follow_seq =
-        (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
+        (uint8_t)obstacle_pack_get(ping, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK);
     p_core->b_ir_cleared = false;
 }
 
-bool nav_core_follow_input (nav_core_t * p_core, uint32_t status,
+bool nav_core_follow_input (nav_core_t * p_core, uint32_t ping, int16_t look_deci,
                             int64_t const p_wheel_um[NAV_CORE_WHEELS], bool b_line_seen,
                             follow_in_t * p_in)
 {
-    uint32_t const seq     = obstacle_pack_get(status, OBSTACLE_ST_SEQ_SH, OBSTACLE_ST_SEQ_MK);
+    uint32_t const seq     = obstacle_pack_get(ping, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK);
+    /* The ping word keeps whole degrees. A ping taken before the servo
+     * reached the look is not a reading at the look. */
+    bool const     b_aimed = (obstacle_pack_ping_servo(ping) ==
+                              (((int32_t)look_deci / OBSTACLE_DECI_PER_DEG) * OBSTACLE_DECI_PER_DEG));
     bool const     b_opens = (!p_core->b_ir_cleared) && (!b_line_seen);
 
     if (b_opens)
@@ -133,12 +137,35 @@ bool nav_core_follow_input (nav_core_t * p_core, uint32_t status,
     }
     fill_pose(p_core, p_wheel_um, p_in);
     /* Casts are safe: the class field is 3 bits, the distance field 12 bits
-     * and the sequence field 5 bits. */
-    p_in->b_ping  = (seq != (uint32_t)p_core->follow_seq);
-    p_in->cls     = (uint8_t)obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK);
-    p_in->dist_mm = (uint16_t)obstacle_pack_get(status, OBSTACLE_ST_DIST_SH, OBSTACLE_ST_DIST_MK);
+     * and the sequence field 6 bits. */
+    p_in->b_ping  = (seq != (uint32_t)p_core->follow_seq) && b_aimed;
+    p_in->cls     = (uint8_t)obstacle_pack_get(ping, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK);
+    p_in->dist_mm = (uint16_t)obstacle_pack_get(ping, OBSTACLE_PING_DIST_SH, OBSTACLE_PING_DIST_MK);
     p_in->b_line  = p_core->b_ir_cleared && b_line_seen;
     p_core->follow_seq = (uint8_t)seq;
 
     return (b_opens);
+}
+
+void nav_core_travel_update (nav_travel_t * p_travel, int64_t net_um)
+{
+    /* Cast is safe: +-2147 km of travel fits in 32 bits. */
+    int32_t const net_mm = (int32_t)(net_um / UM_PER_MM);
+
+    if (p_travel->b_base)
+    {
+        int32_t const step = net_mm - p_travel->last_mm;
+
+        /* Casts are safe: the step is made positive first. */
+        if (step > 0)
+        {
+            p_travel->fwd_mm += (uint32_t)step;
+        }
+        else
+        {
+            p_travel->back_mm += (uint32_t)(-step);
+        }
+    }
+    p_travel->last_mm = net_mm;
+    p_travel->b_base  = true;
 }

@@ -126,22 +126,8 @@ target_compile_definitions(mtk3smp PUBLIC
     NDEBUG
 )
 
-target_include_directories(mtk3smp PUBLIC
-    ${MTK3SMP_PATH}/include
-    ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${MTK3SMP_PATH}/config
-    ${MTK3SMP_PATH}/kernel/knlinc
-    ${MTK3SMP_PATH}/kernel/tkernel
-    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/core/armv6m
-    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/rp2040
-    ${MTK3SMP_PATH}/kernel/sysdepend/pico_rp2040
-    ${MTK3SMP_PATH}/device
-    ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
-    ${MTK3SMP_PATH}/lib/libnet/lwip/include
-    ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
-  PRIVATE
+# The Pico SDK headers the kernel build uses; the PIO encoder driver uses them too.
+set(PICO_SDK_INCLUDES
     ${PICO_SDK_PATH}/src/boards/include
     ${PICO_SDK_PATH}/src/common/hardware_claim/include
     ${PICO_SDK_PATH}/src/common/pico_base_headers/include
@@ -168,6 +154,25 @@ target_include_directories(mtk3smp PUBLIC
     ${PICO_SDK_PATH}/lib/cyw43-driver/src
     ${PICO_SDK_PATH}/lib/cyw43-driver/firmware
     ${PICO_SDK_PATH}/lib/tinyusb/src
+)
+
+target_include_directories(mtk3smp PUBLIC
+    ${MTK3SMP_PATH}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${MTK3SMP_PATH}/config
+    ${MTK3SMP_PATH}/kernel/knlinc
+    ${MTK3SMP_PATH}/kernel/tkernel
+    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/core/armv6m
+    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/rp2040
+    ${MTK3SMP_PATH}/kernel/sysdepend/pico_rp2040
+    ${MTK3SMP_PATH}/device
+    ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
+    ${MTK3SMP_PATH}/lib/libnet/lwip/include
+    ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
+  PRIVATE
+    ${PICO_SDK_INCLUDES}
 )
 
 target_sources(mtk3smp PRIVATE
@@ -366,6 +371,21 @@ target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
 target_link_libraries(motion_core PUBLIC platform mtk3smp)
 target_compile_options(motion_core PRIVATE ${FIRMWARE_WARNINGS})
 
+# The encoder state machines. The SDK PIO driver needs C11, as the kernel
+# build does; SYSTEM keeps the firmware warnings off the SDK headers.
+add_library(motion_pio STATIC
+    src/motion/encoder_pio.c
+)
+set_target_properties(motion_pio PROPERTIES
+    C_STANDARD 11
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS ON
+)
+target_include_directories(motion_pio SYSTEM PRIVATE ${PICO_SDK_INCLUDES}
+    ${CMAKE_CURRENT_LIST_DIR}/src/motion/generated)
+target_link_libraries(motion_pio PUBLIC mtk3smp)
+target_compile_options(motion_pio PRIVATE ${FIRMWARE_WARNINGS})
+
 add_library(motion_service STATIC
     src/motion/motion_service.c
     src/motion/motor_setup.c
@@ -375,7 +395,7 @@ add_library(motion_service STATIC
     src/motion/quadrature.c
 )
 target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(motion_service PUBLIC platform motion_core mtk3smp)
+target_link_libraries(motion_service PUBLIC platform motion_core motion_pio mtk3smp)
 target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(track STATIC
@@ -394,7 +414,9 @@ target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
 add_library(pilot STATIC
     src/pilot/pilot.c
     src/pilot/drive.c
-    src/pilot/avoid.c
+    src/pilot/hug.c
+    src/pilot/look.c
+    src/pilot/pilot_log.c
     src/track/line_control.c
 )
 target_include_directories(pilot PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
@@ -499,6 +521,19 @@ target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3s
 target_compile_options(obstacle_nav PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_nav supervisor)
+
+# With the pilot on, the line task drives through the pilot and the sonar task
+# feeds only the echo health checks. Off keeps the old obstacle navigation.
+option(PICO_CAR_PILOT "Drive with the pilot instead of the old obstacle navigation" ON)
+if(PICO_CAR_PILOT)
+    set(PICO_CAR_PILOT_VALUE 1)
+    target_link_libraries(track PUBLIC pilot)
+else()
+    set(PICO_CAR_PILOT_VALUE 0)
+endif()
+target_compile_definitions(track PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(obstacle PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(obstacle_nav PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 
 # Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
 # part of main.uf2.

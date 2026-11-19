@@ -1,5 +1,5 @@
 import type { LinkPacket } from '../../lib/link';
-import { enumLabel, headingDegrees, obstacleCauseLabel, obstacleStopReason } from '../../lib/schema';
+import { enumLabel, headingDegrees } from '../../lib/schema';
 
 export function faultHex(mask: number | undefined): string {
   if (mask === undefined) {
@@ -48,7 +48,9 @@ export function packetSummary(packet: LinkPacket): string {
     case 'obstacle':
       return (
         `obstacle ${enumLabel('obstacleState', values.state)}  dist ${values.dist_mm ?? '--'} mm  ` +
-        `cause ${obstacleCauseLabel(values.cause, obstacleStopReason(values.faults))}  echo ${enumLabel('echoClass', values.echo_class)}`
+        `cause ${enumLabel('obstacleCause', values.cause)}  echo ${enumLabel('echoClass', values.echo_class)}  ` +
+        `hug ${enumLabel('hugState', values.hug_state)} ${enumLabel('hugSide', values.hug_side).toLowerCase()}  ` +
+        `face ${sizeMm(values.face_mm)}  width ${sizeMm(values.width_mm)}  breadth ${sizeMm(values.breadth_mm)}`
       );
     case 'diag':
       return (
@@ -70,6 +72,11 @@ export function packetSummary(packet: LinkPacket): string {
     default:
       return packet.packet;
   }
+}
+
+/** A size from the hug; 0 means the car has not seen it. */
+export function sizeMm(mm: number | undefined): string {
+  return mm === undefined ? '--' : mm === 0 ? 'unknown' : `${mm} mm`;
 }
 
 export function formatTime(timestamp: number): string {

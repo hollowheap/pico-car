@@ -30,6 +30,10 @@ bool tcp_transport_open (const char * host, uint16_t port);
 /* Ask the lwIP owner task to close the connection. */
 void tcp_transport_close (void);
 
+/* True until the owner task has aborted the connection for every close
+ * request; open again only after it turns false. */
+bool tcp_transport_close_pending (void);
+
 tcp_transport_state_t tcp_transport_state (void);
 
 /* lwIP millisecond clock without dragging lwIP headers into T-Kernel TUs. */

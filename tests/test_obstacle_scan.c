@@ -71,6 +71,8 @@ static void test_classify_each_class(void)
     CHECK(scan_algo_classify(0U, true, true, false) == OBSTACLE_CLASS_GLITCH);
     /* Nothing on ECHO within the wait. */
     CHECK(scan_algo_classify(0U, true, false, false) == OBSTACLE_CLASS_NO_ECHO);
+    /* A wake that left the result empty carries no echo either. */
+    CHECK(scan_algo_classify(0U, false, false, false) == OBSTACLE_CLASS_NO_ECHO);
     /* ECHO high before the trigger wins over everything else. */
     CHECK(scan_algo_classify(done_rise | 1000U, false, false, true) == OBSTACLE_CLASS_STUCK);
 }

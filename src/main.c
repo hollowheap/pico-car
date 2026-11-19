@@ -10,6 +10,7 @@
 #include "motion/motion_service.h"
 #include "motion/motor_setup.h"
 #include "motion/encoder.h"
+#include "motion/pwm.h"
 #include "navigation/obstacle.h"
 #include "track/barcode.h"
 #include "physics/physics.h"
@@ -21,6 +22,7 @@
 #include "supervisor/supervisor.h"
 #include "telemetry/assemble.h"
 #include "telemetry/emit.h"
+#include "telemetry/hug_word.h"
 #include "telemetry/cmd.h"
 #include "telemetry/connection.h"
 #include "telemetry/net_queue.h"
@@ -28,16 +30,43 @@
 #include "telemetry/queue.h"
 #include "telemetry/worker.h"
 
-/* Every task uses 4096 bytes.  The SMP kernel path is deeper than the
-   single-core one -- each critical section runs the global ready-queue
-   assignment on the calling task's stack -- so 1-2 KiB is no longer enough
-   for a task that makes blocking kernel calls. */
-#define STACK_SZ 4096
+/* Task stacks. Each is the deepest call chain of the task, from the GCC
+ * call graph (-fstack-usage -fcallgraph-info=su, function pointers followed
+ * by hand), plus a quarter, plus 1152 bytes for what lands on top of it.
+ * The chain includes the SMP kernel path, which runs the ready-queue
+ * assignment of each critical section on the calling task's stack. On top:
+ * three nested interrupt levels (SysTick 240 B, GPIO 344 B, I2C or UART
+ * 288 B, a 32-byte frame each) and the dispatcher's saved registers. Physics
+ * adds 400 bytes for newlib's sinf, atan2f and acosf, which the call graph
+ * does not see. Rounded up to 256 bytes. Deepest chain per task: startup
+ * 672, motion 984, physics 880, supervisor 1016, obstacle 568, line 936,
+ * telemetry 1208, connection 680, barcode 808. */
+#define STACK_STARTUP_SZ    (2048U)
+#define STACK_MOTION_SZ     (2560U)
+#define STACK_PHYSICS_SZ    (2816U)
+#define STACK_SUPERVISOR_SZ (2560U)
+#define STACK_OBSTACLE_SZ   (2048U)
+#define STACK_LINE_SZ       (2560U)
+#define STACK_TELEMETRY_SZ  (2816U)
+#define STACK_CONNECTION_SZ (2048U)
+#define STACK_BARCODE_SZ    (2304U)
 #define STACK_ALIGN 8U
 
 
-/* Width of the fault word (bits 0..15, see platform/faults.h). */
+/* Width of the fault fields on the wire (bits 0..15, see platform/faults.h).
+   A seventeenth fault bit needs wider status, diag and event fields. */
 #define FAULT_WORD_BITS              (16U)
+STATIC_ASSERT(FAULT_ALL_MASK <= UINT16_MAX, "fault bits fit the wire fields");
+
+/* Kernel objects the firmware creates, against the kernel limits in
+   lib/mtk3smp-rp2040/config/config.h. Tasks: the nine below, plus the
+   kernel's init, USB console and CYW43 tasks. Cyclic handlers: supervisor,
+   telemetry, motion, physics and connection. Past a limit, tk_cre_* fails
+   at boot with E_LIMIT. */
+#define FIRMWARE_TASKS   (12U)
+#define FIRMWARE_CYCLICS (5U)
+STATIC_ASSERT(FIRMWARE_TASKS <= CNF_MAX_TSKID, "task limit");
+STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 
 /* Startup barrier event flag bits. */
 #define STARTUP_FLAG_READY           (0x01U)
@@ -318,9 +347,9 @@ LOCAL void telemetry_send_fast (void)
     telemetry_status_t   status;
     telemetry_motion_t   moving;
     telemetry_physics_t  imu;
-    bool const           b_motion   = (E_OK == motion_status(&motion));
-    bool const           b_feedback = (E_OK == motion_feedback_snapshot(&feedback));
-    bool const           b_diag     = (E_OK == motion_diag_snapshot(&diag));
+    bool const           b_motion   = (E_OK == motion_snapshot(&motion, &feedback, &diag));
+    bool const           b_feedback = b_motion;
+    bool const           b_diag     = b_motion;
     bool const           b_physics  = (E_OK == physics_snapshot(&physics));
     bool const           b_obstacle = (E_OK == obstacle_snapshot(&obstacle));
     line_task_stats_t    line;
@@ -329,7 +358,7 @@ LOCAL void telemetry_send_fast (void)
     telemetry_assemble_status(&status, b_motion ? &motion : NULL,
                               b_feedback ? &feedback : NULL,
                               b_physics ? &physics : NULL,
-                              b_obstacle ? &obstacle : NULL, system_fault_get(),
+                              b_obstacle ? &obstacle : NULL, (uint16_t)system_fault_get(),
                               g_tel.seq, current_line_bits(), line.b_turning);
     g_tel.seq++;
     (void)telemetry_queue_push_packet(
@@ -339,11 +368,14 @@ LOCAL void telemetry_send_fast (void)
     telemetry_assemble_motion(&moving, b_motion ? &motion : NULL,
                               b_feedback ? &feedback : NULL,
                               b_diag ? &diag : NULL);
+    /* Cast is safe: the frame keeps the low byte to pair with status. */
+    moving.seq = (uint8_t)status.seq;
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_MOTION, packet,
         telemetry_pack_motion(packet, &moving), 0U);
 
     telemetry_assemble_physics(&imu, b_physics ? &physics : NULL);
+    imu.seq = (uint8_t)status.seq;
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_PHYSICS, packet,
         telemetry_pack_physics(packet, &imu), 0U);
@@ -358,20 +390,26 @@ LOCAL void telemetry_send_obstacle (void)
     obstacle_status_t       obstacle;
     obstacle_plan_summary_t plan;
     telemetry_obstacle_t    frame;
+    uint32_t                hug[HUG_WORD_COUNT];
     bool const              b_status = (E_OK == obstacle_snapshot(&obstacle));
     bool const              b_plan   = (E_OK == obstacle_copy_plan(&plan));
 
+    line_task_hug(hug);
     telemetry_assemble_obstacle(&frame, b_status ? &obstacle : NULL,
-                                b_plan ? &plan : NULL);
+                                b_plan ? &plan : NULL, hug);
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_OBSTACLE, packet,
         telemetry_pack_obstacle(packet, &frame), 0U);
 }
 
-/* Smallest free stack seen by stack_report, and its task (diag packet).
- * Written by the supervisor task, read whole by the telemetry task. */
-static volatile uint16_t g_stack_min_free = UINT16_MAX;
-static volatile uint8_t  g_stack_min_task = 0U;
+/* Smallest free stack seen by stack_report (low 16 bits) and its task (bits
+ * 16 to 23), for the diag packet. One word, written by the supervisor task
+ * with one store and read once by the telemetry task, so a mark is never
+ * paired with the task of another scan. */
+#define STACK_MARK_FREE_MASK  (0xFFFFU)
+#define STACK_MARK_TASK_SHIFT (16U)
+#define STACK_MARK_TASK_MASK  (0xFFU)
+static volatile uint32_t g_stack_mark = STACK_MARK_FREE_MASK;
 
 /*!
  * @brief Queue the diag frame (1 Hz): counters and health.
@@ -386,10 +424,13 @@ LOCAL void telemetry_send_diag (void)
     uint32_t          echo[OBSTACLE_ECHO_CLASSES] = {0};
     barcode_stats_t   bstats;
     line_task_stats_t lstats;
+    uint32_t const    stack_mark = g_stack_mark;
+    telemetry_cmd_state_t cmd_state;
 
     barcode_stats(&bstats);
     line_task_stats(&lstats);
-    diag.sticky_faults       = system_fault_sticky_get();
+    connection_cmd_state(&cmd_state);
+    diag.sticky_faults       = (uint16_t)system_fault_sticky_get();
     diag.line_lost_count     = lstats.lost_count;
     diag.line_search_mm      = lstats.search_mm;
     diag.barcode_ok          = bstats.ok;
@@ -399,8 +440,18 @@ LOCAL void telemetry_send_diag (void)
     diag.last_barcode_action = bstats.last_action;
     diag.task_alive_mask     = supervisor_alive_mask();
     diag.supervisor_passes   = supervisor_pass_count();
-    diag.stack_min_free      = g_stack_min_free;
-    diag.stack_min_task      = g_stack_min_task;
+    diag.stack_min_free      = (uint16_t)(stack_mark & STACK_MARK_FREE_MASK);
+    diag.stack_min_task      = (uint8_t)((stack_mark >> STACK_MARK_TASK_SHIFT) &
+                                         STACK_MARK_TASK_MASK);
+    /* Low byte on purpose: the wire field wraps and a client takes the
+     * difference between frames (protocol/telemetry.yaml). */
+    diag.cmd_ring_drops      = (uint8_t)supervisor_cmd_drops();
+    diag.cmd_last_id         = cmd_state.last_cmd_id;
+    diag.cmd_rej_length      = cmd_state.rejects.length;
+    diag.cmd_rej_opcode      = cmd_state.rejects.opcode;
+    diag.cmd_rej_run         = cmd_state.rejects.run;
+    diag.cmd_rej_old_id      = cmd_state.rejects.old_id;
+    diag.cmd_rej_age         = cmd_state.rejects.age;
     diag.telem_queue_drops   = clamp_u16((uint32_t)telemetry_queue_drop_count());
     diag.net_queue_drops     = clamp_u16((uint32_t)telemetry_net_queue_drop_count());
     diag.telemetry_overruns  = clamp_u16(g_telemetry_overruns);
@@ -437,7 +488,7 @@ LOCAL void telemetry_send_diag (void)
  */
 LOCAL void telemetry_check_faults (void)
 {
-    uint16_t const level   = system_fault_get();
+    uint16_t const level   = (uint16_t)system_fault_get();
     uint16_t const changed = (uint16_t)(level ^ g_tel.fault_level);
 
     if (0U != changed)
@@ -466,9 +517,10 @@ LOCAL void telemetry_check_faults (void)
  */
 LOCAL void telemetry_check_profile (void)
 {
-    obstacle_status_t   obstacle;
-    uint8_t             packet[TELEMETRY_WIRE_MAX];
-    telemetry_profile_t frame;
+    obstacle_status_t       obstacle;
+    obstacle_plan_summary_t plan;
+    uint8_t                 packet[TELEMETRY_WIRE_MAX];
+    telemetry_profile_t     frame;
     uint8_t             previous = g_tel.obstacle_state;
 
     if (E_OK != obstacle_snapshot(&obstacle))
@@ -478,14 +530,11 @@ LOCAL void telemetry_check_profile (void)
     g_tel.obstacle_state = obstacle.state;
     if ((previous == (uint8_t)TELEMETRY_OBSTACLE_STATE_SCANNING) &&
         (obstacle.state == (uint8_t)TELEMETRY_OBSTACLE_STATE_PLAN) &&
-        (E_OK == obstacle_copy_profile(frame.slots)))
+        (E_OK == obstacle_copy_profile(frame.slots)) && (E_OK == obstacle_copy_plan(&plan)))
     {
-        frame.closest_mm = 0U;
-        frame.width_mm   = 0U;
-        frame.req_id     = obstacle.req_id;
-        frame.status     = 0U;
-        frame.side       = 0U;
-        frame.flags      = 0U;
+        /* The profile and the plan are published together, so they belong
+         * to the same scan. */
+        telemetry_assemble_profile(&frame, &plan);
         (void)telemetry_queue_push_packet(
             (uint8_t)TELEMETRY_TOPIC_PROFILE, packet,
             telemetry_pack_profile(packet, &frame), 0U);
@@ -557,7 +606,8 @@ LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
     {
         (void)motion_request_stop();
     }
-    (void)vehicle_command_post(cmd->opcode, VEHICLE_SRC_TELEMETRY);
+    (void)vehicle_command_post_ids(cmd->opcode, VEHICLE_SRC_TELEMETRY,
+                                   cmd->cmd_id, cmd->run_id);
 }
 
 LOCAL void connection_task (INT stacd, void * exinf)
@@ -577,15 +627,15 @@ LOCAL void connection_task (INT stacd, void * exinf)
  *  Task and object definitions
  * ------------------------------------------------------------------ */
 
-static uint8_t g_startup_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_motion_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_physics_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_obstacle_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_line_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_telemetry_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_connection_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_barcode_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
-static uint8_t g_supervisor_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_startup_stack[STACK_STARTUP_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_motion_stack[STACK_MOTION_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_physics_stack[STACK_PHYSICS_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_obstacle_stack[STACK_OBSTACLE_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_line_stack[STACK_LINE_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_telemetry_stack[STACK_TELEMETRY_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_connection_stack[STACK_CONNECTION_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_barcode_stack[STACK_BARCODE_SZ] __attribute__((aligned(STACK_ALIGN)));
+static uint8_t g_supervisor_stack[STACK_SUPERVISOR_SZ] __attribute__((aligned(STACK_ALIGN)));
 
 /* Stack marks. Before any task exists, every stack is filled with a
  * known byte. The supervisor reads how much of each stack is still untouched,
@@ -594,11 +644,17 @@ static uint8_t g_supervisor_stack[STACK_SZ] __attribute__((aligned(STACK_ALIGN))
 #define STACK_MIN_FREE    (512U)
 #define STACK_REPORT_CALLS (30U)
 #define STACK_COUNT       (9U)
+STATIC_ASSERT(STACK_COUNT <= (STACK_MARK_TASK_MASK + 1U), "task index fits the stack mark");
 
 static uint8_t * const g_stack_base[STACK_COUNT] = {
     g_startup_stack,   g_motion_stack,    g_physics_stack,
     g_obstacle_stack,  g_line_stack,      g_telemetry_stack,
     g_connection_stack, g_barcode_stack,  g_supervisor_stack,
+};
+static uint32_t const g_stack_size[STACK_COUNT] = {
+    STACK_STARTUP_SZ,    STACK_MOTION_SZ,  STACK_PHYSICS_SZ,
+    STACK_OBSTACLE_SZ,   STACK_LINE_SZ,    STACK_TELEMETRY_SZ,
+    STACK_CONNECTION_SZ, STACK_BARCODE_SZ, STACK_SUPERVISOR_SZ,
 };
 
 LOCAL void stack_fill (void)
@@ -608,7 +664,7 @@ LOCAL void stack_fill (void)
 
     for (idx = 0U; idx < STACK_COUNT; idx++)
     {
-        for (byte = 0U; byte < STACK_SZ; byte++)
+        for (byte = 0U; byte < g_stack_size[idx]; byte++)
         {
             g_stack_base[idx][byte] = STACK_FILL_BYTE;
         }
@@ -620,7 +676,8 @@ LOCAL uint32_t stack_free (uint32_t idx)
 {
     uint32_t free_bytes = 0U;
 
-    while ((free_bytes < STACK_SZ) && (STACK_FILL_BYTE == g_stack_base[idx][free_bytes]))
+    while ((free_bytes < g_stack_size[idx]) &&
+           (STACK_FILL_BYTE == g_stack_base[idx][free_bytes]))
     {
         free_bytes++;
     }
@@ -650,11 +707,11 @@ LOCAL void stack_report (void)
         {
             thin |= (1UL << idx);
         }
-        /* Keep the smallest mark for telemetry (no scan per packet). */
-        if (free_bytes < g_stack_min_free)
+        /* Keep the smallest mark for telemetry (no scan per packet). The
+         * stored mark is at most 0xFFFF, so a smaller one fits 16 bits. */
+        if (free_bytes < (g_stack_mark & STACK_MARK_FREE_MASK))
         {
-            g_stack_min_free = (uint16_t)free_bytes;
-            g_stack_min_task = (uint8_t)idx;
+            g_stack_mark = (idx << STACK_MARK_TASK_SHIFT) | free_bytes;
         }
     }
     LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
@@ -670,9 +727,20 @@ LOCAL void stack_report (void)
     }
 }
 
+/* Task table. Core 0 (TP_PRC1) runs real-time control at priorities 1 to 5
+ * and owns the GPIO bank IRQ; core 1 (TP_PRC2) runs the network at 6. A task
+ * is pinned only for hardware ownership or a deadline. Telemetry and barcode
+ * touch no hardware, so they stay unpinned at 7: they fill idle time on
+ * either core, run on core 0 only when every control task waits, and reach
+ * the pinned tasks through SMP-safe queues (src/telemetry/queue.c).
+ * The kernel tick is 10 ms (CNF_TIMER_PERIOD in
+ * lib/mtk3smp-rp2040/config/config.h): every timeout and delay can wait up
+ * to one tick longer than asked. */
+
+/* Core 0, 1: hardware and ISR setup on the IRQ core before any task runs. */
 LOCAL T_CTSK g_ctsk_startup = {
     .itskpri = 1,
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_STARTUP_SZ,
     .task    = startup_task,
     .bufptr  = g_startup_stack,
 #if TK_SUPPORT_SMP
@@ -683,9 +751,10 @@ LOCAL T_CTSK g_ctsk_startup = {
 #endif
 };
 
+/* Core 0, 1 (highest): the 10 ms wheel loop owns the PWM and encoders. */
 LOCAL T_CTSK g_ctsk_motion = {
     .itskpri = 1,
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_MOTION_SZ,
     .task    = motion_task,
     .bufptr  = g_motion_stack,
 #if TK_SUPPORT_SMP
@@ -696,9 +765,10 @@ LOCAL T_CTSK g_ctsk_motion = {
 #endif
 };
 
+/* Core 0, 5 (lowest control): its I2C IMU waits never delay steering. */
 LOCAL T_CTSK g_ctsk_physics = {
     .itskpri = 5, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_PHYSICS_SZ,
     .task    = physics_task,
     .bufptr  = g_physics_stack,
 #if TK_SUPPORT_SMP
@@ -709,9 +779,10 @@ LOCAL T_CTSK g_ctsk_physics = {
 #endif
 };
 
+/* Core 0, 2: the 20 ms stop and fault pass preempts line, sonar and IMU. */
 LOCAL T_CTSK g_ctsk_supervisor = {
     .itskpri = 2, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_SUPERVISOR_SZ,
     .task    = supervisor_task,
     .bufptr  = g_supervisor_stack,
 #if TK_SUPPORT_SMP
@@ -722,9 +793,10 @@ LOCAL T_CTSK g_ctsk_supervisor = {
 #endif
 };
 
+/* Core 0, 4: 50 ms sonar pings and servo yield to the 5 ms line pass. */
 LOCAL T_CTSK g_ctsk_obstacle = {
     .itskpri = 4, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_OBSTACLE_SZ,
     .task    = obstacle_task,
     .bufptr  = g_obstacle_stack,
 #if TK_SUPPORT_SMP
@@ -735,9 +807,10 @@ LOCAL T_CTSK g_ctsk_obstacle = {
 #endif
 };
 
+/* Core 0, 3: the 5 ms line pass steers, below motion and the supervisor. */
 LOCAL T_CTSK g_ctsk_line = {
     .itskpri = 3, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_LINE_SZ,
     .task    = line_task,
     .bufptr  = g_line_stack,
 #if TK_SUPPORT_SMP
@@ -748,17 +821,19 @@ LOCAL T_CTSK g_ctsk_line = {
 #endif
 };
 
+/* Unpinned, 7: packs snapshots into frames; no hardware (see above). */
 LOCAL T_CTSK g_ctsk_telemetry = {
     .itskpri = 7, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_TELEMETRY_SZ,
     .task    = telemetry_task,
     .tskatr  = TA_HLNG | TA_RNG3 | TA_USERBUF,
     .bufptr  = g_telemetry_stack,
 };
 
+/* Core 1, 6: MQTT session; the CYW43 and lwIP poll runs on core 0, at 4. */
 LOCAL T_CTSK g_ctsk_connection = {
     .itskpri = 6, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_CONNECTION_SZ,
     .task    = connection_task,
     .bufptr  = g_connection_stack,
 #if TK_SUPPORT_SMP
@@ -769,9 +844,10 @@ LOCAL T_CTSK g_ctsk_connection = {
 #endif
 };
 
+/* Unpinned, 7: decodes the ISR edge ring; no hardware (see above). */
 LOCAL T_CTSK g_ctsk_barcode = {
     .itskpri = 7, /* NOLINT(readability-magic-numbers): AGENTS.md keeps task attributes literal */
-    .stksz   = STACK_SZ,
+    .stksz   = STACK_BARCODE_SZ,
     .task    = barcode_task,
     .tskatr  = TA_HLNG | TA_RNG3 | TA_USERBUF,
     .bufptr  = g_barcode_stack,
@@ -869,7 +945,7 @@ LOCAL bool create_supervisor (task_set_t * p_tasks)
         ccyc.cychdr = (FP)supervisor_cyclic_wakeup;
         ccyc.cyctim = (RELTIM)SUPERVISOR_PASS_MS;
         ccyc.cycphs = (RELTIM)SUPERVISOR_PASS_MS;
-        (void)tk_cre_cyc(&ccyc);
+        b_ok        = made("cyc(supervisor)", tk_cre_cyc(&ccyc));
     }
 
     return b_ok;
@@ -977,6 +1053,7 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
             ccyc.cyctim = (RELTIM)TELEMETRY_PASS_MS;
             ccyc.cycphs = (RELTIM)TELEMETRY_PASS_MS;
             g_telemetry_cyc_id = tk_cre_cyc(&ccyc);
+            (void)made("cyc(telemetry)", g_telemetry_cyc_id);
         }
     }
 
@@ -1059,6 +1136,10 @@ EXPORT INT usermain (void)
     task_set_t tasks = {0};
     T_CFLG     cflg  = {0};
 
+    /* The kernel boot table leaves GP8/GP9 (left motor) on I2C0 with
+     * pull-ups. Hold every bridge input low before anything else runs; the
+     * motion service repeats it when it takes the pins. */
+    pwm_boot_brake();
     log_init();
     stack_fill();
 

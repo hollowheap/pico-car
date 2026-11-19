@@ -68,13 +68,6 @@ typedef uint32_t packed_hump_t;
 #define HUMP_HEIGHT_MAX_MM    (126U)  /* Largest in-range height.            */
 #define HUMP_HEIGHT_OVERFLOW  (127U)  /* Code meaning 127 mm or more.        */
 
-/* Message size in a micro T-Kernel message buffer: 4-byte header plus the
- * payload rounded up to 4 bytes (HEADERSZ + ROUNDSZ(msgsz) in
- * kernel/tkernel/messagebuf.c). */
-#define PHYSICS_MBF_MSG_COST     (4U + 4U)
-#define PHYSICS_MBF_DEPTH        (4U)
-#define PHYSICS_MBF_BUFSZ        (PHYSICS_MBF_DEPTH * PHYSICS_MBF_MSG_COST)   /* 32 bytes */
-
 /* Unpacked fields, in engineering units. */
 typedef struct
 {

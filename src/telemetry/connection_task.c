@@ -24,6 +24,8 @@
 #define CONNECTION_POLL_MS      100U
 #define CONNECTION_LOOP_MS      10U
 #define CONNECTION_HEARTBEAT_MS 1000U
+#define CONNECTION_ROSC_RANDOMBIT (0x40060000U + 0x1CU) /* ROSC RANDOMBIT */
+#define CONNECTION_RUN_ID_BITS  16U
 #define CONNECTION_STATUS_MS    1000U
 #define CONNECTION_MS_PER_S     1000U
 #define CONNECTION_FRAME_MIN    2U
@@ -52,6 +54,8 @@ static void *                      gp_dispatch_context;
 static bool                        g_mqtt_ready;
 static bool                        g_transport_started;
 static bool                        g_open_failure_logged;
+static bool                        g_transport_closing;
+static uint32_t                    g_busy_drops;
 static uint32_t                    g_heartbeat_ms;
 static T_CYW43_UTK_STATUS          g_status;
 static ID                          g_conn_task_id;
@@ -78,6 +82,22 @@ wait_connection_cycle (void)
     }
 }
 
+/* Run ID from 16 reads of the ring oscillator's noisy bit. The kernel never
+   stops the ring oscillator, which runs from reset. */
+static uint16_t
+boot_run_id (void)
+{
+    uint32_t id  = 0u;
+    uint32_t bit = 0u;
+
+    for (bit = 0u; bit < CONNECTION_RUN_ID_BITS; bit++)
+    {
+        id = (id << 1u) | (in_w(CONNECTION_ROSC_RANDOMBIT) & 1u);
+    }
+    /* Cast is safe: 16 bits were read. */
+    return (uint16_t) id;
+}
+
 static void
 dispatch_command (const telemetry_cmd_t * cmd, void * context)
 {
@@ -92,17 +112,13 @@ dispatch_command (const telemetry_cmd_t * cmd, void * context)
 static void
 on_mqtt_command (const uint8_t * payload, uint16_t len, void * context)
 {
-    telemetry_cmd_t cmd;
-
     (void) context;
 
-    if (telemetry_cmd_parse(payload, len, &cmd) != TELEMETRY_CMD_OK)
-    {
-        return;
-    }
-    (void) telemetry_cmd_accept(&g_cmd_state, &cmd,
-                                (uint16_t) tcp_transport_now_ms(),
-                                dispatch_command, 0);
+    /* The clock and the units of the heartbeat uptime_s the command echoes.
+       A refusal is counted in g_cmd_state for the diag frame. */
+    (void) telemetry_cmd_receive(&g_cmd_state, payload, len,
+                                 tcp_transport_now_ms() / CONNECTION_MS_PER_S,
+                                 dispatch_command, 0);
 }
 
 static int
@@ -122,6 +138,7 @@ static int
 publish_frame (const uint8_t * frame, uint16_t len)
 {
     const char * topic = 0;
+    mqtt_result_t result = MQTT_OK;
 
     if ((frame == 0) || (len < CONNECTION_FRAME_MIN))
     {
@@ -156,14 +173,29 @@ publish_frame (const uint8_t * frame, uint16_t len)
     default:
         return -1;
     }
-    if (mqtt_client_publish(&g_mqtt, topic, &frame[1], (uint16_t) (len - 1u),
-                            tcp_transport_now_ms()) != MQTT_OK)
+    result = mqtt_client_publish(&g_mqtt, topic, &frame[1],
+                                 (uint16_t) (len - 1u),
+                                 tcp_transport_now_ms());
+    if (result == MQTT_ERR_BUSY)
     {
-        system_fault_set(FAULT_MQTT_NACK_BIT);
+        /* The frame is lost, but the broker never refused it. */
+        g_busy_drops++;
         return -1;
     }
-    system_fault_clear(FAULT_MQTT_NACK_BIT);
+    if (result != MQTT_OK)
+    {
+        system_fault_assign(FAULT_OWNER_LINK, FAULT_MQTT_NACK_BIT,
+                            FAULT_MQTT_NACK_BIT);
+        return -1;
+    }
+    system_fault_assign(FAULT_OWNER_LINK, FAULT_MQTT_NACK_BIT, 0u);
     return 0;
+}
+
+static uint32_t
+add_saturating (uint32_t a, uint32_t b)
+{
+    return (a > (UINT32_MAX - b)) ? UINT32_MAX : (a + b);
 }
 
 static void
@@ -187,8 +219,9 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     {
         rssi = CONNECTION_RSSI_MIN;
     }
-    drops = (uint32_t) telemetry_queue_drop_count() +
-            (uint32_t) telemetry_net_queue_drop_count();
+    drops = add_saturating((uint32_t) telemetry_queue_drop_count(),
+                           (uint32_t) telemetry_net_queue_drop_count());
+    drops = add_saturating(drops, g_busy_drops);
     if (drops > CONNECTION_DROPS_MAX)
     {
         drops = CONNECTION_DROPS_MAX;
@@ -200,12 +233,17 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     heartbeat.wifi_rssi    = (int8_t) rssi;
     heartbeat.reset_reason = platform_reset_reason ();
     heartbeat.link_state   = (uint8_t) TELEMETRY_LINK_STATE_MQTT;
+    heartbeat.run_id       = g_cmd_state.expected_run_id;
     if (telemetry_pack_heartbeat(payload, &heartbeat) == 0u)
     {
         return;
     }
-    (void) mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
-                               (uint16_t) sizeof(payload), now_ms);
+    if (mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
+                            (uint16_t) sizeof(payload), now_ms) ==
+        MQTT_ERR_BUSY)
+    {
+        g_busy_drops++;
+    }
 }
 
 static connection_state_t
@@ -260,7 +298,9 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     {
         return E_PAR;
     }
-    telemetry_cmd_state_init(&g_cmd_state, 0u);
+    /* A new run ID at each boot: a host must read it from the heartbeat,
+       so a command for an earlier boot is refused. */
+    telemetry_cmd_state_init(&g_cmd_state, boot_run_id());
     gp_dispatch         = dispatch;
     gp_dispatch_context = context;
     g_mqtt_ready        = true;
@@ -271,6 +311,16 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
 static void
 open_transport (void)
 {
+    if (g_transport_closing)
+    {
+        /* tcp_transport_close only asks: opening again before the owner task
+           aborts the old stream would keep it. */
+        if (tcp_transport_close_pending())
+        {
+            return;
+        }
+        g_transport_closing = false;
+    }
     if (g_transport_started)
     {
         return;
@@ -301,6 +351,12 @@ connection_run (void)
     ccyc.cycphs    = (RELTIM) CONNECTION_LOOP_MS;
     ccyc.assprc    = TP_PRC2;
     g_conn_cyc_id  = tk_cre_cyc(&ccyc);
+    if (g_conn_cyc_id < E_OK)
+    {
+        /* The loop still runs on its sleep timeout, but slower. */
+        LOG_ERROR(LOG_TASK_CONNECTION, LOG_MOD_NONE, "tk_cre_cyc failed, er=%d",
+                  (int) g_conn_cyc_id);
+    }
 
     for (;;)
     {
@@ -337,14 +393,31 @@ connection_run (void)
             }
             else if (next == CONNECTION_FAULT)
             {
-                tcp_transport_close();
+                /* One request per close: a repeat every poll would wrap the
+                   8-bit request count onto the acknowledged one. */
+                if (g_transport_started || !g_transport_closing)
+                {
+                    tcp_transport_close();
+                }
                 g_transport_started = false;
+                g_transport_closing = true;
             }
         }
 
         if (g_mqtt_ready)
         {
+            const bool was_up = (mqtt_client_state(&g_mqtt) !=
+                                 MQTT_STATE_DISCONNECTED);
+
             (void) mqtt_client_poll(&g_mqtt, now_ms);
+            if (was_up &&
+                (mqtt_client_state(&g_mqtt) == MQTT_STATE_DISCONNECTED))
+            {
+                /* The next CONNECT must go out on a new stream. */
+                tcp_transport_close();
+                g_transport_started = false;
+                g_transport_closing = true;
+            }
             if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
             {
                 last_mqtt_up_ms = now_ms;
@@ -352,7 +425,7 @@ connection_run (void)
                 publish_heartbeat(now_ms, &g_status);
             }
         }
-        system_fault_assign(FAULT_WIFI_DISCONN_BIT,
+        system_fault_assign(FAULT_OWNER_LINK, FAULT_WIFI_DISCONN_BIT,
                             ((uint32_t) (now_ms - last_mqtt_up_ms) >=
                              CONNECTION_LINK_DOWN_MS)
                                 ? FAULT_WIFI_DISCONN_BIT
@@ -366,4 +439,15 @@ connection_state_t
 connection_state (void)
 {
     return g_state;
+}
+
+void
+connection_cmd_state (telemetry_cmd_state_t * p_out)
+{
+    /* No lock: only this task writes the state, each count is one byte and
+       the id one aligned halfword, so no field is read torn. */
+    if (p_out != 0)
+    {
+        *p_out = g_cmd_state;
+    }
 }

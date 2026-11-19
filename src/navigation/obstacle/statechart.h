@@ -52,6 +52,8 @@ typedef struct
     uint8_t                last_class;
     uint16_t               last_dist;
     uint8_t                seq;
+    uint32_t               ping;      /* last face ping: obstacle_pack_ping() */
+    int16_t                look_deci; /* servo angle of the next ping        */
     uint8_t                steer;
     uint8_t                steer_seq;
     obstacle_counters_t    counts;
@@ -61,10 +63,11 @@ typedef struct
     uint32_t               bypass_mm;
     uint32_t               scan_progress_ms;
     uint32_t               hug_limit_mm;
-    uint32_t               odo_mm;       /* wheel travel at the latest ping (P2)        */
-    uint32_t               anchor_odo_mm; /* travel at the last VALID reading (P2)       */
+    uint32_t               odo_mm;       /* net forward travel at the latest ping (P2)  */
+    uint32_t               anchor_odo_mm; /* net travel at the last VALID reading (P2)   */
     uint16_t               anchor_dist;  /* the last VALID reading under 600 mm (P2)    */
     bool                   b_anchor;
+    bool                   b_odo_fresh;  /* odo_mm comes from fresh feedback (P2)  */
     bool                   b_inconsistent; /* P2 */
     uint8_t                boot_pings;   /* P3: pings seen since boot, saturates        */
     uint8_t                boot_hits;
@@ -89,7 +92,10 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
                                uint16_t dist_mm, uint32_t now_ms,
                                obstacle_statechart_out_t * p_out);
 /* Tell the statechart the wheel travel before a ping, for the P2 check. */
-void obstacle_statechart_set_odometer (obstacle_statechart_t * p_fsm, uint32_t odo_mm);
+void obstacle_statechart_set_odometer (obstacle_statechart_t * p_fsm, uint32_t odo_mm,
+                                       bool b_fresh);
+/* Tell the statechart the servo angle of the next ping. */
+void obstacle_statechart_set_look (obstacle_statechart_t * p_fsm, int16_t look_deci);
 void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
                                uint32_t odo_mm,
                                obstacle_statechart_out_t * p_out);
@@ -98,10 +104,20 @@ int16_t  obstacle_statechart_servo_deci (obstacle_statechart_t const * p_fsm);
 int16_t  obstacle_statechart_body_deci (obstacle_statechart_t const * p_fsm);
 
 /* A ping taken while the body turns: only the health and collision checks use
- * it. */
+ * it. It changes no reading in the status or the face ping word, so the face
+ * follow never takes it for a ping at its look angle. */
 void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
                                      uint16_t dist_mm, uint32_t now_ms,
                                      obstacle_statechart_out_t * p_out);
+/* A ping that feeds only the echo health checks (stuck echo, dead sonar,
+ * noise). It never reaches the collision latch or any state action. It
+ * updates the reading in the status; only a ping straight ahead (b_ahead)
+ * goes into the forward ping word, because a requested ping has its own
+ * reply word. An echo fault stops the car once and ends when it no longer
+ * holds; the operator stop stays latched. */
+void obstacle_statechart_ping_health (obstacle_statechart_t * p_fsm, uint8_t cls,
+                                      uint16_t dist_mm, bool b_ahead, uint32_t now_ms,
+                                      obstacle_statechart_out_t * p_out);
 uint32_t obstacle_statechart_status (obstacle_statechart_t const * p_fsm);
 uint8_t  obstacle_statechart_flags (obstacle_statechart_t const * p_fsm);
 

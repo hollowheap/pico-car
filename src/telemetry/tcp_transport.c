@@ -1,5 +1,5 @@
 #include <string.h>
-#include <tm/tmonitor.h>
+#include <tk/smp.h>
 
 #include "lwip/dns.h"
 #include "lwip/ip_addr.h"
@@ -11,6 +11,7 @@
 #include "cyw43_utk.h"
 #include "telemetry/tcp_transport.h"
 #include "platform/log.h"
+#include "stream_loss.h"
 
 #define TCP_TRANSPORT_RETRY_MS          1000u
 #define TCP_TRANSPORT_CONNECT_TIMEOUT_MS 10000u
@@ -38,16 +39,27 @@ static struct tcp_pcb *        gp_pcb;
 static ip_addr_t               g_resolved;
 static char                    g_host[TCP_TRANSPORT_HOST_MAX];
 static uint16_t                g_port;
+/* One writer each: g_desired and g_close_req belong to the connection task
+ * (open, close); g_resolving, g_state and g_close_ack belong to the lwIP
+ * owner task (poll and the lwIP callbacks), so a close can never be
+ * overwritten by a poll in flight. */
 static volatile bool           g_desired;
+static volatile uint8_t        g_close_req;
+static volatile uint8_t        g_close_ack;
 static volatile bool           g_resolving;
 static volatile tcp_transport_state_t g_state;
 static uint32_t                g_retry_at_ms;
+/* Streams lost so far; tcp_transport_recv reports each one as a -1. */
+static volatile uint8_t        g_lost_streams;
+static uint8_t                 g_seen_lost;
+/* Core 0 only: bytes of the client reached the current stream. */
+static bool                    g_stream_tx;
 static uint32_t                g_connect_started_ms;
 
 static void
 memory_barrier (void)
 {
-    __asm__ volatile ("dmb" ::: "memory");
+    mp_memory_barrir();
 }
 
 static uint16_t
@@ -117,19 +129,32 @@ detach_callbacks (struct tcp_pcb * pcb)
     tcp_sent(pcb, 0);
 }
 
+/* One snapshot of head decides the count and bounds the reset, so a CONNECT
+   pushed meanwhile stays queued for the next stream. */
+static void
+end_stream (void)
+{
+    const uint16_t head = g_tx.head;
+
+    g_lost_streams = stream_loss_note(g_lost_streams, g_stream_tx,
+                                      (uint16_t) (head - g_tx.tail));
+    g_stream_tx = false;
+    g_tx.tail = head;
+}
+
 static void
 fail_attempt (uint32_t now_ms)
 {
+    end_stream();
     g_resolving = false;
     g_state = TCP_TRANSPORT_FAILED;
     LOG_WARN(LOG_TASK_CONNECTION, LOG_MOD_TCP, "attempt failed, state=%d",
              (int) g_state);
     g_retry_at_ms = now_ms + TCP_TRANSPORT_RETRY_MS;
-    ring_reset(&g_tx);
 }
 
 static void
-close_abort (void)
+abort_pcb (void)
 {
     struct tcp_pcb * pcb = gp_pcb;
 
@@ -140,7 +165,16 @@ close_abort (void)
     gp_pcb = 0;
     detach_callbacks(pcb);
     tcp_abort(pcb);
-    ring_reset(&g_tx);
+}
+
+static void
+close_abort (void)
+{
+    if (gp_pcb != 0)
+    {
+        abort_pcb();
+        end_stream();
+    }
 }
 
 static void
@@ -158,7 +192,6 @@ close_graceful (void)
     {
         tcp_abort(pcb);
     }
-    ring_reset(&g_tx);
 }
 
 static void drain_tx (void);
@@ -199,7 +232,7 @@ on_recv (void * arg, struct tcp_pcb * pcb, struct pbuf * p, err_t err)
     if (err != ERR_OK)
     {
         (void) pbuf_free(p);
-        close_abort();
+        abort_pcb();
         fail_attempt((uint32_t) sys_now());
         return ERR_ABRT;
     }
@@ -360,6 +393,7 @@ drain_tx (void)
         memory_barrier();
         g_tx.tail = (uint16_t) (g_tx.tail + chunk);
         wrote = true;
+        g_stream_tx = true;
     }
     if (wrote)
     {
@@ -385,9 +419,8 @@ tcp_transport_open (const char * host, uint16_t port)
     g_port = port;
     ring_reset(&g_rx);
     ring_reset(&g_tx);
+    g_seen_lost = g_lost_streams;
     g_retry_at_ms = 0u;
-    g_resolving = false;
-    g_state = TCP_TRANSPORT_WAITING;
     memory_barrier();
     g_desired = true;
     return true;
@@ -396,9 +429,21 @@ tcp_transport_open (const char * host, uint16_t port)
 void
 tcp_transport_close (void)
 {
+    /* The next poll aborts the connection and answers with the request
+       count; the request is visible before the flag that the poll tests. */
+    g_close_req++;
+    memory_barrier();
     g_desired = false;
-    g_resolving = false;
-    g_state = TCP_TRANSPORT_CLOSED;
+}
+
+bool
+tcp_transport_close_pending (void)
+{
+    const bool pending = (g_close_ack != g_close_req);
+
+    /* What the owner did before it answered is visible after this read. */
+    memory_barrier();
+    return pending;
 }
 
 tcp_transport_state_t
@@ -439,9 +484,16 @@ tcp_transport_recv (void * context, uint8_t * data, uint16_t len)
     {
         return -1;
     }
-    if ((g_state == TCP_TRANSPORT_FAILED) ||
-        (g_state == TCP_TRANSPORT_CLOSED))
+    if (!g_desired)
     {
+        ring_reset(&g_rx);
+        return -1;
+    }
+    if (g_seen_lost != g_lost_streams)
+    {
+        /* The stream changed since the last read: the client's CONNECT or
+           session is on a dead one, even if a new attempt already runs. */
+        g_seen_lost = g_lost_streams;
         ring_reset(&g_rx);
         return -1;
     }
@@ -457,10 +509,15 @@ tcp_transport_poll (void)
     if (!g_desired)
     {
         close_abort();
-        if (g_state != TCP_TRANSPORT_CLOSED)
+        g_resolving = false;
+        /* IDLE until the first open; CLOSED after a close. */
+        if (g_state != TCP_TRANSPORT_IDLE)
         {
-            g_state = TCP_TRANSPORT_IDLE;
+            g_state = TCP_TRANSPORT_CLOSED;
         }
+        /* After the abort, so a reopen never meets the old stream. */
+        memory_barrier();
+        g_close_ack = g_close_req;
         return;
     }
 
@@ -479,7 +536,7 @@ tcp_transport_poll (void)
         ((uint32_t) (now_ms - g_connect_started_ms) >=
          TCP_TRANSPORT_CONNECT_TIMEOUT_MS))
     {
-        close_abort();
+        abort_pcb();
         fail_attempt(now_ms);
         return;
     }

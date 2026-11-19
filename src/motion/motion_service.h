@@ -6,6 +6,7 @@
 
 #include <tk/tkernel.h>
 #include "controller.h"
+#include "platform/static_assert.h"
 #include "motion_request.h"
 #include "motion_inbox.h"
 
@@ -18,12 +19,17 @@ typedef struct
 typedef struct
 {
     controller_status_t control;
-    ER                      init_error;
-    bool                    ready;
-    bool                    stop_requested;
     uint32_t
         hold_mask; /* Independent normal sensor holds; not emergency stop. */
+    ER   init_error;
+    bool ready;
+    bool stop_requested;
 } motion_service_status_t;
+
+/* Copied across tasks under a spinlock: widest fields first, no padding but
+ * the tail. */
+STATIC_ASSERT (sizeof(motion_service_status_t) == sizeof(controller_status_t) + 16U,
+               "motion_service_status_t size");
 
 /* Lifecycle: call ONCE from core-0 startup task before launching producers
  * or status readers. Reserves encoder bank IRQ and motor PWM slices4/5.
@@ -60,6 +66,8 @@ ER motion_service_request_stop (
 ER motion_service_read_status (motion_service_status_t * p_status);
 /* Renew the supervisor run permit (D160). See motion_renew_permit. */
 ER motion_service_renew_permit (uint32_t lease_ms);
+/* Whole ms since the last renewal, rounded up; UINT32_MAX before the first. */
+uint32_t motion_service_permit_age_ms (void);
 
 #endif /* MOTION_SERVICE_H */
 

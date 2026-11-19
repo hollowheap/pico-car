@@ -135,11 +135,6 @@ typedef struct
     follow_bump_t bump;
 } nav_state_t;
 
-/* Last good odometer reading; only the Buddy 5 task touches it. */
-typedef struct
-{
-    uint32_t last_mm;
-} nav_odo_t;
 
 static nav_state_t g_nav = {
     .b_enabled          = false,
@@ -168,7 +163,8 @@ static nav_state_t g_nav = {
     .wheel_um           = {0, 0},
     .bump_ms            = 0U,
 };
-static nav_odo_t g_odo = {0U};
+/* Only the Buddy 5 task touches it. */
+static nav_travel_t g_travel = {0U, 0U, 0, false};
 
 static uint32_t now_ms (void);
 static int16_t  clamp_i16 (int32_t value);
@@ -202,8 +198,10 @@ static int64_t true_wheel_um (motion_feedback_t const * p_feedback,
 static void    report_fault (motion_status_t const * p_status,
                              motion_feedback_t const * p_feedback);
 static void    trace (uint32_t status, bool b_left, bool b_right, uint32_t now);
+#if !PICO_CAR_PILOT
 static ER      nav_stop (void);
-static ER      nav_distance_mm (uint32_t * p_distance_mm);
+#endif
+static ER      nav_distance_mm (obstacle_travel_t * p_travel);
 
 /*!
  * @brief Start Buddy 5 with the motion links, then RESET and START it.
@@ -217,7 +215,14 @@ static ER      nav_distance_mm (uint32_t * p_distance_mm);
  */
 ER obstacle_nav_init (void)
 {
+#if PICO_CAR_PILOT
+    /* The pilot stops the car on a sonar fault and drives on after RESET.
+     * A motion hold set here would outlive the RESET, because only the old
+     * handover clears it. */
+    obstacle_links_t const links  = {0, NULL, nav_distance_mm};
+#else
     obstacle_links_t const links  = {0, nav_stop, nav_distance_mm};
+#endif
     ER const               result = obstacle_init(&links);
 
     log_rec(OBSTACLE_LOG_BOOT, 0U, 0U, 0U, (int32_t)result, 0, 0);
@@ -256,7 +261,7 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
     if (g_nav.b_enabled)
     {
         now = now_ms();
-        while (E_OK == obstacle_get_event(&evt, TMO_POL))
+        while (E_OK == obstacle_comms_get_event(&evt, TMO_POL))
         {
             handle_event(evt, now);
         }
@@ -424,7 +429,8 @@ static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
         follow_out_t out;
 
         hold_car(false);
-        if (nav_core_follow_input(&g_nav.core, status, g_nav.wheel_um, b_line_seen, &in))
+        if (nav_core_follow_input(&g_nav.core, obstacle_comms_ping(), obstacle_comms_look(),
+                                  g_nav.wheel_um, b_line_seen, &in))
         {
             LOG_NOW("INFO", "line:nav", "IR clear of the line: the next line "
                             "contact ends the bypass\n");
@@ -830,7 +836,7 @@ static void report_state (uint32_t status)
         {
             follow_in_t in;
 
-            nav_core_follow_begin(&g_nav.core, status, g_nav.wheel_um, &in);
+            nav_core_follow_begin(&g_nav.core, obstacle_comms_ping(), g_nav.wheel_um, &in);
             /* The reading that stopped the car is the first face point. */
             follow_start(&g_nav.follow, OBSTACLE_SIDE_LEFT == g_nav.side, &in,
                          (int32_t)g_nav.hit_mm + (int32_t)OBSTACLE_SONAR_FWD_MM);
@@ -1075,6 +1081,16 @@ static void handle_event (uint32_t evt, uint32_t now)
             keep_plan(angle, b_wall);
             post(OBSTACLE_CMD_ACCEPT, g_nav.req_id);
         }
+        else if (g_nav.req_id == req_id)
+        {
+            /* No way round: answer at once, so Buddy 5 stops with the
+             * plan's cause instead of a PLAN timeout and a rescan. */
+            post(OBSTACLE_CMD_REJECT, g_nav.req_id);
+        }
+        else
+        {
+            /* A result for an older request. */
+        }
     }
     else
     {
@@ -1103,7 +1119,8 @@ static void look_for_line (bool b_line_seen, uint32_t now)
  * @brief The motion service has latched a fault: print and log, for each
  *        wheel, the last sample it judged, so the failed check can be seen
  *        (FEEDBACK: speed_valid 0 means an invalid encoder step or a sample
- *        over 100 ms old; NO_EDGES: duty set but no new edges for 2 s).
+ *        over 100 ms old; code 5 NO_EDGES is no longer raised by the motion
+ *        service, the pilot judges a wheel without travel).
  *
  * @param[in] p_status Motion service status at the fault.
  */
@@ -1144,7 +1161,8 @@ static void report_fault (motion_status_t const * p_status,
  *
  * NOTE: States: 0 IDLE, 1 RUNNING, 2 REVERSING, 3 STOPPED, 4 FAULT.
  * Faults: 0 NONE, 1 COMMAND, 2 EXPIRED, 3 FEEDBACK, 4 GAP, 5 NO_EDGES,
- * 6 OUTPUT. STOPPED and FAULT both need a reboot.
+ * 6 OUTPUT (5 is kept for the wire; it is no longer raised). STOPPED and
+ * FAULT both need a reboot.
  */
 static void update_motion (void)
 {
@@ -1242,51 +1260,37 @@ static void trace (uint32_t status, bool b_left, bool b_right, uint32_t now)
  *
  * @return The result of motion_set_hold().
  */
+#if !PICO_CAR_PILOT
 static ER nav_stop (void)
 {
     return (motion_set_hold(MOTION_HOLD_OBSTACLE, true));
 }
+#endif
 
 /*!
- * @brief Distance link for Buddy 5: average forward travel of the wheels.
+ * @brief Travel link for Buddy 5: the mean wheel travel, forward and
+ *        backward apart.
  *
- * NOTE: Before the first good sample, and whenever a sample is not valid,
- * the last good reading is returned, so Buddy 5 never mixes this with its
- * own time-based estimate.
+ * @param[out] p_travel Travel since boot; unchanged without fresh feedback.
  *
- * @param[out] p_distance_mm Distance travelled since boot, mm.
- *
- * @return E_OK.
+ * @return E_OK with fresh feedback, else E_OBJ.
  */
-static ER nav_distance_mm (uint32_t * p_distance_mm)
+static ER nav_distance_mm (obstacle_travel_t * p_travel)
 {
     motion_feedback_t feedback;
+    ER                result = E_OBJ;
 
     if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
     {
-        int64_t const sum_um =
-            true_wheel_um(&feedback, WHEEL_LEFT) +
-            true_wheel_um(&feedback, WHEEL_RIGHT);
-        int64_t const mean_mm = (sum_um / 2) / UM_PER_MM;
-
-        if (mean_mm <= 0)
-        {
-            g_odo.last_mm = 0U;
-        }
-        else if (mean_mm >= (int64_t)UINT32_MAX)
-        {
-            g_odo.last_mm = UINT32_MAX;
-        }
-        else
-        {
-            /* Cast is safe: mean_mm is 1 .. UINT32_MAX - 1 here. */
-            g_odo.last_mm = (uint32_t)mean_mm;
-        }
+        nav_core_travel_update(&g_travel, (true_wheel_um(&feedback, WHEEL_LEFT) +
+                                           true_wheel_um(&feedback, WHEEL_RIGHT)) /
+                                              (int64_t)WHEELS);
+        p_travel->fwd_mm  = g_travel.fwd_mm;
+        p_travel->back_mm = g_travel.back_mm;
+        result            = E_OK;
     }
 
-    *p_distance_mm = g_odo.last_mm;
-
-    return (E_OK);
+    return (result);
 }
 
 /*!

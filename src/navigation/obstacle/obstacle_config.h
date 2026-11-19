@@ -19,6 +19,8 @@
 
 #include <stdint.h>
 
+#include "platform/chassis.h"
+
 /* C99 has no _Static_assert, so a negative array size stops the build when
  * a condition is false. NOTE: This macro cannot be a function because it
  * must act at compile time (BARR-C 6.3.a). */
@@ -247,13 +249,6 @@
 /* [Measured] Widest point of the car is 126 mm (outside of wheel to
  * outside of wheel), so half is 63 mm. */
 #define OBSTACLE_CAR_HALF_W_MM (63U)
-
-/* [Measured] Wheel diameter 65 mm. NOTE: The motion service already
- * uses 204 204 um per wheel turn (pi x 65 mm, main.c), so the odometer
- * needs no change. */
-
-/* [Measured] Wheel centre to wheel centre: 107 mm. */
-#define OBSTACLE_WHEEL_TRACK_MM (107U)
 
 /* FILL: servo shaft to the front bumper, and to the tail of the car. */
 #define OBSTACLE_SERVO_TO_FRONT_MM (30U)

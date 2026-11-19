@@ -35,7 +35,7 @@ static uint32_t be32 (const uint8_t * p)
 static void setup (void)
 {
     mbf_fake_reset();
-    g_mbf_telem_id = 0;
+    telemetry_queue_test_reset();
     CHECK(telemetry_queue_create() == E_OK);
 }
 

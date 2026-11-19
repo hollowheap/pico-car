@@ -8,7 +8,9 @@
  *
  * Rules:
  *   - valid needs a sample, both wheel speeds valid and both odometries
- *     valid, and a timestamp that is not in the future.
+ *     valid, no invalid sample since the previous call (the reading's
+ *     invalid_samples count did not change), and a timestamp that is not in
+ *     the future.
  *   - ds is the change in mean wheel displacement since the previous call,
  *     so it is exact however often the motion service updates. It is zero on the first
  *     call and after odometry was invalid.
@@ -39,12 +41,15 @@ typedef struct
     int64_t  displacement_um[PHYSICS_WHEEL_COUNT]; /* Signed, since the motion service's sampler init.  */
     bool     speed_valid[PHYSICS_WHEEL_COUNT];
     bool     odometry_valid[PHYSICS_WHEEL_COUNT];
+    uint8_t  invalid_samples[PHYSICS_WHEEL_COUNT]; /* Wrapping count of invalid samples. */
 } motion_reading_t;
 
 typedef struct
 {
     float    accel_alpha;        /* EMA weight of a new dv/dt value.       */
     bool     have_disp;
+    bool     have_invalid;
+    uint8_t  prev_invalid[PHYSICS_WHEEL_COUNT];
     int64_t  prev_disp_um[PHYSICS_WHEEL_COUNT];
     bool     have_speed;
     uint32_t prev_ts_us;

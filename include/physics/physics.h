@@ -47,10 +47,14 @@ typedef struct
     bool     hump_active;    /* A hump is in progress.                  */
     bool     finished;       /* The last hump finished.                 */
     bool     height_valid;   /* hump_peak_mm is trustworthy.            */
+    bool     attitude_unknown; /* No rest reference: at boot, after a new run
+                                  or after an IMU loss. Attitude fields hold
+                                  the last known values; do not act on them
+                                  while set. */
 } physics_status_t;
 
-/* 8 + 10 + 8 + 4 + 6 = 36 bytes of fields. */
-STATIC_ASSERT (sizeof(physics_status_t) == 36U, "physics_status_t size");
+/* 8 + 10 + 8 + 4 + 7 = 37 bytes of fields, padded to 40. */
+STATIC_ASSERT (sizeof(physics_status_t) == 40U, "physics_status_t size");
 
 /* Set up the task's message buffers and cyclic handler. The composition
  * root creates the task named by task_id and calls physics_run() from it,
@@ -70,7 +74,7 @@ ER physics_snapshot (physics_status_t * p_status);
 void physics_request_new_run (void);
 
 /* The supervisor tells physics that the wheels turn on target with low duty.
- * It raises the attitude state CANDIDATE and never LIFTED (D161). */
+ * It raises the attitude state CANDIDATE and never LIFTED. */
 void physics_set_wheels_free (bool b_free);
 
 /* Clear the latched I2C fault on the next cycle. */

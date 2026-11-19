@@ -29,6 +29,39 @@
 #include "hump_msg.h"
 #include "attitude.h"
 #include "imu_motion.h"
+#include "lsm303.h"
+#include "platform/chassis.h"
+
+/* Accelerometer reads failed this many cycles in a row (0.5 s): the IMU is
+ * lost. Unmeasured; a shorter burst rides through on the carried travel, as
+ * a 10-cycle gap in a hump does in the host tests. */
+#define PIPELINE_LOST_CYCLES (25U)
+
+/* The stale-motion fault bit stays set this many clean cycles (0.2 s, one
+ * status frame period) after the last stale one. Every change of the fault
+ * bits is a telemetry event, and a marginal encoder would flip the bit each
+ * cycle. */
+#define PIPELINE_STALE_HOLD_CYCLES (10U)
+
+/* Hump validity. The car drives over test humps up to 30 mm high; past a
+ * pitch or height limit the reading is not a valid hump, the hump flag clears
+ * at once and the lift and overturn checks and the line follower act as on
+ * level ground. All values below are guesses, not measured on the car. */
+#define PIPELINE_HUMP_MAX_MM           (30)
+#define PIPELINE_HUMP_HEIGHT_BUDGET_MM (10)
+/* Margin over the peak pitch of the tallest valid hump, asin (30 mm / axle to
+ * caster) = 14.5 deg: the rest calibration may be off by up to the 2 deg
+ * spread it accepts and vibration adds about half a degree. 14.5 + 2.5 = 17
+ * deg stays 3 deg under the 20 deg tilt envelope of the lift check, so a
+ * lift still reads as a lift. */
+#define PIPELINE_HUMP_PITCH_MARGIN_DEG (2.5f)
+/* The test hump rises over 100 mm and falls over 100 mm. The lift mask ends
+ * after 1.5 times the span from the first wheel on the ramp to the last
+ * wheel off it: 2 x 100 mm plus the axle to caster distance, 480 mm in all.
+ * A 30 mm hump on the same 0.2 slope spans 420 mm and stays inside it. */
+#define PIPELINE_HUMP_RAMP_MM          (100)
+#define PIPELINE_HUMP_MASK_MM \
+    ((3 * ((2 * PIPELINE_HUMP_RAMP_MM) + CHASSIS_AXLE_TO_CASTER_MM)) / 2)
 
 /* Motion data from Buddy 2, already converted to SI units. */
 typedef struct
@@ -48,7 +81,10 @@ typedef struct
     hump_ctx_t        hump;
     imu_motion_ctx_t  motion;
     attitude_ctx_t    attitude;
-    bool              wheels_free;   /* Second lift cue, set by the owner (D161). */
+    float             hump_pitch_max_deg; /* Pitch limit of a valid hump. */
+    float             hump_travel_m; /* Travel since the hump began. */
+    bool              hump_rejected; /* The hump in progress is not valid. */
+    bool              wheels_free;   /* Second lift cue, set by the owner. */
     hump_run_t          run;
     uint32_t          telem_every;
     uint32_t          cycle;
@@ -61,6 +97,9 @@ typedef struct
     float             carry_ds_m;
     float             carry_dt_s;
     bool              carry_invalid;
+    uint16_t          failed_cycles; /* Cycles in a row without accel data. */
+    uint8_t           stale_hold;    /* Clean cycles left to hold the stale
+                                        fault. */
 } pipeline_t;
 
 typedef struct
@@ -69,9 +108,20 @@ typedef struct
     bool                to_nav;
     bool                to_telem;
     bool                sensors_ok;  /* False when accel read failed.      */
+    bool                imu_lost;    /* PIPELINE_LOST_CYCLES failed reads:
+                                        attitude is the not-valid default. */
+    bool                imu_lost_started; /* First cycle of a loss. */
+    bool                imu_recovered;    /* First good read after a loss. */
+    bool                calibrated;      /* Rest reference set; failed reads
+                                            keep it. */
+    bool                attitude_unknown; /* No rest reference: at boot, after
+                                             a new run or after an IMU loss. */
     hump_output_t       hump;        /* Valid only when sensors_ok.        */
     imu_motion_output_t motion;      /* Valid only when sensors_ok.        */
-    attitude_output_t   attitude;    /* Valid only when sensors_ok.        */
+    attitude_output_t   attitude;    /* Valid when sensors_ok and not
+                                        attitude_unknown. */
+    bool                hump_rejected; /* The hump was judged not valid on
+                                          this cycle; set once per hump.    */
 } pipeline_step_t;
 
 /* telem_every >= 1. Returns false for a null pointer or a bad config. */
@@ -94,6 +144,26 @@ bool pipeline_step (pipeline_t * p_pipe,
 
 /* Start a new run at rest: recalibrate and reset the run peak. */
 void pipeline_new_run (pipeline_t * p_pipe);
+
+/* One cycle's reads: the accelerometer, then the magnetometer when b_mag_due.
+ * attempts is the configured attempts per transaction, capped at
+ * RETRY_ATTEMPTS after a failed cycle. Sets *p_acc_ok and *p_mag_ok; leaves
+ * both false when the sensor is not ready. */
+void pipeline_read (const pipeline_t * p_pipe, lsm303_t * p_imu,
+                    uint8_t attempts, bool b_mag_due,
+                    lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
+                    bool * p_acc_ok, bool * p_mag_ok);
+
+/* The configuration readback for this cycle, when it is due: every every
+ * cycles, on a ready sensor. Returns true when the configuration does not
+ * match, so the sensor must be initialised again. */
+bool pipeline_config_readback (const pipeline_t * p_pipe, lsm303_t * p_imu,
+                               uint32_t cycle, uint32_t every,
+                               uint8_t attempts);
+
+/* True when this cycle's attitude fields are current: the sensors were read
+ * and a rest reference is set. */
+bool pipeline_attitude_known (const pipeline_step_t * p_step);
 
 #endif /* PHYSICS_PIPELINE_H */
 

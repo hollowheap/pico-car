@@ -277,7 +277,38 @@ Base unit: 4px.
 - Scan plot: a half disc, rings every 100 mm. A filled dot is an echo, a ring on
   the edge is open space, a cross on the edge is a bad echo.
 - Course trace: dead-reckoned from the odometer and the heading, north up. It
-  says that it drifts and that it is not a map.
+  says that it drifts and that it is not a map. A reverse draws backward along
+  the heading. The odometer falls in a reverse, so it can name two places: the
+  box is drawn at the newest trail point with its stamp's timestamp (status
+  frames of one bridge burst can share a timestamp), and a mark at the trail
+  segment nearest its packet time in trail order that spans its odometer. An event older than
+  the trail lands on the first segment that spans its odometer, the first pass;
+  a mark whose odometer no segment spans is not drawn. The
+  obstacle a hug found is a box ahead of the car's pose where the hug first
+  read the face, on the heading of the contact; a side with no measured size is
+  dashed. The pose is the newest status point at or before the obstacle frame
+  (up to 200 ms old). There is no box until the face is read. It stays after
+  the hug ends, and is dropped, not moved to another pass, when its stamp's
+  point leaves the capped trail. The trail and the box restart on a boot event,
+  an odometer jump up of more than 5000 mm or drop of more than 500 mm (the
+  longest reverse is the 250 mm hug back-off), and a heartbeat with a new
+  `run_id` or a smaller `uptime_s` (not when an odometer restart since the last
+  heartbeat already began the new trail); the events stay unless the boot event
+  came.
+  A restart sets the trail start time, and no mark is drawn for an event before
+  it, so the events of the run before do not land on the new trail by odometer.
+  Known limits: new-run status frames whose odometer drops 500 mm or less
+  before the next heartbeat join the old trail until the heartbeat restart
+  wipes them. The cut is by packet time with `<`, so an old-run event with the
+  same millisecond as the restart packet keeps its mark, and a new-run event
+  that arrives before the packet that detects the restart loses it. The
+  heartbeat skip checks when an odometer restart happened, not why: any restart
+  after the previous heartbeat (a drop over 500 mm that is not a reboot, a jump
+  glitch, or a second reboot) hides a real reboot the heartbeat would have
+  caught, for longer than 1 s when heartbeats are lost, and the old-run points
+  stay on the trail until the next restart. The longest reverse is 250 mm, so a
+  normal reverse never triggers it. If both the IDLE and the CONTACT frame
+  between two hugs are lost, they merge into one box.
 - SVG text uses the page font and stays at or above 12 px after scaling.
 
 ### Banner

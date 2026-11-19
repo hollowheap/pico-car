@@ -4,9 +4,9 @@ import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-na
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
 import { scanPoints } from '../../lib/scan';
-import { bitLabels, enumLabel, obstacleCauseLabel, obstacleFaultBits, obstacleStopReason } from '../../lib/schema';
+import { bitLabels, enumLabel } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
-import { formatTime } from './format';
+import { formatTime, sizeMm } from './format';
 import { Panel, PanelFill, useDense } from './Panel';
 import { StatusPill } from './StatusPill';
 import { ScanPlot } from './ScanPlot';
@@ -22,23 +22,21 @@ type Props = {
 const BEAM_HALF_DEG = 9.5;
 const DETECT_MM = 250;
 const DECI = 10;
-const PLAN_WORDS = ['ok', 'clear', 'no safe path', 'failed'];
 
 /** Whole degrees without a minus sign on zero. */
 const degrees = (deci: number) => `${Math.round(deci / DECI) || 0}°`;
 
 /**
- * Sonar state, the latest scan as a polar plot, and the plan card (side, width,
- * room needed, start angle). The scan keeps showing after the car drives on.
+ * Sonar state, the latest scan as a polar plot, and the hug card (state, side, face
+ * distance, width, breadth). The scan keeps showing after the car drives on.
  */
 export function ObstaclePanel({ obstacle, profile, status, style }: Props) {
   const theme = useTheme();
   const o = obstacle?.values;
   const servoDeci = o?.servo_deci;
   const bodyDeci = o?.body_deci;
-  const planStatus = o?.plan_status ?? 0;
-  const faults = o === undefined ? [] : bitLabels('obstacleFaults', obstacleFaultBits(o.faults));
-  const cause = o === undefined ? '--' : obstacleCauseLabel(o.cause, obstacleStopReason(o.faults));
+  const faults = o === undefined ? [] : bitLabels('obstacleFaults', o.faults);
+  const cause = o === undefined ? '--' : enumLabel('obstacleCause', o.cause);
   const stopped = o !== undefined && o.state === 0 && o.cause !== 0;
   const dense = useDense();
   const fill = useContext(PanelFill);
@@ -79,15 +77,15 @@ export function ObstaclePanel({ obstacle, profile, status, style }: Props) {
         {servoDeci === undefined ? '--' : degrees(servoDeci)} · body {bodyDeci === undefined ? '--' : degrees(bodyDeci)}
       </Text>
       <View style={[styles.plan, { borderColor: theme.colors.border }]}>
-        <Text style={[theme.typography.label, { color: theme.colors.muted }]}>PLAN</Text>
+        <Text style={[theme.typography.label, { color: theme.colors.muted }]}>HUG</Text>
         <Text style={[text, { color: theme.colors.text }]}>
           {o === undefined
             ? '--'
-            : `${PLAN_WORDS[planStatus] ?? planStatus}, pass on the ${o.plan_side === 0 ? 'left' : 'right'}, width ${o.plan_width_mm} mm, needs ${o.plan_need_mm} mm, start ${o.plan_start_deg}°, rescans ${o.rescans}`}
+            : `${enumLabel('hugState', o.hug_state).toLowerCase()}, ${enumLabel('hugSide', o.hug_side).toLowerCase()} side, face ${sizeMm(o.face_mm)}, width ${sizeMm(o.width_mm)}, breadth ${sizeMm(o.breadth_mm)}`}
         </Text>
       </View>
       {stopped ? (
-        // The pill has one line; the reason of a bypass that gave up goes here, where the text wraps.
+        // The pill has one line; a long cause goes here, where the text wraps.
         <Text style={[text, { color: theme.colors.danger }]}>Stop cause: {cause.toLowerCase()}</Text>
       ) : null}
       <Text style={[theme.typography.caption, { color: faults.length > 0 ? theme.colors.danger : theme.colors.muted }]}>

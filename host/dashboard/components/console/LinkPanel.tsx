@@ -31,7 +31,7 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Wi-Fi signal, frame loss from gaps in seq, queue drops, uptime and the last reset. */
+/** Wi-Fi signal, frame loss from gaps in seq, dropped frames, uptime and the last reset. */
 export function LinkPanel({ snapshot, store, nowMs, status, style }: Props) {
   const theme = useTheme();
   const hb = store.latest.heartbeat?.values;
@@ -69,11 +69,11 @@ export function LinkPanel({ snapshot, store, nowMs, status, style }: Props) {
       <Row label="Last reset" value={reset} />
       {dense ? (
         <Row
-          label="Queue drops: car, telemetry, network"
+          label="Frames dropped: car total, telemetry queue, network queue"
           value={`${hb?.drops ?? '--'} · ${diag?.telem_queue_drops ?? '--'} · ${diag?.net_queue_drops ?? '--'}`}
         />
       ) : (
-        <Row label="Queue drops" value={`${hb?.drops ?? '--'} (since boot, car) · ${diag?.telem_queue_drops ?? '--'} telemetry · ${diag?.net_queue_drops ?? '--'} network`} />
+        <Row label="Frames dropped" value={`${hb?.drops ?? '--'} (since boot, car total, queues and send ring) · ${diag?.telem_queue_drops ?? '--'} telemetry queue · ${diag?.net_queue_drops ?? '--'} network queue`} />
       )}
     </Panel>
   );

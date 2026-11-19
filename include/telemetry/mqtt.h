@@ -10,7 +10,7 @@
 #define MQTT_RX_BUFFER_SIZE 128u
 #define MQTT_DEFAULT_KEEPALIVE_S 30u
 
-/* Reply timeout and reconnect backoff (D91). */
+/* Reply timeout and reconnect backoff. */
 #define MQTT_REPLY_TIMEOUT_MS 10000u
 #define MQTT_RECONNECT_MIN_MS 1000u
 #define MQTT_RECONNECT_MAX_MS 30000u
@@ -21,7 +21,13 @@ typedef enum
     MQTT_ERR_ARG,
     MQTT_ERR_STATE,
     MQTT_ERR_TRANSPORT,
-    MQTT_ERR_PROTOCOL
+    MQTT_ERR_PROTOCOL,
+    /* The transport had no room (send returned 0): the packet was dropped and
+       the session stays up. A PUBACK that finds no room is not dropped: the
+       command has already run, and the next poll retries the PUBACK before
+       it parses any further packet, so a QoS 0 PUBLISH behind it is delayed
+       until the PUBACK fits. */
+    MQTT_ERR_BUSY
 } mqtt_result_t;
 
 STATIC_ASSERT (sizeof(mqtt_result_t) <= 4U, "mqtt_result_t size");
@@ -72,17 +78,22 @@ typedef struct
     uint32_t          next_attempt_ms;
     uint32_t          reply_deadline_ms;
     uint32_t          reconnect_delay_ms;
-    uint16_t          last_cmd_id;
-    bool              has_last_cmd;
     bool              attempt_pending;
     bool              reply_pending;
+    bool              ping_owed;
+    bool              puback_due;
+    uint16_t          puback_id;
     uint8_t           rx_buffer[MQTT_RX_BUFFER_SIZE];
     uint16_t          rx_len;
     bool              valid;
     uint8_t           tx_buffer[MQTT_TX_BUFFER_SIZE];
 } mqtt_client_t;
 
-STATIC_ASSERT (sizeof(mqtt_client_t) == (416U + (10U * sizeof(void *))),
+/* 416 bytes beside nine pointers and the padded keepalive word, rounded up
+   to the pointer alignment. */
+STATIC_ASSERT (sizeof(mqtt_client_t) ==
+                   (((416U + (10U * sizeof(void *))) + (sizeof(void *) - 1U)) &
+                    ~(sizeof(void *) - 1U)),
                "mqtt_client_t size");
 
 void mqtt_client_init (mqtt_client_t * client, const mqtt_config_t * config,

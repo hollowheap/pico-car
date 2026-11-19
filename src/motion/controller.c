@@ -61,11 +61,6 @@ static void brake (controller_t * p_control, uint32_t now_us, bool latch)
     }
 }
 
-static bool is_encoder_fault (motion_fault_t reason)
-{
-    return (MOTION_FAULT_FEEDBACK == reason) || (MOTION_FAULT_NO_EDGES == reason);
-}
-
 static void fault (controller_t * p_control, uint32_t now_us,
                    motion_fault_t reason)
 {
@@ -73,7 +68,7 @@ static void fault (controller_t * p_control, uint32_t now_us,
     p_control->status.fault = reason;
     p_control->fault_us     = now_us;
     reset_pid(p_control);
-    brake(p_control, now_us, !is_encoder_fault(reason));
+    brake(p_control, now_us, MOTION_FAULT_FEEDBACK != reason);
     LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE, "fault=%s, stopped",
               fault_name(reason));
 }
@@ -86,7 +81,8 @@ static void clear_encoder_fault (controller_t * p_control, const motion_input_t 
 {
     unsigned int wheel = 0U;
 
-    if ((MOTION_FAULT == p_control->status.state) && is_encoder_fault(p_control->status.fault) &&
+    if ((MOTION_FAULT == p_control->status.state) &&
+        (MOTION_FAULT_FEEDBACK == p_control->status.fault) &&
         !p_control->status.brake_failed && (p_input != NULL) &&
         ((uint32_t)(now_us - p_control->fault_us) >= MOTION_FAULT_CLEAR_US) &&
         odometry_init(&p_control->sampler, &p_control->config.sampling, p_input))
@@ -94,8 +90,6 @@ static void clear_encoder_fault (controller_t * p_control, const motion_input_t 
         reset_pid(p_control);
         for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
         {
-            p_control->progress_us[wheel]        = now_us;
-            p_control->last_edges[wheel]         = 0;
             p_control->bad_samples[wheel]        = 0U;
             p_control->drive_sign[wheel]         = 0;
             p_control->command.target_um_s[wheel] = 0;
@@ -119,8 +113,6 @@ bool controller_config_valid (const controller_config_t * p_config)
         (p_config->max_command_ttl_us > (uint32_t)INT32_MAX) ||
         (p_config->max_control_gap_us == 0U) ||
         (p_config->max_control_gap_us > p_config->sampling.max_interval_us) ||
-        (p_config->feedback_timeout_us <= p_config->max_control_gap_us) ||
-        (p_config->feedback_timeout_us > (uint32_t)INT32_MAX) ||
         (p_config->reversal_brake_us == 0U) ||
         (p_config->reversal_brake_us > (uint32_t)INT32_MAX) ||
         !odometry_init(&sampler, &p_config->sampling, &baseline))
@@ -159,7 +151,6 @@ bool controller_init (controller_t *              p_control,
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         (void)pid_init(&next.pid[wheel], &p_config->speed[wheel]);
-        next.progress_us[wheel] = p_baseline->timestamp_us;
     }
     if (!p_output->brake(p_output->context, false))
     {
@@ -282,17 +273,12 @@ static void tick_idle (controller_t * p_control, uint32_t now_us)
     brake(p_control, now_us, false);
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        p_control->progress_us[wheel] = now_us;
         p_control->bad_samples[wheel] = 0U;
-        if (p_control->status.sample_available)
-        {
-            p_control->last_edges[wheel] =
-                p_control->status.sample.wheel[wheel].net_edges;
-        }
     }
 }
 
-/* Run the per-wheel progress watchdog and speed PID. Fills p_requested and
+/* Run the speed PID per wheel. A wheel without edges is not a fault here (the
+ * pilot judges it); the duty stays within the PID limit. Fills p_requested and
  * sets *p_reversal when a wheel asks to reverse its drive direction.
  * Returns false after a fault. */
 static bool speed_loop (controller_t * p_control, uint32_t now_us,
@@ -302,20 +288,6 @@ static bool speed_loop (controller_t * p_control, uint32_t now_us,
 
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        int64_t edges = p_control->status.sample.wheel[wheel].net_edges;
-
-        if ((p_control->status.duty[wheel] == 0) ||
-            (edges != p_control->last_edges[wheel]))
-        {
-            p_control->progress_us[wheel] = now_us;
-        }
-        else if ((uint32_t)(now_us - p_control->progress_us[wheel]) >=
-                 p_control->config.feedback_timeout_us)
-        {
-            fault(p_control, now_us, MOTION_FAULT_NO_EDGES);
-            return false;
-        }
-        p_control->last_edges[wheel] = edges;
         if (!p_control->status.sample.wheel[wheel].speed_valid &&
             (p_control->bad_samples[wheel] < MAX_BAD_SAMPLES))
         {

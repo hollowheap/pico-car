@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { loadConfig } from "./config.js";
-import { encodeCommand, parseCommandRequest, type CommandRequest } from "./command.js";
+import { randomInt } from "node:crypto";
+import { createCommandSession, parseCommandRequest, type CommandRequest } from "./command.js";
 import { createHistoryStore } from "./history.js";
 import { createLiveServer } from "./live.js";
 import { createMqttIngest } from "./mqtt.js";
@@ -10,8 +11,14 @@ const config = loadConfig();
 const schema = loadProtocolSchema(config.schemaPath);
 const history = createHistoryStore(config.historyPath, config.historyMaxRecords, config.historyMaxEvents);
 let live: ReturnType<typeof createLiveServer> | null = null;
+const commands = createCommandSession(randomInt(0x10000));
 const ingest = createMqttIngest(config, schema, (packet, topic) => {
   const timestamp = Date.now();
+  if (packet.name === "heartbeat") {
+    commands.noteHeartbeat(packet.values, timestamp);
+  } else if (packet.name === "diag") {
+    commands.noteDiag(packet.values);
+  }
   history.append({
     timestamp,
     topic,
@@ -78,7 +85,11 @@ async function handleCommand(
     sendJson(response, 503, { error: "mqtt disconnected" });
     return;
   }
-  const frame = encodeCommand(schema, command);
+  const frame = commands.frame(schema, command.action, Date.now());
+  if (frame === null) {
+    sendJson(response, 503, { error: "no fresh heartbeat or no diag frame from the car" });
+    return;
+  }
   const topic = `${config.topicPrefix}/${schema.topics.command}`;
 
   try {

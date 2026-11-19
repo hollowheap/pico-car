@@ -1,9 +1,9 @@
 /*
  *	run_state.h
- *	Run state of the vehicle and the rules for each command (D120). Pure C:
+ *	Run state of the vehicle and the rules for each command. Pure C:
  *	no kernel call, so a host test drives it.
  *
- *	The state is five flags, and the visible state is derived from them. A
+ *	The state is a few flags, and the visible state is derived from them. A
  *	command or a tick changes flags and the supervisor applies the result.
  *	The supervisor decides what is allowed. The line task does what is
  *	allowed.
@@ -21,7 +21,7 @@ typedef enum
 {
     RUN_STATE_BOOT = 0,
     RUN_STATE_RUNNING,
-    RUN_STATE_STOPPED, /* an operator or dashboard STOP holds the car       */
+    RUN_STATE_STOPPED, /* boot, or an operator STOP, holds the car            */
     RUN_STATE_HELD,    /* a barcode stop or a lift holds the car            */
     RUN_STATE_LATCHED  /* emergency stop or overturn: needs RESET or reboot */
 } run_state_t;
@@ -35,24 +35,34 @@ typedef enum
 #define RUN_REJECT_SOURCE      (5U)
 #define RUN_REJECT_OPCODE      (6U)
 #define RUN_REJECT_ON_HUMP     (7U) /* a calibration on a ramp would be wrong */
+#define RUN_REJECT_STALLED     (8U) /* the motion permit lapsed */
+#define RUN_REJECT_NO_ATTITUDE (9U) /* the lean is not known yet */
 
-/* Passes the car must stand level before the lift hold ends without START:
-   1 s at SUPERVISOR_PASS_MS. The car has no button, so a car set down with no
-   dashboard link must start on its own. [Default] */
-#define RUN_LIFT_SETTLE_PASSES (50U)
+/* The tick runs once per supervisor pass (SUPERVISOR_PASS_MS). */
+#define RUN_PASS_MS (20U)
+
+/* Obstacle posts the full obstacle command queue refused. They are owed and
+   posted again on the next pass, RESET before START. */
+#define RUN_OWE_RESET (1U)
+#define RUN_OWE_START (2U)
 
 /* The turn the line task must run, or none. */
 #define RUN_TURN_NONE (0xFFU)
 
+/* Roll, in cdeg, within which the car counts as upright: the attitude overturn
+   roll limit (src/physics/attitude.c). */
+#define RUN_UPRIGHT_ROLL_CDEG (6000)
+
 typedef struct
 {
     bool b_booted;
-    bool b_operator; /* STOP from the dashboard or a button           */
+    bool b_operator; /* boot, or STOP from the dashboard or a button   */
     bool b_barcode;  /* STOP from a barcode                            */
     bool b_lift;     /* lifted or overturned: the lift hold is on      */
     bool b_overturn; /* overturned: needs RESET after the car is upright */
     bool b_estop;    /* the motion emergency latch                     */
-    uint8_t level_passes; /* passes level since the last lift          */
+    uint8_t start_count; /* accepted STARTs; wraps */
+    uint8_t reset_count; /* accepted RESETs; wraps */
 } run_ctx_t;
 
 /* Facts the supervisor reads before each step. */
@@ -63,7 +73,22 @@ typedef struct
     bool b_estop;
     bool b_follow; /* the line task follows the line, the obstacle task monitors, no turn is pending */
     bool b_on_hump; /* the hump detector is in a hump: the car is not level */
+    bool b_upright; /* calibrated, and the roll is within the overturn limit */
+    bool b_permit_lapsed; /* the motion permit lapsed: a stall or a long gap */
+    bool b_attitude_unknown; /* the lean is not known: no START or RECAL */
 } run_inputs_t;
+
+/* The physics and motion facts the supervisor maps to run_inputs_t. */
+typedef struct
+{
+    bool    b_ready;
+    bool    b_calibrated;
+    bool    b_attitude_unknown;
+    bool    b_hump_active;
+    uint8_t hump_state;     /* TELEMETRY_HUMP_STATE_* */
+    uint8_t attitude_state; /* TELEMETRY_ATTITUDE_STATE_* */
+    int16_t roll_cdeg;
+} run_physics_t;
 
 /* What the supervisor must do after a step. hold_mask is the full set of
    holds that must be on (MOTION_HOLD_*); the supervisor sets the changes. */
@@ -80,6 +105,8 @@ typedef struct
     bool     b_obstacle_start;
     bool     b_motion_estop;
     bool     b_physics_recal; /* the IMU must calibrate again: after an overturn, on START, on RECAL */
+    bool     b_start;         /* START accepted: ends a latched sonar stop */
+    bool     b_sticky_clear;  /* RESET: clear the sticky fault word */
 } run_result_t;
 
 void        run_state_init (run_ctx_t * p_ctx);
@@ -90,9 +117,30 @@ uint32_t    run_state_hold_mask (const run_ctx_t * p_ctx);
 void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd,
                         const run_inputs_t * p_in, run_result_t * p_out);
 
+/* Set the inputs that come from physics. The attitude fields are read only
+   while the lean is known. */
+void run_state_read_physics (run_inputs_t * p_in, const run_physics_t * p_phys);
+
+/* True when the motion permit lapsed since the last renew: the supervisor
+   skipped it, or the gap since it is over the lease. */
+bool run_permit_lapsed (bool b_skipped, uint32_t gap_ms, uint32_t lease_ms);
+
+/* True when a pass does not renew the motion permit: a critical task stalled,
+   or the motion service refused the renewal. */
+bool run_permit_skipped (bool b_critical, bool b_renew_failed);
+
 /* Apply the facts that change the state by themselves: boot done, the
-   emergency latch, a lift, an overturn. */
+   emergency latch, a lift, an overturn, a stalled task. */
 void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in,
                      run_result_t * p_out);
+
+/* Post the RESET and START a step asks for, after those still owed (RUN_OWE_*
+   bits). p_refused posts one OBSTACLE_CMD_* and returns true when the full
+   queue refused it; that post and the ones after it stay owed. A stop drops
+   what is owed, so a START that never arrived cannot run after it; the caller
+   posts the STOP, which the obstacle task never refuses. Returns what is
+   still owed. */
+uint8_t run_obstacle_post (uint8_t owed, const run_result_t * p_res,
+                           bool (*p_refused) (uint8_t cmd));
 
 #endif /* SUPERVISOR_RUN_STATE_H */

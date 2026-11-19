@@ -1,75 +1,56 @@
 /** @file quadrature.c
- * @brief Count valid adjacent quadrature transitions in either direction.
+ * @brief Extend the quadrature state machine words into running counts.
  */
 #include <stddef.h>
 #include "quadrature.h"
 
-/* Two state bits per wheel, and the four states of one wheel's A/B pair. */
-#define QUAD_BITS_PER_WHEEL 2U
-#define QUAD_STATE_COUNT    4U
-#define QUAD_STATE_MASK     3U
-#define QUAD_MAX_STATE      3U
+/* Word layout of quadrature.pio. */
+#define QUAD_NET_MASK   0x00FFFFFFU
+#define QUAD_NET_SIGN   0x00800000U
+#define QUAD_NET_SPAN   0x01000000U
+#define QUAD_SKIP_SHIFT 24U
+#define QUAD_SKIP_MASK  0xFFU
 
-/* Valid bits of quadrature_t.states: both wheels, two bits each. */
-#define QUAD_STATES_MASK 15U
-
-/* Step table entry for a transition that skipped a state. */
-#define QUAD_STEP_INVALID 2
-
-void quadrature_init (quadrature_t * p_quad, uint8_t states)
+void quadrature_init (quadrature_t * p_quad, const uint32_t words[ENCODER_WHEELS])
 {
     unsigned int wheel = 0U;
 
-    if (p_quad != NULL)
+    if ((p_quad != NULL) && (words != NULL))
     {
         for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
         {
             p_quad->wheel[wheel].positive = 0U;
             p_quad->wheel[wheel].negative = 0U;
             p_quad->wheel[wheel].invalid  = 0U;
+            p_quad->last[wheel]           = words[wheel];
         }
-        p_quad->states = (uint8_t)((unsigned int)states & QUAD_STATES_MASK);
     }
 }
 
-bool quadrature_update (quadrature_t * p_quad, unsigned int wheel,
-                          uint8_t state, bool ambiguous)
+bool quadrature_apply (quadrature_t * p_quad, unsigned int wheel, uint32_t word)
 {
-    static const int8_t steps[16] = {0, 1, -1, 2,  -1, 0,  2, 1,
-                                     1, 2, 0,  -1, 2,  -1, 1, 0};
-    unsigned int        shift    = 0U;
-    uint8_t             previous = 0U;
-    int8_t              step     = 0;
+    uint32_t net  = 0U;
+    uint32_t skip = 0U;
 
-    if ((p_quad == NULL) || (wheel >= ENCODER_WHEELS) ||
-        (state > QUAD_MAX_STATE))
+    if ((p_quad == NULL) || (wheel >= ENCODER_WHEELS))
     {
         return false;
     }
-    shift    = wheel * QUAD_BITS_PER_WHEEL;
-    previous = (uint8_t)(((unsigned int)p_quad->states >> shift) &
-                         QUAD_STATE_MASK);
-    step     = steps[(previous * QUAD_STATE_COUNT) + state];
-    p_quad->states =
-        (uint8_t)(((unsigned int)p_quad->states & ~(QUAD_STATE_MASK << shift)) |
-                  ((unsigned int)state << shift));
-    if (ambiguous || (step == QUAD_STEP_INVALID))
+    net  = (word - p_quad->last[wheel]) & QUAD_NET_MASK;
+    /* X counts down, so the skips are the old value minus the new one. */
+    skip = ((p_quad->last[wheel] >> QUAD_SKIP_SHIFT) - (word >> QUAD_SKIP_SHIFT)) &
+           QUAD_SKIP_MASK;
+    p_quad->last[wheel] = word;
+
+    if ((net & QUAD_NET_SIGN) != 0U)
     {
-        p_quad->wheel[wheel].invalid++;
-        return false;
-    }
-    if (step > 0)
-    {
-        p_quad->wheel[wheel].positive++;
-    }
-    else if (step < 0)
-    {
-        p_quad->wheel[wheel].negative++;
+        p_quad->wheel[wheel].negative += QUAD_NET_SPAN - net;
     }
     else
     {
-        /* A repeated sample contains no new transition. */
+        p_quad->wheel[wheel].positive += net;
     }
+    p_quad->wheel[wheel].invalid += skip;
     return true;
 }
 

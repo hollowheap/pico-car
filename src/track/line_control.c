@@ -1,20 +1,20 @@
 /** @file line_control.c
- * @brief Pure line-following and one-shot turn logic (decisions D92, D93).
+ * @brief Pure line-following and one-shot turn logic.
  *
- * Integer math only. The follower is a heading cascade (D181): a sensor hit
- * slews a heading target toward the line, the encoder heading follows the
- * target, and no wheel stops. With no sensor hit the car holds its heading
- * for LINE_GAP_MM, then turns on the spot toward the side that saw the line
- * last and back the other way, until a sensor sees the line or both turns are
- * done and the car stops. A turn measures its
- * heading from the wheel displacements and ends when a sensor sees the line
- * inside the capture window.
+ * Integer math only. The follower is a heading cascade: a sensor hit slews a
+ * heading target toward the line, the encoder heading follows the target, and
+ * no wheel stops. With no sensor hit the car holds its heading for
+ * LINE_GAP_MM, then turns on the spot toward the side that saw the line last
+ * and back the other way, and retries from a reverse (see search_turn()),
+ * until a sensor sees the line or the last retry fails and the car stops. A
+ * turn measures its heading from the wheel displacements and ends when a
+ * sensor sees the line inside the capture window.
  */
 
 #include "track/line_control.h"
 
-#define UM_PER_MM            (1000)
-#define DECI_PER_RAD         (573)
+#include "platform/units.h"
+
 #define HEADING_CLAMP_DECI   (100000)
 #define HEADING_ABS_MAX      (1000000000)
 
@@ -26,15 +26,23 @@
 #define TURN_PHASE_DONE      (3U)
 #define TURN_PHASE_ABORTED   (4U)
 
-#define TRACK_UM             ((int64_t)LINE_WHEEL_TRACK_MM * UM_PER_MM)
+#define TRACK_UM             ((int64_t)CHASSIS_WHEEL_TRACK_MM * UM_PER_MM)
 #define GAP_UM               ((int64_t)LINE_GAP_MM * UM_PER_MM)
+#define HUMP_GAP_UM          ((int64_t)LINE_HUMP_GAP_MM * UM_PER_MM)
+#define REVERSE_UM           ((int64_t)LINE_REVERSE_MM * UM_PER_MM)
 #define MS_PER_S             (1000)
 #define UM_PER_M             (1000000)
+#define UM_PER_CM            (10000)
+#define CM_MASK              (0xFFU)
+#define CM_HALF              (0x80U)
+#define REVERSE_STEP_UM      ((int64_t)LINE_REVERSE_STEP_MM * UM_PER_MM)
 
 /* line_follow_t.sweep: the search turn in progress. */
 #define SWEEP_NONE           (0U)
 #define SWEEP_TOWARD         (1U)
 #define SWEEP_BACK           (2U)
+#define SWEEP_TURN_BACK      (3U)
+#define SWEEP_REVERSE        (4U)
 #define SWEEP_SPAN           (2 * LINE_SEARCH_SWEEP_DECI)
 
 static void set_targets(line_targets_t * p_targets, int32_t left_um_s,
@@ -44,25 +52,32 @@ static void set_targets(line_targets_t * p_targets, int32_t left_um_s,
     p_targets->right_um_s = right_um_s;
 }
 
+/* Travel in cm modulo 256, rounded down. The loss point stays within 128 cm of
+ * the car while a retry count is held, so the wrapped difference tells before
+ * from beyond. */
+static uint8_t travel_cm(int64_t travel_um)
+{
+    int64_t cm = travel_um / UM_PER_CM;
+
+    if ((travel_um % UM_PER_CM) < 0)
+    {
+        cm--;
+    }
+
+    return (uint8_t)((uint64_t)cm & CM_MASK);
+}
+
+/* True when the car is 1 to 127 cm beyond the loss point. */
+static bool past_loss(uint8_t loss_cm, int64_t travel_um)
+{
+    uint8_t const ahead = (uint8_t)(travel_cm(travel_um) - loss_cm);
+
+    return (0U != ahead) && (ahead < CM_HALF);
+}
+
 static int64_t abs_i64(int64_t value)
 {
     return (value < 0) ? -value : value;
-}
-
-static int32_t clamp_i32(int32_t value, int32_t low, int32_t high)
-{
-    int32_t result = value;
-
-    if (result < low)
-    {
-        result = low;
-    }
-    if (result > high)
-    {
-        result = high;
-    }
-
-    return result;
 }
 
 int32_t line_heading_deci(int64_t left_um, int64_t right_um)
@@ -82,24 +97,51 @@ void line_follow_init(line_follow_t * p_follow)
     p_follow->last_ms     = 0U;
     p_follow->side        = (uint8_t)LINE_SIDE_NONE;
     p_follow->status      = (uint8_t)LINE_FOLLOW_FOLLOWING;
-    p_follow->started     = 0U;
+    p_follow->flags       = 0U;
     p_follow->sweep       = SWEEP_NONE;
-    p_follow->speed_mm_s  = 0U;
+    p_follow->speed_q     = 0U;
+    p_follow->retry       = 0U;
+    p_follow->loss_cm     = 0U;
+    p_follow->rev_mark_um  = 0;
+    p_follow->rev_stall_ms = 0U;
+}
+
+void line_follow_set_hump(line_follow_t * p_follow, bool b_hump)
+{
+    if (b_hump)
+    {
+        p_follow->flags |= LINE_FOLLOW_HUMP;
+    }
+    else
+    {
+        p_follow->flags &= (uint8_t)~LINE_FOLLOW_HUMP;
+    }
 }
 
 void line_follow_set_side(line_follow_t * p_follow, line_side_t side)
 {
     p_follow->side    = (uint8_t)side;
     p_follow->status  = (uint8_t)LINE_FOLLOW_FOLLOWING;
-    p_follow->started = 0U;
+    p_follow->flags  &= (uint8_t)~LINE_FOLLOW_STARTED;
     p_follow->sweep   = SWEEP_NONE;
+    p_follow->retry   = 0U;
+}
+
+void line_follow_reanchor(line_follow_t * p_follow)
+{
+    /* A search in progress keeps its turn and its reverse start. */
+    if ((uint8_t)LINE_FOLLOW_SEARCHING != p_follow->status)
+    {
+        p_follow->flags &= (uint8_t)~LINE_FOLLOW_STARTED;
+    }
 }
 
 void line_follow_start_search(line_follow_t * p_follow)
 {
     p_follow->status  = (uint8_t)LINE_FOLLOW_SEARCHING;
-    p_follow->started = 0U;
+    p_follow->flags  &= (uint8_t)~LINE_FOLLOW_STARTED;
     p_follow->sweep   = SWEEP_NONE;
+    p_follow->retry   = 0U;
 }
 
 /* Slew the heading target by a rate (deci-degrees per second) over dt_ms, and
@@ -198,10 +240,10 @@ static uint32_t begin_pass(line_follow_t * p_follow, int32_t heading_deci,
 {
     uint32_t dt_ms = 0U;
 
-    if (0U == p_follow->started)
+    if (0U == (p_follow->flags & LINE_FOLLOW_STARTED))
     {
-        p_follow->started     = 1U;
-        p_follow->speed_mm_s  = (uint16_t)(LINE_CRUISE_UM_S / UM_PER_MM);
+        p_follow->flags      |= LINE_FOLLOW_STARTED;
+        p_follow->speed_q     = (uint16_t)(LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S);
         p_follow->ref_deci    = heading_deci;
         p_follow->anchor_um   = travel_um;
         p_follow->last_ms     = now_ms;
@@ -219,17 +261,69 @@ static uint32_t begin_pass(line_follow_t * p_follow, int32_t heading_deci,
     return dt_ms;
 }
 
-/* The search turn. The heading target is the end of the current turn: first
+/* A reverse in which the slower wheel does not back up LINE_REVERSE_STEP_MM
+ * within LINE_REVERSE_STALL_MS is blocked. The slower wheel is the mean travel
+ * less half the wheel difference, which the heading's departure from the
+ * reverse heading gives: with one wheel jammed the other turns the car round
+ * it and the mean grows, but the slower wheel does not. The departure is taken
+ * from the target heading, not the heading the reverse began at, so the
+ * turn-back overshoot (one pass, under half a step) shifts the estimate by at
+ * most one step: one extra stall window at worst. The time counts passes
+ * of the follower only, each limited to LINE_DT_MAX_MS, so a pause of the
+ * caller does not count. */
+static bool reverse_blocked(line_follow_t * p_follow, int64_t back_um,
+                            int32_t heading_deci, uint32_t dt_ms)
+{
+    int64_t const off_deci = (int64_t)heading_deci - p_follow->ref_deci;
+    int64_t const yaw_um = (abs_i64(off_deci) * TRACK_UM) / (2 * DECI_PER_RAD);
+    int64_t const slow_um = back_um - yaw_um;
+    bool b_blocked = false;
+
+    if ((slow_um - p_follow->rev_mark_um) >= REVERSE_STEP_UM)
+    {
+        p_follow->rev_mark_um  = (int32_t)slow_um;
+        p_follow->rev_stall_ms = 0U;
+    }
+    else
+    {
+        uint32_t const stall_ms = p_follow->rev_stall_ms + dt_ms;
+
+        p_follow->rev_stall_ms = (uint16_t)stall_ms;
+        b_blocked = (stall_ms >= LINE_REVERSE_STALL_MS);
+    }
+
+    return b_blocked;
+}
+
+/* The search. The heading target is the end of the current turn: first
  * LINE_SEARCH_SWEEP_DECI toward the side that saw the line last (left if none
- * did), then as far the other way. At the end of the second turn the car
- * stops. */
-static void search_turn(line_follow_t * p_follow, int32_t heading_deci)
+ * did), then as far the other way. A failed search starts a retry: the car
+ * turns back to the heading it had when the search began, reverses
+ * LINE_REVERSE_MM straight and searches again. A reverse that is blocked ends
+ * early and the search begins again at once. After LINE_RETRY_COUNT retries
+ * the car stops. */
+static void search_turn(line_follow_t * p_follow, int32_t heading_deci,
+                        int64_t travel_um, uint32_t dt_ms)
 {
     int32_t const sign = ((uint8_t)LINE_SIDE_RIGHT == p_follow->side) ? -1 : 1;
     int32_t const past = sign * (heading_deci - p_follow->ref_deci);
 
+    if (SWEEP_REVERSE == p_follow->sweep)
+    {
+        int64_t const back_um = p_follow->anchor_um - travel_um;
+
+        if ((back_um >= REVERSE_UM) ||
+            reverse_blocked(p_follow, back_um, heading_deci, dt_ms))
+        {
+            p_follow->sweep = SWEEP_NONE;
+        }
+    }
     if (SWEEP_NONE == p_follow->sweep)
     {
+        if (0U == p_follow->retry)
+        {
+            p_follow->loss_cm = travel_cm(travel_um);
+        }
         p_follow->sweep    = SWEEP_TOWARD;
         p_follow->ref_deci = heading_deci + (sign * LINE_SEARCH_SWEEP_DECI);
     }
@@ -240,27 +334,49 @@ static void search_turn(line_follow_t * p_follow, int32_t heading_deci)
     }
     else if ((SWEEP_BACK == p_follow->sweep) && (past <= 0))
     {
-        p_follow->status = (uint8_t)LINE_FOLLOW_STOPPED;
+        if (p_follow->retry < LINE_RETRY_COUNT)
+        {
+            /* The end of this turn is a sweep short of the heading at the
+             * start of the search. */
+            p_follow->retry++;
+            p_follow->sweep     = SWEEP_TURN_BACK;
+            p_follow->ref_deci += sign * LINE_SEARCH_SWEEP_DECI;
+        }
+        else
+        {
+            p_follow->status = (uint8_t)LINE_FOLLOW_STOPPED;
+        }
+    }
+    else if ((SWEEP_TURN_BACK == p_follow->sweep) && (past >= 0))
+    {
+        /* The anchor is not used while the car searches: it marks where the
+         * reverse began. */
+        p_follow->sweep        = SWEEP_REVERSE;
+        p_follow->anchor_um    = travel_um;
+        p_follow->rev_mark_um  = 0;
+        p_follow->rev_stall_ms = 0U;
     }
     else
     {
-        /* Still turning. */
+        /* Still turning or reversing. */
     }
 }
 
 /* Neither sensor sees the line. A short stretch is a crossing, a gap or the
- * line between the sensors: the car holds its heading. After LINE_GAP_MM the
- * line is lost and the car searches on the spot. */
+ * line between the sensors: the car holds its heading. After LINE_GAP_MM (on a
+ * hump LINE_HUMP_GAP_MM, the sensors lift off the floor at the crest) the line
+ * is lost and the car searches on the spot. */
 static void follow_blind(line_follow_t * p_follow, int32_t heading_deci,
                          int64_t travel_um, uint32_t dt_ms)
 {
     int64_t const blind_um = abs_i64(travel_um - p_follow->anchor_um);
+    int64_t const gap_um   = (0U != (p_follow->flags & LINE_FOLLOW_HUMP)) ? HUMP_GAP_UM : GAP_UM;
 
     if ((uint8_t)LINE_FOLLOW_FOLLOWING == p_follow->status)
     {
         p_follow->status = (uint8_t)LINE_FOLLOW_BRIDGING;
     }
-    if (((uint8_t)LINE_FOLLOW_BRIDGING == p_follow->status) && (blind_um >= GAP_UM))
+    if (((uint8_t)LINE_FOLLOW_BRIDGING == p_follow->status) && (blind_um >= gap_um))
     {
         p_follow->status = (uint8_t)LINE_FOLLOW_SEARCHING;
     }
@@ -272,12 +388,54 @@ static void follow_blind(line_follow_t * p_follow, int32_t heading_deci,
     }
     else if ((uint8_t)LINE_FOLLOW_SEARCHING == p_follow->status)
     {
-        search_turn(p_follow, heading_deci);
+        search_turn(p_follow, heading_deci, travel_um, dt_ms);
     }
     else
     {
         /* STOPPED: wait for a sensor hit. */
     }
+}
+
+/* A sensor sees the line during the search or a retry: follow from the
+ * heading, not from the end of the search turn. The speed drops with the angle
+ * the search turned, as for a heading error: a centred car finds the line at
+ * once and keeps most of its speed, a corner restarts slow. A hit during the
+ * reverse starts from the reverse speed, not from the speed before the loss. */
+static void search_found(line_follow_t * p_follow, int32_t heading_deci)
+{
+    int32_t const sign = ((uint8_t)LINE_SIDE_RIGHT == p_follow->side) ? -1 : 1;
+    int32_t origin = p_follow->ref_deci;
+    int32_t speed = 0;
+
+    if (SWEEP_TOWARD == p_follow->sweep)
+    {
+        origin -= sign * LINE_SEARCH_SWEEP_DECI;
+    }
+    else if (SWEEP_BACK == p_follow->sweep)
+    {
+        origin += sign * LINE_SEARCH_SWEEP_DECI;
+    }
+    else
+    {
+        /* A retry turns back to the start heading, which is the target. */
+    }
+    if (p_follow->sweep < SWEEP_TURN_BACK)
+    {
+        /* A search turn found the line: the next loss has all its retries.
+         * A reverse can only find the line the car came on. */
+        p_follow->retry = 0U;
+    }
+    speed = corner_speed(origin, heading_deci);
+    if ((SWEEP_REVERSE == p_follow->sweep) && (speed > LINE_SEARCH_UM_S))
+    {
+        speed = LINE_SEARCH_UM_S;
+    }
+    if (speed < (int32_t)(p_follow->speed_q * LINE_SPEED_STEP_UM_S))
+    {
+        p_follow->speed_q = (uint16_t)(speed / LINE_SPEED_STEP_UM_S);
+    }
+    p_follow->sweep    = SWEEP_NONE;
+    p_follow->ref_deci = heading_deci;
 }
 
 line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
@@ -290,22 +448,13 @@ line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
 
     if ((b_left || b_right) && (SWEEP_NONE != p_follow->sweep))
     {
-        /* Found by the search: follow from the heading, not from the end of
-         * the search turn. The speed drops with the angle the search turned,
-         * as for a heading error: a centred car finds the line at once and
-         * keeps most of its speed, a corner restarts slow. */
-        int32_t const sign   = ((uint8_t)LINE_SIDE_RIGHT == p_follow->side) ? -1 : 1;
-        int32_t const origin = (SWEEP_TOWARD == p_follow->sweep)
-                                   ? (p_follow->ref_deci - (sign * LINE_SEARCH_SWEEP_DECI))
-                                   : (p_follow->ref_deci + (sign * LINE_SEARCH_SWEEP_DECI));
-        int32_t const speed  = corner_speed(origin, heading_deci) / UM_PER_MM;
-
-        if (speed < (int32_t)p_follow->speed_mm_s)
-        {
-            p_follow->speed_mm_s = (uint16_t)speed;
-        }
-        p_follow->sweep    = SWEEP_NONE;
-        p_follow->ref_deci = heading_deci;
+        search_found(p_follow, heading_deci);
+    }
+    if ((b_left || b_right) && (0U != p_follow->retry) &&
+        past_loss(p_follow->loss_cm, travel_um))
+    {
+        /* Following the line past the point where it was lost. */
+        p_follow->retry = 0U;
     }
     if (b_left && b_right)
     {
@@ -334,21 +483,29 @@ line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
     if ((uint8_t)LINE_FOLLOW_SEARCHING == p_follow->status)
     {
         /* Keep the speed from before the search for the restart. */
-        base_um_s = (int32_t)p_follow->speed_mm_s * UM_PER_MM;
+        base_um_s = (int32_t)p_follow->speed_q * LINE_SPEED_STEP_UM_S;
     }
     else
     {
         /* Slow down at once, speed up at LINE_ACCEL_MM_S2. */
         int32_t const want = corner_speed(p_follow->ref_deci, heading_deci);
         int32_t const rise = (int32_t)(((int64_t)LINE_ACCEL_MM_S2 * UM_PER_MM * dt_ms) / MS_PER_S);
-        int32_t const last = (int32_t)p_follow->speed_mm_s * UM_PER_MM;
+        int32_t const last = (int32_t)p_follow->speed_q * LINE_SPEED_STEP_UM_S;
 
         base_um_s = (want < (last + rise)) ? want : (last + rise);
     }
-    p_follow->speed_mm_s = (uint16_t)(base_um_s / UM_PER_MM);
+    p_follow->speed_q = (uint16_t)(base_um_s / LINE_SPEED_STEP_UM_S);
     if ((uint8_t)LINE_FOLLOW_STOPPED == p_follow->status)
     {
         set_targets(p_targets, 0, 0);
+    }
+    else if (((uint8_t)LINE_FOLLOW_SEARCHING == p_follow->status) &&
+             (SWEEP_REVERSE == p_follow->sweep))
+    {
+        /* Straight back on the start heading, at the search speed. The wheel
+         * difference that turns the car is the same in reverse. */
+        steer_to(heading_deci, p_follow->ref_deci, LINE_SEARCH_UM_S, p_targets);
+        set_targets(p_targets, -p_targets->left_um_s, -p_targets->right_um_s);
     }
     else if ((uint8_t)LINE_FOLLOW_SEARCHING == p_follow->status)
     {
@@ -364,6 +521,39 @@ line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
     }
 
     return (line_follow_status_t)p_follow->status;
+}
+
+uint8_t line_watch_step(line_watch_t * p_watch, bool b_follow, bool b_hug,
+                        line_follow_status_t status)
+{
+    uint8_t bits = 0U;
+
+    if (b_hug)
+    {
+        if (0U != p_watch->b_lost)
+        {
+            bits = LINE_WATCH_QUIET;
+        }
+        p_watch->b_lost    = 0U;
+        p_watch->b_stopped = 0U;
+    }
+    else if (b_follow)
+    {
+        bool const b_stopped = (LINE_FOLLOW_STOPPED == status);
+
+        if (b_stopped && (0U == p_watch->b_stopped))
+        {
+            bits = LINE_WATCH_STOP;
+        }
+        p_watch->b_lost    = ((LINE_FOLLOW_SEARCHING == status) || b_stopped) ? 1U : 0U;
+        p_watch->b_stopped = b_stopped ? 1U : 0U;
+    }
+    else
+    {
+        /* Safety has the wheels: the follower does not run, nothing changes. */
+    }
+
+    return bits;
 }
 
 void line_turn_start(line_turn_state_t * p_turn, line_turn_kind_t kind,

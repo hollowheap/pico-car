@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { confirmControl, encodeCommand, needsConfirm } from './controls';
+import { confirmControl, needsConfirm } from './controls';
 
 describe('controls', () => {
   it('requires confirmation', () => {
@@ -28,21 +28,5 @@ describe('controls', () => {
   it('allows confirmed start and stop', () => {
     expect(confirmControl('start', true, false).allowed).toBe(true);
     expect(confirmControl('stop', true, true).allowed).toBe(true);
-  });
-
-  it('encodes the eight-byte command frame', () => {
-    expect(Array.from(encodeCommand('start', 0x1234, 0x0001, 0x0102))).toEqual([
-      0x12, 0x34, 0x00, 0x01, 0x01, 0x02, 0x01, 0x00,
-    ]);
-    expect(encodeCommand('reset', 1, 1, 1)[6]).toBe(0x02);
-  });
-
-  it('encodes the turn opcodes from the protocol schema', () => {
-    expect(encodeCommand('left', 1, 1, 1)[6]).toBe(0x03);
-    expect(encodeCommand('right', 1, 1, 1)[6]).toBe(0x04);
-    expect(encodeCommand('uturn', 1, 1, 1)[6]).toBe(0x05);
-    expect(encodeCommand('straight', 1, 1, 1)[6]).toBe(0x07);
-    expect(encodeCommand('recalibrate', 1, 1, 1)[6]).toBe(0x08);
-    expect(encodeCommand('estop', 1, 1, 1)[6]).toBe(0x06);
   });
 });

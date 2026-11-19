@@ -16,19 +16,17 @@
 #include "obstacle_config.h"
 #include "navigation/obstacle_cmd.h"
 #include "navigation/obstacle_flags.h"
+#include "navigation/obstacle_ping.h"
+#include "pilot/look.h"
+
+/* The ping-word layout and its decoders live in navigation/obstacle_ping.h.
+ * The public copies of two config values must match the private ones. */
+OBSTACLE_CT_ASSERT(ping_deci_per_deg, OBSTACLE_PING_DECI_PER_DEG == OBSTACLE_DECI_PER_DEG);
+OBSTACLE_CT_ASSERT(ping_too_close_mm, OBSTACLE_PING_TOO_CLOSE_MM == OBSTACLE_MIN_RANGE_MM);
 
 /* ------------------------------------------------------------------ *
  * Codes.
  * ------------------------------------------------------------------ */
-
-/* Echo class, 3 bits. A missing echo is never OPEN, and no class means
- * "unknown": each class has its own reaction. */
-#define OBSTACLE_CLASS_VALID     (0U) /* rise + fall, 116..23500 us         */
-#define OBSTACLE_CLASS_OPEN      (1U) /* rise seen, pulse beyond 4 m        */
-#define OBSTACLE_CLASS_TOO_CLOSE (2U) /* clean echo, 30..116 us: an object  */
-#define OBSTACLE_CLASS_NO_ECHO   (3U) /* nothing on ECHO within the wait    */
-#define OBSTACLE_CLASS_GLITCH    (4U) /* one edge missing, or a tiny pulse  */
-#define OBSTACLE_CLASS_STUCK     (5U) /* ECHO high before the trigger       */
 
 /* Statechart, 3 bits. */
 #define OBSTACLE_STATE_STOPPED   (0U)
@@ -57,16 +55,6 @@
 #define OBSTACLE_CAUSE_ECHO_NOISE    (14U) /* ECHO line or edges are bad       */
 #define OBSTACLE_CAUSE_BYPASS_GAVE_UP (15U) /* the follow gave up             */
 
-/* Fault word, 9 bits: the obstacle task is its only writer. */
-#define OBSTACLE_FAULT_NO_ECHO      (1U << 0U)
-#define OBSTACLE_FAULT_ECHO_STUCK   (1U << 1U)
-#define OBSTACLE_FAULT_SCAN_TIMEOUT (1U << 2U)
-#define OBSTACLE_FAULT_NO_SAFE_PATH (1U << 3U)
-#define OBSTACLE_FAULT_COLLISION    (1U << 4U)
-#define OBSTACLE_FAULT_HANDOVER     (1U << 5U)
-#define OBSTACLE_FAULT_BYPASS_LIMIT (1U << 6U)
-#define OBSTACLE_FAULT_LINE_TIMEOUT (1U << 7U)
-#define OBSTACLE_FAULT_ECHO_NOISE   (1U << 8U)
 /* Faults that leave the car stopped by a planner or bypass limit, as opposed
    to a sensor fault. They set the shared obstacle_stopped bit. */
 #define OBSTACLE_FAULTS_STOPPING \
@@ -172,20 +160,6 @@
 #define OBSTACLE_EV_STEER_MK (0x3U)
 #define OBSTACLE_EV_SSEQ_SH  (9U)
 #define OBSTACLE_EV_SSEQ_MK  (0x3FU)
-
-/* Ping (u32, one store by the scan task): seq 6 | class 3 | dist 12 |
- * servo 6. The servo field is the servo angle in whole degrees plus 30. */
-#define OBSTACLE_PING_SEQ_SH   (0U)
-#define OBSTACLE_PING_SEQ_MK   (0x3FU)
-#define OBSTACLE_PING_CLASS_SH (6U)
-#define OBSTACLE_PING_CLASS_MK (0x7U)
-#define OBSTACLE_PING_DIST_SH  (9U)
-#define OBSTACLE_PING_DIST_MK  (0xFFFU)
-#define OBSTACLE_PING_SERVO_SH (21U)
-#define OBSTACLE_PING_SERVO_MK (0x3FU)
-
-/* Servo field offset: whole degrees plus 30 (the servo limit). */
-#define OBSTACLE_PING_SERVO_OFFSET (30)
 
 /* ------------------------------------------------------------------ *
  * Helpers. The value is masked before it is placed, so a value that is
@@ -375,17 +349,100 @@ static inline uint32_t obstacle_pack_ping (uint32_t seq, uint32_t cls, uint32_t 
 }
 
 /*!
- * @brief Servo angle of a ping word.
+ * @brief Tell whether a request word holds a request.
+ *
+ * @param[in] word Request word.
+ *
+ * @return True if the pending flag is set.
+ */
+static inline bool obstacle_pack_ping_req_is_pending (uint32_t word)
+{
+    return (0U != obstacle_pack_get(word, OBSTACLE_REQ_PENDING_SH, OBSTACLE_REQ_PENDING_MK));
+}
+
+/*!
+ * @brief Servo angle of a request word.
+ *
+ * @param[in] word Request word.
+ *
+ * @return Angle in deci-degrees, as asked (not clamped).
+ */
+static inline int32_t obstacle_pack_ping_req_servo (uint32_t word)
+{
+    /* Cast is safe: the field holds a 16-bit two's complement value. */
+    return ((int32_t)(int16_t)obstacle_pack_get(word, OBSTACLE_REQ_SERVO_SH, OBSTACLE_REQ_SERVO_MK));
+}
+
+/*!
+ * @brief Sequence of a request word.
+ *
+ * @param[in] word Request word.
+ *
+ * @return Sequence, 0..63.
+ */
+static inline uint32_t obstacle_pack_ping_req_seq (uint32_t word)
+{
+    return (obstacle_pack_get(word, OBSTACLE_REQ_SEQ_SH, OBSTACLE_REQ_SEQ_MK));
+}
+
+/*!
+ * @brief Clamp a servo angle to the servo limit.
+ *
+ * @param[in] servo_deci Angle in deci-degrees.
+ *
+ * @return The angle inside +-OBSTACLE_SERVO_LIMIT_DECI.
+ */
+static inline int32_t obstacle_pack_servo_clamp (int32_t servo_deci)
+{
+    int32_t result = servo_deci;
+
+    if (result > OBSTACLE_SERVO_LIMIT_DECI)
+    {
+        result = OBSTACLE_SERVO_LIMIT_DECI;
+    }
+    else if (result < -OBSTACLE_SERVO_LIMIT_DECI)
+    {
+        result = -OBSTACLE_SERVO_LIMIT_DECI;
+    }
+    else
+    {
+        /* Within the limit. */
+    }
+
+    return (result);
+}
+
+/*!
+ * @brief Pack the ping taken for a request: a ping word with the reply flag.
+ *
+ * @param[in] seq        Sequence of the request.
+ * @param[in] cls        Echo class (OBSTACLE_CLASS_*).
+ * @param[in] dist_mm    Distance; 0 unless the class is VALID.
+ * @param[in] servo_deci Servo angle actually used.
+ *
+ * @return The packed ping word.
+ */
+static inline uint32_t obstacle_pack_ping_reply (uint32_t seq, uint32_t cls, uint32_t dist_mm,
+                                                 int32_t servo_deci)
+{
+    uint32_t const word = obstacle_pack_ping(seq, cls, dist_mm, servo_deci);
+
+    return (obstacle_pack_put(word, OBSTACLE_PING_REPLY_SH, OBSTACLE_PING_REPLY_MK, 1U));
+}
+
+/*!
+ * @brief Tell whether a ping word answers the request with this sequence.
  *
  * @param[in] word Packed ping word.
+ * @param[in] seq  Sequence of the request (only the low 6 bits count).
  *
- * @return Angle in deci-degrees (whole degrees only).
+ * @return True for a reply whose sequence equals seq.
  */
-static inline int32_t obstacle_pack_ping_servo (uint32_t word)
+static inline bool obstacle_pack_ping_answers (uint32_t word, uint32_t seq)
 {
-    int32_t const deg = (int32_t)obstacle_pack_get(word, OBSTACLE_PING_SERVO_SH, OBSTACLE_PING_SERVO_MK);
-
-    return ((deg - OBSTACLE_PING_SERVO_OFFSET) * OBSTACLE_DECI_PER_DEG);
+    return (obstacle_pack_ping_is_reply(word) &&
+            (obstacle_pack_get(word, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK) ==
+             (seq & OBSTACLE_PING_SEQ_MK)));
 }
 
 #endif /* OBSTACLE_PACK_H */

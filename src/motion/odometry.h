@@ -33,7 +33,8 @@ typedef struct
     int32_t  velocity_um_s; /* Signed interval average, positive car-forward. */
     uint32_t invalid_delta;
     bool     speed_valid;
-    bool     odometry_valid;
+    bool     odometry_valid; /* This sample only; same as speed_valid. */
+    uint8_t  invalid_samples; /* Samples without speed_valid since init; wraps. */
 } motion_wheel_sample_t;
 
 typedef struct
@@ -48,7 +49,7 @@ typedef struct
     motion_config_t config;
     motion_input_t  previous;
     int64_t         net_edges[ENCODER_WHEELS];
-    bool            odometry_valid[ENCODER_WHEELS];
+    uint8_t         invalid_samples[ENCODER_WHEELS];
     bool            initialised;
 } odometry_t;
 
@@ -61,9 +62,10 @@ bool odometry_init (odometry_t *      p_sampler,
 
 /* Failure (null/uninitialised input, zero dt or arithmetic overflow) changes
  * neither state nor output. Success may publish invalid quality flags:
- * capture invalids invalidate that interval's speed and latch odometry bad;
- * excessive dt invalidates both speeds and latches both odometries bad.
- * Later clean intervals can restore speed validity, not lost odometry.
+ * a capture invalid or an excessive dt makes that interval's speed and
+ * odometry not valid, and the next clean interval is valid again.
+ * invalid_samples counts such intervals per wheel (wraps at 256), so a
+ * reader that polls less often than the samples arrive can still see one.
  * Observed net counts remain available, without guessed missing edges.
  * Conversions truncate toward zero; total edges preserve fractional travel.
  * Speed/displacement magnitudes must fit INT32_MAX/INT64_MAX respectively.

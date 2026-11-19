@@ -1,5 +1,5 @@
 /** @file encoder.h
- * @brief RP2040 quadrature diagnostic capture using the SMP kernel.
+ * @brief RP2040 quadrature capture: one PIO state machine per wheel.
  */
 #ifndef ENCODER_CAPTURE_H
 #define ENCODER_CAPTURE_H
@@ -9,30 +9,27 @@
 
 typedef struct
 {
-    uint32_t              timestamp_us;
+    uint32_t            timestamp_us;
     quadrature_counts_t wheel[ENCODER_WHEELS];
-    uint8_t               captured_states;
-    /* Bits 0..3: live A/B states; 4/5: pending L/R edge IRQ;
-     * 6/7: L/R edge enables AND this core's NVIC enable. */
-    uint8_t pins_and_irq;
 } encoder_sample_t;
 
-/* Call once from a task pinned to TP_PRC1, before enabling other GPIO IRQs.
- * This diagnostic driver owns IO_IRQ_BANK0 exclusively. Integration with the
- * sonar needs a common dispatcher; do not install two independent handlers.
- * Returns E_BUSY if any GPIO IRQ is already enabled on either core.
- * A/B inputs must be valid 3.3 V quadrature signals; no internal pulls used.
+/* Call once, before any reader starts. Sets the encoder pads and starts the
+ * state machines; they count with no interrupt and no CPU time. Returns
+ * E_LIMIT when no PIO block has room for them, E_IO when a state machine
+ * pushes no word.
  */
 ER encoder_init (void);
 
-/* Coherent copy from either core, protected against capture IRQ updates.
- * No blocking kernel call, printing or conversion while holding this lock.
- * Counter/time rollover is modulo 2^32, not unlimited history.
+/* Coherent copy from either core. Reads one fresh word per wheel under a
+ * spinlock, about 1.5 us. Call before one wheel moves 2^23 steps (30 min
+ * at full speed) or skips 256 states. Counter and time rollover is modulo
+ * 2^32. Returns E_IO, with the counters unchanged, when a state machine
+ * pushes no word within a few microseconds.
  */
 ER encoder_read (encoder_sample_t * p_sample);
 
-/* Diagnostic only: reseed from current inputs and zero counters. Call on
- * core 0 with no concurrent consumers needing the old counter baseline. */
+/* Diagnostic only: zero the counters from the present count. No concurrent
+ * consumer may need the old counter baseline. */
 ER encoder_reset (void);
 
 #endif /* ENCODER_CAPTURE_H */

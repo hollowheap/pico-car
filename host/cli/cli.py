@@ -78,29 +78,34 @@ def cmd_monitor(args, schema) -> int:
     return 0
 
 
-def _device_sent_ms(client, schema, prefix: str, timeout: float = 2.0):
-    """Approximate the device's 16-bit millisecond clock from a heartbeat."""
-    heartbeat = {}
+def _device_state(client, schema, prefix: str, timeout: float = 2.5) -> dict:
+    """run_id and uptime_s from the 1 Hz heartbeat, and cmd_last_id from the
+    1 Hz diag frame. A key is missing when its packet did not arrive."""
+    state = {}
 
     def on_message(topic: str, payload: bytes) -> None:
-        if packet_name_for_topic(schema, topic) != "heartbeat":
+        name = packet_name_for_topic(schema, topic)
+        if name not in ("heartbeat", "diag"):
             return
         try:
-            values = decode_packet(schema, "heartbeat", payload)["values"]
+            values = decode_packet(schema, name, payload)["values"]
         except ValueError:
             return
-        heartbeat["uptime_s"] = values["uptime_s"]
-        heartbeat["received"] = time.monotonic()
+        if name == "heartbeat":
+            state["run_id"] = values["run_id"]
+            state["uptime_s"] = values["uptime_s"]
+        else:
+            state["cmd_last_id"] = values["cmd_last_id"]
 
     client.on_message = on_message
-    client.subscribe(f"{prefix}/{schema['topics']['heartbeat']}", qos=0)
+    for name in ("heartbeat", "diag"):
+        client.subscribe(f"{prefix}/{schema['topics'][name]}", qos=0)
     deadline = time.monotonic() + timeout
-    while "received" not in heartbeat and time.monotonic() < deadline:
+    while (("uptime_s" not in state) or ("cmd_last_id" not in state)) and (
+        time.monotonic() < deadline
+    ):
         client.loop(0.1)
-    if "received" not in heartbeat:
-        return None
-    elapsed_ms = (time.monotonic() - heartbeat["received"]) * 1000.0
-    return int(heartbeat["uptime_s"] * 1000 + elapsed_ms) & 0xFFFF
+    return state
 
 
 def cmd_command(args, schema) -> int:
@@ -111,9 +116,6 @@ def cmd_command(args, schema) -> int:
         return 2
 
     prefix = _topic_prefix(args.prefix)
-    cmd_id = args.cmd_id
-    if cmd_id is None:
-        cmd_id = int(time.time() * 1000) & 0xFFFF
 
     client = MqttClient(
         args.host,
@@ -126,20 +128,27 @@ def cmd_command(args, schema) -> int:
     topic = f"{prefix}/{schema['topics']['command']}"
     try:
         client.connect()
-        sent_ms = args.sent_ms
-        if sent_ms is None:
-            sent_ms = _device_sent_ms(client, schema, prefix)
-            if sent_ms is None:
-                print("no heartbeat received; pass --sent-ms", file=sys.stderr)
+        state = _device_state(client, schema, prefix)
+        if "uptime_s" not in state:
+            # The car refuses a command without a fresh uptime echo.
+            print("no heartbeat received", file=sys.stderr)
+            return 1
+        run_id = state["run_id"] if args.run_id is None else args.run_id
+        cmd_id = args.cmd_id
+        if cmd_id is None:
+            if "cmd_last_id" not in state:
+                print("no diag frame received; pass --cmd-id", file=sys.stderr)
                 return 1
-        payload = encode_command(schema, args.name, cmd_id, args.run_id,
-                                 sent_ms)
+            # The car takes only an id newer than the last one it accepted.
+            cmd_id = (state["cmd_last_id"] + 1) & 0xFFFF
+        payload = encode_command(schema, args.name, cmd_id, run_id,
+                                 state["uptime_s"])
         packet_id = client.publish(topic, payload, qos=1)
         if not client.wait_for_puback(packet_id):
             print("command not acknowledged", file=sys.stderr)
             return 1
-        print(f"sent {args.name} cmd_id={cmd_id} run_id={args.run_id} "
-              f"sent_ms={sent_ms}")
+        print(f"sent {args.name} cmd_id={cmd_id} run_id={run_id} "
+              f"uptime_s={state['uptime_s']}")
         return 0
     except (OSError, MQTTError) as exc:
         print(f"mqtt error: {exc}", file=sys.stderr)
@@ -171,14 +180,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     command = sub.add_parser("command", help="send a validated command")
     command.add_argument("name", help="command name from the protocol schema")
-    command.add_argument("--run-id", type=int, default=0)
-    command.add_argument("--cmd-id", type=int, default=None)
     command.add_argument(
-        "--sent-ms",
+        "--run-id",
         type=int,
         default=None,
-        help="override the heartbeat-synchronized 16-bit timestamp",
+        help="override the run ID read from the heartbeat",
     )
+    command.add_argument("--cmd-id", type=int, default=None)
     return parser
 
 

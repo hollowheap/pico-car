@@ -1,7 +1,7 @@
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, G, Line, Polygon, Polyline, Rect } from 'react-native-svg';
 
-import type { Course } from '../../lib/course';
+import { obstacleLabel, type Course } from '../../lib/course';
 import type { EventKind } from '../../lib/events';
 import { useTheme } from '../../lib/theme-provider';
 
@@ -18,6 +18,9 @@ const PAD = 28;
 const SCALE_STEPS_MM = [100, 200, 500, 1000, 2000, 5000, 10000];
 /** The smallest span the plot fits, so a short run is not blown up (mm). */
 const MIN_SPAN_MM = 600;
+
+/** Legend line of the obstacle box, which is not an event mark. */
+export const OBSTACLE_LEGEND = 'Obstacle estimate: a box in the fault colour; a dashed side is not measured.';
 
 /** Legend text of each mark shape. */
 export const MARK_LEGEND: { kind: EventKind; label: string }[] = [
@@ -61,7 +64,7 @@ function Mark({ kind, x, y, color }: { kind: EventKind; x: number; y: number; co
  */
 export function CourseTrace({ course, height = HEIGHT * 1.2 }: Props) {
   const theme = useTheme();
-  const { bounds, points, markers } = course;
+  const { bounds, points, markers, obstacle } = course;
   const spanX = Math.max(MIN_SPAN_MM, bounds.maxX - bounds.minX);
   const spanY = Math.max(MIN_SPAN_MM, bounds.maxY - bounds.minY);
   const scale = Math.min((WIDTH - 2 * PAD) / spanX, (HEIGHT - 2 * PAD) / spanY);
@@ -76,7 +79,7 @@ export function CourseTrace({ course, height = HEIGHT * 1.2 }: Props) {
   return (
     <View style={filling ? styles.filling : styles.stack}>
     <Svg
-      accessibilityLabel={`Course trace, ${points.length} points, ${markers.length} marks`}
+      accessibilityLabel={`Course trace, ${points.length} points, ${markers.length} marks${obstacle === null ? '' : `, ${obstacleLabel(obstacle)}`}`}
       accessibilityRole="image"
       height={height}
       preserveAspectRatio="xMidYMid meet"
@@ -95,6 +98,27 @@ export function CourseTrace({ course, height = HEIGHT * 1.2 }: Props) {
       ) : null}
       {points[0] !== undefined ? (
         <Circle cx={sx(points[0].x)} cy={sy(points[0].y)} fill="none" r="5" stroke={theme.colors.text} strokeWidth="1.5" />
+      ) : null}
+      {obstacle !== null ? (
+        <G>
+          {obstacle.corners.map((corner, i) => {
+            const next = obstacle.corners[(i + 1) % 4] ?? corner;
+            // Edges 1 and 3 are the sides, edge 2 is the far face; edge 0 is the near face.
+            const dashed = (i === 1 || i === 3) ? obstacle.widthDashed : i === 2 && obstacle.depthDashed;
+            return (
+              <Line
+                key={i}
+                stroke={theme.colors.danger}
+                strokeDasharray={dashed ? '4 3' : undefined}
+                strokeWidth="2"
+                x1={sx(corner.x)}
+                x2={sx(next.x)}
+                y1={sy(corner.y)}
+                y2={sy(next.y)}
+              />
+            );
+          })}
+        </G>
       ) : null}
       {markers.map((marker) => (
         <Mark

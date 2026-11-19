@@ -128,6 +128,7 @@ test_motion (void)
         .overruns         = TELEMETRY_VEC_MOTION_OVERRUNS,
         .motion_state     = TELEMETRY_VEC_MOTION_MOTION_STATE,
         .motion_fault     = TELEMETRY_VEC_MOTION_MOTION_FAULT,
+        .seq              = TELEMETRY_VEC_MOTION_SEQ,
     };
 
     CHECK_PACK (MOTION, motion, src, 0u);
@@ -153,13 +154,12 @@ test_physics (void)
         .physics_faults = TELEMETRY_VEC_PHYSICS_PHYSICS_FAULTS,
         .flags          = TELEMETRY_VEC_PHYSICS_FLAGS,
         .attitude_state = TELEMETRY_VEC_PHYSICS_ATTITUDE_STATE,
+        .seq            = TELEMETRY_VEC_PHYSICS_SEQ,
     };
 
     CHECK_PACK (PHYSICS, physics, src, 0u);
     CHECK_PACK (PHYSICS, physics, src, ODD_OFFSET);
     CHECK_NULLS (physics, src);
-    /* The reserved byte is always zero. */
-    CHECK (TELEMETRY_VECTOR_PHYSICS[TELEMETRY_PHYSICS_OFF_RESERVED] == 0u);
 }
 
 static void
@@ -169,8 +169,9 @@ test_obstacle (void)
         .faults         = TELEMETRY_VEC_OBSTACLE_FAULTS,
         .dist_mm        = TELEMETRY_VEC_OBSTACLE_DIST_MM,
         .closest_mm     = TELEMETRY_VEC_OBSTACLE_CLOSEST_MM,
-        .plan_width_mm  = TELEMETRY_VEC_OBSTACLE_PLAN_WIDTH_MM,
-        .plan_need_mm   = TELEMETRY_VEC_OBSTACLE_PLAN_NEED_MM,
+        .width_mm       = TELEMETRY_VEC_OBSTACLE_WIDTH_MM,
+        .breadth_mm     = TELEMETRY_VEC_OBSTACLE_BREADTH_MM,
+        .face_mm        = TELEMETRY_VEC_OBSTACLE_FACE_MM,
         .servo_deci     = TELEMETRY_VEC_OBSTACLE_SERVO_DECI,
         .body_deci      = TELEMETRY_VEC_OBSTACLE_BODY_DECI,
         .state          = TELEMETRY_VEC_OBSTACLE_STATE,
@@ -178,11 +179,9 @@ test_obstacle (void)
         .echo_class     = TELEMETRY_VEC_OBSTACLE_ECHO_CLASS,
         .flags          = TELEMETRY_VEC_OBSTACLE_FLAGS,
         .seq            = TELEMETRY_VEC_OBSTACLE_SEQ,
-        .req_id         = TELEMETRY_VEC_OBSTACLE_REQ_ID,
-        .plan_status    = TELEMETRY_VEC_OBSTACLE_PLAN_STATUS,
-        .plan_side      = TELEMETRY_VEC_OBSTACLE_PLAN_SIDE,
-        .plan_start_deg = TELEMETRY_VEC_OBSTACLE_PLAN_START_DEG,
-        .rescans        = TELEMETRY_VEC_OBSTACLE_RESCANS,
+        .hug_state      = TELEMETRY_VEC_OBSTACLE_HUG_STATE,
+        .hug_side       = TELEMETRY_VEC_OBSTACLE_HUG_SIDE,
+        .hug_seq        = TELEMETRY_VEC_OBSTACLE_HUG_SEQ,
     };
 
     CHECK_PACK (OBSTACLE, obstacle, src, 0u);
@@ -218,6 +217,13 @@ test_diag (void)
         .supervisor_passes = TELEMETRY_VEC_DIAG_SUPERVISOR_PASSES,
         .stack_min_free    = TELEMETRY_VEC_DIAG_STACK_MIN_FREE,
         .stack_min_task    = TELEMETRY_VEC_DIAG_STACK_MIN_TASK,
+        .cmd_ring_drops    = TELEMETRY_VEC_DIAG_CMD_RING_DROPS,
+        .cmd_last_id       = TELEMETRY_VEC_DIAG_CMD_LAST_ID,
+        .cmd_rej_length    = TELEMETRY_VEC_DIAG_CMD_REJ_LENGTH,
+        .cmd_rej_opcode    = TELEMETRY_VEC_DIAG_CMD_REJ_OPCODE,
+        .cmd_rej_run       = TELEMETRY_VEC_DIAG_CMD_REJ_RUN,
+        .cmd_rej_old_id    = TELEMETRY_VEC_DIAG_CMD_REJ_OLD_ID,
+        .cmd_rej_age       = TELEMETRY_VEC_DIAG_CMD_REJ_AGE,
     };
 
     CHECK_PACK (DIAG, diag, src, 0u);
@@ -234,6 +240,7 @@ test_heartbeat (void)
         .wifi_rssi    = TELEMETRY_VEC_HEARTBEAT_WIFI_RSSI,
         .reset_reason = TELEMETRY_VEC_HEARTBEAT_RESET_REASON,
         .link_state   = TELEMETRY_VEC_HEARTBEAT_LINK_STATE,
+        .run_id       = TELEMETRY_VEC_HEARTBEAT_RUN_ID,
     };
 
     CHECK_PACK (HEARTBEAT, heartbeat, src, 0u);
@@ -284,10 +291,11 @@ test_profile (void)
 static void
 test_sizes_and_topics (void)
 {
-    CHECK (TELEMETRY_SCHEMA_VERSION == 2u);
+    CHECK (TELEMETRY_SCHEMA_VERSION == 3u);
     CHECK (TELEMETRY_STATUS_WIRE_SIZE == 16u);
     CHECK (TELEMETRY_EVENT_WIRE_SIZE == 12u);
-    CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 8u);
+    CHECK (TELEMETRY_DIAG_WIRE_SIZE == 45u);
+    CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 10u);
     CHECK (TELEMETRY_PROFILE_WIRE_SIZE == 82u);
     CHECK (TELEMETRY_WIRE_MAX == 82u);
     CHECK (TELEMETRY_FRAME_MAX == 83u);

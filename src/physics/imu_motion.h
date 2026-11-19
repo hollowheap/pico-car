@@ -12,13 +12,14 @@
  *     the field. A sample is rejected when |m| is outside the expected
  *     Earth-field band.
  *   - When both are valid and disagree for several samples, yaw_disagree is
- *     set (wheel slip, or magnetic interference). It does not say which.
+ *     set (wheel slip, or magnetic interference). It does not say which;
+ *     the encoder rate stays the yaw source and heading_valid is cleared.
  *   Sign: positive yaw rate = turning left (counter-clockwise from above).
  *   Heading: 0 to 360 degrees, clockwise from magnetic north.
  *
  * Forward residual: measured forward reading minus sin(filtered pitch) minus
  * dv/dt / g. It is only reported for telemetry. The IMU does not detect
- * collisions (D140); the sonar guard in the obstacle code does.
+ * collisions; the sonar guard in the obstacle code does.
  *
  * Classes, highest priority first: UNKNOWN (not calibrated), CLIMBING /
  * DESCENDING (hump state), STATIONARY, TURNING, ACCELERATING, MOVING,
@@ -26,7 +27,8 @@
  * samples before it is reported, except calibration. LIFTED is set by the
  * pipeline from the attitude module, not by this module.
  *
- * All thresholds are placeholders until tuned on logged data.
+ * No threshold is measured on the car; imu_motion.c says what sets the scale
+ * of each. The track width is the chassis value (CHASSIS_WHEEL_TRACK_MM).
  */
 
 #ifndef IMU_MOTION_H
@@ -136,7 +138,7 @@ typedef struct
     uint16_t    disagree_count;
 } imu_motion_ctx_t;
 
-/* Fill cfg with placeholder defaults. */
+/* Fill cfg with the unmeasured defaults and the chassis track width. */
 void imu_motion_default_config (imu_motion_config_t * p_cfg);
 
 /* Check cfg, copy the forward axis from the hump config and reset. Returns

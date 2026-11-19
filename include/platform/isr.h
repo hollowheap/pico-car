@@ -13,6 +13,9 @@
 
 #include "platform/static_assert.h"
 
+/** NVIC priority of the GPIO bank IRQ. Must equal the line alarm priority. */
+#define GPIO_IRQ_PRI 2U
+
 /** Maximum number of handlers for GPIO interrupts. */
 #define MAX_GPIO_IRQ_HANDLERS 4U
 

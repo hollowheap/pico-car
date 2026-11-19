@@ -1,7 +1,7 @@
 # Ground Station CLI
 
 Direct-MQTT ground-station CLI. It consumes `protocol/telemetry.yaml`, decodes
-the schema 2 packets (status, motion, physics, obstacle, diag, event,
+the schema 3 packets (status, motion, physics, obstacle, diag, event,
 heartbeat, profile), and sends validated commands without going
 through the dashboard backend (D41).
 
@@ -34,17 +34,21 @@ Defaults: broker `<this host>:1883`, topic prefix `car/PICO-CAR`, keepalive
 
 ```text
 12:00:01 status    speed_mms=123 odometer_mm=456 heading_ddeg=900 state=2 mode=1 faults=0 seq=7 line_bits=0 hold_mask=0
-12:00:01 heartbeat uptime_s=42 drops=0 wifi_rssi=-55 reset_reason=0 link_state=3
+12:00:01 heartbeat uptime_s=42 drops=0 wifi_rssi=-55 reset_reason=0 link_state=3 run_id=4660
 ```
 
-`command` subscribes to the 1 Hz heartbeat to synchronize `sent_ms` with the
-device clock, then publishes QoS 1 and waits for PUBACK. The command is an
-8-byte frame: `cmd_id u16, run_id u16, sent_ms u16, opcode u8, reserved u8`.
-Override the synchronized value with `--sent-ms` for controlled tests.
+`command` reads the run ID and the uptime from the 1 Hz heartbeat and
+`cmd_last_id` from the 1 Hz diag frame, then publishes QoS 1 and waits for
+PUBACK. The command is a 9-byte frame: `cmd_id u16, run_id u16, opcode u8,
+uptime_s u32`. The car picks a new run ID at each boot and refuses a command
+with another one. It also refuses a cmd_id that is not newer than the last
+one it accepted, so the CLI sends `cmd_last_id + 1`, and an uptime echo more
+than 3 s old. Override the ids with `--run-id` and `--cmd-id` for controlled
+tests; the uptime always comes from the heartbeat.
 
 ## Outage check
 
 The outage check script `test_wifi_outage.py` (kept outside the repository) starts a loopback broker, publishes
 telemetry, drops the link for 30 seconds, and checks reconnect (NFR6), live
-decode, and the CLI command path including heartbeat synchronization. Set `PICO_CAR_CLI_DIR` and
+decode, and the CLI command path including the heartbeat run ID. Set `PICO_CAR_CLI_DIR` and
 `PICO_CAR_SCHEMA` when running it against a worktree.

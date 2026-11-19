@@ -8,6 +8,7 @@
 #include <stdlib.h>
 
 #include "pilot/drive.h"
+#include "pilot/pilot.h"
 
 #ifdef NDEBUG
 #error "tests need assert()"
@@ -18,14 +19,14 @@
 #define SETTLE_RUNS 200
 #define TURN_90_DPS 900
 
-static void step(drive_state_t * p_d, int32_t speed, int32_t turn, uint32_t dt,
+static void step(drive_state_t * p_d, int16_t speed, int16_t turn, uint32_t dt,
                  int32_t * p_l, int32_t * p_r)
 {
     drive_step(p_d, speed, turn, dt, p_l, p_r);
 }
 
 /* Run until the targets stop changing. */
-static void settle(drive_state_t * p_d, int32_t speed, int32_t turn,
+static void settle(drive_state_t * p_d, int16_t speed, int16_t turn,
                    int32_t * p_l, int32_t * p_r)
 {
     int i;
@@ -212,6 +213,120 @@ static void test_dt_clamp(void)
                      + DRIVE_ACCEL_MM_S2 * (int32_t)DRIVE_DT_MAX_MS);
 }
 
+/* A safety stop at 300 mm/s: the line task resets the drive, so the next step
+ * commands 0 at once. Through the slew alone the stop would take 0.6 s. */
+static void test_safety_stop_skips_slew(void)
+{
+    drive_state_t d;
+    int32_t l;
+    int32_t r;
+
+    drive_init(&d);
+    settle(&d, 300, 0, &l, &r);
+    assert(l == 300 * UM_PER_MM && r == 300 * UM_PER_MM);
+    step(&d, 0, 0, STEP_MS, &l, &r);
+    assert(l == (300 * UM_PER_MM) - (DRIVE_ACCEL_MM_S2 * (int32_t)STEP_MS));
+
+    settle(&d, 300, 0, &l, &r);
+    drive_safety_stop(&d, &l, &r);
+    assert(l == 0 && r == 0);
+    step(&d, 0, 0, STEP_MS, &l, &r);
+    assert(l == 0 && r == 0);
+    /* The drive starts again from rest. */
+    step(&d, 100, 0, STEP_MS, &l, &r);
+    assert(l == DRIVE_START_MM_S * UM_PER_MM);
+}
+
+/* The line follower's command reaches the wheels in one pass: 300 mm/s to a
+ * pivot about the inner wheel. Through the slew the inner wheel would need
+ * 0.6 s. The next slewed step starts from these targets. */
+static void test_follow_skips_slew(void)
+{
+    drive_state_t d;
+    int32_t l;
+    int32_t r;
+    int32_t r_follow;
+    /* Half the wheel difference is 150 mm/s on the 107 mm track: 1606 ddeg/s. */
+    int16_t const turn = 1606;
+
+    drive_init(&d);
+    settle(&d, 300, 0, &l, &r);
+    drive_follow(&d, 150, turn, STEP_MS, &l, &r);
+    assert(l < 2 * UM_PER_MM && l > -2 * UM_PER_MM);
+    assert(r > 298 * UM_PER_MM && r <= DRIVE_MAX_TARGET_UM_S);
+    r_follow = r;
+    step(&d, 150, 0, STEP_MS, &l, &r);
+    assert(r == r_follow - (DRIVE_ACCEL_MM_S2 * (int32_t)STEP_MS));
+}
+
+/* The follower asks for cruise as it starts: at boot, after a hug, after a
+ * back-off and after a hold. The forward speed rises at the slew limit, so the
+ * wheels do not spin; the turn of a spot search still comes at once. */
+static void test_follow_start_ramps(void)
+{
+    drive_state_t d;
+    int32_t l;
+    int32_t r;
+    int32_t const rise = DRIVE_ACCEL_MM_S2 * (int32_t)STEP_MS;
+
+    drive_init(&d);
+    drive_follow(&d, 300, 0, STEP_MS, &l, &r);
+    assert(l == rise && r == rise);
+    drive_follow(&d, 300, 0, STEP_MS, &l, &r);
+    assert(l == 2 * rise && r == 2 * rise);
+
+    /* From the pilot's back-off at -60 mm/s. */
+    drive_init(&d);
+    settle(&d, -60, 0, &l, &r);
+    assert(l == -60 * UM_PER_MM);
+    drive_follow(&d, 300, 0, STEP_MS, &l, &r);
+    assert(l == rise && r == rise);
+
+    drive_init(&d);
+    drive_follow(&d, 0, TURN_90_DPS, STEP_MS, &l, &r);
+    assert(l < -80 * UM_PER_MM && r > 80 * UM_PER_MM && l == -r);
+}
+
+/* The hug stops when its pings are lost: the car must not roll on blind
+ * through the slew. A stop to look, with no reason, still slews. */
+static void test_pilot_stop_with_reason(void)
+{
+    drive_state_t d;
+    pilot_cmd_t   cmd = { 0 };
+    int32_t       l;
+    int32_t       r;
+
+    drive_init(&d);
+    settle(&d, 120, 0, &l, &r);
+    cmd.behaviour = (uint8_t)PILOT_BEHAVIOUR_HUG;
+    cmd.reason    = (uint8_t)PILOT_REASON_NONE;
+    pilot_drive(&d, &cmd, STEP_MS, &l, &r);
+    assert(l == (120 * UM_PER_MM) - (DRIVE_ACCEL_MM_S2 * (int32_t)STEP_MS));
+
+    settle(&d, 120, 0, &l, &r);
+    cmd.reason = (uint8_t)PILOT_REASON_SONAR;
+    pilot_drive(&d, &cmd, STEP_MS, &l, &r);
+    assert(l == 0 && r == 0);
+}
+
+/* A stuck car backs off from rest: its wheels do not turn, and a slew down
+ * from 300 mm/s would push on the blockage for 0.6 s first. */
+static void test_pilot_backoff_from_rest(void)
+{
+    drive_state_t d;
+    pilot_cmd_t   cmd = { 0 };
+    int32_t       l;
+    int32_t       r;
+
+    drive_init(&d);
+    settle(&d, 300, 0, &l, &r);
+    cmd.speed_mm_s = -PILOT_BACKOFF_MM_S;
+    cmd.behaviour  = (uint8_t)PILOT_BEHAVIOUR_SAFETY;
+    cmd.reason     = (uint8_t)PILOT_REASON_STUCK;
+    pilot_drive(&d, &cmd, STEP_MS, &l, &r);
+    assert(l == -DRIVE_START_MM_S * UM_PER_MM && r == l);
+}
+
 int main(void)
 {
     test_straight();
@@ -223,6 +338,11 @@ int main(void)
     test_sign_change_goes_through_zero();
     test_saturation_keeps_turn();
     test_dt_clamp();
-    puts("test_pilot_drive: 9 tests passed");
+    test_safety_stop_skips_slew();
+    test_follow_skips_slew();
+    test_follow_start_ramps();
+    test_pilot_stop_with_reason();
+    test_pilot_backoff_from_rest();
+    puts("test_pilot_drive: 14 tests passed");
     return 0;
 }

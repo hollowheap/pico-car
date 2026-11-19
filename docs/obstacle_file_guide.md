@@ -118,7 +118,10 @@ functions, who uses it, and when you would edit it.
   32-bit words. Small inline helpers read and write those fields.
 - **Main functions:** `obstacle_pack_get`, `obstacle_pack_put`, `obstacle_pack_slot`,
   `obstacle_pack_slot_dist`, `obstacle_pack_slot_class`, `obstacle_pack_slot_is_measured`,
-  `obstacle_pack_cmd`.
+  `obstacle_pack_cmd`. The ping-word layout and its decoders (`obstacle_pack_ping_echo`,
+  `obstacle_pack_ping_mm`, `obstacle_pack_ping_seq`) are in the public
+  `include/navigation/obstacle_ping.h`; this header includes it. A no-reading echo gives
+  `LOOK_ECHO_NONE`, never OPEN.
 - **Used by:** every other file, and by Navigation to build commands and
   read events.
 - **Edit it when:** a new code or field is needed. Then update the bit table
@@ -144,7 +147,7 @@ functions, who uses it, and when you would edit it.
   its next slot.
 
 #### `planner.c / .h`
-- **What it does:** computes obstacle width and candidate bypass sides after a
+- **What it does:** the old path, used when `PICO_CAR_PILOT=OFF`. Computes obstacle width and candidate bypass sides after a
   body-pivot scan. Controls wheel speeds for pivots and straight legs. Calculates
   side-lean angles and drift trim for stop-and-look bypass legs.
 - **Main functions:** `obstacle_plan_cfg_default`, `obstacle_plan_build`,
@@ -181,7 +184,7 @@ functions, who uses it, and when you would edit it.
 - **Edit it when:** pins, PWM settings or the ISR change.
 
 #### `scan_task.c / .h`
-- **What it does:** the Buddy 5 task (processor 1, priority 6). Each loop
+- **What it does:** the Buddy 5 task (processor 1, priority 4). Each loop
   pass handles commands and time limits, then does one of: move the servo
   and wait for it to settle, wait for the 60 ms ping spacing, or take one
   ping and feed it to the statechart.
@@ -191,15 +194,16 @@ functions, who uses it, and when you would edit it.
 
 #### `comms.c / .h`
 - **What it does:** everything shared between Buddy 5 and other tasks: the
-  4-slot command queue, the 4-slot event outbox, the status and steering
-  words, the fault byte, the profile copy, and the links to Buddy 2
-  (emergency stop, odometer). Other tasks can read these without ever
-  making Buddy 5 wait. Private: only `obstacle.c` and `scan_task.c`
-  include it.
+  4-slot command queue, the 4-slot event outbox, the status, ping and
+  steering words, the fault byte, the profile and plan copy, and the links to
+  Buddy 2 (emergency stop, wheel travel). Other tasks can read these without
+  ever making Buddy 5 wait. Private to the obstacle module: no other
+  subsystem includes it.
 - **Main functions:** `obstacle_comms_init`, `obstacle_comms_post_cmd`,
   `obstacle_comms_pop_cmd`, `obstacle_comms_publish`, `obstacle_comms_get_event`,
-  `obstacle_comms_odometer_mm`, `obstacle_comms_copy_profile`.
-- **Used by:** `obstacle.c`, `scan_task.c`.
+  `obstacle_comms_travel`, `obstacle_comms_ping`, `obstacle_comms_copy_profile`.
+- **Used by:** `obstacle.c`, `scan_task.c`, `obstacle_nav.c` and
+  `bench_main.c` (events and the ping word).
 - **Edit it when:** changing queue sizes, delivery rules or the links.
 
 #### `obstacle.c / .h`
@@ -207,7 +211,7 @@ functions, who uses it, and when you would edit it.
   start-up order (links → event flag → hardware → task) and forwards every
   other call to `comms.c`.
 - **Main functions:** `obstacle_init`, `obstacle_post_cmd`,
-  `obstacle_get_event`, `obstacle_get_steer`, `obstacle_get_status`,
+  `obstacle_get_steer`, `obstacle_get_status`,
   `obstacle_get_faults`, `obstacle_copy_profile`, `obstacle_flag_id`,
   `obstacle_dropped_events`.
 - **Used by:** `obstacle_nav.c` (in `main.uf2`) and `bench_main.c`.

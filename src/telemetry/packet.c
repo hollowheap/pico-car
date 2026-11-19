@@ -94,6 +94,7 @@ telemetry_pack_motion (uint8_t * dst, const telemetry_motion_t * p_src)
     put_u8 (dst, TELEMETRY_MOTION_OFF_MOTION_STATE, p_src->motion_state);
     put_u8 (dst, TELEMETRY_MOTION_OFF_MOTION_FAULT, p_src->motion_fault);
     put_u16 (dst, TELEMETRY_MOTION_OFF_OVERRUNS, p_src->overruns);
+    put_u8 (dst, TELEMETRY_MOTION_OFF_SEQ, p_src->seq);
 
     return TELEMETRY_MOTION_WIRE_SIZE;
 }
@@ -119,7 +120,7 @@ telemetry_pack_physics (uint8_t * dst, const telemetry_physics_t * p_src)
     put_u8 (dst, TELEMETRY_PHYSICS_OFF_PHYSICS_FAULTS, p_src->physics_faults);
     put_u8 (dst, TELEMETRY_PHYSICS_OFF_FLAGS, p_src->flags);
     put_u8 (dst, TELEMETRY_PHYSICS_OFF_ATTITUDE_STATE, p_src->attitude_state);
-    put_u8 (dst, TELEMETRY_PHYSICS_OFF_RESERVED, 0u);
+    put_u8 (dst, TELEMETRY_PHYSICS_OFF_SEQ, p_src->seq);
 
     return TELEMETRY_PHYSICS_WIRE_SIZE;
 }
@@ -139,13 +140,12 @@ telemetry_pack_obstacle (uint8_t * dst, const telemetry_obstacle_t * p_src)
     put_u16 (dst, TELEMETRY_OBSTACLE_OFF_DIST_MM, p_src->dist_mm);
     put_u16 (dst, TELEMETRY_OBSTACLE_OFF_CLOSEST_MM, p_src->closest_mm);
     put_u8 (dst, TELEMETRY_OBSTACLE_OFF_SEQ, p_src->seq);
-    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_REQ_ID, p_src->req_id);
-    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_PLAN_STATUS, p_src->plan_status);
-    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_PLAN_SIDE, p_src->plan_side);
-    put_u16 (dst, TELEMETRY_OBSTACLE_OFF_PLAN_WIDTH_MM, p_src->plan_width_mm);
-    put_u16 (dst, TELEMETRY_OBSTACLE_OFF_PLAN_NEED_MM, p_src->plan_need_mm);
-    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_PLAN_START_DEG, p_src->plan_start_deg);
-    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_RESCANS, p_src->rescans);
+    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_HUG_STATE, p_src->hug_state);
+    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_HUG_SIDE, p_src->hug_side);
+    put_u8 (dst, TELEMETRY_OBSTACLE_OFF_HUG_SEQ, p_src->hug_seq);
+    put_u16 (dst, TELEMETRY_OBSTACLE_OFF_WIDTH_MM, p_src->width_mm);
+    put_u16 (dst, TELEMETRY_OBSTACLE_OFF_BREADTH_MM, p_src->breadth_mm);
+    put_u16 (dst, TELEMETRY_OBSTACLE_OFF_FACE_MM, p_src->face_mm);
     put_i16 (dst, TELEMETRY_OBSTACLE_OFF_SERVO_DECI, p_src->servo_deci);
     put_i16 (dst, TELEMETRY_OBSTACLE_OFF_BODY_DECI, p_src->body_deci);
 
@@ -187,6 +187,13 @@ telemetry_pack_diag (uint8_t * dst, const telemetry_diag_t * p_src)
     put_u16 (dst, TELEMETRY_DIAG_OFF_SUPERVISOR_PASSES, p_src->supervisor_passes);
     put_u16 (dst, TELEMETRY_DIAG_OFF_STACK_MIN_FREE, p_src->stack_min_free);
     put_u8 (dst, TELEMETRY_DIAG_OFF_STACK_MIN_TASK, p_src->stack_min_task);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_RING_DROPS, p_src->cmd_ring_drops);
+    put_u16 (dst, TELEMETRY_DIAG_OFF_CMD_LAST_ID, p_src->cmd_last_id);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_LENGTH, p_src->cmd_rej_length);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_OPCODE, p_src->cmd_rej_opcode);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_RUN, p_src->cmd_rej_run);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_OLD_ID, p_src->cmd_rej_old_id);
+    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_AGE, p_src->cmd_rej_age);
 
     return TELEMETRY_DIAG_WIRE_SIZE;
 }
@@ -203,6 +210,7 @@ telemetry_pack_heartbeat (uint8_t * dst, const telemetry_heartbeat_t * p_src)
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_WIFI_RSSI, (uint8_t) p_src->wifi_rssi);
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_RESET_REASON, p_src->reset_reason);
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_LINK_STATE, p_src->link_state);
+    put_u16 (dst, TELEMETRY_HEARTBEAT_OFF_RUN_ID, p_src->run_id);
 
     return TELEMETRY_HEARTBEAT_WIRE_SIZE;
 }

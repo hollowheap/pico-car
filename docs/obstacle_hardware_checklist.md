@@ -8,7 +8,7 @@ each step: these are your evidence for the tribunal.
 - **Wheels:** keep them off the floor (on a block) until H6.
 - **Tool:** a ruler is enough for most steps; a multimeter is needed for H1.
 - **Values:** the numbers in this list come from `obstacle_config.h`. The
-  [contract](obstacle_contract.md) lists the states, the limits and the faults.
+  `statechart.c` lists the states and the faults.
 
 | # | Test | How | Pass when | Result |
 |---|---|---|---|---|

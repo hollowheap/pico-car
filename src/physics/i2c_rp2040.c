@@ -23,7 +23,6 @@
 #define PADS_BANK0_ADDR     (0x4001C000UL)
 #define I2C_RESETS_ADDR         (0x4000C000UL)
 #define SIO_ADDR            (0xD0000000UL)
-#define TIMER_ADDR          (0x40054000UL)
 
 /* I2C register offsets. */
 #define IC_CON              (I2C1_BASE_ADDR + 0x00UL)
@@ -89,7 +88,6 @@
 #define LSM303_ALIAS_SET        (0x2000UL)
 #define LSM303_ALIAS_CLR        (0x3000UL)
 
-#define TIMER_RAWL          (TIMER_ADDR + 0x28UL)
 
 #define SDA_MASK            (1UL << I2C_SDA_PIN)
 #define SCL_MASK            (1UL << I2C_SCL_PIN)
@@ -100,7 +98,7 @@
 
 uint32_t physics_time_us (void)
 {
-    return in_w (TIMER_RAWL);
+    return in_w (TIMER_TIMERAWL);
 }
 
 static bool expired (uint32_t start_us, uint32_t limit_us)
@@ -188,12 +186,35 @@ static i2c_bus_result_t abort_result (uint32_t source)
     return result;
 }
 
+/* Each poll loop checks its condition again once the deadline has passed. A
+ * higher-priority task can preempt this one between a poll and the deadline
+ * check, and the transfer can finish while it is away. */
+static bool tx_empty (void)
+{
+    return (in_w (IC_RAW_INTR_STAT) & RAW_TX_EMPTY) != 0UL;
+}
+
+static bool tx_has_room (void)
+{
+    return in_w (IC_TXFLR) < TX_FIFO_DEPTH;
+}
+
+static bool rx_has_data (void)
+{
+    return in_w (IC_RXFLR) != 0UL;
+}
+
+static bool stop_detected (void)
+{
+    return (in_w (IC_RAW_INTR_STAT) & RAW_STOP_DET) != 0UL;
+}
+
 /* After an abort or the final STOP, wait for STOP_DET and clear it. */
 static bool wait_stop (uint32_t start_us)
 {
-    while ((in_w (IC_RAW_INTR_STAT) & RAW_STOP_DET) == 0UL)
+    while (!stop_detected ())
     {
-        if (expired (start_us, I2C_TIMEOUT_US))
+        if (expired (start_us, I2C_TIMEOUT_US) && !stop_detected ())
         {
             return false;
         }
@@ -222,9 +243,9 @@ static i2c_bus_result_t write_phase (uint32_t start, const uint8_t * p_wr,
         }
         out_w (IC_DATA_CMD, cmd);
 
-        while ((in_w (IC_RAW_INTR_STAT) & RAW_TX_EMPTY) == 0UL)
+        while (!tx_empty ())
         {
-            if (expired (start, I2C_TIMEOUT_US))
+            if (expired (start, I2C_TIMEOUT_US) && !tx_empty ())
             {
                 result = I2C_BUS_TIMEOUT;
                 break;
@@ -278,9 +299,9 @@ static i2c_bus_result_t read_phase (uint32_t start, uint32_t wr_len,
             cmd |= CMD_STOP;
         }
 
-        while (in_w (IC_TXFLR) >= TX_FIFO_DEPTH)
+        while (!tx_has_room ())
         {
-            if (expired (start, I2C_TIMEOUT_US))
+            if (expired (start, I2C_TIMEOUT_US) && !tx_has_room ())
             {
                 result = I2C_BUS_TIMEOUT;
                 break;
@@ -292,7 +313,7 @@ static i2c_bus_result_t read_phase (uint32_t start, uint32_t wr_len,
         }
         out_w (IC_DATA_CMD, cmd);
 
-        while (0UL == in_w (IC_RXFLR))
+        while (!rx_has_data ())
         {
             source = in_w (IC_TX_ABRT_SOURCE);
             if (source != 0UL)
@@ -302,7 +323,7 @@ static i2c_bus_result_t read_phase (uint32_t start, uint32_t wr_len,
                 (void)wait_stop (start);
                 break;
             }
-            if (expired (start, I2C_TIMEOUT_US))
+            if (expired (start, I2C_TIMEOUT_US) && !rx_has_data ())
             {
                 result = I2C_BUS_TIMEOUT;
                 break;
