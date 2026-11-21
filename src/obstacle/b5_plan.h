@@ -70,12 +70,13 @@ bool    b5_plan_is_escape_clear (uint8_t cls, uint16_t dist_mm,
 uint8_t b5_plan_steer_away (uint8_t side);
 uint8_t b5_plan_steer_toward (uint8_t side);
 
-uint32_t b5_plan_backup_mm (uint32_t closest_mm);
+uint32_t b5_plan_ahead_mm (uint32_t closest_mm);
 uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci);
 uint32_t b5_plan_out_mm (uint32_t room_mm);
 uint32_t b5_plan_level_mm (uint32_t closest_mm);
 void     b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
-                            uint32_t lane_mm, b5_plan_side_t * p_side);
+                            uint32_t line_mm, int32_t pan_deci,
+                            b5_plan_side_t * p_side);
 int32_t  b5_plan_point_side_mm (int32_t side_mm, int32_t away_deci,
                                 uint32_t ahead_mm);
 

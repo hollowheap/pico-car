@@ -730,7 +730,7 @@ static bool check_health (b5_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
  *
  * NOTE: [Chat] Only REACQUIRE is guarded. In WAIT_STOP the car is already
  * braking, and in BYPASS Navigation first backs away from an obstacle that
- * is too close (b5_plan_backup_mm()), so a close reading straight ahead
+ * is too close (b5_plan_ahead_mm()), so a close reading straight ahead
  * there is expected; stopping for it would leave the car stuck in front of
  * the obstacle. Navigation's virtual bumper covers contact in every
  * bypass phase.

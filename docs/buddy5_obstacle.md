@@ -152,12 +152,12 @@ Fault counters:
 | State | Servo | Leaves when |
 |---|---|---|
 | STOPPED (power-on, latched) | 0° | RESET (only if the cause is cleared), then START |
-| MONITOR | 0° | 2 VALID ≤ 250 mm in a row → OBSTACLE event |
+| MONITOR | 0° | 2 VALID ≤ 220 mm in a row → OBSTACLE event |
 | WAIT_STOP | 0° | SCAN_REQ(id); 1 s limit |
 | SCANNING | sweeps | profile done → SCAN_RESULT event; 8 s limit |
 | PLAN | 0° | ACCEPT(id) → BYPASS (or MONITOR if CLEAR); REJECT → STOPPED; 1 s limit |
 | BYPASS (escape) | 0° | forward beam clear for 2 pings in a row; 10 s limit |
-| REACQUIRE (bypass) | set by Navigation (`obstacle_set_look()`): 0° while turning and moving, a full −60°..+60° sweep at every side scan | LINE_FOUND(id); 120 s / 4 m limit |
+| REACQUIRE (bypass) | set by Navigation (`obstacle_set_look()`): 0° while moving and rotating, a −60°..+60° sweep at every side scan (same range as the first scan) | LINE_FOUND(id); 180 s / 6 m limit |
 
 These rules apply in every state:
 
@@ -208,75 +208,74 @@ is usable → NO_SAFE_PATH.
 
 **Start angle:** `atan(needed offset / closest distance)`.
 
-**Revised bypass [Chat]** (`b5_nav.c`, geometry in `b5_plan.c`). Every
-position is the middle of the wheel axle; the origin is where the car
-stopped, "ahead" is along the line and "side" is towards the side being
-passed. Two kinds of rotation:
-
-- **Turn:** a 90° pivot on one stopped wheel (moves the axle half a track,
-  53 mm, sideways and forwards).
-- **Spin:** both wheels at the same speed in opposite directions, so the
-  car rotates on the middle of its axle (no shift).
-
-Headings are absolute (90° away, 0°, −90° = facing the line, 0°), so errors
-do not add up.
+**Revised bypass [Chat]** (`b5_nav.c`, geometry in `b5_plan.c`), as the
+user's execution plan. Every position is the middle of the wheel axle; the
+origin is where the car stopped, "ahead" is along the line and "side" is
+towards the side being passed. Every change of heading is a **rotation**:
+both wheels at the same speed in opposite directions, so the car turns on
+the middle of its axle (no shift). Headings are absolute (90° away, 0°,
+−90° = facing the line).
 
 | Phase | What the car does | Ends when |
 |---|---|---|
-| BACKUP | reverse at 70 mm/s (only if needed) | backed up `177 + 50 − 69 − B` mm (the far front corner swings 177 mm round the stopped wheel) |
-| TURN_AWAY | turn away (escape, then REACQUIRE); the direction is remembered | heading 90° away |
-| OUT | straight, heading held | moved E |
-| TURN_BACK | turn back | heading 0° |
+| AHEAD | straight on, towards the obstacle | moved B / 2 |
+| SPIN_AWAY | rotate away (the direction is remembered) | heading 90° away |
+| OUT | straight, heading held | moved A + 63 + 20 |
+| SPIN_PARALLEL | rotate back | heading 0° |
 | LEVEL | straight, heading held | moved B + 10 mm (level with the near face) |
-| SPIN_FACE | spin to face the line (and the obstacle) | heading −90° |
-| SWEEP | stand still; servo −60°..+60° in 5° steps, 2 pings each | judged (below) |
-| SPIN_BACK | spin back | heading 0° |
-| MOVE_ON | straight, heading held | moved D + C, then SPIN_FACE and SWEEP again |
+| SPIN_FACE | rotate to face the line (and the obstacle) | heading −90° |
+| SWEEP | stand still; servo −60°..+60° in 5° steps (the first scan's range), 2 pings each | judged (below) |
+| SPIN_BACK | rotate back | heading 0° |
+| MOVE_ON | straight, heading held | moved (D + 63 + 20) / 2, then SPIN_FACE and SWEEP again |
 | TO_LINE | slowly (70 mm/s) at the line, heading held | IR black for ≥ 8 mm of travel, no more than 80 mm short of the line; stop 300 mm past it |
-| CREEP | straight | 70 mm more |
-| ALIGN | turn the same way as TURN_AWAY | heading 0° → LINE_FOUND |
+| CENTRE | straight | 127 mm more (axle on the line) |
+| MAP | rotate in the remembered direction (same way as SPIN_AWAY), slowly, servo at 0° | an IR sensor finds the line → LINE_FOUND, line following resumes; none in a full turn → stop |
 
-The numbers (measured: car length 127 mm, half width 63 mm, axle → sonar
-68.5 mm, axle → IR 123.5 mm, tape 17.5 mm, track 107 mm):
+The numbers (measured: half width 63 mm, axle → sonar 68.5 mm, axle → IR
+123.5 mm, tape 17.5 mm, track 107 mm):
 
-- **B** = the closest reading of the first scan.
+- **B** = the closest reading of the first scan; detection is now 220 mm
+  (`B5_DETECT_MM`), so B ≈ 205 mm.
 - **A** = `B · tan(cleared angle)`, the cleared angle being the first 5°
-  slot past the edge on the chosen side (raw, no beam correction), capped
-  at 150 mm (`B5_ROOM_MAX_MM`).
-- **E** = `A + 127 + 20`.
-- **C** = `63 + 30` = 93 mm (half the car plus a buffer).
+  slot past the edge on the chosen side (raw), capped at 150 mm.
 - **Side scan judgement** (`b5_plan_side_scan()`), with the car facing the
   line. Each reading becomes a point `f = r·cos α` towards the line and
   `s = r·sin α` along it (α positive = forward along the line). Points past
   the line + 100 mm are ignored.
-  - **Lane clear** (no point with |s| ≤ C) → TO_LINE.
-  - Otherwise **d** = the closest point, the **forward cleared angle** is
-    one slot past the last forward hit (0° with none), and the car moves on
-    **D + C** with `D = d · tan(forward cleared angle)`. With no forward
-    cleared angle (hits up to +60°), 30° is used.
-  - Still blocked after 5 side scans → stop.
-- **Creep** = `124 − 53 − (9 − 8)` = 70 mm, so the last turn ends with the
-  axle on the middle of the tape.
+  - **Completely clear** (no point with |s| ≤ C = 63 + 30 = 93 mm) →
+    TO_LINE.
+  - **Cleared angle found, still in the way**: `D = d · tan(forward cleared
+    angle)`, d = the closest point; move on `(D + 63 + 20) / 2`.
+  - **No cleared angle** (hits up to +60°): θ = 30°, same move.
+  - There is no limit on the number of scans (only the REACQUIRE time and
+    distance limits).
+- **MAP:** the IR sensors (124 mm ahead of the axle) trace a circle round
+  the axle. Rotating the same way as the first rotation, the first line end
+  they meet (after about 90°) is the one leading forward, away from the
+  obstacle, so the car never turns to face the obstacle. Black already under
+  the sensors when the rotation starts does not count.
 
-Safety: the **virtual bumper** stops the car if a wheel asked for
-≥ 70 mm/s measures under 40 % of it for 150 ms; the collision guard (REACQUIRE)
-stops it for 2 readings under 80 mm; a collision, a bump, a box still
-blocking after 5 scans or a missed line stops the car until it is reset (no
-automatic retry, which would drive it back into the obstacle). Before any
-wheel reverses (every spin and its correction) both wheels stop for 300 ms.
+Safety kept: the **virtual bumper** stops the car if a wheel asked for
+≥ 70 mm/s measures under 40 % of it for 150 ms; the collision guard
+(REACQUIRE) stops it for 2 readings under 80 mm; a collision, a bump or a
+missed line stops the car until it is reset. Before any wheel reverses
+(every rotation from a straight leg, and every correction) both wheels stop
+for 300 ms.
 
-Known behaviour: the beam is about 19° wide, so right after the car has
-moved past the far corner the next sweep can still place that corner just
-inside the lane; the car then makes one more short loop (C = 93 mm).
+**Known risks (host simulation of the real `b5_nav.c`):**
 
-Worked example (150 mm box, closest 233 mm, cleared 30°): A = 134, E = 281,
-LEVEL 243 mm; side scan 1 blocked (forward cleared 35°, d 250 → move on
-268 mm); side scan 2 clear → TO_LINE. Host simulation of the real
-`b5_nav.c` (kinematic car, cone sonar), all without contact: 150 mm box
-both sides, boxes 80–300 mm wide, 400 and 700 mm deep (3 and 4 side
-scans), rotated 30° and 45°, obstacles 70–100 mm away (car backs up first),
-a floor-mat gap (ignored, too short). A 1500 mm deep box stops after 5 side
-scans. A whole run takes about 30–55 s.
+- The front corners swing about 148 mm round the axle in a rotation. At
+  SPIN_FACE the axle is only `63 + 20 + (A − true half width)` from the
+  obstacle's side, so for every box tried (80–300 mm wide, 150–400 mm deep,
+  rotated, offset) that rotation touched the box and the bumper stopped the
+  car.
+- Car run (earlier full-turn MAP): the car rejoined the line 137 mm past the
+  obstacle; turning back towards it, the sonar read 68 mm and the collision
+  guard stopped the car. The MAP now stops at the first line end (about
+  90°), before the car faces back along the line.
+- AHEAD (B / 2) brings the front within about `B / 2 − 64` mm of the face,
+  and the first rotation needs `B / 2 + 69 ≥ 148`, so B must stay above
+  about 160 mm.
 
 STEER words use the order of Buddy 2's `motion_drive_action_t`:
 STRAIGHT / LEFT / RIGHT / HOLD. The statechart publishes "away" during the
@@ -437,7 +436,7 @@ calls `obstacle_init()` with these links, then sends RESET and START:
 | Link | Wired to | Why |
 |---|---|---|
 | `p_stop` | `motion_service_set_hold(MOTION_HOLD_OBSTACLE, true)` | Stops the car without the reboot latch of `motion_service_request_stop()`, so RESET + START can recover. |
-| `p_get_distance_mm` | Mean forward `displacement_um` of both wheels from `motion_service_read_status()`, in mm | Real odometer for the 4 m bypass limit. It keeps the last good value if a sample is invalid. |
+| `p_get_distance_mm` | Mean forward `displacement_um` of both wheels from `motion_service_read_status()`, in mm | Real odometer for the 6 m bypass limit. It keeps the last good value if a sample is invalid. |
 | `h_nav_mbf` | 0 | Events go to Buddy 5's own outbox; the line task polls it. |
 
 If `b5_nav_init()` fails, it prints the error and line following runs
@@ -449,11 +448,11 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 
 | Buddy 5 state | What the glue does | Line follower |
 |---|---|---|
-| MONITOR | releases the obstacle hold, unless the latest reading is a VALID echo within 250 mm (so a retry never creeps into the obstacle) | drives as before |
+| MONITOR | releases the obstacle hold, unless the latest reading is a VALID echo within 220 mm (so a retry never creeps into the obstacle) | drives as before |
 | WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id) | paused |
-| BYPASS | releases the hold; starts the bypass (BACKUP if needed, then TURN_AWAY); Buddy 5 moves on to REACQUIRE once the way ahead is clear | paused |
-| REACQUIRE | the rest of the bypass (see Plan and bypass); sets the servo angle with `obstacle_set_look()`; ends with LINE_FOUND(id) (at most every 100 ms) after ALIGN | paused |
-| STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR, except after a collision or a bypass Navigation gave up on (bump, still blocked after 5 side scans, line missed): those stay stopped until the car is reset | paused |
+| BYPASS | releases the hold; starts the bypass (AHEAD, then SPIN_AWAY); Buddy 5 moves on to REACQUIRE once the way ahead is clear | paused |
+| REACQUIRE | the rest of the bypass (see Plan and bypass); sets the servo angle with `obstacle_set_look()`; ends with LINE_FOUND(id) (at most every 100 ms) after MAP | paused |
+| STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR, except after a collision or a bypass Navigation gave up on (bump, line missed): those stay stopped until the car is reset | paused |
 
 **Speeds** (`motion_service_set_speed()`, lease 100 ms). The car stands
 still whenever the servo turns (entering BYPASS or MONITOR, and every look
@@ -463,14 +462,12 @@ while a motor drives can disturb the wheel encoders.
 | Phase | Left / right wheel (passing right) |
 |---|---|
 | BACKUP | −70 / −70 mm/s |
-| Turns (pivots) | 140 / 0 (away) or 0 / 140 (towards); the driven wheel slows to 70 for the last 10° |
-| Spins | +70 / −70 or −70 / +70; both slow to 46 for the last 10° |
-| Straight legs | 140 / 140 (TO_LINE and CREEP 70 / 70); a heading correction runs one wheel 14 mm/s slower |
+| Rotations | +70 / −70 or −70 / +70; both slow to 46 for the last 10° (MAP runs at 46 throughout) |
+| Straight legs | 140 / 140 (TO_LINE and CENTRE 70 / 70); a heading correction runs one wheel 14 mm/s slower |
 
-NOTE: The stopped wheel of a pivot is at 0 (the motion service does not
-check a wheel told to stand still). A wheel changing direction (after
-BACKUP, at the start of a spin from a straight leg, or a spin correcting an
-overshoot) first stops both wheels for 300 ms.
+NOTE: A wheel changing direction (at the start of a rotation from a
+straight leg, or a rotation correcting an overshoot) first stops both wheels
+for 300 ms.
 
 **Dead reckoning.** Heading = `(right − left wheel distance) /
 B5_WHEEL_TRACK_MM` (from the totals, so it does not drift); position is
@@ -482,7 +479,7 @@ summed along that heading every pass. `B5_WHEEL_TRACK_MM` is 107 mm
 
 The glue prints `[b5-nav] state N cause N`, `[b5-nav] plan: ...`,
 `[b5-nav] phase N: side .. ahead .. heading ..`, `[b5-nav] steer N: left ..
-right ..`, `[b5-nav] turned to N deg`, `spun to N deg`, `side scan N: ...`,
+right ..`, `[b5-nav] spun to N deg`, `side scan N: ...`, `map: ...`,
 `line ...`, `HALT: ...`, motion changes and every `SCAN_RESULT`, and writes
 all of it to the flight recorder.
 
@@ -504,8 +501,9 @@ over USB when a serial monitor is opened.
 **What is in it:** every Buddy 5 state change with its cause, OBSTACLE,
 FAULT, every SCAN_RESULT with the full 25-slot profile, every steering
 change with how far the car has turned, every bypass phase, the PLAN (B,
-cleared angle, A, E), every side scan (judgement, d, move on, and its 25
-readings), every line contact
+cleared angle, A, out), every side scan (judgement, d, move on, and its
+readings), the MAP (line found, and after how many degrees), every line
+contact
 (found, or ignored and why), a BUMP or HALT, every motion-service
 state/fault change, every command sent, and a trace line (state, echo, IR sensors,
 wheel distances) every 100 ms while Buddy 5 drives and every 500 ms
@@ -568,5 +566,5 @@ Known points for the team:
   `obstacle_bench.uf2`.
 - `gpio_irq_init()` enables the IRQ only on the core that calls it.
 - The kernel's `BOARD_LED_PIN` is GP16, which is Buddy 2's encoder pin.
-- A bypass takes about 30–55 s: each side scan loop (spin, 25-angle sweep,
-  spin back, move on) takes about 11 s.
+- Each side scan loop (rotation, 25-angle sweep, rotation back, move on)
+  takes about 8 s; the number of loops is not limited.

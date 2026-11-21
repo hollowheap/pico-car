@@ -82,9 +82,14 @@
  * Monitor ahead and the collision guard.
  * ------------------------------------------------------------------ */
 
-/* [Default] The Tribunal stops the car about 200 mm away; 50 mm more
- * leaves room for two pings and braking. */
-#define B5_DETECT_MM (250U)
+/* [Chat] Detection distance, lowered from 250 mm (revised bypass, "decrease
+ * detection distance"). The car ends about 15 mm closer after two pings and
+ * braking, so B is about 205 mm. NOTE: After the first leg (B / 2) the
+ * axle is B / 2 + 69 mm from the obstacle face and the front corners swing
+ * 148 mm round it in the first rotation, so B under about 160 mm leaves no
+ * room. The Week 6 tribunal sheet quotes a 200 mm standoff (team document,
+ * not a course rule). */
+#define B5_DETECT_MM (220U)
 
 /* [Spec] Consecutive VALID hits needed to report an obstacle. */
 #define B5_DETECT_HITS (2U)
@@ -180,17 +185,17 @@
 /* The bend-away phase may last 10 s. */
 #define B5_ESCAPE_MAX_MS (10000U)
 
-/* The rest of the bypass (REACQUIRE: out, side scans, back to the line)
- * may last 120 s or 4000 mm (net forward travel of the wheels) before the
- * line must be found. [Chat] Each side scan loop (spin, 25-angle sweep,
- * spin back, move on) takes about 13 s, and up to B5_SIDE_SCANS_MAX of
- * them are allowed. */
-#define B5_BYPASS_MAX_MS (120000U)
-#define B5_BYPASS_MAX_MM (4000U)
+/* The rest of the bypass (REACQUIRE: out, side scans, back to the line,
+ * the 360 degree map) may last 180 s or 6000 mm (net forward travel of the
+ * wheels) before the line must be found. [Chat] Each side scan loop
+ * (rotation, sweep, rotation back, move on) takes about 8 s; the number of
+ * loops itself is not limited. */
+#define B5_BYPASS_MAX_MS (180000U)
+#define B5_BYPASS_MAX_MM (6000U)
 
 /* [Chat] The escape ends after this many clear forward pings in a row
  * (two, so that one noisy reading cannot end the turn early). Navigation
- * keeps pivoting until the car is 90 degrees off the line anyway
+ * keeps rotating until the car is 90 degrees off the line anyway
  * (b5_nav.c). */
 #define B5_ESCAPE_CLEAR_PINGS (2U)
 
@@ -222,15 +227,6 @@
 #define B5_AXLE_TO_SONAR_MM (69U)
 #define B5_AXLE_TO_IR_MM    (124U)
 #define B5_AXLE_TO_FRONT_MM (133U)
-
-/* Half of the wheel track: how far a 90 degree pivot on one stopped wheel
- * moves the middle of the axle, both sideways and forwards. */
-#define B5_HALF_TRACK_MM (B5_WHEEL_TRACK_MM / 2U)
-
-/* How far the front corner on the far side reaches from the stopped wheel
- * during a pivot: sqrt((half width + half track)^2 + front^2) =
- * sqrt(116.5^2 + 133^2) = 176.8 mm, rounded up (checked below). */
-#define B5_PIVOT_REACH_MM (177U)
 
 /* [Chat] Largest sideways offset a bypass may use. The course has no side
  * boundary, so this is not a wall: it only rejects absurd plans (for
@@ -283,19 +279,13 @@
  * car, way A). */
 #define B5_ENCODERS_CROSSED (0)
 
-/* [Chat] Every 90 degree turn (not a rotation, see B5_NAV_SPIN_UM_S) is a
- * pivot: the inside wheel stopped and the outside wheel forwards at
- * B5_NAV_SPEED_UM_S, slowing to B5_NAV_TURN_SLOW_UM_S for the last
- * B5_NAV_TURN_SLOW_DECI so it does not overshoot. The turn ends within
- * B5_NAV_TURN_TOL_DECI of its target. The targets are absolute headings
- * from the original line (90 away, back to 0, and 0 again from facing the
- * line at the end), so errors do not add up from turn to turn. 573 is
- * deci-degrees per radian. */
-#define B5_NAV_ESCAPE_INSIDE_UM_S (0)
-#define B5_NAV_TURN_SLOW_UM_S     (B5_NAV_SPEED_UM_S / 2U)
-#define B5_NAV_TURN_SLOW_DECI     (100)
-#define B5_NAV_TURN_TOL_DECI      (10)
-#define B5_NAV_DECI_PER_RAD       (573)
+/* [Chat] Every 90 degree change of heading is a rotation (see
+ * B5_NAV_SPIN_UM_S): it slows for the last B5_NAV_TURN_SLOW_DECI. The
+ * targets are absolute headings from the original line (90 away, 0, 90
+ * towards = facing the line, 0), so errors do not add up from rotation to
+ * rotation. 573 is deci-degrees per radian. */
+#define B5_NAV_TURN_SLOW_DECI (100)
+#define B5_NAV_DECI_PER_RAD   (573)
 
 /* [Chat] Straight legs hold their heading: more than B5_NAV_HOLD_DEAD_DECI
  * off, the wheel on the side the car drifts towards runs
@@ -303,53 +293,53 @@
 #define B5_NAV_HOLD_DEAD_DECI (20)
 #define B5_NAV_TRIM_UM_S      (B5_NAV_SPEED_UM_S / 10U)
 
-/* [Chat] Clearance kept from the obstacle by the first pivot (see
- * B5_NAV_BACKUP_UM_S). */
-#define B5_NAV_CLEAR_MM (50U)
+/* [Chat] Revised bypass, first leg: the car drives on B / 2 towards the
+ * obstacle before its first rotation (b5_plan_ahead_mm()). */
 
-/* [Chat] Before the first pivot the car backs up at this speed if the
- * obstacle is closer than B5_PIVOT_REACH_MM + B5_NAV_CLEAR_MM -
- * B5_AXLE_TO_SONAR_MM (158 mm from the sensor), so the swinging front
- * corner cannot touch it. */
-#define B5_NAV_BACKUP_UM_S (B5_NAV_SPEED_UM_S / 2U)
-
-/* [Chat] Revised bypass, first move out. A = B x tan(cleared angle), from
- * the first scan (B = closest reading, cleared angle = the first 5 degree
- * step past the obstacle edge on the chosen side, raw, no beam
- * correction), capped at B5_ROOM_MAX_MM so that one wide echo from a flat
- * face cannot send the car far off. The car then moves out
- * E = A + B5_CAR_LEN_MM + B5_OUT_BUFFER_MM, and after the pivot back drives
- * on B + B5_LEVEL_BUFFER_MM, which brings it level with the obstacle's
- * near face. */
-#define B5_CAR_LEN_MM      (127U)
+/* [Chat] Revised bypass, move out. A = B x tan(cleared angle), from the
+ * first scan (B = closest reading, cleared angle = the first 5 degree step
+ * past the obstacle edge on the chosen side, raw, no beam correction),
+ * capped at B5_ROOM_MAX_MM so that one wide echo from a flat face cannot
+ * send the car far off. The car then moves out A + half car width +
+ * B5_OUT_BUFFER_MM, and after rotating back drives on
+ * B + B5_LEVEL_BUFFER_MM, which brings it level with the obstacle's near
+ * face.
+ * NOTE: The rotation to face the obstacle happens beside it, and the front
+ * corners swing about 148 mm (sqrt(133^2 + 63^2)) round the axle, while
+ * the axle is only 83 mm + (A - true half width) from the obstacle's side;
+ * in the host simulation that rotation touched a 150 mm box. */
 #define B5_ROOM_MAX_MM     (150U)
 #define B5_OUT_BUFFER_MM   (20U)
 #define B5_LEVEL_BUFFER_MM (10U)
 
-/* [Chat] Every side scan is a full sweep, -60..+60 degrees in 5 degree
- * steps (the B5_SLOT_* angles), B5_SWEEP_PINGS pings at each angle (the
- * nearer VALID reading counts). The car's lane to the line is half the car
+/* [Chat] Every side scan sweeps -B5_SIDE_PAN_DECI..+B5_SIDE_PAN_DECI in 5
+ * degree steps, the same -60..+60 degree range and B5_SLOT_* angles as the
+ * first scan, B5_SWEEP_PINGS pings at each angle (the nearer VALID reading
+ * counts). The car's lane to the line is half the car
  * width plus B5_LANE_BUFFER_MM each side (C = 93 mm) and runs
  * B5_LANE_EXTRA_MM past the line (room for the last turn). A reading
  * inside the lane means the way to the line is blocked. */
+#define B5_SIDE_PAN_DECI  (600)
 #define B5_SWEEP_PINGS    (2U)
 #define B5_LANE_BUFFER_MM (30U)
 #define B5_LANE_HALF_MM   (B5_CAR_HALF_W_MM + B5_LANE_BUFFER_MM)
 #define B5_LANE_EXTRA_MM  (100U)
 
-/* [Chat] Blocked: the car moves on D + C along the line, D = d x
- * tan(forward cleared angle), d = the closest reading of the sweep. With no
- * cleared angle on the forward side (the obstacle still reaches +60
- * degrees), B5_SIDE_ASSUMED_DECI is used. After B5_SIDE_SCANS_MAX blocked
- * scans the car stops. */
+/* [Chat] Blocked: the car moves on (D + half car width + B5_MOVE_BUFFER_MM)
+ * / B5_MOVE_DIVISOR along the line, D = d x tan(forward cleared angle),
+ * d = the closest reading of the sweep. With no cleared angle on the
+ * forward side (the obstacle still reaches B5_SIDE_PAN_DECI),
+ * B5_SIDE_ASSUMED_DECI is used. The car keeps scanning until the way is
+ * clear (no limit on the number of scans). */
+#define B5_MOVE_BUFFER_MM    (20U)
+#define B5_MOVE_DIVISOR      (2U)
 #define B5_SIDE_ASSUMED_DECI (300)
-#define B5_SIDE_SCANS_MAX    (5U)
 
-/* [Chat] Rotations (facing the obstacle side and back) spin the car on the
- * middle of its axle: both wheels at the same speed in opposite
- * directions, B5_NAV_SPIN_UM_S, slowing to B5_NAV_SPIN_SLOW_UM_S for the
- * last B5_NAV_TURN_SLOW_DECI, ending within B5_NAV_SPIN_TOL_DECI. A spin
- * that overshoots is corrected the other way after the reverse pause. */
+/* [Chat] Rotations spin the car on the middle of its axle: both wheels at the
+ * same speed in opposite directions, B5_NAV_SPIN_UM_S, slowing to
+ * B5_NAV_SPIN_SLOW_UM_S for the last B5_NAV_TURN_SLOW_DECI, ending within
+ * B5_NAV_SPIN_TOL_DECI. A spin that overshoots is corrected the other way after
+ * the reverse pause. */
 #define B5_NAV_SPIN_UM_S      (B5_NAV_SPEED_UM_S / 2U)
 #define B5_NAV_SPIN_SLOW_UM_S (B5_NAV_SPEED_UM_S / 3U)
 #define B5_NAV_SPIN_TOL_DECI  (15)
@@ -376,14 +366,14 @@
 #define B5_LINE_GIVE_UP_MM (300U)
 #define B5_NAV_LINE_UM_S   (B5_NAV_SPEED_UM_S / 2U)
 
-/* [Chat] Once the line counts, the car drives on this far before the last
- * pivot so the middle of the axle ends on the line: the IR sensors are
- * B5_AXLE_TO_IR_MM ahead of the axle, the pivot moves the axle another
- * half track, and the sensor is (tape / 2 - B5_LINE_MIN_MM) short of the
- * middle of the tape when the line counts. 124 - 53 - 1 = 70 mm. */
-#define B5_NAV_CREEP_MM                                                        \
-    (B5_AXLE_TO_IR_MM - B5_HALF_TRACK_MM -                                     \
-     ((B5_TAPE_W_MM / 2U) - B5_LINE_MIN_MM))
+/* [Chat] Once the line counts, the car drives on B5_NAV_CENTRE_MM (the
+ * user's value; the IR sensors are B5_AXLE_TO_IR_MM ahead of the axle), so
+ * the middle of the axle sits on the line. It then rotates in the
+ * remembered direction (the same way as its first rotation), servo
+ * straight ahead, until an IR sensor finds the line, at most
+ * B5_MAP_TURN_DECI, and line following resumes from there. */
+#define B5_NAV_CENTRE_MM (127U)
+#define B5_MAP_TURN_DECI (3600)
 
 /* [Chat] The servo has settled once this many pings have arrived since it
  * was told to move (the first may have been taken before it moved). */
@@ -511,32 +501,25 @@ B5_CT_ASSERT(hit_cnt_fits, B5_DETECT_HITS <= B5_CNT3_MAX);
 B5_CT_ASSERT(coll_cnt_fits, B5_COLLISION_HITS <= B5_CNT2_MAX);
 B5_CT_ASSERT(clear_cnt_fits, B5_ESCAPE_CLEAR_PINGS <= B5_CNT3_MAX);
 B5_CT_ASSERT(nav_brake_in_time, B5_NAV_BRAKE_MS < B5_WAIT_STOP_MS);
-B5_CT_ASSERT(nav_escape_in_range, (B5_NAV_ESCAPE_INSIDE_UM_S >= -100000) &&
-                                      (B5_NAV_ESCAPE_INSIDE_UM_S <= 0));
 B5_CT_ASSERT(nav_speed_in_range, B5_NAV_SPEED_UM_S <= 200000U);
-B5_CT_ASSERT(pivot_reach_covers,
-             (4U * B5_PIVOT_REACH_MM * B5_PIVOT_REACH_MM) >=
-                 (((2U * B5_CAR_HALF_W_MM) + B5_WHEEL_TRACK_MM) *
-                      ((2U * B5_CAR_HALF_W_MM) + B5_WHEEL_TRACK_MM) +
-                  (4U * B5_AXLE_TO_FRONT_MM * B5_AXLE_TO_FRONT_MM)));
 B5_CT_ASSERT(sensors_in_front, (B5_AXLE_TO_SONAR_MM < B5_AXLE_TO_FRONT_MM) &&
                                    (B5_AXLE_TO_IR_MM < B5_AXLE_TO_FRONT_MM));
-B5_CT_ASSERT(tyre_outside_wheel, B5_HALF_TRACK_MM <= B5_CAR_HALF_W_MM);
 B5_CT_ASSERT(sweep_reading_safe, B5_COLLISION_MM < B5_LANE_HALF_MM);
 B5_CT_ASSERT(sweep_pings_fit, (B5_SWEEP_PINGS > 0U) && (B5_SWEEP_PINGS < 8U));
 B5_CT_ASSERT(side_assumed_in_range,
              (B5_SIDE_ASSUMED_DECI > 0) &&
-                 (B5_SIDE_ASSUMED_DECI < B5_SERVO_LIMIT_DECI));
-B5_CT_ASSERT(side_scans_fit,
-             (B5_SIDE_SCANS_MAX > 0U) && (B5_SIDE_SCANS_MAX < 256U));
+                 (B5_SIDE_ASSUMED_DECI < B5_SIDE_PAN_DECI));
 B5_CT_ASSERT(spin_in_range, (B5_NAV_SPIN_SLOW_UM_S <= B5_NAV_SPIN_UM_S) &&
                                 (B5_NAV_SPIN_UM_S <= B5_NAV_SPEED_UM_S) &&
                                 (B5_NAV_SPIN_TOL_DECI > 0));
 B5_CT_ASSERT(line_window_order, B5_LINE_WINDOW_MM < B5_LINE_GIVE_UP_MM);
 B5_CT_ASSERT(line_min_order,
              (B5_LINE_MIN_MM > 0U) && (B5_LINE_MIN_MM <= (B5_TAPE_W_MM / 2U)));
-B5_CT_ASSERT(creep_positive,
-             B5_AXLE_TO_IR_MM > (B5_HALF_TRACK_MM + (B5_TAPE_W_MM / 2U)));
+B5_CT_ASSERT(centre_past_ir, B5_NAV_CENTRE_MM >= B5_AXLE_TO_IR_MM);
+B5_CT_ASSERT(pan_in_range, (B5_SIDE_PAN_DECI > 0) &&
+                               (B5_SIDE_PAN_DECI <= B5_SERVO_LIMIT_DECI) &&
+                               (0 == (B5_SIDE_PAN_DECI % B5_SLOT_STEP_DECI)));
+B5_CT_ASSERT(move_divisor_ok, B5_MOVE_DIVISOR > 0U);
 B5_CT_ASSERT(bump_in_range,
              (B5_BUMP_PERCENT > 0) && (B5_BUMP_PERCENT < 100) &&
                  (B5_BUMP_MIN_UM_S <= (int32_t)B5_NAV_SPEED_UM_S));

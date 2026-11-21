@@ -131,13 +131,13 @@ functions, who uses it, and when you would edit it.
 #### `b5_plan.c / .h`
 - **What it does:** after a scan, works out the obstacle width (corrected
   for the sensor's 9.5° half-beam), which side to pass on, the side offset
-  and the start angle. It also holds the geometry of the bypass (how far
-  to back up, A, E, the LEVEL leg) and judges each side scan (is the lane
-  to the line clear, and if not, how far to move on). All maths is whole
+  and the start angle. It also holds the geometry of the bypass (the first
+  B / 2 leg, A, the move out, the LEVEL leg) and judges each side scan (is
+  the lane to the line clear, and if not, how far to move on). All maths is whole
   numbers: no floating point, no libm.
 - **Main functions:** `b5_plan_cfg_default`, `b5_plan_build`,
   `b5_plan_is_escape_clear`, `b5_plan_steer_away`, `b5_plan_steer_toward`,
-  `b5_plan_backup_mm`, `b5_plan_room_mm`, `b5_plan_out_mm`,
+  `b5_plan_ahead_mm`, `b5_plan_room_mm`, `b5_plan_out_mm`,
   `b5_plan_level_mm`, `b5_plan_side_scan`, `b5_plan_point_side_mm`, plus integer trig (`b5_plan_sin_q14`,
   `b5_plan_atan_deci`, `b5_plan_isqrt`, …).
 - **Used by:** `b5_fsm.c`, `scan_task.c` (for the default settings),
@@ -206,13 +206,15 @@ functions, who uses it, and when you would edit it.
   motion service, and on every line-task pass turns Buddy 5's events into
   motion commands: hold the car, send SCAN_REQ, ACCEPT and LINE_FOUND,
   retry after a fault, and drive the bypass from wheel-odometry dead
-  reckoning (BACKUP, TURN_AWAY, OUT, TURN_BACK, LEVEL, then SPIN_FACE,
-  SWEEP, SPIN_BACK, MOVE_ON in a loop, then TO_LINE, CREEP, ALIGN),
-  choosing the servo angle and watching the virtual bumper.
+  reckoning (AHEAD, SPIN_AWAY, OUT, SPIN_PARALLEL, LEVEL, then SPIN_FACE,
+  SWEEP, SPIN_BACK, MOVE_ON in a loop, then TO_LINE, CENTRE and MAP
+  (rotate until the line is found)), choosing the servo angle and watching the virtual
+  bumper.
 - **Main functions:** `b5_nav_init`, `b5_nav_step`; private `step_bypass`,
   `run_phase`, `run_leg`, `run_sweep`, `judge_sweep`, `run_to_line`,
-  `pivot_to`, `spin_to`, `drive_hold`, `check_bump`, `update_pose`, `keep_plan`, `handle_event`,
-  `nav_stop` (obstacle hold), `nav_distance_mm` (odometer).
+  `run_map`, `spin_to`, `drive_hold`, `check_bump`, `update_pose`,
+  `keep_plan`, `handle_event`, `nav_stop` (obstacle hold),
+  `nav_distance_mm` (odometer).
 - **Used by:** `line_task` in `src/main.c`.
 - **Edit it when:** the bypass or the handshake with the line follower
   changes (the numbers are `B5_NAV_*` in `b5_cfg.h`).
@@ -262,13 +264,13 @@ functions, who uses it, and when you would edit it.
 |---|---|
 | wire the sensor or the servo | the design doc → Wiring |
 | fill in my car measurements | `b5_cfg.h` (search for **FILL**) |
-| change the 250 mm detection distance | `b5_cfg.h` → `B5_DETECT_MM` |
+| change the 220 mm detection distance | `b5_cfg.h` → `B5_DETECT_MM` |
 | fix the servo pointing slightly off centre | `b5_cfg.h` → `B5_SERVO_CENTRE_US` |
 | change how a side is chosen | `b5_plan.c` → `b5_plan_build` |
-| change the bypass buffers, the A cap, the lane, the side scan limit or the bumper | `b5_cfg.h` → `B5_OUT_BUFFER_MM`, `B5_LEVEL_BUFFER_MM`, `B5_ROOM_MAX_MM`, `B5_LANE_*`, `B5_SIDE_*`, `B5_BUMP_*` |
+| change the bypass buffers, the A cap, the lane, the sweep width, the final rotation or the bumper | `b5_cfg.h` → `B5_OUT_BUFFER_MM`, `B5_LEVEL_BUFFER_MM`, `B5_MOVE_*`, `B5_ROOM_MAX_MM`, `B5_LANE_*`, `B5_SIDE_*`, `B5_NAV_CENTRE_MM`, `B5_MAP_*`, `B5_BUMP_*` |
 | change a state change or time limit | `b5_fsm.c` (limits are in `b5_cfg.h`) |
 | see how Navigation should call Buddy 5 | `obstacle.h`, then the design doc → Interfaces |
-| change bypass speed, spin speed or steering strength | `b5_cfg.h` → `B5_BYPASS_SPEED_MM_S`, `B5_NAV_SPIN_*`, `B5_NAV_TRIM_UM_S`, `B5_NAV_TURN_SLOW_UM_S` |
+| change bypass speed, rotation speed or steering strength | `b5_cfg.h` → `B5_BYPASS_SPEED_MM_S`, `B5_NAV_SPIN_*`, `B5_NAV_TRIM_UM_S`, `B5_NAV_TURN_SLOW_DECI` |
 | see how the line task uses Buddy 5 | `b5_nav.c`, and the design doc → Phase 2 |
 | understand a bench log line | `b5_bench_main.c` (`print_*` functions) |
 | add a Buddy 5 source file | the file, plus the "Buddy 5" block in the team `CMakeLists.txt` |

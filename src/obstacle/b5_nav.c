@@ -6,41 +6,41 @@
  * What the line task does with Buddy 5 (design review 4.1):
  *   - OBSTACLE      hold the car, wait B5_NAV_BRAKE_MS, send SCAN_REQ(id).
  *   - SCAN_RESULT   OK or CLEAR: send ACCEPT(id), and keep the plan: the
- *                   side, the closest reading and the sideways offset the
- *                   car needs (the planner's own value).
+ *                   side, B (the closest reading) and that side's raw
+ *                   cleared angle.
  *   - BYPASS and    drive the revised bypass [Chat] from the wheel odometry
- *     REACQUIRE     (positions are for the middle of the wheel axle). A
- *                   "turn" pivots on one stopped wheel; a "spin" runs both
- *                   wheels opposite, so the car rotates on the middle of
- *                   its axle.
- *       BACKUP      reverse first if the obstacle is too close for the
- *                   front corner to swing past it (b5_plan_backup_mm()).
- *       TURN_AWAY   turn 90 degrees away from the line, the side the
- *                   planner chose (remembered for the last turn).
- *       OUT         straight on E = A + car length + B5_OUT_BUFFER_MM,
+ *     REACQUIRE     (positions are for the middle of the wheel axle). Every
+ *                   change of heading is a rotation: both wheels opposite,
+ *                   so the car turns on the middle of its axle.
+ *       AHEAD       straight on B / 2 towards the obstacle.
+ *       SPIN_AWAY   rotate 90 degrees away from the line, the side the
+ *                   planner chose (remembered for the 360 degree map).
+ *       OUT         straight on E = A + half car width + B5_OUT_BUFFER_MM,
  *                   A = B x tan(cleared angle) from the first scan, capped
  *                   (b5_plan_room_mm()).
- *       TURN_BACK   turn 90 degrees back, parallel to the line.
+ *       SPIN_PARALLEL rotate back, parallel to the line.
  *       LEVEL       straight on B + B5_LEVEL_BUFFER_MM, level with the
  *                   obstacle's near face.
- *       SPIN_FACE   spin 90 degrees to face the line (and the obstacle).
- *       SWEEP       stand still and sweep the servo -60..+60 degrees, then
+ *       SPIN_FACE   rotate to face the line (and the obstacle).
+ *       SWEEP       stand still and sweep the servo +-B5_SIDE_PAN_DECI, then
  *                   judge the readings (b5_plan_side_scan()):
- *                     lane to the line clear  -> TO_LINE;
- *                     blocked                 -> SPIN_BACK, MOVE_ON D + C,
- *                                                SPIN_FACE, SWEEP again;
- *                     still blocked after B5_SIDE_SCANS_MAX scans -> HALT.
- *       SPIN_BACK   spin 90 degrees back, parallel to the line.
- *       MOVE_ON     straight on D + C (D from the forward cleared angle, or
+ *                     lane to the line clear -> TO_LINE;
+ *                     blocked -> SPIN_BACK, MOVE_ON, SPIN_FACE, SWEEP again
+ *                     (no limit on the number of scans).
+ *       SPIN_BACK   rotate back, parallel to the line.
+ *       MOVE_ON     straight on (D + half car width + B5_MOVE_BUFFER_MM) / 2,
+ *                   D from the forward cleared angle (or
  *                   B5_SIDE_ASSUMED_DECI when there is none).
  *       TO_LINE     slowly straight at the line until an IR sensor has seen
  *                   black for B5_LINE_MIN_MM, no more than
  *                   B5_LINE_WINDOW_MM short of the line; stop
  *                   B5_LINE_GIVE_UP_MM past it.
- *       CREEP       on B5_NAV_CREEP_MM, so that the last turn ends with the
- *                   axle on the line.
- *       ALIGN       turn 90 degrees, the same way as TURN_AWAY, then send
- *                   LINE_FOUND(id) until Buddy 5 is back in MONITOR.
+ *       CENTRE      on B5_NAV_CENTRE_MM, so the axle sits on the line.
+ *       MAP         rotate in the remembered direction (the same way as
+ *                   SPIN_AWAY), servo straight ahead, until an IR sensor
+ *                   finds the line (at most a full turn), then send
+ *                   LINE_FOUND(id) until Buddy 5 is back in MONITOR and
+ *                   line following resumes from there.
  *     A virtual bumper (a wheel much slower than it was told) stops the car.
  *   - FAULT         hold the car; retry RESET + START every 3 s, except after
  *                   a collision, a bump or a bypass that Navigation gave up
@@ -107,20 +107,28 @@
 
 /* Bypass phases inside BYPASS and REACQUIRE (see the file comment). The
  * order matches the names in b5_log.c. */
-#define PHASE_BACKUP    (0U)
-#define PHASE_TURN_AWAY (1U)
-#define PHASE_OUT       (2U)
-#define PHASE_TURN_BACK (3U)
-#define PHASE_LEVEL     (4U)
-#define PHASE_SPIN_FACE (5U)
-#define PHASE_SWEEP     (6U)
-#define PHASE_SPIN_BACK (7U)
-#define PHASE_MOVE_ON   (8U)
-#define PHASE_TO_LINE   (9U)
-#define PHASE_CREEP     (10U)
-#define PHASE_ALIGN     (11U)
-#define PHASE_DONE      (12U)
-#define PHASE_HALT      (13U)
+#define PHASE_AHEAD         (0U)
+#define PHASE_SPIN_AWAY     (1U)
+#define PHASE_OUT           (2U)
+#define PHASE_SPIN_PARALLEL (3U)
+#define PHASE_LEVEL         (4U)
+#define PHASE_SPIN_FACE     (5U)
+#define PHASE_SWEEP         (6U)
+#define PHASE_SPIN_BACK     (7U)
+#define PHASE_MOVE_ON       (8U)
+#define PHASE_TO_LINE       (9U)
+#define PHASE_CENTRE        (10U)
+#define PHASE_MAP           (11U)
+#define PHASE_DONE          (12U)
+#define PHASE_HALT          (13U)
+
+/* First and last sweep slots (+-B5_SIDE_PAN_DECI). */
+#define SWEEP_FIRST_SLOT                                                       \
+    ((uint8_t)(B5_SLOT_CENTRE -                                                \
+               (uint32_t)(B5_SIDE_PAN_DECI / B5_SLOT_STEP_DECI)))
+#define SWEEP_LAST_SLOT                                                        \
+    ((uint8_t)(B5_SLOT_CENTRE +                                                \
+               (uint32_t)(B5_SIDE_PAN_DECI / B5_SLOT_STEP_DECI)))
 
 /* Steering intent, turned into LEFT / RIGHT by the side being passed. */
 #define INTENT_STRAIGHT (0U)
@@ -140,9 +148,8 @@
 
 /* Why Navigation gave up on a bypass (HALT record, b5_log.c). */
 #define HALT_BUMP      (0U)
-#define HALT_BLOCKED   (1U)
-#define HALT_MISSED    (2U)
-#define HALT_COLLISION (3U)
+#define HALT_MISSED    (1U)
+#define HALT_COLLISION (2U)
 
 /* Reading used for OPEN, UNKNOWN and STUCK pings (farther than any echo). */
 #define NAV_FAR_MM (4095U)
@@ -207,12 +214,13 @@ typedef struct
     uint32_t motion_word;
     uint32_t cmd_ms;
     uint32_t closest_mm;
-    uint32_t backup_mm;
     uint32_t room_mm;
     uint32_t out_mm;
     uint32_t level_mm;
     uint32_t move_mm;
     uint32_t low_ms[WHEELS];
+    uint32_t ahead_end_mm;
+    int32_t  map_start;
     int32_t  phase_mm;
     int32_t  black_mm;
     int32_t  wheel_mm[WHEELS];
@@ -266,12 +274,13 @@ static nav_state_t g_nav = {
     .motion_word    = UINT32_MAX,
     .cmd_ms         = 0U,
     .closest_mm     = 0U,
-    .backup_mm      = 0U,
     .room_mm        = 0U,
     .out_mm         = 0U,
     .level_mm       = 0U,
     .move_mm        = 0U,
     .low_ms         = {0U, 0U},
+    .ahead_end_mm   = 0U,
+    .map_start      = 0,
     .phase_mm       = 0,
     .black_mm       = 0,
     .wheel_mm       = {0, 0},
@@ -306,8 +315,8 @@ static void     drive_speeds (uint32_t steer, int32_t left_um_s,
                               int32_t right_um_s);
 static void     drive_stop (void);
 static void     drive_hold (int32_t target_deci, int32_t speed_um_s);
-static bool     pivot_to (int32_t target_deci);
 static bool     spin_to (int32_t target_deci);
+static void     spin_drive (uint32_t intent, int32_t speed_um_s);
 static bool     is_reverse_pause (int32_t const p_speed[WHEELS]);
 static void     set_phase (uint8_t phase);
 static void     begin_bypass (void);
@@ -321,6 +330,7 @@ static void     run_sweep (uint32_t status);
 static void     next_sweep_slot (void);
 static void     judge_sweep (void);
 static void     log_sweep (b5_plan_side_t const * p_side);
+static void     run_map (bool b_line_seen);
 static void     run_to_line (bool b_line_seen);
 static void     note_line (uint8_t event, int32_t ir_side_mm, int32_t black_mm);
 static bool     take_ping (uint32_t status, uint32_t * p_dist_mm);
@@ -506,23 +516,23 @@ static void run_phase (uint32_t state, uint32_t status, bool b_line_seen,
     {
         switch (g_nav.phase)
         {
-            case PHASE_BACKUP:
+            case PHASE_AHEAD:
             case PHASE_OUT:
             case PHASE_LEVEL:
             case PHASE_MOVE_ON:
-            case PHASE_CREEP:
+            case PHASE_CENTRE:
                 run_leg();
             break;
 
-            case PHASE_TURN_AWAY:
-                if (pivot_to(DECI_RIGHT_ANGLE))
+            case PHASE_SPIN_AWAY:
+                if (spin_to(DECI_RIGHT_ANGLE))
                 {
                     set_phase(PHASE_OUT);
                 }
             break;
 
-            case PHASE_TURN_BACK:
-                if (pivot_to(0))
+            case PHASE_SPIN_PARALLEL:
+                if (spin_to(0))
                 {
                     set_phase(PHASE_LEVEL);
                 }
@@ -550,11 +560,8 @@ static void run_phase (uint32_t state, uint32_t status, bool b_line_seen,
                 run_to_line(b_line_seen);
             break;
 
-            case PHASE_ALIGN:
-                if (pivot_to(0))
-                {
-                    set_phase(PHASE_DONE);
-                }
+            case PHASE_MAP:
+                run_map(b_line_seen);
             break;
 
             default:
@@ -567,35 +574,34 @@ static void run_phase (uint32_t state, uint32_t status, bool b_line_seen,
 }
 
 /*!
- * @brief The straight legs that end on a distance: BACKUP (reverse until
- *        far enough from the obstacle), OUT (E, away from the line), LEVEL
- *        (B + buffer, along the line), MOVE_ON (D + C, along the line) and
- *        CREEP (onto the line before the last turn).
+ * @brief The straight legs that end on a distance: AHEAD (B / 2 towards
+ *        the obstacle), OUT (A + half width + buffer, away from the
+ *        line), LEVEL (B + buffer, along the line), MOVE_ON (along the line)
+ *        and CENTRE (onto the line before the map).
  */
 static void run_leg (void)
 {
     int32_t const moved_mm = travel_mm() - g_nav.phase_mm;
 
-    /* Casts are safe: every leg is far shorter than 2^31 mm and both
-     * speeds are 70 000 or 140 000 um/s. */
+    /* Casts are safe: every leg is far shorter than 2^31 mm and the speeds
+     * are 70 000 or 140 000 um/s. */
     switch (g_nav.phase)
     {
-        case PHASE_BACKUP:
-            if (ahead_mm() <= -(int32_t)g_nav.backup_mm)
+        case PHASE_AHEAD:
+            if (moved_mm >= (int32_t)g_nav.ahead_end_mm)
             {
-                set_phase(PHASE_TURN_AWAY);
+                set_phase(PHASE_SPIN_AWAY);
             }
             else
             {
-                drive_speeds(B5_STEER_STRAIGHT, -(int32_t)B5_NAV_BACKUP_UM_S,
-                             -(int32_t)B5_NAV_BACKUP_UM_S);
+                drive_hold(0, (int32_t)B5_NAV_SPEED_UM_S);
             }
         break;
 
         case PHASE_OUT:
             if (moved_mm >= (int32_t)g_nav.out_mm)
             {
-                set_phase(PHASE_TURN_BACK);
+                set_phase(PHASE_SPIN_PARALLEL);
             }
             else
             {
@@ -626,10 +632,10 @@ static void run_leg (void)
         break;
 
         default:
-            /* CREEP */
-            if (moved_mm >= (int32_t)B5_NAV_CREEP_MM)
+            /* CENTRE */
+            if (moved_mm >= (int32_t)B5_NAV_CENTRE_MM)
             {
-                set_phase(PHASE_ALIGN);
+                set_phase(PHASE_MAP);
             }
             else
             {
@@ -641,8 +647,8 @@ static void run_leg (void)
 
 /*!
  * @brief SWEEP: the car stands still while the servo steps through the
- *        B5_SLOT_COUNT angles (-60..+60 degrees); at each, B5_SWEEP_PINGS
- *        pings are taken and the nearest VALID one is kept.
+ *        slot angles from -B5_SIDE_PAN_DECI to +B5_SIDE_PAN_DECI; at each,
+ *        B5_SWEEP_PINGS pings are taken and the nearest VALID one is kept.
  *
  * @param[in] status Packed Buddy 5 status word.
  */
@@ -682,7 +688,7 @@ static void next_sweep_slot (void)
     g_nav.sweep_pings = 0U;
     g_nav.sweep_slot  = (uint8_t)(g_nav.sweep_slot + 1U);
 
-    if (g_nav.sweep_slot >= B5_SLOT_COUNT)
+    if (g_nav.sweep_slot > SWEEP_LAST_SLOT)
     {
         judge_sweep();
     }
@@ -707,23 +713,23 @@ static void judge_sweep (void)
     b5_plan_side_t side;
 
     /* Cast is safe: sonar_mm is non-negative and a few hundred mm. */
-    uint32_t const lane_mm =
-        ((sonar_mm > 0) ? (uint32_t)sonar_mm : 0U) + B5_LANE_EXTRA_MM;
+    uint32_t const line_mm = (sonar_mm > 0) ? (uint32_t)sonar_mm : 0U;
 
-    b5_plan_side_scan(g_nav.sweep_mm, side_sign(), lane_mm, &side);
+    b5_plan_side_scan(g_nav.sweep_mm, side_sign(), line_mm, B5_SIDE_PAN_DECI,
+                      &side);
 
-    /* Cast is safe: scans stops at B5_SIDE_SCANS_MAX. */
-    g_nav.scans = (uint8_t)(g_nav.scans + 1U);
+    /* Cast is safe: the count stops at 255 (only printed and logged). */
+    if (g_nav.scans < UINT8_MAX)
+    {
+        g_nav.scans = (uint8_t)(g_nav.scans + 1U);
+    }
+
     log_sweep(&side);
     set_look(0);
 
     if (side.b_lane_clear)
     {
         set_phase(PHASE_TO_LINE);
-    }
-    else if (g_nav.scans >= B5_SIDE_SCANS_MAX)
-    {
-        halt_bypass(HALT_BLOCKED);
     }
     else
     {
@@ -783,6 +789,47 @@ static void log_sweep (b5_plan_side_t const * p_side)
 }
 
 /*!
+ * @brief MAP: rotate in the remembered direction (the same way as
+ *        SPIN_AWAY), servo straight ahead, until an IR sensor finds the
+ *        line; then hand back to line following (DONE). Black that is
+ *        already under the sensors when the rotation starts does not count
+ *        (the sensors must have been off black first). No line within
+ *        B5_MAP_TURN_DECI: stop.
+ *
+ * @param[in] b_line_seen An IR sensor sees the line.
+ */
+static void run_map (bool b_line_seen)
+{
+    int32_t const turned = away_deci() - g_nav.map_start;
+
+    if (!b_line_seen)
+    {
+        g_nav.b_ir_cleared = true;
+    }
+
+    if (g_nav.b_ir_cleared && b_line_seen)
+    {
+        drive_stop();
+        tm_printf((UB *)"[b5-nav] map: line found after %d deg\n",
+                  (INT)(turned / DECI_PER_DEG));
+        log_rec(B5_LOG_MAP, 1U, 0U, 0U, 0, 0, turned);
+        set_phase(PHASE_DONE);
+    }
+    else if (turned >= B5_MAP_TURN_DECI)
+    {
+        drive_stop();
+        tm_printf((UB *)"[b5-nav] map: no line in a full turn\n");
+        log_rec(B5_LOG_MAP, 0U, 0U, 0U, 0, 0, turned);
+        halt_bypass(HALT_MISSED);
+    }
+    else
+    {
+        /* Cast is safe: the speed is 46 666 um/s. */
+        spin_drive(INTENT_AWAY, (int32_t)B5_NAV_SPIN_SLOW_UM_S);
+    }
+}
+
+/*!
  * @brief TO_LINE: drive slowly straight at the line. Once both IR sensors
  *        have been off the line (IR gate), black counts as the line only
  *        after B5_LINE_MIN_MM of travel (floor-mat gaps are thinner) and
@@ -825,7 +872,7 @@ static void run_to_line (bool b_line_seen)
     else if ((black_mm >= (int32_t)B5_LINE_MIN_MM) && b_inside)
     {
         note_line(LINE_ACCEPTED, ir_side_mm, black_mm);
-        set_phase(PHASE_CREEP);
+        set_phase(PHASE_CENTRE);
     }
     else if ((black_mm >= (int32_t)B5_LINE_MIN_MM) && (!g_nav.b_line_noted))
     {
@@ -1163,42 +1210,24 @@ static void drive_hold (int32_t target_deci, int32_t speed_um_s)
 }
 
 /*!
- * @brief Pivot on the inside wheel towards a heading, slowing near it.
+ * @brief Rotate on the middle of the axle: both wheels at speed_um_s in
+ *        opposite directions.
  *
- * NOTE: Only one wheel drives, always forwards: turning away drives the
- * wheel on the obstacle side, turning towards drives the other one. An
- * overshoot is corrected by the other wheel, so no wheel ever reverses.
- *
- * @param[in] target_deci Heading to reach (deci-degrees, positive = away).
- *
- * @return True once the heading is within B5_NAV_TURN_TOL_DECI.
+ * @param[in] intent     INTENT_AWAY or INTENT_TOWARD (direction).
+ * @param[in] speed_um_s Wheel speed (um/s).
  */
-static bool pivot_to (int32_t target_deci)
+static void spin_drive (uint32_t intent, int32_t speed_um_s)
 {
-    int32_t const error  = target_deci - away_deci();
-    int32_t const left   = (error < 0) ? -error : error;
-    bool const    b_done = (left <= B5_NAV_TURN_TOL_DECI);
+    uint32_t const steer = intent_steer(intent);
 
-    if (b_done)
+    if (B5_STEER_LEFT == steer)
     {
-        drive_stop();
-        tm_printf((UB *)"[b5-nav] turned to %d deg (target %d)\n",
-                  (INT)(away_deci() / DECI_PER_DEG),
-                  (INT)(target_deci / DECI_PER_DEG));
-        log_rec(B5_LOG_TURNED, 0U, 0U, 0U, away_deci(), target_deci, 0);
+        drive_speeds(steer, -speed_um_s, speed_um_s);
     }
     else
     {
-        /* Casts are safe: the speeds are 70 000 and 140 000 um/s. */
-        int32_t const outside_um_s = (left <= B5_NAV_TURN_SLOW_DECI)
-                                         ? (int32_t)B5_NAV_TURN_SLOW_UM_S
-                                         : (int32_t)B5_NAV_SPEED_UM_S;
-
-        drive_steer(intent_steer((error > 0) ? INTENT_AWAY : INTENT_TOWARD),
-                    (int32_t)B5_NAV_ESCAPE_INSIDE_UM_S, outside_um_s);
+        drive_speeds(steer, speed_um_s, -speed_um_s);
     }
-
-    return (b_done);
 }
 
 /*!
@@ -1229,20 +1258,10 @@ static bool spin_to (int32_t target_deci)
     else
     {
         /* Casts are safe: the speeds are 46 666 and 70 000 um/s. */
-        int32_t const  speed_um_s = (left <= B5_NAV_TURN_SLOW_DECI)
-                                        ? (int32_t)B5_NAV_SPIN_SLOW_UM_S
-                                        : (int32_t)B5_NAV_SPIN_UM_S;
-        uint32_t const steer =
-            intent_steer((error > 0) ? INTENT_AWAY : INTENT_TOWARD);
-
-        if (B5_STEER_LEFT == steer)
-        {
-            drive_speeds(steer, -speed_um_s, speed_um_s);
-        }
-        else
-        {
-            drive_speeds(steer, speed_um_s, -speed_um_s);
-        }
+        int32_t const speed_um_s = (left <= B5_NAV_TURN_SLOW_DECI)
+                                       ? (int32_t)B5_NAV_SPIN_SLOW_UM_S
+                                       : (int32_t)B5_NAV_SPIN_UM_S;
+        spin_drive((error > 0) ? INTENT_AWAY : INTENT_TOWARD, speed_um_s);
     }
 
     return (b_done);
@@ -1268,11 +1287,16 @@ static void set_phase (uint8_t phase)
             g_nav.sweep_mm[slot] = B5_PLAN_NO_ECHO;
         }
 
-        g_nav.sweep_slot  = 0U;
+        g_nav.sweep_slot  = SWEEP_FIRST_SLOT;
         g_nav.sweep_pings = 0U;
 
         /* Cast is safe: a slot angle is within +-600. */
-        set_look((int16_t)scan_algo_slot_deci(0U));
+        set_look((int16_t)scan_algo_slot_deci(SWEEP_FIRST_SLOT));
+    }
+    else if (PHASE_MAP == phase)
+    {
+        g_nav.map_start    = away_deci();
+        g_nav.b_ir_cleared = false;
     }
     else if (PHASE_TO_LINE == phase)
     {
@@ -1294,21 +1318,14 @@ static void set_phase (uint8_t phase)
 
 /*!
  * @brief BYPASS has begun: start the dead reckoning, point the servo
- *        ahead, and back up first if the obstacle is too close to pivot.
+ *        ahead, and drive the first leg (AHEAD).
  */
 static void begin_bypass (void)
 {
     reset_pose();
     g_nav.scans = 0U;
     set_look(0);
-    if (g_nav.backup_mm > 0U)
-    {
-        set_phase(PHASE_BACKUP);
-    }
-    else
-    {
-        set_phase(PHASE_TURN_AWAY);
-    }
+    set_phase(PHASE_AHEAD);
 }
 
 /*!
@@ -1319,9 +1336,8 @@ static void begin_bypass (void)
  */
 static void halt_bypass (uint8_t reason)
 {
-    static char const * const g_why[] = {
-        "bumped into something", "still blocked after the last side scan",
-        "the line was not found", "collision"};
+    static char const * const g_why[] = {"bumped into something",
+                                         "the line was not found", "collision"};
 
     drive_stop();
     hold_car(true);
@@ -1723,8 +1739,8 @@ static bool is_servo_moving (uint32_t status, uint32_t now)
 
 /*!
  * @brief Keep the accepted plan: the side, B (the closest reading) and the
- *        side's raw cleared angle, and work out the back-up, A, E and the
- *        LEVEL leg (b5_plan.c).
+ *        side's raw cleared angle, and work out the first leg, A, E and
+ *        the LEVEL leg (b5_plan.c).
  *
  * @param[in] p_result Planner result, replayed from the scan profile.
  * @param[in] side     Side the car passes on (B5_SIDE_*).
@@ -1733,16 +1749,16 @@ static void keep_plan (b5_plan_result_t const * p_result, uint32_t side)
 {
     int32_t const clear_deci = p_result->clear_deci[side % SCAN_ALGO_SIDES];
 
-    g_nav.closest_mm = p_result->closest_mm;
-    g_nav.backup_mm  = b5_plan_backup_mm(g_nav.closest_mm);
-    g_nav.room_mm    = b5_plan_room_mm(g_nav.closest_mm, clear_deci);
-    g_nav.out_mm     = b5_plan_out_mm(g_nav.room_mm);
-    g_nav.level_mm   = b5_plan_level_mm(g_nav.closest_mm);
+    g_nav.closest_mm   = p_result->closest_mm;
+    g_nav.ahead_end_mm = b5_plan_ahead_mm(g_nav.closest_mm);
+    g_nav.room_mm      = b5_plan_room_mm(g_nav.closest_mm, clear_deci);
+    g_nav.out_mm       = b5_plan_out_mm(g_nav.room_mm);
+    g_nav.level_mm     = b5_plan_level_mm(g_nav.closest_mm);
 
-    tm_printf((UB *)"[b5-nav] plan: B %d mm, cleared %d deg, A %d mm, back up "
-                    "%d mm, out E %d mm, level %d mm\n",
+    tm_printf((UB *)"[b5-nav] plan: B %d mm, cleared %d deg, A %d mm, first "
+                    "leg %d mm, out %d mm, level %d mm\n",
               (INT)g_nav.closest_mm, (INT)(clear_deci / DECI_PER_DEG),
-              (INT)g_nav.room_mm, (INT)g_nav.backup_mm, (INT)g_nav.out_mm,
+              (INT)g_nav.room_mm, (INT)g_nav.ahead_end_mm, (INT)g_nav.out_mm,
               (INT)g_nav.level_mm);
 
     /* Cast is safe: the side field is 1 bit wide. */

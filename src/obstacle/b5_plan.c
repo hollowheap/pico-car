@@ -365,24 +365,20 @@ uint8_t b5_plan_steer_toward (uint8_t side)
 }
 
 /*!
- * @brief Revised bypass, before the first pivot: how far to back up so the
- *        front corner swinging round the stopped wheel keeps
- *        B5_NAV_CLEAR_MM from the obstacle face.
+ * @brief Revised bypass, first leg: the car drives on B / 2 towards the
+ *        obstacle before its first rotation.
  *
  * Frame for the bypass helpers: the middle of the wheel axle where the
  * car stopped is the origin, "ahead" runs along the original line and
  * "side" towards the side being passed.
  *
- * @param[in] closest_mm Closest scan reading, measured from the sensor.
+ * @param[in] closest_mm B, the closest scan reading (from the sensor).
  *
- * @return Distance to reverse, mm (0 when there is room already).
+ * @return Ahead position of the axle for the first rotation, mm.
  */
-uint32_t b5_plan_backup_mm (uint32_t closest_mm)
+uint32_t b5_plan_ahead_mm (uint32_t closest_mm)
 {
-    uint32_t const needed_mm =
-        (B5_PIVOT_REACH_MM + B5_NAV_CLEAR_MM) - B5_AXLE_TO_SONAR_MM;
-
-    return ((closest_mm >= needed_mm) ? 0U : (needed_mm - closest_mm));
+    return (closest_mm / (uint32_t)HALF);
 }
 
 /*!
@@ -416,7 +412,7 @@ uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci)
 
 /*!
  * @brief Revised bypass: E, how far the car moves out after the first
- *        pivot: A + car length + B5_OUT_BUFFER_MM.
+ *        rotation: A + half car width + B5_OUT_BUFFER_MM.
  *
  * @param[in] room_mm A (b5_plan_room_mm()).
  *
@@ -424,11 +420,11 @@ uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci)
  */
 uint32_t b5_plan_out_mm (uint32_t room_mm)
 {
-    return (room_mm + B5_CAR_LEN_MM + B5_OUT_BUFFER_MM);
+    return (room_mm + B5_CAR_HALF_W_MM + B5_OUT_BUFFER_MM);
 }
 
 /*!
- * @brief Revised bypass: how far the car drives on after the pivot back,
+ * @brief Revised bypass: how far the car drives on after rotating back,
  *        to come level with the obstacle's near face: B + B5_LEVEL_BUFFER_MM.
  *
  * @param[in] closest_mm B, the closest scan reading (from the sensor).
@@ -446,30 +442,34 @@ uint32_t b5_plan_level_mm (uint32_t closest_mm)
  *
  * Each reading at servo angle t (alpha = fwd_sign x t, positive = forward
  * along the line) is a point f = r cos(alpha) towards the line and
- * s = r sin(alpha) along it. Points with f beyond lane_mm are past the line
- * and ignored; the rest are "hits".
+ * s = r sin(alpha) along it. Readings outside +-pan_deci and points with f
+ * beyond lane_mm (past the line) are ignored; the rest are "hits".
  *   - Lane: a hit with |s| <= B5_LANE_HALF_MM blocks the way to the line.
  *   - d: the closest hit.
  *   - Forward cleared angle: one slot past the last hit with alpha >= 0;
  *     0 with no forward hit; none (B5_SIDE_ASSUMED_DECI is used) when the
- *     hits reach the servo limit.
- *   - Move on: d x tan(cleared angle) + B5_LANE_HALF_MM (D + C).
+ *     hits reach pan_deci.
+ *   - Move on: (d x tan(cleared angle) + half car width +
+ *     B5_MOVE_BUFFER_MM) / B5_MOVE_DIVISOR.
  *
  * @param[in]  p_mm     B5_SLOT_COUNT readings in slot order (mm, or
  *                      B5_PLAN_NO_ECHO).
  * @param[in]  fwd_sign +1 if a left (positive) servo angle looks forward
  *                      along the line, -1 if a right one does.
- * @param[in]  lane_mm  How far the lane runs from the sensor towards (and
- *                      past) the line.
+ * @param[in]  line_mm  Distance from the sensor to the line (mm).
+ * @param[in]  pan_deci Largest servo angle swept (deci-degrees).
  * @param[out] p_side   The judgement.
  */
 void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
-                        uint32_t lane_mm, b5_plan_side_t * p_side)
+                        uint32_t line_mm, int32_t pan_deci,
+                        b5_plan_side_t * p_side)
 {
-    uint32_t closest_mm = B5_PLAN_NO_ECHO;
-    int32_t  last_deci  = -1;
-    bool     b_blocked  = false;
-    uint32_t slot       = 0U;
+    /* Cast is safe: line_mm is a few hundred mm. */
+    int32_t const lane_mm    = (int32_t)line_mm + (int32_t)B5_LANE_EXTRA_MM;
+    uint32_t      closest_mm = B5_PLAN_NO_ECHO;
+    int32_t       last_deci  = -1;
+    bool          b_blocked  = false;
+    uint32_t      slot       = 0U;
 
     for (slot = 0U; slot < B5_SLOT_COUNT; slot++)
     {
@@ -478,14 +478,14 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
         /* Cast is safe: slot is 0..24. */
         int32_t const alpha = fwd_sign * scan_algo_slot_deci((uint8_t)slot);
 
-        if (B5_PLAN_NO_ECHO != range_mm)
+        if ((B5_PLAN_NO_ECHO != range_mm) && (alpha <= pan_deci) &&
+            (alpha >= -pan_deci))
         {
             int32_t const to_line_mm =
                 mul_q14(range_mm, b5_plan_cos_q14(alpha));
             int32_t const along_mm = mul_q14(range_mm, b5_plan_sin_q14(alpha));
 
-            /* Cast is safe: lane_mm is a few hundred mm. */
-            if (to_line_mm <= (int32_t)lane_mm)
+            if (to_line_mm <= lane_mm)
             {
                 closest_mm = (range_mm < closest_mm) ? range_mm : closest_mm;
                 b_blocked =
@@ -498,7 +498,7 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
     }
 
     p_side->b_lane_clear = !b_blocked;
-    p_side->b_cleared    = (last_deci < B5_SERVO_LIMIT_DECI);
+    p_side->b_cleared    = (last_deci < pan_deci);
 
     /* Casts are safe: the angles are 0..600 and closest_mm is 12 bits or
      * B5_PLAN_NO_ECHO. */
@@ -518,14 +518,17 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
     if (B5_PLAN_NO_ECHO == closest_mm)
     {
         p_side->closest_mm = 0U;
-        p_side->move_mm    = B5_LANE_HALF_MM;
+        p_side->move_mm =
+            (B5_CAR_HALF_W_MM + B5_MOVE_BUFFER_MM) / B5_MOVE_DIVISOR;
     }
     else
     {
         p_side->closest_mm = (uint16_t)closest_mm;
         p_side->move_mm =
-            (uint32_t)mul_q14(closest_mm, b5_plan_tan_q14(p_side->clear_deci)) +
-            B5_LANE_HALF_MM;
+            ((uint32_t)mul_q14(closest_mm,
+                               b5_plan_tan_q14(p_side->clear_deci)) +
+             B5_CAR_HALF_W_MM + B5_MOVE_BUFFER_MM) /
+            B5_MOVE_DIVISOR;
     }
 }
 

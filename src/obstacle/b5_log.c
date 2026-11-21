@@ -23,22 +23,24 @@
  *           positive = away from the obstacle side)
  *   MFAULT  a = wheel, b = speed_valid, c = odometry_valid, d = bad
  *           encoder steps, e = speed (mm/s), f = sample interval (us)
- *   PHASE   a = bypass phase (0 BACKUP .. 13 HALT, see g_phase_name),
+ *   PHASE   a = bypass phase (0 AHEAD .. 13 HALT, see g_phase_name),
  *           d = side offset (mm), e = distance along the line (mm),
  *           f = heading (deci-degrees, positive = away from the obstacle
  *           side)
- *   SWEEP   a = side scan number (1..), b = 0 lane clear / 1 blocked, cleared
- *           angle found / 2 blocked, no cleared angle (assumed), c = cleared
- *           angle used (deg), d = d, the closest reading (mm), e = move on
- *           D + C (mm), f = profile store index (the 25 readings)
+ *   SWEEP   a = side scan number (1..), b = 0 lane clear / 1 blocked,
+ *           cleared angle found / 2 blocked, no cleared angle (assumed),
+ *           c = cleared angle used (deg), d = d, the closest reading (mm),
+ *           e = move-on distance (mm), f = profile store index (the
+ *           readings)
  *   PLAN    a = side, d = B, the closest reading (mm), e = A, the room on
  *           that side (mm), f = raw cleared angle (deci-degrees)
+ *   MAP     a = 1 line found / 0 none in a full turn, f = how far the car
+ *           had rotated (deci-degrees)
  *   BUMP    a = wheel, b = phase, d = asked (mm/s), e = measured (mm/s),
  *           f = distance along the line (mm)
  *   LINE    a = 0 found / 1 outside the window / 2 too short, d = IR side
  *           offset (mm), e = black for (mm), f = distance along the line
- *   HALT    a = reason (0 bump, 1 still blocked, 2 line missed,
- *           3 collision),
+ *   HALT    a = reason (0 bump, 1 line missed, 2 collision),
  *           d = side offset, e = distance along the line (mm), f = heading
  *
  * NOTE: The kernel types UB, INT, UINT and SYSTIM are used where the
@@ -72,7 +74,7 @@
 #define PHASE_NAMES  (14U)
 #define SWEEP_NAMES  (3U)
 #define LINE_NAMES   (3U)
-#define HALT_NAMES   (4U)
+#define HALT_NAMES   (3U)
 
 /* Slots printed per profile line. */
 #define SLOTS_PER_LINE (5U)
@@ -150,17 +152,16 @@ static char const * const g_cmd_name[CMD_NAMES] = {
     "LINE_FOUND", "STOP",     "RESET",  "START"};
 
 static char const * const g_phase_name[PHASE_NAMES] = {
-    "BACKUP",    "TURN_AWAY", "OUT",       "TURN_BACK", "LEVEL",
-    "SPIN_FACE", "SWEEP",     "SPIN_BACK", "MOVE_ON",   "TO_LINE",
-    "CREEP",     "ALIGN",     "DONE",      "HALT"};
+    "AHEAD",     "SPIN_AWAY", "OUT",       "SPIN_PARALLEL", "LEVEL",
+    "SPIN_FACE", "SWEEP",     "SPIN_BACK", "MOVE_ON",       "TO_LINE",
+    "CENTRE",    "MAP",       "DONE",      "HALT"};
 static char const * const g_sweep_name[SWEEP_NAMES] = {
     "lane to the line clear", "blocked, forward cleared angle",
     "blocked, no cleared angle (assumed)"};
 static char const * const g_line_name[LINE_NAMES] = {
     "found", "ignored: outside the window", "ignored: too short"};
-static char const * const g_halt_name[HALT_NAMES] = {
-    "bump", "still blocked after the last side scan", "line missed",
-    "collision"};
+static char const * const g_halt_name[HALT_NAMES] = {"bump", "line missed",
+                                                     "collision"};
 
 static uint32_t now_ms (void);
 static void     print_profile (uint32_t index, uint32_t t_ms);
@@ -489,7 +490,7 @@ static void print_nav_record (b5_log_rec_t const * p_rec)
 }
 
 /*!
- * @brief Print one bypass record (SWEEP, PLAN, BUMP, LINE, HALT) as
+ * @brief Print one bypass record (SWEEP, PLAN, MAP, BUMP, LINE, HALT) as
  *        a readable line.
  *
  * @param[in] p_rec Record to print.
@@ -511,13 +512,19 @@ static void print_bypass_record (b5_log_rec_t const * p_rec)
 
         case B5_LOG_PLAN:
             tm_printf((UB const *)"%8d PLAN side=%s B %d mm, cleared %d deg, A "
-                                  "%d mm, out E %d mm, level %d mm\n",
+                                  "%d mm, out %d mm, level %d mm\n",
                       t_ms, g_side_name[p_rec->val_a % FIELD2_NAMES],
                       (INT)p_rec->val_d, (INT)(p_rec->val_f / DECI_PER_DEG),
                       (INT)p_rec->val_e,
-                      (INT)(p_rec->val_e + (int16_t)B5_CAR_LEN_MM +
+                      (INT)(p_rec->val_e + (int16_t)B5_CAR_HALF_W_MM +
                             (int16_t)B5_OUT_BUFFER_MM),
                       (INT)(p_rec->val_d + (int16_t)B5_LEVEL_BUFFER_MM));
+        break;
+
+        case B5_LOG_MAP:
+            tm_printf((UB const *)"%8d MAP %s after rotating %d deg\n", t_ms,
+                      (0U != p_rec->val_a) ? "line found" : "no line",
+                      (INT)(p_rec->val_f / DECI_PER_DEG));
         break;
 
         case B5_LOG_BUMP:
