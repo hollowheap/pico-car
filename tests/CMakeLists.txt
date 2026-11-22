@@ -98,3 +98,10 @@ target_include_directories(test_route_demo PRIVATE ../src)
 target_compile_options(test_route_demo PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 add_test(NAME route_demo_policy COMMAND test_route_demo)
+
+add_executable(test_b5_plan_track test_b5_plan_track.c
+    ../src/obstacle/b5_plan.c ../src/obstacle/scan_algo.c)
+target_include_directories(test_b5_plan_track PRIVATE ../src/obstacle)
+target_compile_options(test_b5_plan_track PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME b5_plan_track_geometry COMMAND test_b5_plan_track)

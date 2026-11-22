@@ -159,6 +159,20 @@ void obstacle_set_look (int16_t deci)
 }
 
 /*!
+ * @brief Tell Buddy 5 that Navigation's chicken-head rotation scan is
+ *        running (REACQUIRE only): the servo then follows every new look
+ *        angle at once, without the pre-delay and settle wait, so it can
+ *        turn smoothly while the car rotates. Navigation turns it off again
+ *        on every way out of the scan.
+ *
+ * @param[in] b_on True while the rotation scan runs.
+ */
+void obstacle_set_track (bool b_on)
+{
+    b5_comms_set_track(b_on);
+}
+
+/*!
  * @brief Packed status word, read in one 32-bit load.
  *
  * @return The status word.

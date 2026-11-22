@@ -36,7 +36,8 @@
 #define B5_LOG_LINE   (15U)
 #define B5_LOG_HALT   (16U)
 #define B5_LOG_MAP    (17U)
-#define B5_LOG_KINDS  (18U)
+#define B5_LOG_TRACK  (18U)
+#define B5_LOG_KINDS  (19U)
 
 /* One record: 16 bytes. */
 typedef struct

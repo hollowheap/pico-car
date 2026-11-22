@@ -225,6 +225,8 @@ the middle of its axle (no shift). Headings are absolute (90° away, 0°,
 | LEVEL | straight, heading held | moved B + 10 mm (level with the near face) |
 | SPIN_FACE | rotate to face the line (and the obstacle) | heading −90° |
 | SWEEP | stand still; servo −60°..+60° in 5° steps (the first scan's range), 2 pings each | judged (below) |
+| TRACK_OUT | rotation scan pass 1: rotate 60° towards the obstacle's side at a constant ~50°/s, servo turning the other way so the beam points straight at the line | turned 60° → TRACK_BACK, or an echo in the lane / swing circle → blocked |
+| TRACK_BACK | pass 2: rotate back with the beam tilted 10° towards the obstacle's side | back at the start heading → TO_LINE if clear |
 | SPIN_BACK | rotate back | heading 0° |
 | MOVE_ON | straight, heading held | moved (D + 63 + 20) / 2, then SPIN_FACE and SWEEP again |
 | TO_LINE | slowly (70 mm/s) at the line, heading held | IR black for ≥ 8 mm of travel, no more than 80 mm short of the line; stop 300 mm past it |
@@ -243,12 +245,47 @@ The numbers (measured: half width 63 mm, axle → sonar 68.5 mm, axle → IR
   `s = r·sin α` along it (α positive = forward along the line). Points past
   the line + 100 mm are ignored.
   - **Completely clear** (no point with |s| ≤ C = 63 + 30 = 93 mm) →
-    TO_LINE.
+    the rotation scan (below), then TO_LINE.
   - **Cleared angle found, still in the way**: `D = d · tan(forward cleared
     angle)`, d = the closest point; move on `(D + 63 + 20) / 2`.
   - **No cleared angle** (hits up to +60°): θ = 30°, same move.
   - There is no limit on the number of scans (only the REACQUIRE time and
     distance limits).
+- **Rotation scan ("chicken head", TRACK_OUT / TRACK_BACK).** The sweep
+  cannot see the obstacle's far corner beside and behind the car, so a
+  clear sweep is checked again by rotating the car on the spot towards the
+  obstacle's side and back, while the servo turns the other way so the beam
+  keeps one direction on the floor (the gaze). As the car rotates, the
+  sensor (69 mm ahead of the axle) slides sideways, so the beam sweeps
+  across the lane and meets faces square-on. Frame: origin at the axle when
+  the scan starts, forward = towards the line, side positive = left;
+  psi = heading since the scan started:
+  - `servo = clamp(gaze − psi, ±60°)` (re-aimed about every 20 ms,
+    `obstacle_set_look()` without the servo wait; the Buddy 5 task is in
+    tracking mode, `obstacle_set_track()`)
+  - `forward = 69·cos psi + (15 + p)·cos gaze`,
+    `side = 69·sin psi + (15 + p)·sin gaze` (`b5_plan_track_point()`;
+    15 mm = servo shaft to sensor face, FILL)
+  - **blocked** if `0 < forward < lookahead` and `|side| < 93`
+    (lookahead = side offset at the start + 100 mm, to 100 mm past the
+    line), or if `forward² + side² < 148²` (inside the swing circle of the
+    front corners).
+  - Pass 1 gaze 0; pass 2 gaze 10° towards the obstacle's side (FILL; 12°
+    if echoes survive 15° off square).
+  - **Blocked** → SPIN_BACK, MOVE_ON `93 − closest blocked side`, at least
+    30 mm, then SPIN_FACE and SWEEP again. More than 3 UNKNOWN / STUCK pings
+    → the scan is repeated once, then counted as blocked (30 mm).
+  - Before rotating at all, the SWEEP echoes are checked against the swing
+    circle; if one is inside it, the car does not rotate there but moves
+    on 30 mm first.
+  - Tracking is switched off on every way out (clear, blocked, retry, halt,
+    a new bypass, or Buddy 5 leaving REACQUIRE); the Buddy 5 task also
+    ignores the flag outside REACQUIRE.
+  - It skips the "wheels still before the servo swings" rule on purpose, so
+    the encoder-disturbance check below is required before relying on it.
+  - Host simulation with a sensor that only hears faces within 20° of
+    square: the rotation scan caught a corner the sweep missed (blocked,
+    moved on 30–50 mm, clear on the next scan), with no contact.
 - **MAP:** the IR sensors (124 mm ahead of the axle) trace a circle round
   the axle. Rotating the same way as the first rotation, the first line end
   they meet (after about 90°) is the one leading forward, away from the
@@ -276,6 +313,21 @@ for 300 ms.
 - AHEAD (B / 2) brings the front within about `B / 2 − 64` mm of the face,
   and the first rotation needs `B / 2 + 69 ≥ 148`, so B must stay above
   about 160 mm.
+
+**Rotation scan checks on the car** (USB serial monitor open):
+
+1. **Smoothness:** nothing nearby, run a scan; the sensor should keep
+   pointing at one spot on the far wall without stepping or twitching.
+2. **Encoder disturbance:** tape marks on the floor at 0° and 60°; compare
+   the encoder rotation with the real angle with tracking on and with the
+   servo held still. They should agree within about 3°.
+3. **Side hit:** box with its far end just inside the lane, beside and
+   behind the car; the scan must report blocked and the car move on and
+   rescan without touching it.
+4. **Clear:** box well outside the lane; both passes clear → TO_LINE.
+5. **Swing guard:** object about 120 mm from the axle beside the car; the
+   car must not rotate into it.
+6. **Timing:** a full scan (120° of rotation) takes about 2.4 s.
 
 STEER words use the order of Buddy 2's `motion_drive_action_t`:
 STRAIGHT / LEFT / RIGHT / HOLD. The statechart publishes "away" during the
@@ -421,6 +473,8 @@ Search `b5_cfg.h` for **FILL**. Status:
 | Assumed depth `B5_DEPTH_ASSUMED_MM` | 220 mm (covers a 150 mm box corner-first); set to the deepest real obstacle |
 | Servo→tail `B5_SERVO_TO_REAR_MM` | Pending (170 mm); only the planner's corridor check uses it |
 | Servo centre / scale | Looks right by eye; protractor check optional |
+| Servo shaft → sensor face `B5_SONAR_FACE_MM` | Pending (15 mm default) |
+| Rotation scan tilt `B5_TRACK_TILT_DECI` | Pending (10°); 12° if echoes survive 15° off square |
 | Power source | Pending (settle time on a low LiPo, H2d) |
 
 ## Phase 2 (integration) — in main.uf2
@@ -502,7 +556,9 @@ over USB when a serial monitor is opened.
 FAULT, every SCAN_RESULT with the full 25-slot profile, every steering
 change with how far the car has turned, every bypass phase, the PLAN (B,
 cleared angle, A, out), every side scan (judgement, d, move on, and its
-readings), the MAP (line found, and after how many degrees), every line
+readings), every rotation scan result (TRACK: pass, clear or blocked,
+closest side, unknown pings, move on), the MAP (line found, and after how
+many degrees), every line
 contact
 (found, or ignored and why), a BUMP or HALT, every motion-service
 state/fault change, every command sent, and a trace line (state, echo, IR sensors,

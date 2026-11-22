@@ -4,6 +4,9 @@
  *        does exactly one of: move the servo and let it settle, wait for
  *        the 60 ms ping spacing, or take one ping and feed it to the
  *        statechart. Commands and time limits are handled on every pass.
+ *        While Navigation's rotation scan has tracking on, the servo is
+ *        re-aimed without settling and the wait is cut to
+ *        B5_TRACK_PERIOD_MS, so it follows the car smoothly between pings.
  *
  * NOTE: The kernel API types INT, UINT, ER, TMO and SYSTIM are used where
  * the kernel functions require them (deviation from BARR-C 5.2.a, see
@@ -60,6 +63,7 @@ static void     wait_ms (uint32_t delay_ms);
 static void     tick (void);
 static uint32_t settle_ms (int16_t target);
 static bool     is_car_driving (void);
+static bool     is_tracking (void);
 static bool     move_servo (void);
 static void     ping (uint8_t * p_cls, uint16_t * p_dist_mm);
 static void     ping_and_step (void);
@@ -102,8 +106,18 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
         else if (since_us < PING_PERIOD_US)
         {
             /* Round up so the next pass is never early. */
-            wait_ms(((PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) /
-                    USEC_PER_MSEC);
+            uint32_t wait_for_ms =
+                ((PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) /
+                USEC_PER_MSEC;
+
+            /* While tracking, come back at least every B5_TRACK_PERIOD_MS
+             * to re-aim the servo between pings. */
+            if ((is_tracking()) && (wait_for_ms > B5_TRACK_PERIOD_MS))
+            {
+                wait_for_ms = B5_TRACK_PERIOD_MS;
+            }
+
+            wait_ms(wait_for_ms);
         }
         else
         {
@@ -257,7 +271,26 @@ static bool is_car_driving (void)
 }
 
 /*!
+ * @brief Tell whether Navigation's rotation scan has servo tracking on.
+ *        Only honoured in REACQUIRE, so a flag left on by mistake cannot
+ *        change the servo handling anywhere else.
+ *
+ * @return True while tracking.
+ */
+static bool is_tracking (void)
+{
+    return ((b5_comms_track()) && (B5_STATE_REACQUIRE == g_fsm.state));
+}
+
+/*!
  * @brief Move the servo if the statechart wants a new angle.
+ *
+ * NOTE: While tracking (is_tracking()) the servo is set at once, with no
+ * B5_SERVO_PREDELAY_MS and no settle wait, and the function reports "not
+ * moved" so the ping stays on time. This deliberately skips the "stop the
+ * wheels before the servo swings" rule below, because the car is rotating
+ * while the servo turns the other way; the encoder-disturbance test in
+ * docs/buddy5_obstacle.md (rotation scan checks) checks that this is safe.
  *
  * @return True if the servo moved (and has now settled).
  */
@@ -266,7 +299,16 @@ static bool move_servo (void)
     bool    b_moved = false;
     int16_t target  = b5_fsm_servo_deci(&g_fsm, b5_comms_look());
 
-    if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
+    if (is_tracking())
+    {
+        if ((!g_servo.b_known) || (target != g_servo.deci))
+        {
+            scan_hw_servo_set(target);
+            g_servo.deci    = target;
+            g_servo.b_known = true;
+        }
+    }
+    else if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
     {
         /* Let Navigation stop the wheels before the servo swings: a servo
          * swing while a motor drives disturbs the wheel encoders. The
@@ -275,6 +317,8 @@ static bool move_servo (void)
         target = b5_fsm_servo_deci(&g_fsm, b5_comms_look());
     }
 
+    /* After the tracking branch the servo already matches the target, so
+     * this settle step only runs outside tracking. */
     if ((!g_servo.b_known) || (target != g_servo.deci))
     {
         uint32_t const delay_ms = settle_ms(target);

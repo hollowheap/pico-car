@@ -23,7 +23,7 @@
  *           positive = away from the obstacle side)
  *   MFAULT  a = wheel, b = speed_valid, c = odometry_valid, d = bad
  *           encoder steps, e = speed (mm/s), f = sample interval (us)
- *   PHASE   a = bypass phase (0 AHEAD .. 13 HALT, see g_phase_name),
+ *   PHASE   a = bypass phase (0 AHEAD .. 15 HALT, see g_phase_name),
  *           d = side offset (mm), e = distance along the line (mm),
  *           f = heading (deci-degrees, positive = away from the obstacle
  *           side)
@@ -36,6 +36,11 @@
  *           that side (mm), f = raw cleared angle (deci-degrees)
  *   MAP     a = 1 line found / 0 none in a full turn, f = how far the car
  *           had rotated (deci-degrees)
+ *   TRACK   a = pass (1 out, 2 back), b = 0 clear / 1 blocked / 2 too many
+ *           unknown pings, retry / 3 too many unknown pings, blocked,
+ *           c = unknown pings, d = closest blocked side (mm, 32767 if
+ *           none), e = turned since the scan started (deci-degrees),
+ *           f = move-on distance (mm)
  *   BUMP    a = wheel, b = phase, d = asked (mm/s), e = measured (mm/s),
  *           f = distance along the line (mm)
  *   LINE    a = 0 found / 1 outside the window / 2 too short, d = IR side
@@ -71,7 +76,8 @@
 #define FIELD2_NAMES (4U)
 #define MOTION_NAMES (8U)
 #define CMD_NAMES    (8U)
-#define PHASE_NAMES  (14U)
+#define PHASE_NAMES  (16U)
+#define TRACK_NAMES  (4U)
 #define SWEEP_NAMES  (3U)
 #define LINE_NAMES   (3U)
 #define HALT_NAMES   (3U)
@@ -152,9 +158,13 @@ static char const * const g_cmd_name[CMD_NAMES] = {
     "LINE_FOUND", "STOP",     "RESET",  "START"};
 
 static char const * const g_phase_name[PHASE_NAMES] = {
-    "AHEAD",     "SPIN_AWAY", "OUT",       "SPIN_PARALLEL", "LEVEL",
-    "SPIN_FACE", "SWEEP",     "SPIN_BACK", "MOVE_ON",       "TO_LINE",
-    "CENTRE",    "MAP",       "DONE",      "HALT"};
+    "AHEAD",      "SPIN_AWAY", "OUT",     "SPIN_PARALLEL",
+    "LEVEL",      "SPIN_FACE", "SWEEP",   "TRACK_OUT",
+    "TRACK_BACK", "SPIN_BACK", "MOVE_ON", "TO_LINE",
+    "CENTRE",     "MAP",       "DONE",    "HALT"};
+static char const * const g_track_name[TRACK_NAMES] = {
+    "clear", "blocked", "too many unknown pings, retry",
+    "too many unknown pings, blocked"};
 static char const * const g_sweep_name[SWEEP_NAMES] = {
     "lane to the line clear", "blocked, forward cleared angle",
     "blocked, no cleared angle (assumed)"};
@@ -490,7 +500,7 @@ static void print_nav_record (b5_log_rec_t const * p_rec)
 }
 
 /*!
- * @brief Print one bypass record (SWEEP, PLAN, MAP, BUMP, LINE, HALT) as
+ * @brief Print one bypass record (SWEEP, PLAN, MAP, TRACK, BUMP, LINE, HALT) as
  *        a readable line.
  *
  * @param[in] p_rec Record to print.
@@ -525,6 +535,15 @@ static void print_bypass_record (b5_log_rec_t const * p_rec)
             tm_printf((UB const *)"%8d MAP %s after rotating %d deg\n", t_ms,
                       (0U != p_rec->val_a) ? "line found" : "no line",
                       (INT)(p_rec->val_f / DECI_PER_DEG));
+        break;
+
+        case B5_LOG_TRACK:
+            tm_printf((UB const *)"%8d TRACK pass %d: %s, closest side %d mm, "
+                                  "%d unknown, turned %d deg, move on %d mm\n",
+                      t_ms, (INT)p_rec->val_a,
+                      g_track_name[p_rec->val_b % TRACK_NAMES],
+                      (INT)p_rec->val_d, (INT)p_rec->val_c,
+                      (INT)(p_rec->val_e / DECI_PER_DEG), (INT)p_rec->val_f);
         break;
 
         case B5_LOG_BUMP:

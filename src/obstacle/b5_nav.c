@@ -24,9 +24,23 @@
  *       SPIN_FACE   rotate to face the line (and the obstacle).
  *       SWEEP       stand still and sweep the servo +-B5_SIDE_PAN_DECI, then
  *                   judge the readings (b5_plan_side_scan()):
- *                     lane to the line clear -> TO_LINE;
+ *                     lane to the line clear -> TRACK_OUT (or, if an echo
+ *                     lies inside the swing circle, SPIN_BACK and MOVE_ON
+ *                     B5_TRACK_MIN_MOVE_MM without rotating there);
  *                     blocked -> SPIN_BACK, MOVE_ON, SPIN_FACE, SWEEP again
  *                     (no limit on the number of scans).
+ *       TRACK_OUT   chicken-head rotation scan, pass 1: rotate
+ *                   B5_TRACK_PAN_DECI towards the obstacle's side at a
+ *                   constant speed while the servo turns the other way, so
+ *                   the beam keeps pointing straight at the line; every
+ *                   echo becomes a floor point checked against the lane and
+ *                   the swing circle (b5_plan_track_*()).
+ *       TRACK_BACK  pass 2: rotate back with the beam tilted
+ *                   B5_TRACK_TILT_DECI towards the obstacle's side. Clear
+ *                   -> TO_LINE; blocked -> SPIN_BACK and MOVE_ON
+ *                   (lane half width - closest side, at least
+ *                   B5_TRACK_MIN_MOVE_MM); too many unknown pings -> one
+ *                   retry, then blocked.
  *       SPIN_BACK   rotate back, parallel to the line.
  *       MOVE_ON     straight on (D + half car width + B5_MOVE_BUFFER_MM) / 2,
  *                   D from the forward cleared angle (or
@@ -114,13 +128,15 @@
 #define PHASE_LEVEL         (4U)
 #define PHASE_SPIN_FACE     (5U)
 #define PHASE_SWEEP         (6U)
-#define PHASE_SPIN_BACK     (7U)
-#define PHASE_MOVE_ON       (8U)
-#define PHASE_TO_LINE       (9U)
-#define PHASE_CENTRE        (10U)
-#define PHASE_MAP           (11U)
-#define PHASE_DONE          (12U)
-#define PHASE_HALT          (13U)
+#define PHASE_TRACK_OUT     (7U)
+#define PHASE_TRACK_BACK    (8U)
+#define PHASE_SPIN_BACK     (9U)
+#define PHASE_MOVE_ON       (10U)
+#define PHASE_TO_LINE       (11U)
+#define PHASE_CENTRE        (12U)
+#define PHASE_MAP           (13U)
+#define PHASE_DONE          (14U)
+#define PHASE_HALT          (15U)
 
 /* First and last sweep slots (+-B5_SIDE_PAN_DECI). */
 #define SWEEP_FIRST_SLOT                                                       \
@@ -129,6 +145,16 @@
 #define SWEEP_LAST_SLOT                                                        \
     ((uint8_t)(B5_SLOT_CENTRE +                                                \
                (uint32_t)(B5_SIDE_PAN_DECI / B5_SLOT_STEP_DECI)))
+
+/* TRACK record results (b5_log.c). */
+#define TRACK_CLEAR        (0U)
+#define TRACK_BLOCKED      (1U)
+#define TRACK_RETRY        (2U)
+#define TRACK_UNKNOWN_STOP (3U)
+
+/* TRACK record pass numbers. */
+#define TRACK_PASS_OUT  (1U)
+#define TRACK_PASS_BACK (2U)
 
 /* Steering intent, turned into LEFT / RIGHT by the side being passed. */
 #define INTENT_STRAIGHT (0U)
@@ -189,6 +215,7 @@ typedef struct
     bool     b_no_retry;
     bool     b_black;
     bool     b_line_noted;
+    bool     b_track_blocked;
     bool     b_low[WHEELS];
     bool     b_vel_ok[WHEELS];
     uint8_t  req_id;
@@ -201,7 +228,10 @@ typedef struct
     uint8_t  sweep_slot;
     uint8_t  sweep_pings;
     uint8_t  scans;
+    uint8_t  track_unknown;
+    uint8_t  track_retry;
     int16_t  look_deci;
+    int16_t  track_sent;
     uint16_t sweep_mm[B5_SLOT_COUNT];
     uint32_t status;
     uint32_t wait_ms;
@@ -221,6 +251,11 @@ typedef struct
     uint32_t low_ms[WHEELS];
     uint32_t ahead_end_mm;
     int32_t  map_start;
+    int32_t  track_h0;
+    int32_t  track_away0;
+    int32_t  track_gaze;
+    int32_t  track_min_side_mm;
+    uint32_t track_lookahead_mm;
     int32_t  phase_mm;
     int32_t  black_mm;
     int32_t  wheel_mm[WHEELS];
@@ -240,57 +275,66 @@ typedef struct
 } nav_odo_t;
 
 static nav_state_t g_nav = {
-    .b_enabled      = false,
-    .b_scan_pending = false,
-    .b_servo_wait   = false,
-    .b_pausing      = false,
-    .b_ir_cleared   = false,
-    .b_held         = false,
-    .b_no_retry     = false,
-    .b_black        = false,
-    .b_line_noted   = false,
-    .b_low          = {false, false},
-    .b_vel_ok       = {false, false},
-    .req_id         = 0U,
-    .next_id        = 0U,
-    .last_state     = NAV_UNSEEN,
-    .side           = B5_SIDE_LEFT,
-    .phase          = PHASE_DONE,
-    .wait_seq       = 0U,
-    .ping_seq       = 0U,
-    .sweep_slot     = 0U,
-    .sweep_pings    = 0U,
-    .scans          = 0U,
-    .look_deci      = 0,
-    .sweep_mm       = {0U},
-    .status         = 0U,
-    .wait_ms        = 0U,
-    .pause_ms       = 0U,
-    .last_drive     = NAV_DRIVE_UNSEEN,
-    .hold_ms        = 0U,
-    .retry_ms       = 0U,
-    .line_ms        = 0U,
-    .trace_ms       = 0U,
-    .motion_word    = UINT32_MAX,
-    .cmd_ms         = 0U,
-    .closest_mm     = 0U,
-    .room_mm        = 0U,
-    .out_mm         = 0U,
-    .level_mm       = 0U,
-    .move_mm        = 0U,
-    .low_ms         = {0U, 0U},
-    .ahead_end_mm   = 0U,
-    .map_start      = 0,
-    .phase_mm       = 0,
-    .black_mm       = 0,
-    .wheel_mm       = {0, 0},
-    .last_cmd       = {0, 0},
-    .vel_um_s       = {0, 0},
-    .wheel_um       = {0, 0},
-    .base_um        = {0, 0},
-    .prev_um        = {0, 0},
-    .x_um           = 0,
-    .y_um           = 0,
+    .b_enabled          = false,
+    .b_scan_pending     = false,
+    .b_servo_wait       = false,
+    .b_pausing          = false,
+    .b_ir_cleared       = false,
+    .b_held             = false,
+    .b_no_retry         = false,
+    .b_black            = false,
+    .b_line_noted       = false,
+    .b_track_blocked    = false,
+    .b_low              = {false, false},
+    .b_vel_ok           = {false, false},
+    .req_id             = 0U,
+    .next_id            = 0U,
+    .last_state         = NAV_UNSEEN,
+    .side               = B5_SIDE_LEFT,
+    .phase              = PHASE_DONE,
+    .wait_seq           = 0U,
+    .ping_seq           = 0U,
+    .sweep_slot         = 0U,
+    .sweep_pings        = 0U,
+    .scans              = 0U,
+    .track_unknown      = 0U,
+    .track_retry        = 0U,
+    .look_deci          = 0,
+    .track_sent         = 0,
+    .sweep_mm           = {0U},
+    .status             = 0U,
+    .wait_ms            = 0U,
+    .pause_ms           = 0U,
+    .last_drive         = NAV_DRIVE_UNSEEN,
+    .hold_ms            = 0U,
+    .retry_ms           = 0U,
+    .line_ms            = 0U,
+    .trace_ms           = 0U,
+    .motion_word        = UINT32_MAX,
+    .cmd_ms             = 0U,
+    .closest_mm         = 0U,
+    .room_mm            = 0U,
+    .out_mm             = 0U,
+    .level_mm           = 0U,
+    .move_mm            = 0U,
+    .low_ms             = {0U, 0U},
+    .ahead_end_mm       = 0U,
+    .map_start          = 0,
+    .track_h0           = 0,
+    .track_away0        = 0,
+    .track_gaze         = 0,
+    .track_min_side_mm  = INT32_MAX,
+    .track_lookahead_mm = 0U,
+    .phase_mm           = 0,
+    .black_mm           = 0,
+    .wheel_mm           = {0, 0},
+    .last_cmd           = {0, 0},
+    .vel_um_s           = {0, 0},
+    .wheel_um           = {0, 0},
+    .base_um            = {0, 0},
+    .prev_um            = {0, 0},
+    .x_um               = 0,
+    .y_um               = 0,
 };
 static nav_odo_t g_odo = {0U};
 
@@ -331,6 +375,16 @@ static void     next_sweep_slot (void);
 static void     judge_sweep (void);
 static void     log_sweep (b5_plan_side_t const * p_side);
 static void     run_map (bool b_line_seen);
+static bool     is_swing_clear (void);
+static void     run_track (uint32_t status);
+static void     track_ping (uint32_t status, uint32_t dist_mm, int32_t psi);
+static void     track_echo (uint32_t dist_mm, int32_t psi);
+static bool     track_spin (int32_t target_deci);
+static void     finish_track (void);
+static void     log_track (uint8_t result, uint32_t move_mm);
+static int16_t  clamp_look (int32_t deci);
+static void     sync_ping (void);
+static void     start_track_pass (uint8_t phase);
 static void     run_to_line (bool b_line_seen);
 static void     note_line (uint8_t event, int32_t ir_side_mm, int32_t black_mm);
 static bool     take_ping (uint32_t status, uint32_t * p_dist_mm);
@@ -549,6 +603,11 @@ static void run_phase (uint32_t state, uint32_t status, bool b_line_seen,
                 run_sweep(status);
             break;
 
+            case PHASE_TRACK_OUT:
+            case PHASE_TRACK_BACK:
+                run_track(status);
+            break;
+
             case PHASE_SPIN_BACK:
                 if (spin_to(0))
                 {
@@ -704,7 +763,9 @@ static void next_sweep_slot (void)
  *        runs from the sensor to B5_LANE_EXTRA_MM past the line. A left
  *        servo angle looks forward along the line when passing on the
  *        left (the car faces the line from its left), and a right one when
- *        passing on the right.
+ *        passing on the right. A clear lane is checked once more with the
+ *        chicken-head rotation scan (TRACK_OUT) before TO_LINE, unless an
+ *        echo lies inside the swing circle (then the car moves on first).
  */
 static void judge_sweep (void)
 {
@@ -727,9 +788,19 @@ static void judge_sweep (void)
     log_sweep(&side);
     set_look(0);
 
-    if (side.b_lane_clear)
+    if (side.b_lane_clear && (is_swing_clear()))
     {
-        set_phase(PHASE_TO_LINE);
+        set_phase(PHASE_TRACK_OUT);
+    }
+    else if (side.b_lane_clear)
+    {
+        /* Something is within the swing circle: do not rotate here. The
+         * rotation back retraces the arc SPIN_FACE has already swept. */
+        tm_printf((UB *)"[b5-nav] track: echo within the swing circle, "
+                        "move on %d mm first\n",
+                  (INT)B5_TRACK_MIN_MOVE_MM);
+        g_nav.move_mm = B5_TRACK_MIN_MOVE_MM;
+        set_phase(PHASE_SPIN_BACK);
     }
     else
     {
@@ -827,6 +898,345 @@ static void run_map (bool b_line_seen)
         /* Cast is safe: the speed is 46 666 um/s. */
         spin_drive(INTENT_AWAY, (int32_t)B5_NAV_SPIN_SLOW_UM_S);
     }
+}
+
+/*!
+ * @brief SWEEP: tell whether the car may rotate where it stands, i.e. no
+ *        sweep echo lies inside the circle its front corners sweep
+ *        (b5_plan_track_near(), the sweep taken with psi = 0 and the beam
+ *        at each servo angle).
+ *
+ * @return True if no echo is within B5_SWING_MM of the axle.
+ */
+static bool is_swing_clear (void)
+{
+    bool     b_clear = true;
+    uint32_t slot    = 0U;
+
+    for (slot = 0U; slot < B5_SLOT_COUNT; slot++)
+    {
+        uint16_t const range_mm = g_nav.sweep_mm[slot];
+        int32_t        fwd_mm   = 0;
+        int32_t        side_mm  = 0;
+
+        if (B5_PLAN_NO_ECHO != range_mm)
+        {
+            /* Cast is safe: slot is 0..24. */
+            b5_plan_track_point(0, scan_algo_slot_deci((uint8_t)slot), range_mm,
+                                &fwd_mm, &side_mm);
+            b_clear = b_clear && (!b5_plan_track_near(fwd_mm, side_mm));
+        }
+    }
+
+    return (b_clear);
+}
+
+/*!
+ * @brief TRACK_OUT and TRACK_BACK, every line-task pass (about 20 ms):
+ *        aim the servo so the beam keeps the gaze direction, take any new
+ *        ping, and rotate on.
+ *
+ * NOTE: The servo is set with obstacle_set_look() directly, not
+ * set_look(): there is no servo wait and the wheels keep turning (the
+ * Buddy 5 task is in tracking mode, see scan_task.c).
+ *
+ * @param[in] status Packed Buddy 5 status word.
+ */
+static void run_track (uint32_t status)
+{
+    int32_t const psi     = heading_deci() - g_nav.track_h0;
+    int16_t const servo   = clamp_look(g_nav.track_gaze - psi);
+    int32_t const step    = (int32_t)servo - (int32_t)g_nav.track_sent;
+    uint32_t      dist_mm = NAV_FAR_MM;
+
+    if ((step >= B5_TRACK_MIN_STEP_DECI) || (step <= -B5_TRACK_MIN_STEP_DECI))
+    {
+        obstacle_set_look(servo);
+        g_nav.track_sent = servo;
+        g_nav.look_deci  = servo;
+    }
+
+    if (take_ping(status, &dist_mm))
+    {
+        track_ping(status, dist_mm, psi);
+    }
+
+    if ((PHASE_TRACK_OUT == g_nav.phase) &&
+        (track_spin(g_nav.track_away0 - B5_TRACK_PAN_DECI)))
+    {
+        set_phase(PHASE_TRACK_BACK);
+    }
+    else if ((PHASE_TRACK_BACK == g_nav.phase) &&
+             (track_spin(g_nav.track_away0)))
+    {
+        finish_track();
+    }
+    else
+    {
+        /* Still rotating, or the scan has just ended on an echo. */
+    }
+}
+
+/*!
+ * @brief TRACK: use one ping. A VALID echo becomes a floor point (beam in
+ *        the commanded gaze direction); one inside the swing circle or the
+ *        lane ends the scan as blocked at once. UNKNOWN and STUCK pings are
+ *        counted; OPEN needs nothing.
+ *
+ * @param[in] status  Packed Buddy 5 status word (for the echo class).
+ * @param[in] dist_mm Reading, mm (NAV_FAR_MM unless VALID).
+ * @param[in] psi     Heading since the scan started (deci-degrees).
+ */
+static void track_ping (uint32_t status, uint32_t dist_mm, int32_t psi)
+{
+    uint32_t const cls = b5_pack_get(status, B5_ST_CLASS_SH, B5_ST_CLASS_MK);
+
+    if (B5_CLASS_VALID == cls)
+    {
+        track_echo(dist_mm, psi);
+    }
+    else if ((B5_CLASS_UNKNOWN == cls) || (B5_CLASS_STUCK == cls))
+    {
+        /* Cast is safe: the count stops at 255. */
+        if (g_nav.track_unknown < UINT8_MAX)
+        {
+            g_nav.track_unknown = (uint8_t)(g_nav.track_unknown + 1U);
+        }
+    }
+    else
+    {
+        /* OPEN: nothing in range. */
+    }
+}
+
+/*!
+ * @brief TRACK: turn one VALID echo into a floor point (beam in the
+ *        commanded gaze direction). A point inside the swing circle or the
+ *        lane ends the scan as blocked at once.
+ *
+ * @param[in] dist_mm Reading, mm.
+ * @param[in] psi     Heading since the scan started (deci-degrees).
+ */
+static void track_echo (uint32_t dist_mm, int32_t psi)
+{
+    int32_t fwd_mm  = 0;
+    int32_t side_mm = 0;
+
+    b5_plan_track_point(psi, g_nav.track_gaze, dist_mm, &fwd_mm, &side_mm);
+
+    if ((b5_plan_track_near(fwd_mm, side_mm)) ||
+        (b5_plan_track_blocked(fwd_mm, side_mm, g_nav.track_lookahead_mm)))
+    {
+        int32_t const abs_side = (side_mm < 0) ? -side_mm : side_mm;
+
+        g_nav.b_track_blocked = true;
+
+        if (abs_side < g_nav.track_min_side_mm)
+        {
+            g_nav.track_min_side_mm = abs_side;
+        }
+
+        finish_track();
+    }
+}
+
+/*!
+ * @brief TRACK: rotate towards a heading at the constant
+ *        B5_TRACK_SPIN_UM_S (no slow-down step, so the beam drifts evenly
+ *        between servo updates).
+ *
+ * @param[in] target_deci Heading to reach (deci-degrees, positive = away).
+ *
+ * @return True once the heading is within B5_NAV_SPIN_TOL_DECI.
+ */
+static bool track_spin (int32_t target_deci)
+{
+    int32_t const error  = target_deci - away_deci();
+    int32_t const left   = (error < 0) ? -error : error;
+    bool const    b_done = (left <= B5_NAV_SPIN_TOL_DECI);
+
+    if (b_done)
+    {
+        drive_stop();
+    }
+    else
+    {
+        /* Cast is safe: the speed is 46 666 um/s. */
+        spin_drive((error > 0) ? INTENT_AWAY : INTENT_TOWARD,
+                   (int32_t)B5_TRACK_SPIN_UM_S);
+    }
+
+    return (b_done);
+}
+
+/*!
+ * @brief TRACK: end the rotation scan and go on.
+ *   - Blocked: SPIN_BACK, then MOVE_ON (lane half width - closest blocked
+ *     side, at least B5_TRACK_MIN_MOVE_MM); moving on along the line shifts
+ *     the obstacle sideways in the scan frame by the same amount.
+ *   - More than B5_TRACK_MAX_UNKNOWN unknown pings: repeat the scan (the
+ *     car is back at its start heading), at most B5_TRACK_RETRIES times,
+ *     then count it as blocked (B5_TRACK_MIN_MOVE_MM).
+ *   - Clear: TO_LINE.
+ * Tracking is always switched off first.
+ */
+static void finish_track (void)
+{
+    uint32_t move_mm = B5_TRACK_MIN_MOVE_MM;
+
+    drive_stop();
+    obstacle_set_track(false);
+
+    if (g_nav.b_track_blocked)
+    {
+        int32_t const gap_mm =
+            (int32_t)B5_LANE_HALF_MM - g_nav.track_min_side_mm;
+
+        /* Cast is safe: gap_mm is checked to be above the minimum. */
+        if (gap_mm > (int32_t)B5_TRACK_MIN_MOVE_MM)
+        {
+            move_mm = (uint32_t)gap_mm;
+        }
+
+        log_track(TRACK_BLOCKED, move_mm);
+        g_nav.move_mm = move_mm;
+        set_look(0);
+        set_phase(PHASE_SPIN_BACK);
+    }
+    else if ((g_nav.track_unknown > B5_TRACK_MAX_UNKNOWN) &&
+             (g_nav.track_retry < B5_TRACK_RETRIES))
+    {
+        /* Cast is safe: track_retry stops at B5_TRACK_RETRIES. */
+        g_nav.track_retry = (uint8_t)(g_nav.track_retry + 1U);
+        log_track(TRACK_RETRY, 0U);
+        set_look(0);
+        set_phase(PHASE_TRACK_OUT);
+    }
+    else if (g_nav.track_unknown > B5_TRACK_MAX_UNKNOWN)
+    {
+        log_track(TRACK_UNKNOWN_STOP, move_mm);
+        g_nav.move_mm = move_mm;
+        set_look(0);
+        set_phase(PHASE_SPIN_BACK);
+    }
+    else
+    {
+        log_track(TRACK_CLEAR, 0U);
+        set_look(0);
+        set_phase(PHASE_TO_LINE);
+    }
+}
+
+/*!
+ * @brief Print and log how a rotation scan ended.
+ *
+ * @param[in] result  TRACK_CLEAR, TRACK_BLOCKED, TRACK_RETRY or
+ *                    TRACK_UNKNOWN_STOP.
+ * @param[in] move_mm Move-on distance chosen (0 if none).
+ */
+static void log_track (uint8_t result, uint32_t move_mm)
+{
+    static char const * const g_what[] = {"clear", "blocked",
+                                          "too many unknown pings, retry",
+                                          "too many unknown pings, blocked"};
+    int32_t const             psi      = heading_deci() - g_nav.track_h0;
+    uint8_t const             pass =
+        (PHASE_TRACK_OUT == g_nav.phase) ? TRACK_PASS_OUT : TRACK_PASS_BACK;
+
+    tm_printf(
+        (UB *)"[b5-nav] track pass %d: %s, closest side %d mm, %d "
+              "unknown, turned %d deg, move on %d mm\n",
+        (INT)pass, g_what[result % (TRACK_UNKNOWN_STOP + 1U)],
+        (INT)((INT32_MAX == g_nav.track_min_side_mm) ? -1
+                                                     : g_nav.track_min_side_mm),
+        (INT)g_nav.track_unknown, (INT)(psi / DECI_PER_DEG), (INT)move_mm);
+
+    /* Cast is safe: move_mm is a few hundred mm. */
+    log_rec(B5_LOG_TRACK, pass, result, g_nav.track_unknown,
+            g_nav.track_min_side_mm, psi, (int32_t)move_mm);
+}
+
+/*!
+ * @brief Limit a servo angle to +-B5_SERVO_LIMIT_DECI.
+ *
+ * @param[in] deci Angle (deci-degrees, positive = left).
+ *
+ * @return The clamped angle.
+ */
+static int16_t clamp_look (int32_t deci)
+{
+    int32_t clamped = deci;
+
+    if (clamped > B5_SERVO_LIMIT_DECI)
+    {
+        clamped = B5_SERVO_LIMIT_DECI;
+    }
+    else if (clamped < -B5_SERVO_LIMIT_DECI)
+    {
+        clamped = -B5_SERVO_LIMIT_DECI;
+    }
+    else
+    {
+        /* In range. */
+    }
+
+    /* Cast is safe: clamped is within +-600. */
+    return ((int16_t)clamped);
+}
+
+/*!
+ * @brief Set up one pass of the rotation scan.
+ *   - TRACK_OUT (also on a retry): note the start heading, the lookahead
+ *     (to B5_LANE_EXTRA_MM past the line, the same lane as judge_sweep()),
+ *     gaze straight ahead, clear the counts, and turn tracking on.
+ *   - TRACK_BACK: tilt the gaze B5_TRACK_TILT_DECI towards the obstacle's
+ *     side and move the servo there with the normal settle wait (the
+ *     wheels are stopped at the turnaround).
+ * Pings from before the pass are not used.
+ *
+ * @param[in] phase PHASE_TRACK_OUT or PHASE_TRACK_BACK.
+ */
+static void start_track_pass (uint8_t phase)
+{
+    if (PHASE_TRACK_OUT == phase)
+    {
+        int32_t const side_mm = lateral_mm();
+
+        g_nav.track_h0    = heading_deci();
+        g_nav.track_away0 = away_deci();
+
+        /* Cast is safe: side_mm is non-negative here and a few hundred mm. */
+        g_nav.track_lookahead_mm =
+            ((side_mm > 0) ? (uint32_t)side_mm : 0U) + B5_LANE_EXTRA_MM;
+        g_nav.track_gaze        = 0;
+        g_nav.track_sent        = g_nav.look_deci;
+        g_nav.track_unknown     = 0U;
+        g_nav.b_track_blocked   = false;
+        g_nav.track_min_side_mm = INT32_MAX;
+        obstacle_set_track(true);
+    }
+    else
+    {
+        int32_t const psi = heading_deci() - g_nav.track_h0;
+
+        /* Towards the obstacle's side is -side_sign() in heading terms. */
+        g_nav.track_gaze = -side_sign() * B5_TRACK_TILT_DECI;
+        g_nav.track_sent = clamp_look(g_nav.track_gaze - psi);
+        set_look(g_nav.track_sent);
+    }
+
+    sync_ping();
+}
+
+/*!
+ * @brief Mark the latest ping as already seen, so take_ping() only
+ *        reports pings that arrive from now on.
+ */
+static void sync_ping (void)
+{
+    /* Cast is safe: the sequence field is 6 bits. */
+    g_nav.ping_seq =
+        (uint8_t)b5_pack_get(g_nav.status, B5_ST_SEQ_SH, B5_ST_SEQ_MK);
 }
 
 /*!
@@ -1289,9 +1699,14 @@ static void set_phase (uint8_t phase)
 
         g_nav.sweep_slot  = SWEEP_FIRST_SLOT;
         g_nav.sweep_pings = 0U;
+        g_nav.track_retry = 0U;
 
         /* Cast is safe: a slot angle is within +-600. */
         set_look((int16_t)scan_algo_slot_deci(SWEEP_FIRST_SLOT));
+    }
+    else if ((PHASE_TRACK_OUT == phase) || (PHASE_TRACK_BACK == phase))
+    {
+        start_track_pass(phase);
     }
     else if (PHASE_MAP == phase)
     {
@@ -1324,6 +1739,7 @@ static void begin_bypass (void)
 {
     reset_pose();
     g_nav.scans = 0U;
+    obstacle_set_track(false);
     set_look(0);
     set_phase(PHASE_AHEAD);
 }
@@ -1341,6 +1757,7 @@ static void halt_bypass (uint8_t reason)
 
     drive_stop();
     hold_car(true);
+    obstacle_set_track(false);
     set_phase(PHASE_HALT);
     g_nav.b_no_retry = true;
     tm_printf((UB *)"[b5-nav] HALT: %s. Reset the car to go on.\n",
@@ -1654,6 +2071,13 @@ static void report_state (uint32_t status)
         tm_printf((UB *)"[b5-nav] state %d cause %d\n", (INT)state, (INT)cause);
         log_rec(B5_LOG_STATE, (uint8_t)state, (uint8_t)cause,
                 obstacle_get_faults(), 0, 0, 0);
+
+        if (B5_STATE_REACQUIRE != state)
+        {
+            /* Servo tracking belongs to the rotation scan in REACQUIRE
+             * only. */
+            obstacle_set_track(false);
+        }
 
         if (B5_STATE_BYPASS == state)
         {

@@ -344,6 +344,34 @@
 #define B5_NAV_SPIN_SLOW_UM_S (B5_NAV_SPEED_UM_S / 3U)
 #define B5_NAV_SPIN_TOL_DECI  (15)
 
+/* [Chat] Chicken-head rotation scan (TRACK_OUT, TRACK_BACK; b5_nav.c),
+ * between a clear SWEEP and TO_LINE. The car rotates B5_TRACK_PAN_DECI
+ * towards the obstacle's side at a constant B5_TRACK_SPIN_UM_S and back,
+ * while the servo turns the opposite way (re-aimed every
+ * B5_TRACK_PERIOD_MS when it has changed by at least
+ * B5_TRACK_MIN_STEP_DECI), so the beam keeps one direction on the floor
+ * (straight at the line on the way out, tilted B5_TRACK_TILT_DECI towards
+ * the obstacle's side on the way back). Every echo becomes a floor point
+ * (b5_plan_track_point(); the sensor face is B5_SONAR_FACE_MM in front of
+ * the servo shaft) and is checked against the lane and the swing circle
+ * (B5_SWING_MM, front corners round the axle). More than
+ * B5_TRACK_MAX_UNKNOWN UNKNOWN or STUCK pings repeat the scan, at most
+ * B5_TRACK_RETRIES times, after which it counts as blocked. A blocked scan
+ * moves the car on at least B5_TRACK_MIN_MOVE_MM.
+ * FILL: B5_SONAR_FACE_MM and B5_TRACK_TILT_DECI are defaults until
+ * measured (120 is fine for the tilt if echoes survive at least 15 degrees
+ * off square). */
+#define B5_SONAR_FACE_MM       (15U)
+#define B5_TRACK_PERIOD_MS     (20U)
+#define B5_TRACK_PAN_DECI      (600)
+#define B5_TRACK_TILT_DECI     (100)
+#define B5_TRACK_MIN_STEP_DECI (10)
+#define B5_TRACK_SPIN_UM_S     (B5_NAV_SPIN_SLOW_UM_S)
+#define B5_TRACK_MAX_UNKNOWN   (3U)
+#define B5_TRACK_RETRIES       (1U)
+#define B5_TRACK_MIN_MOVE_MM   (30U)
+#define B5_SWING_MM            (148U)
+
 /* [Chat] Virtual bumper: a wheel told to run at B5_BUMP_MIN_UM_S or more
  * that measures under B5_BUMP_PERCENT of it for B5_BUMP_MS has hit
  * something. Not checked for B5_BUMP_SETTLE_MS after any speed change or
@@ -516,6 +544,13 @@ B5_CT_ASSERT(line_window_order, B5_LINE_WINDOW_MM < B5_LINE_GIVE_UP_MM);
 B5_CT_ASSERT(line_min_order,
              (B5_LINE_MIN_MM > 0U) && (B5_LINE_MIN_MM <= (B5_TAPE_W_MM / 2U)));
 B5_CT_ASSERT(centre_past_ir, B5_NAV_CENTRE_MM >= B5_AXLE_TO_IR_MM);
+B5_CT_ASSERT(swing_covers_corners,
+             (B5_SWING_MM * B5_SWING_MM) >=
+                 ((B5_AXLE_TO_FRONT_MM * B5_AXLE_TO_FRONT_MM) +
+                  (B5_CAR_HALF_W_MM * B5_CAR_HALF_W_MM)));
+B5_CT_ASSERT(track_pan_in_range, B5_TRACK_PAN_DECI <= B5_SERVO_LIMIT_DECI);
+B5_CT_ASSERT(track_tilt_below_pan, B5_TRACK_TILT_DECI < B5_TRACK_PAN_DECI);
+B5_CT_ASSERT(track_step_positive, B5_TRACK_MIN_STEP_DECI > 0);
 B5_CT_ASSERT(pan_in_range, (B5_SIDE_PAN_DECI > 0) &&
                                (B5_SIDE_PAN_DECI <= B5_SERVO_LIMIT_DECI) &&
                                (0 == (B5_SIDE_PAN_DECI % B5_SLOT_STEP_DECI)));

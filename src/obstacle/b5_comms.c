@@ -60,6 +60,14 @@ typedef struct
     obstacle_distance_fn_t volatile p_get_distance_mm;
 } comms_links_t;
 
+/* Servo tracking flag (chicken-head rotation scan). NOTE: The Boolean is a
+ * b_ member of a g_ struct, which satisfies both BARR-C 7.1.m/7.1.o and the
+ * team .clang-tidy. */
+typedef struct
+{
+    bool volatile b_on;
+} comms_track_t;
+
 /* ------------------------------------------------------------------ *
  * Static data. Every item is shared between tasks or with the ISR side,
  * so each one is volatile (BARR-C 1.8.c).
@@ -70,6 +78,7 @@ static comms_links_t g_links = {0, 0, NULL, NULL};
 static uint32_t volatile g_status = 0U;
 static uint32_t volatile g_steer  = 0U;
 static int16_t volatile g_look    = 0;
+static comms_track_t g_track      = {false};
 static uint8_t volatile g_faults  = 0U;
 static uint8_t volatile g_drops   = 0U;
 
@@ -373,6 +382,29 @@ void b5_comms_set_look (int16_t deci)
 int16_t b5_comms_look (void)
 {
     return (g_look);
+}
+
+/*!
+ * @brief Turn servo tracking on or off (Navigation's chicken-head rotation
+ *        scan, REACQUIRE only): while it is on, the Buddy 5 task moves the
+ *        servo to every new look angle at once, without waiting for the
+ *        wheels or for the servo to settle (scan_task.c).
+ *
+ * @param[in] b_on True while the rotation scan runs.
+ */
+void b5_comms_set_track (bool b_on)
+{
+    g_track.b_on = b_on;
+}
+
+/*!
+ * @brief Tell whether Navigation has servo tracking on.
+ *
+ * @return True while the rotation scan runs.
+ */
+bool b5_comms_track (void)
+{
+    return (g_track.b_on);
 }
 
 /*!

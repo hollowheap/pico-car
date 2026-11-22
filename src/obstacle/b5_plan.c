@@ -551,6 +551,79 @@ int32_t b5_plan_point_side_mm (int32_t side_mm, int32_t away_deci,
 }
 
 /*!
+ * @brief Chicken-head rotation scan: floor position of one echo.
+ *
+ * Frame: origin at the middle of the axle when the scan started, "forward"
+ * the way the car then faced (towards the line), "side" positive to the
+ * left. The sensor is B5_AXLE_TO_SONAR_MM ahead of the axle along the
+ * car's heading psi; the beam leaves the sensor face (B5_SONAR_FACE_MM
+ * further on) in the commanded gaze direction:
+ *   forward = R cos(psi) + (E + p) cos(gaze)
+ *   side    = R sin(psi) + (E + p) sin(gaze)
+ *
+ * @param[in]  psi_deci  Car heading since the scan started (deci-degrees,
+ *                       positive = left).
+ * @param[in]  gaze_deci Beam direction in the scan frame (deci-degrees,
+ *                       positive = left).
+ * @param[in]  range_mm  Ping distance, mm (12 bits).
+ * @param[out] p_fwd_mm  Forward position of the echo, mm.
+ * @param[out] p_side_mm Side position of the echo, mm.
+ */
+void b5_plan_track_point (int32_t psi_deci, int32_t gaze_deci,
+                          uint32_t range_mm, int32_t * p_fwd_mm,
+                          int32_t * p_side_mm)
+{
+    int64_t const arm_mm  = (int64_t)B5_AXLE_TO_SONAR_MM;
+    int64_t const beam_mm = (int64_t)B5_SONAR_FACE_MM + (int64_t)range_mm;
+    int64_t const fwd_q14 = (arm_mm * b5_plan_cos_q14(psi_deci)) +
+                            (beam_mm * b5_plan_cos_q14(gaze_deci));
+    int64_t const side_q14 = (arm_mm * b5_plan_sin_q14(psi_deci)) +
+                             (beam_mm * b5_plan_sin_q14(gaze_deci));
+
+    /* Casts are safe: both results are within a few metres. */
+    *p_fwd_mm  = (int32_t)(fwd_q14 / Q14_ONE);
+    *p_side_mm = (int32_t)(side_q14 / Q14_ONE);
+}
+
+/*!
+ * @brief Chicken-head rotation scan: tell whether a floor point lies in
+ *        the lane the car will drive through to the line.
+ *
+ * @param[in] fwd_mm       Forward position (b5_plan_track_point()).
+ * @param[in] side_mm      Side position (b5_plan_track_point()).
+ * @param[in] lookahead_mm How far the lane runs forward from the axle.
+ *
+ * @return True if 0 < forward < lookahead and |side| < B5_LANE_HALF_MM.
+ */
+bool b5_plan_track_blocked (int32_t fwd_mm, int32_t side_mm,
+                            uint32_t lookahead_mm)
+{
+    /* Casts are safe: the lookahead is a few hundred mm. */
+    return ((fwd_mm > 0) && (fwd_mm < (int32_t)lookahead_mm) &&
+            (side_mm < (int32_t)B5_LANE_HALF_MM) &&
+            (side_mm > -(int32_t)B5_LANE_HALF_MM));
+}
+
+/*!
+ * @brief Chicken-head rotation scan: tell whether a floor point lies
+ *        inside the circle the front corners sweep when the car rotates
+ *        on the middle of its axle (B5_SWING_MM).
+ *
+ * @param[in] fwd_mm  Forward position (b5_plan_track_point()).
+ * @param[in] side_mm Side position (b5_plan_track_point()).
+ *
+ * @return True if forward^2 + side^2 < B5_SWING_MM^2.
+ */
+bool b5_plan_track_near (int32_t fwd_mm, int32_t side_mm)
+{
+    int64_t const fwd   = (int64_t)fwd_mm;
+    int64_t const side  = (int64_t)side_mm;
+    int64_t const swing = (int64_t)B5_SWING_MM;
+
+    return (((fwd * fwd) + (side * side)) < (swing * swing));
+}
+
+/*!
  * @brief Table lookup with linear interpolation between whole degrees.
  *
  * @param[in] p_table   Q14 table, one entry per degree.
