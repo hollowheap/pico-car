@@ -12,8 +12,9 @@
  *
  * The unsettled cue (|amag - 1 g| over the limit) counts toward LIFTED over
  * lift_samples samples, except while b_on_hump is set: hump bumps meet that
- * limit. A tilt breach still counts. Known gap: a hump taken below the hump
- * detector's minimum speed or in reverse has no mask, so its bumps can lift.
+ * limit. A tilt breach still counts. The unsettled hold bridges short gaps.
+ * Confirmation requires current tilt or acceleration evidence. Once both cues
+ * end, a new excursion starts a new count. Reverse travel has no hump mask.
  *
  * States: OK, CANDIDATE, LIFTED, OVERTURNED. Before the rest calibration the
  * module reports OK and calibrated = false. All limits are placeholders until
@@ -53,7 +54,7 @@ typedef struct
     float    overturn_roll_deg;   /* | roll | above this: overturned.           */
     uint16_t overturn_samples;    /* Held this long: overturned.                */
     float    clear_tilt_deg;      /* Level: tilt under this.                    */
-    float    clear_dev_g;         /* Still: | |a| - 1 g | under this.           */
+    float    clear_dev_g;         /* Still: deviation from measured rest g.     */
     uint16_t clear_samples;       /* Level and still this long: lifted clears.  */
 } attitude_config_t;
 
@@ -73,6 +74,7 @@ typedef struct
 {
     attitude_state_t state;
     bool  calibrated;
+    bool  level_still;            /* Settled within the calibrated recovery envelope. */
     float tilt_deg;
     float roll_deg;
     float amag_g;
@@ -107,6 +109,9 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
 
 /* Forget the state. The next calibrated sample starts at OK. */
 void attitude_reset (attitude_ctx_t * p_ctx);
+
+/* Discard partial confirmation windows while preserving the attitude latch. */
+void attitude_interrupt_evidence (attitude_ctx_t * p_ctx);
 
 #endif /* ATTITUDE_H */
 

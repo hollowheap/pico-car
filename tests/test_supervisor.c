@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "command_ring.h"
-#include "edge_events.h"
+#include "supervisor/edge_events.h"
 #include "health_core.h"
 #include "navigation/obstacle_cmd.h"
 #include "platform/liveness.h"
@@ -149,7 +149,7 @@ static void test_ring_keeps_ids (void)
 
 static run_inputs_t follow_inputs (void)
 {
-    run_inputs_t in = { false, false, false, true, false, true, false, false };
+    run_inputs_t in = { .b_follow = true, .b_upright = true };
 
     return in;
 }
@@ -201,8 +201,7 @@ static void test_boot_and_stop_start (void)
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_accepted && out.b_obstacle_reset && out.b_obstacle_start);
-    CHECK (out.b_start);
-    CHECK (!out.b_sticky_clear);
+    CHECK (out.b_start && out.b_sticky_clear);
     CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
     CHECK (0U == out.hold_mask);
 }
@@ -412,6 +411,7 @@ static void test_start_refused_when_overturned (void)
                        &in, &out);
 
     in.b_overturned = true;
+    in.b_upright = false;
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_rejected && (RUN_REJECT_LIFTED == out.reason));
@@ -471,11 +471,14 @@ static void test_lift_and_overturn (void)
 
     /* Set down: START ends the hold at once. */
     in.b_lifted = false;
+    /* A lingering hump state cannot skip a level set-down calibration. */
+    in.b_on_hump = true;
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_HELD == run_state_of (&ctx));
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
-    CHECK (out.b_accepted && (0U == out.hold_mask));
+    CHECK (out.b_accepted && out.b_physics_recal && (0U == out.hold_mask));
+    in.b_on_hump = false;
     CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
 
     /* With no START the hold never ends, however long the car stands level,
@@ -500,6 +503,37 @@ static void test_lift_and_overturn (void)
         CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
         CHECK (0U == out.hold_mask);
     }
+
+    /* A righted car needs one START. The old attitude latch can outlive the
+       accepted command until physics handles the new calibration request. */
+    in.b_overturned = true;
+    in.b_upright = false;
+    run_state_tick (&ctx, &in, &out);
+    in.b_upright = true;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    uint8_t const starts = ctx.start_count;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
+                       &in, &out);
+    CHECK (out.b_accepted && out.b_physics_recal && out.b_sticky_clear);
+    CHECK ((starts + 1U == ctx.start_count) && (0U == ctx.reset_count));
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+    CHECK (0U == out.hold_mask);
+    in.b_attitude_unknown = true;
+    in.b_overturned = false;
+    in.b_upright = false;
+    run_state_tick (&ctx, &in, &out);
+    in.b_attitude_unknown = false;
+    in.b_overturned = true;
+    in.b_upright = true;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+    in.b_upright = false;
+    run_state_tick (&ctx, &in, &out);
+    CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    in = follow_inputs ();
+    start_running (&ctx, &in);
 
     /* Overturned but upright before any latch: RESET is accepted and asks for
        a new run, which clears the attitude latch. */
@@ -746,8 +780,8 @@ static void test_reset_refused_upside_down_without_tick (void)
     CHECK (!out.b_sticky_clear && !out.b_physics_recal);
 }
 
-/* START and RECAL wait while the lean is not known. A running car keeps
- * driving, and START is accepted once the lean is known again. */
+/* The run stays armed while the supervisor owns the temporary calibration
+ * hold. START and RECAL require a known attitude. */
 static void test_attitude_unknown (void)
 {
     run_ctx_t    ctx;
@@ -877,13 +911,13 @@ static run_physics_t level_physics (void)
     p.b_hump_active      = false;
     p.hump_state         = TELEMETRY_HUMP_STATE_FLAT;
     p.attitude_state     = TELEMETRY_ATTITUDE_STATE_OK;
-    p.roll_cdeg          = 0;
+    p.b_level_still      = true;
 
     return p;
 }
 
 /* The physics facts become the inputs. The attitude is read only while known,
- * and the car counts as upright only with a reference and a roll in limit. */
+ * and recovery requires a reference and sustained level, still samples. */
 static void test_physics_inputs (void)
 {
     run_inputs_t in = follow_inputs ();
@@ -893,19 +927,10 @@ static void test_physics_inputs (void)
     CHECK (!in.b_attitude_unknown && !in.b_lifted && !in.b_overturned);
     CHECK (in.b_upright && !in.b_on_hump);
 
-    p.roll_cdeg = RUN_UPRIGHT_ROLL_CDEG;
-    run_state_read_physics (&in, &p);
-    CHECK (in.b_upright);
-    p.roll_cdeg = RUN_UPRIGHT_ROLL_CDEG + 1;
+    p.b_level_still = false;
     run_state_read_physics (&in, &p);
     CHECK (!in.b_upright);
-    p.roll_cdeg = -RUN_UPRIGHT_ROLL_CDEG;
-    run_state_read_physics (&in, &p);
-    CHECK (in.b_upright);
-    p.roll_cdeg = -(RUN_UPRIGHT_ROLL_CDEG + 1);
-    run_state_read_physics (&in, &p);
-    CHECK (!in.b_upright);
-    p.roll_cdeg = 0;
+    p.b_level_still = true;
     p.b_calibrated = false;
     run_state_read_physics (&in, &p);
     CHECK (!in.b_upright);
@@ -1454,7 +1479,7 @@ static void test_edge_obstacle_stop_and_clear (void)
     edge_init (&watch);
     in = obs (TELEMETRY_OBSTACLE_STATE_MONITOR);
     (void) edge_obstacle (&watch, &in, ev);
-    /* A clear path skips PLAN: the plan is reported when the bypass starts. */
+    /* If polling skipped PLAN, the bypass snapshot still reports the plan. */
     in = obs (TELEMETRY_OBSTACLE_STATE_WAIT_STOP);
     (void) edge_obstacle (&watch, &in, ev);
     in = obs (TELEMETRY_OBSTACLE_STATE_BYPASS);
@@ -1469,7 +1494,7 @@ static void test_edge_obstacle_stop_and_clear (void)
     CHECK (0U == edge_obstacle (&watch, &in, ev));
 }
 
-static void test_edge_hump_and_run (void)
+static void test_edge_run (void)
 {
     edge_watch_t watch;
     edge_watch_t fresh;
@@ -1478,13 +1503,6 @@ static void test_edge_hump_and_run (void)
     edge_init (&watch);
     edge_init (&fresh);
     CHECK (0U == edge_run (&fresh, RUN_STATE_STOPPED, ev));
-    CHECK (0U == edge_hump (&watch, false, 0U, false, ev));
-    CHECK (1U == edge_hump (&watch, true, 0U, false, ev));
-    CHECK (TELEMETRY_EVT_HUMP_START == ev[0].type);
-    CHECK (0U == edge_hump (&watch, true, 0U, false, ev));
-    CHECK (1U == edge_hump (&watch, false, 52U, true, ev));
-    CHECK ((TELEMETRY_EVT_HUMP_END == ev[0].type) && (52 == ev[0].p1) && (1U == ev[0].p2));
-
     CHECK (0U == edge_run (&watch, RUN_STATE_BOOT, ev));
     CHECK (1U == edge_run (&watch, RUN_STATE_RUNNING, ev));
     CHECK (TELEMETRY_EVT_RUN_START == ev[0].type);
@@ -1556,44 +1574,39 @@ static void test_calhold (void)
     unsigned  idx = 0U;
 
     /* Boot: held until the first calibration. */
-    calhold_start (&hold, false);
-    CHECK (calhold_update (&hold, false));
-    CHECK (!calhold_update (&hold, true));
+    calhold_start (&hold, 0U);
+    CHECK (calhold_update (&hold, 0U, false));
+    CHECK (!calhold_update (&hold, 0U, true));
     CHECK (!hold.b_timed_out);
 
-    /* A request: the old reference is still reported for a few passes. */
-    calhold_start (&hold, true);
-    CHECK (calhold_update (&hold, true));
-    CHECK (calhold_update (&hold, false));
-    CHECK (calhold_update (&hold, false));
-    CHECK (!calhold_update (&hold, true));
-
-    /* Physics never drops the flag: the hold waits CALHOLD_DROP_PASSES, then for a fresh one. */
-    calhold_start (&hold, true);
-    for (idx = 0U; idx < (CALHOLD_DROP_PASSES - 1U); idx++)
+    /* An unrelated calibration or a delayed task cannot satisfy this START. */
+    calhold_start (&hold, 17U);
+    CHECK (calhold_update (&hold, 16U, false));
+    for (idx = 0U; idx <= CALHOLD_MAX_PASSES; idx++)
     {
-        CHECK (calhold_update (&hold, true));
+        CHECK (calhold_update (&hold, 16U, true));
     }
-    CHECK (calhold_update (&hold, true));
-    CHECK (!calhold_update (&hold, true));
+    CHECK (hold.b_timed_out);
+    CHECK (calhold_update (&hold, 17U, false));
+    CHECK (!calhold_update (&hold, 17U, true));
 
     /* No calibration at all: the timeout is reported and the hold stays on
        until a calibration comes. A new request starts a fresh attempt. */
-    calhold_start (&hold, false);
+    calhold_start (&hold, 0U);
     for (idx = 0U; idx < CALHOLD_MAX_PASSES; idx++)
     {
-        CHECK (calhold_update (&hold, false));
+        CHECK (calhold_update (&hold, 0U, false));
     }
     CHECK (hold.b_timed_out);
     for (idx = 0U; idx < (2U * CALHOLD_MAX_PASSES); idx++)
     {
-        CHECK (calhold_update (&hold, false));
+        CHECK (calhold_update (&hold, 0U, false));
     }
-    CHECK (!calhold_update (&hold, true));
+    CHECK (!calhold_update (&hold, 0U, true));
 
-    calhold_start (&hold, true);
+    calhold_start (&hold, 1U);
     CHECK (!hold.b_timed_out);
-    CHECK (calhold_update (&hold, false));
+    CHECK (calhold_update (&hold, 0U, false));
 }
 
 /* The hold covers a calibration the supervisor asked for. A reference physics
@@ -1603,11 +1616,11 @@ static void test_calhold_ignores_a_lost_reference (void)
     calhold_t hold;
     unsigned  idx = 0U;
 
-    calhold_start (&hold, false);
-    CHECK (!calhold_update (&hold, true));
+    calhold_start (&hold, 0U);
+    CHECK (!calhold_update (&hold, 0U, true));
     for (idx = 0U; idx < (2U * CALHOLD_MAX_PASSES); idx++)
     {
-        CHECK (!calhold_update (&hold, false));
+        CHECK (!calhold_update (&hold, 0U, false));
     }
     CHECK (!hold.b_timed_out);
 }
@@ -1621,23 +1634,22 @@ static void test_calhold_timeout_edge (void)
 
     for (attempt = 0U; attempt < 2U; attempt++)
     {
-        calhold_start (&hold, false);
+        calhold_start (&hold, 0U);
         CHECK (!calhold_timeout_edge (&hold));
         for (idx = 0U; idx < (CALHOLD_MAX_PASSES - 1U); idx++)
         {
-            CHECK (calhold_update (&hold, false));
+            CHECK (calhold_update (&hold, 0U, false));
             CHECK (!calhold_timeout_edge (&hold));
         }
-        CHECK (calhold_update (&hold, false));
+        CHECK (calhold_update (&hold, 0U, false));
         CHECK (calhold_timeout_edge (&hold));
-        CHECK (calhold_update (&hold, false));
+        CHECK (calhold_update (&hold, 0U, false));
         CHECK (!calhold_timeout_edge (&hold));
         CHECK (!calhold_timeout_edge (&hold));
     }
 }
 
-/* Only the lease and gap faults reboot; a stall from the wheels or a
-   stop by request does not. */
+/* A stop by request can carry a timing fault already raised by the controller. */
 static void test_motion_timing_fault (void)
 {
     CHECK (health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_EXPIRED));
@@ -1646,8 +1658,11 @@ static void test_motion_timing_fault (void)
     CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_NO_EDGES));
     CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_COMMAND));
     CHECK (!health_motion_timing_fault (MOTION_STATE_FAULT, TELEMETRY_MOTION_FAULT_OUTPUT));
-    CHECK (!health_motion_timing_fault (MOTION_STATE_STOPPED, TELEMETRY_MOTION_FAULT_EXPIRED));
-    CHECK (!health_motion_timing_fault (MOTION_STATE_RUNNING, TELEMETRY_MOTION_FAULT_NONE));
+    CHECK (health_motion_timing_fault (MOTION_STATE_STOPPED, TELEMETRY_MOTION_FAULT_EXPIRED));
+    CHECK (health_motion_timing_fault (MOTION_STATE_STOPPED, TELEMETRY_MOTION_FAULT_GAP));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_STOPPED, TELEMETRY_MOTION_FAULT_NONE));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_STOPPED, TELEMETRY_MOTION_FAULT_OUTPUT));
+    CHECK (!health_motion_timing_fault (MOTION_STATE_RUNNING, TELEMETRY_MOTION_FAULT_GAP));
 }
 
 typedef struct
@@ -1702,7 +1717,7 @@ static const test_case_t cases[] = {
     CASE(calhold_timeout_edge),
     CASE(edge_obstacle_cycle),
     CASE(edge_obstacle_stop_and_clear),
-    CASE(edge_hump_and_run),
+    CASE(edge_run),
     CASE(remote_stop_after_silent_run),
     CASE(single_estop_sample_survives_release),
     CASE(lift_reading_holds_on_first_tick),

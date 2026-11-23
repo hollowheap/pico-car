@@ -76,7 +76,8 @@ bool liveness_critical_stalled (const liveness_t * p_live)
 
 bool health_motion_timing_fault (uint8_t state, uint8_t fault)
 {
-    return (MOTION_STATE_FAULT == state) &&
+    /* E-STOP can publish STOPPED with the terminal timing fault still set. */
+    return ((MOTION_STATE_FAULT == state) || (MOTION_STATE_STOPPED == state)) &&
            ((TELEMETRY_MOTION_FAULT_EXPIRED == fault) || (TELEMETRY_MOTION_FAULT_GAP == fault));
 }
 
@@ -345,43 +346,23 @@ drive_probe_t health_drive_probe_verdict (int32_t driven_mm, int32_t other_mm)
     return verdict;
 }
 
-void calhold_start (calhold_t * p_hold, bool b_wait_drop)
+void calhold_start (calhold_t * p_hold, uint32_t reference_request)
 {
-    p_hold->phase       = (uint8_t) (b_wait_drop ? CALHOLD_WAIT_DROP : CALHOLD_WAIT_CAL);
-    p_hold->passes         = 0U;
-    p_hold->b_timed_out    = false;
-    p_hold->b_timeout_seen = false;
+    *p_hold = (calhold_t){.reference_request = reference_request, .b_waiting = true};
 }
 
-bool calhold_update (calhold_t * p_hold, bool b_calibrated)
+bool calhold_update (calhold_t * p_hold, uint32_t applied_request, bool b_calibrated)
 {
-    if ((uint8_t) CALHOLD_IDLE != p_hold->phase)
+    if (p_hold->b_waiting)
     {
-        if (p_hold->passes < CALHOLD_MAX_PASSES)
+        p_hold->b_waiting = !b_calibrated || (applied_request != p_hold->reference_request);
+        if (p_hold->b_waiting && (p_hold->passes < CALHOLD_MAX_PASSES))
         {
             p_hold->passes++;
-        }
-        if (((uint8_t) CALHOLD_WAIT_DROP == p_hold->phase) &&
-            (!b_calibrated || (p_hold->passes >= CALHOLD_DROP_PASSES)))
-        {
-            p_hold->phase = (uint8_t) CALHOLD_WAIT_CAL;
-        }
-        else if (((uint8_t) CALHOLD_WAIT_CAL == p_hold->phase) && b_calibrated)
-        {
-            p_hold->phase = (uint8_t) CALHOLD_IDLE;
-        }
-        else
-        {
-            /* Still waiting. */
-        }
-        if (((uint8_t) CALHOLD_IDLE != p_hold->phase) &&
-            (p_hold->passes >= CALHOLD_MAX_PASSES))
-        {
-            p_hold->b_timed_out = true;
+            p_hold->b_timed_out = (p_hold->passes == CALHOLD_MAX_PASSES);
         }
     }
-
-    return (uint8_t) CALHOLD_IDLE != p_hold->phase;
+    return p_hold->b_waiting;
 }
 
 bool calhold_timeout_edge (calhold_t * p_hold)

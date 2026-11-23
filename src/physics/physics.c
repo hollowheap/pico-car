@@ -12,6 +12,7 @@
 #include "physics_task.h"
 #include "hump_msg.h"
 #include "physics/physics.h"
+#include "telemetry/emit.h"
 
 #define MM_PER_M             (1000.0f)
 #define ROUND_HALF           (0.5f)
@@ -22,6 +23,7 @@ ER physics_init (ID task_id)
 
     physics_car_config(&cfg);
     cfg.read_motion = motion_glue_read;
+    cfg.emit_event = telemetry_try_emit_event;
 
     return (physics_task_init(&cfg, task_id));
 }
@@ -36,16 +38,21 @@ ER physics_snapshot (physics_status_t * p_status)
     physics_task_stats_t  stats;
     hump_fields_t fields;
     ER               result = E_PAR;
+    SYSTIM           now = {0, 0U};
 
     if (NULL != p_status)
     {
         physics_task_get_stats(&stats);
 
         p_status->cycles   = stats.cycles;
+        p_status->reference_request = stats.reference_request;
         p_status->overruns = stats.overruns;
-        p_status->ready    = (stats.cycles > 0U) &&
-                             hump_unpack(stats.last_word, &fields);
+        p_status->ready    = (stats.cycles > 0U) && (E_OK == tk_get_otm(&now)) &&
+                             physics_task_sample_recent(&stats.sample_time, &now) && hump_unpack(stats.last_word, &fields);
         p_status->calibrated = stats.calibrated;
+        p_status->level_still = p_status->ready && stats.level_still;
+        p_status->collecting_rest = p_status->ready && stats.collecting_rest;
+        p_status->rest_interruptions = stats.rest_interruptions;
 
         if (p_status->ready)
         {
@@ -100,9 +107,9 @@ ER physics_snapshot (physics_status_t * p_status)
     return (result);
 }
 
-void physics_request_new_run (void)
+uint32_t physics_request_new_run (void)
 {
-    physics_task_request_new_run();
+    return physics_task_request_new_run();
 }
 
 void physics_set_wheels_free (bool b_free)

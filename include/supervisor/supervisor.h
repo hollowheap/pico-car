@@ -25,7 +25,7 @@
 #include "supervisor/command.h"
 #include "supervisor/health_ids.h"
 
-/* supervisor_take_turn returns this when no turn is pending. */
+/* supervisor_poll_turn returns this when no turn is pending. */
 #define SUPERVISOR_NO_TURN (0xFFU)
 
 /* Event parameter p1 of a task_stall event for a check that is not a task. */
@@ -44,12 +44,16 @@ typedef struct
     void (*p_background) (void);
     /* Number of line sensor changes since boot. May be NULL. */
     uint32_t (*p_line_edges) (void);
+    /* Whether telemetry has had a broker session since boot. NULL disables offline start. */
+    bool (*p_telemetry_seen) (void);
+    /* Read the physical START button in task context. NULL disables it. */
+    bool (*p_start_pressed) (void);
     /* Tasks that must kick their liveness bit (bits of LIVE_*). */
     uint16_t required_mask;
 } supervisor_config_t;
 
-/* Two function pointers and a mask, padded to a word. */
-STATIC_ASSERT (sizeof(supervisor_config_t) == (2U * sizeof(void *)) + 4U,
+/* Four function pointers and a mask, padded to a word. */
+STATIC_ASSERT (sizeof(supervisor_config_t) == (4U * sizeof(void *)) + 4U,
                "supervisor_config_t size");
 
 /* Prepare the supervisor. Call once from the startup task, before the task
@@ -60,8 +64,9 @@ ER supervisor_init (const supervisor_config_t * p_config);
    cyclic handler that wakes it. */
 void supervisor_run (void);
 
-/* Post a command from any task. Never blocks. Returns E_OK, or E_TMOUT when the
-   ring is full and the command was dropped. */
+/* Post a command from any task. Never blocks. One non-barcode E-STOP can wait
+   separately from the ring and is handled first. Returns E_OK when stored or
+   E_TMOUT if the command was dropped. */
 ER vehicle_command_post (uint8_t opcode, uint8_t source);
 
 /* The same with the ids of a telemetry command frame, so its cmd_accept or
@@ -69,13 +74,14 @@ ER vehicle_command_post (uint8_t opcode, uint8_t source);
 ER vehicle_command_post_ids (uint8_t opcode, uint8_t source, uint16_t cmd_id,
                              uint16_t run_id);
 
-/* Commands the ring dropped since boot. The count wraps. */
+/* Commands the inbox dropped since boot. The count wraps. */
 uint16_t supervisor_cmd_drops (void);
 
-/* The line task takes a turn the supervisor allowed: VEHICLE_CMD_LEFT, _RIGHT or
-   _UTURN, _STRAIGHT, or SUPERVISOR_NO_TURN. A turn is returned once. *p_source gets the
-   VEHICLE_SRC_* of the command that asked for it. */
-uint8_t supervisor_take_turn (uint8_t * p_source);
+/* Poll an admitted maneuver and its VEHICLE_SRC_*. Barcode L/R/S remain
+   pending until selected or canceled. A one-shot maneuver is claimed here. */
+uint8_t supervisor_poll_turn (uint8_t * p_source);
+/* A consuming check removes only the matching barcode junction choice. */
+bool supervisor_route_pending (uint8_t expected_opcode, bool b_consume);
 
 /* Accepted RESET commands since boot, wrapping at 8 bits. The line task
    compares it with the last value it saw and clears the pilot's latches when it
@@ -85,8 +91,13 @@ uint8_t supervisor_take_turn (uint8_t * p_source);
 uint8_t supervisor_reset_count (void);
 
 /* Accepted START commands since boot, wrapping at 8 bits. The line task
-   releases the pilot's sonar and stale latches when it changes. */
+   clears recoverable pilot latches and rechecks a blocked course when it changes. */
 uint8_t supervisor_start_count (void);
+/* Copy the start generation and its active floor selection under one lock. */
+uint8_t supervisor_start_snapshot (bool * p_continuous_floor);
+/* Completed in-run attitude recoveries. The accompanying flag says the fresh
+ * forward observation cleared the path. A near return needs a new survey. */
+uint8_t supervisor_recovery_snapshot (bool * p_clear);
 
 /* The line task tells the supervisor while a one-shot turn runs. */
 void supervisor_set_turning (bool b_turning);

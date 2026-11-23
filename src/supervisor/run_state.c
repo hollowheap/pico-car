@@ -39,7 +39,9 @@ void run_state_init (run_ctx_t * p_ctx)
     p_ctx->b_barcode  = false;
     p_ctx->b_lift     = false;
     p_ctx->b_overturn = false;
+    p_ctx->b_righted_overturn = false;
     p_ctx->b_estop    = false;
+    p_ctx->b_continuous_floor = false;
     p_ctx->start_count = 0U;
     p_ctx->reset_count = 0U;
 }
@@ -109,35 +111,59 @@ static void command_stop (run_ctx_t * p_ctx, vehicle_cmd_t cmd, run_result_t * p
 
 static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t * p_out)
 {
-    if (p_ctx->b_estop || p_ctx->b_overturn)
+    bool const b_recover_pose = p_ctx->b_lift || p_ctx->b_overturn || p_in->b_overturned;
+
+    if (p_ctx->b_estop || p_in->b_estop || (p_ctx->b_overturn && !p_in->b_upright))
     {
         reject (p_out, RUN_REJECT_LATCHED);
     }
-    else if (p_in->b_lifted || p_in->b_overturned)
+    else if (p_in->b_lifted || (p_in->b_overturned && !p_in->b_upright))
     {
         reject (p_out, RUN_REJECT_LIFTED);
+    }
+    else if (p_in->b_connection_fault)
+    {
+        reject (p_out, RUN_REJECT_HARDWARE_FAULT);
     }
     else if (p_in->b_attitude_unknown)
     {
         reject (p_out, RUN_REJECT_NO_ATTITUDE);
+        if (p_in->b_calibration_timed_out && !p_in->b_permit_lapsed)
+        {
+            p_out->b_physics_recal = true;
+            /* A refused START must leave the car held when calibration ends. */
+            if (!p_ctx->b_operator)
+            {
+                p_ctx->b_operator = true;
+                p_out->b_cancel_turn = true;
+                p_out->b_obstacle_stop = true;
+            }
+        }
     }
     else if (p_in->b_permit_lapsed)
     {
         reject (p_out, RUN_REJECT_STALLED);
     }
+    else if (!p_in->b_upright && (p_ctx->b_lift || !p_in->b_on_hump))
+    {
+        reject (p_out, RUN_REJECT_LIFTED);
+    }
     else
     {
+        p_ctx->b_righted_overturn = p_in->b_overturned;
+        p_ctx->b_overturn = false;
         p_ctx->b_operator = false;
         p_ctx->b_barcode  = false;
         p_ctx->b_lift     = false;
         p_ctx->start_count++;
         p_out->b_accepted       = true;
         p_out->b_start          = true;
+        p_out->b_sticky_clear   = true;
         p_out->b_obstacle_reset = true;
         p_out->b_obstacle_start = true;
         /* A level car calibrates again before it moves; on a hump the old
            reference is better than a tilted one. */
-        p_out->b_physics_recal = !p_in->b_on_hump;
+        p_out->b_physics_recal = b_recover_pose || !p_in->b_on_hump;
     }
 }
 
@@ -189,6 +215,7 @@ static void command_reset (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
         }
         /* The attitude latch clears only with a new run. */
         p_out->b_physics_recal  = p_ctx->b_overturn || p_in->b_overturned;
+        p_ctx->b_righted_overturn = p_in->b_overturned;
         p_ctx->b_overturn       = false;
         p_ctx->reset_count++;
         p_out->b_accepted       = true;
@@ -220,7 +247,9 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
 {
     clear_result (p_out, p_ctx);
 
-    if ((VEHICLE_SRC_BARCODE == cmd.source) && (VEHICLE_CMD_START == cmd.opcode))
+    if (vehicle_is_start (cmd.opcode) &&
+        ((VEHICLE_SRC_BARCODE == cmd.source) ||
+         ((VEHICLE_CMD_START != cmd.opcode) && (VEHICLE_SRC_TELEMETRY != cmd.source))))
     {
         reject (p_out, RUN_REJECT_SOURCE);
     }
@@ -246,8 +275,22 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
                 command_stop (p_ctx, cmd, p_out);
             break;
 
+            case VEHICLE_CMD_START_STATIONARY:
+            case VEHICLE_CMD_START_CONTINUOUS_FLOOR:
             case VEHICLE_CMD_START:
-                command_start (p_ctx, p_in, p_out);
+                if ((RUN_STATE_RUNNING == run_state_of (p_ctx)) &&
+                    ((VEHICLE_CMD_START != cmd.opcode) || !p_ctx->b_continuous_floor))
+                {
+                    reject (p_out, RUN_REJECT_BUSY);
+                }
+                else
+                {
+                    command_start (p_ctx, p_in, p_out);
+                    if (p_out->b_start)
+                    {
+                        p_ctx->b_continuous_floor = (VEHICLE_CMD_START_STATIONARY != cmd.opcode);
+                    }
+                }
             break;
 
             case VEHICLE_CMD_RESET:
@@ -283,17 +326,25 @@ void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t 
     p_ctx->b_booted = true;
     if (p_in->b_estop)
     {
+        p_out->b_cancel_turn = !p_ctx->b_estop;
         p_ctx->b_estop = true;
     }
-    /* After a RESET the attitude latch can still read OVERTURNED for a pass;
-       only a car that is upside down latches the overturn. */
-    if (p_in->b_overturned && !p_in->b_upright)
+    /* A righted, acknowledged attitude can still read OVERTURNED while physics
+       handles its new-run request. Any new unsafe pose immediately holds again. */
+    if (!p_in->b_attitude_unknown && (!p_in->b_overturned || !p_in->b_upright))
+    {
+        p_ctx->b_righted_overturn = false;
+    }
+    bool const b_overturn = p_in->b_overturned && !p_ctx->b_righted_overturn;
+    if (b_overturn)
     {
         p_ctx->b_overturn = true;
     }
-    if (p_in->b_overturned || p_in->b_lifted)
+    if (b_overturn || p_in->b_lifted)
     {
         /* Only START ends the hold, however long the car stands level. */
+        p_out->b_obstacle_stop = !p_ctx->b_lift;
+        p_out->b_cancel_turn = p_out->b_cancel_turn || !p_ctx->b_lift;
         p_ctx->b_lift = true;
     }
     if (p_in->b_permit_lapsed && !p_ctx->b_operator)
@@ -317,7 +368,6 @@ void run_state_read_physics (run_inputs_t * p_in, const run_physics_t * p_phys)
 {
     bool const    b_known = p_phys->b_ready && !p_phys->b_attitude_unknown;
     uint8_t const state   = p_phys->attitude_state;
-    int16_t const roll    = p_phys->roll_cdeg;
     bool const    b_hump  = p_phys->b_hump_active ||
                             (TELEMETRY_HUMP_STATE_FLAT != p_phys->hump_state);
 
@@ -325,9 +375,7 @@ void run_state_read_physics (run_inputs_t * p_in, const run_physics_t * p_phys)
     p_in->b_lifted           = b_known && (TELEMETRY_ATTITUDE_STATE_LIFTED == state);
     p_in->b_overturned       = b_known &&
                                (TELEMETRY_ATTITUDE_STATE_OVERTURNED == state);
-    p_in->b_upright          = b_known && p_phys->b_calibrated &&
-                               (roll <= RUN_UPRIGHT_ROLL_CDEG) &&
-                               (roll >= -RUN_UPRIGHT_ROLL_CDEG);
+    p_in->b_upright          = b_known && p_phys->b_calibrated && p_phys->b_level_still;
     p_in->b_on_hump          = p_phys->b_ready && b_hump;
 }
 

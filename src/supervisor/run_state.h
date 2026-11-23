@@ -23,7 +23,7 @@ typedef enum
     RUN_STATE_RUNNING,
     RUN_STATE_STOPPED, /* boot, or an operator STOP, holds the car            */
     RUN_STATE_HELD,    /* a barcode stop or a lift holds the car            */
-    RUN_STATE_LATCHED  /* emergency stop or overturn: needs RESET or reboot */
+    RUN_STATE_LATCHED  /* emergency stop, or overturn awaiting recovery */
 } run_state_t;
 
 /* Why a command was refused. */
@@ -37,6 +37,7 @@ typedef enum
 #define RUN_REJECT_ON_HUMP     (7U) /* a calibration on a ramp would be wrong */
 #define RUN_REJECT_STALLED     (8U) /* the motion permit lapsed */
 #define RUN_REJECT_NO_ATTITUDE (9U) /* the lean is not known yet */
+#define RUN_REJECT_HARDWARE_FAULT (10U)
 
 /* The tick runs once per supervisor pass (SUPERVISOR_PASS_MS). */
 #define RUN_PASS_MS (20U)
@@ -49,17 +50,15 @@ typedef enum
 /* The turn the line task must run, or none. */
 #define RUN_TURN_NONE (0xFFU)
 
-/* Roll, in cdeg, within which the car counts as upright: the attitude overturn
-   roll limit (src/physics/attitude.c). */
-#define RUN_UPRIGHT_ROLL_CDEG (6000)
-
 typedef struct
 {
     bool b_booted;
     bool b_operator; /* boot, or STOP from the dashboard or a button   */
     bool b_barcode;  /* STOP from a barcode                            */
     bool b_lift;     /* lifted or overturned: the lift hold is on      */
-    bool b_overturn; /* overturned: needs RESET after the car is upright */
+    bool b_overturn; /* overturn awaiting operator recovery */
+    bool b_righted_overturn; /* previous attitude latch awaiting physics recalibration */
+    bool b_continuous_floor; /* floor selected by the last accepted START */
     bool b_estop;    /* the motion emergency latch                     */
     uint8_t start_count; /* accepted STARTs; wraps */
     uint8_t reset_count; /* accepted RESETs; wraps */
@@ -73,9 +72,13 @@ typedef struct
     bool b_estop;
     bool b_follow; /* the line task follows the line, the obstacle task monitors, no turn is pending */
     bool b_on_hump; /* the hump detector is in a hump: the car is not level */
-    bool b_upright; /* calibrated, and the roll is within the overturn limit */
+    bool b_upright; /* calibrated, level and settled in the IMU recovery window */
     bool b_permit_lapsed; /* the motion permit lapsed: a stall or a long gap */
     bool b_attitude_unknown; /* the lean is not known: no START or RECAL */
+    bool b_collecting_rest;  /* fresh qualifying calibration or level/still sample */
+    uint8_t rest_interruptions;
+    bool b_connection_fault; /* a current IMU or sonar fault: no START */
+    bool b_calibration_timed_out; /* a calibration hold still waits for a reference */
 } run_inputs_t;
 
 /* The physics and motion facts the supervisor maps to run_inputs_t. */
@@ -87,7 +90,7 @@ typedef struct
     bool    b_hump_active;
     uint8_t hump_state;     /* TELEMETRY_HUMP_STATE_* */
     uint8_t attitude_state; /* TELEMETRY_ATTITUDE_STATE_* */
-    int16_t roll_cdeg;
+    bool    b_level_still;
 } run_physics_t;
 
 /* What the supervisor must do after a step. hold_mask is the full set of
@@ -106,7 +109,7 @@ typedef struct
     bool     b_motion_estop;
     bool     b_physics_recal; /* the IMU must calibrate again: after an overturn, on START, on RECAL */
     bool     b_start;         /* START accepted: ends a latched sonar stop */
-    bool     b_sticky_clear;  /* RESET: clear the sticky fault word */
+    bool     b_sticky_clear;  /* START or RESET: acknowledge recovered faults */
 } run_result_t;
 
 void        run_state_init (run_ctx_t * p_ctx);

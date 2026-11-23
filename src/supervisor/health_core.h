@@ -28,8 +28,8 @@
    too (5 s). [Default] */
 #define LIVENESS_BOOT_CHECKS (50U)
 
-/* The tasks whose stall stops the car (and, with the watchdog on, resets the
-   board). The others only raise the fault. */
+/* A stall in these tasks revokes the motion permit. A stalled physics
+   task can recover under its attitude hold before the board watchdog fires. */
 #define LIVENESS_CRITICAL_MASK \
     ((1U << LIVE_MOTION) | (1U << LIVE_LINE) | (1U << LIVE_OBSTACLE))
 
@@ -181,34 +181,21 @@ typedef enum
 
 drive_probe_t health_drive_probe_verdict (int32_t driven_mm, int32_t other_mm);
 
-/* Calibration hold. The car stays still while the IMU takes its rest
- * reference: at boot, after START on level ground, and after RECAL. A started
- * request first waits for physics to drop the old reference, then for the new
- * one. A timeout is reported once, and the car stays held until the reference
- * comes. One step per supervisor pass. */
-#define CALHOLD_DROP_PASSES (10U)   /* 200 ms for physics to start over        */
-#define CALHOLD_MAX_PASSES  (250U)  /* 5 s: the car never came to rest          */
-
-typedef enum
-{
-    CALHOLD_IDLE = 0,
-    CALHOLD_WAIT_DROP,
-    CALHOLD_WAIT_CAL
-} calhold_phase_t;
+/* Physics publishes the applied request together with the calibrated sample.
+ * Zero is the boot reference. Timeouts report a delayed reference. */
+#define CALHOLD_MAX_PASSES (250U)  /* 5 s at the supervisor period */
 
 typedef struct
 {
-    uint8_t  phase;   /* calhold_phase_t */
+    uint32_t reference_request;
     uint16_t passes;
+    bool     b_waiting;
     bool     b_timed_out;
     bool     b_timeout_seen;
 } calhold_t;
 
-/* b_wait_drop is false at boot, when no reference exists yet. */
-void calhold_start (calhold_t * p_hold, bool b_wait_drop);
-
-/* One pass. Returns true while the car must stay held. */
-bool calhold_update (calhold_t * p_hold, bool b_calibrated);
+void calhold_start (calhold_t * p_hold, uint32_t reference_request);
+bool calhold_update (calhold_t * p_hold, uint32_t applied_request, bool b_calibrated);
 
 /* True on the first pass of an attempt that sees its timeout. Call it once per
  * pass, after calhold_update. */

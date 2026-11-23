@@ -442,6 +442,17 @@ static void test_calibration_pose_gate (void)
     CHECK (!calibrates_at (&cfg, sinf (d15), 0.0f, cosf (d15), 500U));
     CHECK (!calibrates_at (&cfg, 0.0f, sinf (d15), cosf (d15), 500U));
     CHECK (!calibrates_at (&cfg, 0.0f, 0.0f, -1.0f, 500U));
+    CHECK (calibrates_at (&cfg, 0.0f, 0.0f, 1.055f, 100U));
+    CHECK (!calibrates_at (&cfg, 0.0f, 0.0f, 1.085f, 100U));
+    hump_ctx_t ctx;
+    hump_output_t out;
+    CHECK (hump_init (&ctx, &cfg));
+    for (unsigned int i = 0U; i < 100U; i++)
+    {
+        hump_sample_t sample = { .az_g = ((i % 2U) == 0U) ? 1.06f : 0.98f };
+        CHECK (hump_update (&ctx, &sample, &out));
+        CHECK (!out.calibrated);
+    }
 
     cfg.cal_max_tilt_deg = 20.0f;
     CHECK (calibrates_at (&cfg, sinf (d15), 0.0f, cosf (d15), 500U));

@@ -32,6 +32,8 @@
 #include "imu_motion.h"
 #include "lsm303.h"
 
+#define PHYSICS_DEFAULT_PERIOD_MS (20U)
+
 typedef struct
 {
     PRI      priority;           /* Planned value: 4.                      */
@@ -44,13 +46,17 @@ typedef struct
     float    motion_accel_alpha;     /* dv/dt smoothing, see motion_adapter.h.  */
     /* Fill *p_reading from the motion service. NULL = the motion service is not used (bring-up). */
     bool   (*read_motion) (motion_reading_t * p_reading);
+    /* Optional best-effort event output, called after publishing the sample. */
+    ER     (*emit_event) (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm);
     hump_config_t       hump;
     imu_motion_config_t motion;
 } physics_task_config_t;
 
 typedef struct
 {
+    SYSTIM   sample_time;        /* Operating time when this cycle began.  */
     uint32_t cycles;
+    uint32_t reference_request;
     uint32_t overruns;           /* Wake-ups missed while still working.   */
     uint32_t max_work_us;        /* Longest cycle, read to send.           */
     uint32_t sensor_inits;       /* Attempts to start the LSM303.          */
@@ -66,6 +72,9 @@ typedef struct
     uint8_t  attitude_state;     /* attitude_state_t, holds on a failed read. */
     bool     heading_valid;      /* heading_ddeg is fresh and usable.      */
     bool     calibrated;         /* Hump detector has its rest reference.  */
+    bool     collecting_rest;    /* Fresh qualifying gravity or settled-pose sample. */
+    uint8_t  rest_interruptions; /* Interruptions since boot, modulo 256. */
+    bool     level_still;         /* Sustained calibrated recovery pose. */
     bool     attitude_unknown;   /* Lean not known; attitude fields are the
                                     last known. */
 } physics_task_stats_t;
@@ -84,9 +93,12 @@ void physics_task_run (void);
 /* Consistent copy of the counters; safe from any task on either core. */
 void physics_task_get_stats (physics_task_stats_t * p_stats);
 
+/* A published sample and a recovery window use the same operating-clock expiry. */
+bool physics_task_sample_recent (const SYSTIM * p_sample, const SYSTIM * p_now);
+
 /* Request a new run (recalibrate, reset run peak) on the next cycle.
  * Only while the car is at rest. */
-void physics_task_request_new_run (void);
+uint32_t physics_task_request_new_run (void);
 
 /* The car's settings: the mount axis, the hump limits and the motion reader.
  * physics_init() and the bring-up check both use them, so a bench sees what the

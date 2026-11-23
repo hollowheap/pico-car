@@ -20,8 +20,10 @@
 #include "lsm303.h"
 #include "platform/faults.h"
 #include "platform/liveness.h"
+#include "platform/units.h"
 #include "supervisor/health_ids.h"
 #include "platform/log.h"
+#include "telemetry/wire_schema.h"
 
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
 /* Attempts per transaction for a re-init and its readback. On a dead bus each
@@ -38,12 +40,13 @@
 #define US_TO_S            (1.0e-6f)
 #define MS_TO_S            (1.0e-3f)
 #define ROUND_HALF         (0.5f)
+#define SYSTIM_HIGH_SHIFT  (32U)
+#define SNAPSHOT_LOSS_MS   (PHYSICS_DEFAULT_PERIOD_MS * PIPELINE_LOST_CYCLES)
 #define HEADING_WRAP_DDEG  (3600U)
 #define SCALE_CENTI        (100.0f)
 
 /* physics_task_default_config values. */
 #define DEFAULT_TASK_PRIORITY (4)
-#define DEFAULT_PERIOD_MS     (20U)
 #define DEFAULT_MAG_EVERY     (3U)
 #define DEFAULT_TELEM_EVERY   (10U)
 #define DEFAULT_I2C_ATTEMPTS  (4U)
@@ -61,11 +64,10 @@ static bool             g_started = false;
 static T_SPLOCK         g_stats_lock;
 static physics_task_stats_t  g_stats;
 
-/* Requests from other tasks: bits set atomically elsewhere and taken here
- * with one exchange, so a request set at any time is served once. */
-#define REQ_NEW_RUN     (1UL << 0U)
-#define REQ_CLEAR_FAULT (1UL << 1U)
-static UW               g_requests = 0U;
+/* Sample the latest requests under the publication lock. The task applies
+ * them outside the lock and publishes the reference ID with the result. */
+static uint32_t         g_requested_reference;
+static bool             g_clear_fault_pending;
 /* A level, not a request: the owner sets it every pass; the last value wins. */
 static volatile bool    g_wheels_free = false;
 
@@ -145,11 +147,21 @@ static void log_header (void)
     LOG_NOW ("INFO", "physics:imu", "mag raw: X/Y 1100 LSB/G, Z 980 LSB/G\n");
 }
 
-/* Sleep until the next period and count missed wake-ups. */
+bool physics_task_sample_recent (const SYSTIM * p_sample, const SYSTIM * p_now)
+{
+    uint64_t const sample_ms = ((uint64_t)(uint32_t)p_sample->hi << SYSTIM_HIGH_SHIFT) | p_sample->lo;
+    uint64_t const now_ms = ((uint64_t)(uint32_t)p_now->hi << SYSTIM_HIGH_SHIFT) | p_now->lo;
+
+    return (p_sample->hi >= 0) && (p_now->hi >= 0) && ((now_ms - sample_ms) < SNAPSHOT_LOSS_MS);
+}
+
+/* Sleep until the next period, count missed wake-ups and stamp the new cycle. */
 static void wait_cycle (physics_task_stats_t * p_local)
 {
     INT queued = 0;
     ER er = E_OK;
+    uint32_t const overruns = p_local->overruns;
+    SYSTIM const previous = p_local->sample_time;
 
     er = tk_slp_tsk (SLEEP_TIMEOUT_MS);
     queued = tk_can_wup (TSK_SELF);
@@ -164,6 +176,24 @@ static void wait_cycle (physics_task_stats_t * p_local)
     else
     {
         /* Normal wake-up. */
+    }
+    if (E_OK != tk_get_otm (&p_local->sample_time))
+    {
+        p_local->sample_time.hi = -1;
+    }
+    if ((overruns != p_local->overruns) || !physics_task_sample_recent (&previous, &p_local->sample_time))
+    {
+        /* Keep the attitude latch. Only consecutive observations prove set-down. */
+        if (p_local->collecting_rest)
+        {
+            p_local->rest_interruptions++;
+            p_local->collecting_rest = false;
+        }
+        g_pipe.attitude.clear_count = 0U;
+        if (!g_pipe.hump.calibrated && (g_pipe.hump.cal_count > 0U))
+        {
+            hump_recalibrate (&g_pipe.hump);
+        }
     }
 }
 
@@ -180,7 +210,9 @@ static void retry_sensor_init (physics_task_stats_t * p_local,
                   "IMU configuration does not match, re-initialising");
         *p_retry_count = INIT_RETRY_CYCLES;
     }
-    if (!g_imu.ready)
+    /* A successful configuration readback can coexist with a dead data
+     * register. Keep the bounded retries going until acceleration returns. */
+    if (!g_imu.ready || (g_pipe.failed_cycles >= PIPELINE_LOST_CYCLES))
     {
         (*p_retry_count)++;
         if (*p_retry_count >= INIT_RETRY_CYCLES)
@@ -217,13 +249,18 @@ static void track_lost (const pipeline_step_t * p_step,
 /* Read the accelerometer every cycle and the magnetometer every mag_every. */
 static void read_sensors (const physics_task_stats_t * p_local,
                           lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
-                          bool * p_acc_ok, bool * p_mag_ok)
+                          bool * p_acc_ok, bool * p_mag_ok, bool * p_mag_fault)
 {
     bool const b_mag_due = (0U == (p_local->cycles % g_cfg.mag_every))
                            && g_cfg.motion.mag_enabled;
 
     pipeline_read (&g_pipe, &g_imu, g_cfg.i2c_attempts, b_mag_due, p_acc, p_mag,
                    p_acc_ok, p_mag_ok);
+    /* A skipped sample cannot prove that the magnetometer is back. */
+    if (b_mag_due && *p_acc_ok)
+    {
+        *p_mag_fault = !*p_mag_ok;
+    }
 }
 
 /* Clamp a scaled value into int16_t for the snapshot. */
@@ -280,14 +317,30 @@ static void update_heading (physics_task_stats_t * p_local,
  * a lift hold nor reads as a level pose, and attitude_unknown says so. */
 static void update_attitude (physics_task_stats_t * p_local, const pipeline_step_t * p_step)
 {
+    bool const b_was_collecting = p_local->collecting_rest;
     p_local->attitude_unknown = p_step->attitude_unknown;
+    p_local->level_still = pipeline_attitude_known (p_step) && p_step->attitude.level_still;
+    p_local->collecting_rest = p_step->sensors_ok &&
+        (p_step->calibrated
+         ? ((ATTITUDE_OK == p_step->attitude.state) && (g_pipe.attitude.clear_count > 0U))
+         : (g_pipe.hump.cal_count > 0U));
+    /* A noisy sample can immediately seed a new window. Count the break
+     * even if the supervisor only sees the next good sample. */
+    if (b_was_collecting && (!p_local->collecting_rest ||
+                            (!p_step->calibrated && (1U == g_pipe.hump.cal_count))))
+    {
+        p_local->rest_interruptions++;
+    }
+    if (p_step->sensors_ok)
+    {
+        p_local->az_mg   = clamp_i16 (scaled (p_step->attitude.az_g, SCALE_MILLI));
+        p_local->amag_mg = (uint16_t) clamp_i16 (scaled (p_step->attitude.amag_g, SCALE_MILLI));
+    }
     if (pipeline_attitude_known (p_step))
     {
         uint16_t active = 0U;
 
         p_local->roll_cdeg = clamp_i16 (scaled (p_step->attitude.roll_deg, SCALE_CENTI));
-        p_local->az_mg     = clamp_i16 (scaled (p_step->attitude.az_g, SCALE_MILLI));
-        p_local->amag_mg   = (uint16_t) clamp_i16 (scaled (p_step->attitude.amag_g, SCALE_MILLI));
         p_local->attitude_state = (uint8_t) p_step->attitude.state;
 
         if (ATTITUDE_LIFTED == p_step->attitude.state)
@@ -307,22 +360,102 @@ static void update_attitude (physics_task_stats_t * p_local, const pipeline_step
     }
 }
 
-/* Report the physics fault bits (I2C, stale, tilt) as shared bits 5 to 7. The
- * detail is read through physics_snapshot(); nothing receives it by message
- * buffer. */
-static void dispatch_step (const pipeline_step_t * p_step,
-                           uint8_t * p_last_faults)
+/* The packed I2C fault is latched for diagnosis. The shared level follows
+ * current reads so a recovered connection can pass the START gate. */
+static void dispatch_faults (const hump_fields_t * p_fields, bool b_i2c_fault,
+                             uint8_t * p_last_faults)
 {
-    hump_fields_t fields;
-
-    (void)hump_unpack (p_step->word, &fields);
-    if (fields.faults != *p_last_faults)
+    uint8_t const level = (uint8_t) ((p_fields->faults & ~PHYSICS_FAULT_I2C) |
+                                    (b_i2c_fault ? PHYSICS_FAULT_I2C : 0U));
+    if (level != *p_last_faults)
     {
         system_fault_assign (FAULT_OWNER_PHYSICS, PHYSICS_SHARED_FAULT_MASK,
-                             (uint16_t) ((uint16_t) fields.faults
+                             (uint16_t) ((uint16_t) level
                                          << PHYSICS_SHARED_FAULT_SHIFT));
     }
-    *p_last_faults = fields.faults;
+    *p_last_faults = level;
+}
+
+static uint8_t attitude_event (uint8_t previous, uint8_t current)
+{
+    if (previous != current)
+    {
+        if (ATTITUDE_LIFTED == current)
+        {
+            return (uint8_t)TELEMETRY_EVT_LIFT_START;
+        }
+        if (ATTITUDE_OVERTURNED == current)
+        {
+            return (uint8_t)TELEMETRY_EVT_OVERTURN;
+        }
+        if ((ATTITUDE_LIFTED == previous) && (ATTITUDE_OK == current))
+        {
+            return (uint8_t)TELEMETRY_EVT_LIFT_END;
+        }
+    }
+    return 0U;
+}
+
+static void emit_sample_events (const physics_task_stats_t * p_stats, const pipeline_step_t * p_step,
+                                const hump_fields_t * p_hump, const motion_reading_t * p_reading,
+                                uint8_t previous_attitude, bool b_previous_hump)
+{
+    bool const b_hump_edge = p_hump->hump_active != b_previous_hump;
+    uint8_t const type = attitude_event (previous_attitude, p_stats->attitude_state);
+    uint8_t const source = (uint8_t)TELEMETRY_EVENT_SOURCE_PHYSICS;
+
+    if ((NULL == g_cfg.emit_event) || (!b_hump_edge && (0U == type)))
+    {
+        return;
+    }
+    /* The motion snapshot retains displacement even without fresh speed. */
+    uint32_t const odo = (NULL != p_reading)
+        ? wheel_odometer_mm (p_reading->displacement_um[PHYSICS_WHEEL_LEFT],
+                             p_reading->displacement_um[PHYSICS_WHEEL_RIGHT]) : 0U;
+
+    if (b_hump_edge)
+    {
+        if (p_hump->hump_active)
+        {
+            (void)g_cfg.emit_event (source, (uint8_t)TELEMETRY_EVT_HUMP_START, 0, 0U, odo);
+        }
+        else
+        {
+            int16_t const peak_mm = (int16_t)((p_hump->hump_peak_m * SCALE_MILLI) + ROUND_HALF);
+
+            (void)g_cfg.emit_event (source, (uint8_t)TELEMETRY_EVT_HUMP_END, peak_mm,
+                                   p_hump->height_valid ? 1U : 0U, odo);
+        }
+    }
+    if (0U != type)
+    {
+        /* Below one milligravity the wire magnitude is zero and tilt is
+         * unavailable. The sentinel preserves the measured zero-g sample. */
+        int16_t const tilt = (0U == p_stats->amag_mg) ? INT16_MAX
+            : clamp_i16 (scaled (p_step->attitude.tilt_deg, SCALE_CENTI));
+
+        (void)g_cfg.emit_event (source, type, tilt, p_stats->amag_mg, odo);
+    }
+}
+
+static void apply_requests (physics_task_stats_t * p_local)
+{
+    UINT saved = 0U;
+    (void)ISpinLock (&g_stats_lock, &saved);
+    uint32_t const requested = g_requested_reference;
+    bool const b_clear = g_clear_fault_pending;
+    g_clear_fault_pending = false;
+    (void)ISpinUnlock (&g_stats_lock, saved);
+
+    if (b_clear)
+    {
+        lsm303_clear_fault (&g_imu);
+    }
+    if (p_local->reference_request != requested)
+    {
+        pipeline_new_run (&g_pipe);
+        p_local->reference_request = requested;
+    }
 }
 
 void physics_task_run (void)
@@ -333,6 +466,8 @@ void physics_task_run (void)
     uint32_t prev_us = 0U;
     uint32_t retry_count = 0U;
     uint8_t last_faults = FAULTS_UNSET;
+    bool b_mag_fault = false;
+    bool b_hump_active = false;
 
     i2c_rp2040_init (&g_bus);
     local.sensor_inits = 1U;
@@ -349,12 +484,13 @@ void physics_task_run (void)
         motion_reading_t reading = { 0 };
         motion_input_t motion;
         pipeline_step_t step;
+        hump_fields_t hump = {0};
+        uint8_t const previous_attitude = local.attitude_state;
         bool have_motion = false;
         bool acc_ok = false;
         bool mag_ok = false;
         uint32_t now_us = 0U;
         uint32_t work_us = 0U;
-        UW requests = 0U;
         float dt_s = 0.0f;
 
         wait_cycle (&local);
@@ -368,18 +504,9 @@ void physics_task_run (void)
             dt_s = (float)g_cfg.period_ms * MS_TO_S;
         }
 
-        requests = atomic_xchg (&g_requests, 0U);
-        if (0U != (requests & REQ_CLEAR_FAULT))
-        {
-            lsm303_clear_fault (&g_imu);
-        }
-        if (0U != (requests & REQ_NEW_RUN))
-        {
-            pipeline_new_run (&g_pipe);
-        }
-
+        apply_requests (&local);
         retry_sensor_init (&local, &retry_count);
-        read_sensors (&local, &acc, &mag, &acc_ok, &mag_ok);
+        read_sensors (&local, &acc, &mag, &acc_ok, &mag_ok, &b_mag_fault);
 
         if (NULL != g_cfg.read_motion)
         {
@@ -407,7 +534,8 @@ void physics_task_run (void)
         }
         update_heading (&local, &step);
         update_attitude (&local, &step);
-        dispatch_step (&step, &last_faults);
+        (void)hump_unpack (step.word, &hump);
+        dispatch_faults (&hump, !acc_ok || b_mag_fault, &last_faults);
 
         if ((g_cfg.log_every > 0U) && (0U == (local.cycles % g_cfg.log_every)))
         {
@@ -423,6 +551,9 @@ void physics_task_run (void)
         local.i2c = g_imu.stats;
         local.last_word = step.word;
         stats_update (&local);
+        emit_sample_events (&local, &step, &hump, have_motion ? &reading : NULL,
+                            previous_attitude, b_hump_active);
+        b_hump_active = hump.hump_active;
     }
 }
 
@@ -435,7 +566,7 @@ void physics_task_default_config (physics_task_config_t * p_cfg)
         *p_cfg = zero_cfg;
         p_cfg->priority = DEFAULT_TASK_PRIORITY;
         p_cfg->processor = TP_PRC2;
-        p_cfg->period_ms = DEFAULT_PERIOD_MS;
+        p_cfg->period_ms = PHYSICS_DEFAULT_PERIOD_MS;
         p_cfg->mag_every = DEFAULT_MAG_EVERY;
         p_cfg->telem_every = DEFAULT_TELEM_EVERY;   /* 5 Hz periodic Telemetry. */
         p_cfg->log_every = 0U;
@@ -504,10 +635,8 @@ void physics_task_get_stats (physics_task_stats_t * p_stats)
 
 /* The GY-511 sits with X pointing aft on the car, so nose-up reads negative.
  * Flip the forward axis so the hump state machine and the compass use the
- * car's forward direction. The logged humps peak near 5 deg above rest, so
- * enter at 4 deg with a 2 deg exit band. The decision to keep 6.0 and 2.5
- * (imu-lift-overturn.md) does not reach the car: this is what runs. */
-#define CAR_HUMP_ENTER_DEG     (4.0f)
+ * car's forward direction. */
+#define CAR_HUMP_ENTER_DEG     (3.0f)
 #define CAR_HUMP_EXIT_BAND_DEG (2.0f)
 
 void physics_car_config (physics_task_config_t * p_cfg)
@@ -523,14 +652,22 @@ void physics_task_set_wheels_free (bool b_free)
     g_wheels_free = b_free;
 }
 
-void physics_task_request_new_run (void)
+uint32_t physics_task_request_new_run (void)
 {
-    (void)atomic_bitset (&g_requests, REQ_NEW_RUN);
+    UINT saved = 0U;
+    (void)ISpinLock (&g_stats_lock, &saved);
+    g_requested_reference++;
+    uint32_t const requested = g_requested_reference;
+    (void)ISpinUnlock (&g_stats_lock, saved);
+    return requested;
 }
 
 void physics_task_request_clear_fault (void)
 {
-    (void)atomic_bitset (&g_requests, REQ_CLEAR_FAULT);
+    UINT saved = 0U;
+    (void)ISpinLock (&g_stats_lock, &saved);
+    g_clear_fault_pending = true;
+    (void)ISpinUnlock (&g_stats_lock, saved);
 }
 
 /*** end of file ***/

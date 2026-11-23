@@ -17,6 +17,8 @@ static inline ER ISpinUnlock (T_SPLOCK * lock, UINT saved)
 }
 
 ER tk_slp_tsk (TMO timeout);
+typedef struct { int32_t hi; uint32_t lo; } SYSTIM;
+ER tk_get_otm (SYSTIM * p_time);
 
 /* Match the firmware's 4-byte alignment for this supervisor configuration
  * structure while retaining native host pointers and its size assertion. */

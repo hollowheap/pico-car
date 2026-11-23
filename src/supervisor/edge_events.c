@@ -3,7 +3,7 @@
  *	See edge_events.h.
  */
 
-#include "edge_events.h"
+#include "supervisor/edge_events.h"
 
 #include "run_state.h"
 #include "telemetry/wire_schema.h"
@@ -12,7 +12,6 @@ void edge_init (edge_watch_t * p_watch)
 {
     p_watch->obstacle_state  = (uint8_t) TELEMETRY_OBSTACLE_STATE_STOPPED;
     p_watch->b_plan_reported = false;
-    p_watch->b_hump_active   = false;
     p_watch->b_running       = false;
     p_watch->b_started       = false;
 }
@@ -70,29 +69,6 @@ uint8_t edge_obstacle (edge_watch_t * p_watch, const edge_obstacle_in_t * p_in,
         p_watch->b_plan_reported = false;
     }
     p_watch->obstacle_state = state;
-
-    return count;
-}
-
-uint8_t edge_hump (edge_watch_t * p_watch, bool b_active, uint16_t peak_mm, bool b_height_valid,
-                   edge_event_t p_out[EDGE_EVENTS_MAX])
-{
-    uint8_t count = 0U;
-
-    if (b_active && !p_watch->b_hump_active)
-    {
-        count = put (p_out, count, (uint8_t) TELEMETRY_EVT_HUMP_START, 0, 0U);
-    }
-    else if (!b_active && p_watch->b_hump_active)
-    {
-        count = put (p_out, count, (uint8_t) TELEMETRY_EVT_HUMP_END, (int16_t) peak_mm,
-                     b_height_valid ? 1U : 0U);
-    }
-    else
-    {
-        /* No change. */
-    }
-    p_watch->b_hump_active = b_active;
 
     return count;
 }

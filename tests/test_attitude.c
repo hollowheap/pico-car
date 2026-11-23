@@ -174,6 +174,70 @@ static void test_bump_is_not_a_lift (void)
     CHECK (ATTITUDE_OK == rig.out.state);
 }
 
+static void test_interrupted_floor_tilt (void)
+{
+    rig_t rig;
+
+    for (unsigned free_cue = 0U; free_cue < 2U; free_cue++)
+    {
+        rig_init (&rig);
+        rig.in.b_wheels_free = (free_cue != 0U);
+        /* The November floor recording contains both of these magnitudes
+         * and a near-envelope roll. The intervening 50 Hz samples here
+         * are synthetic. Ordinary driving need not meet set-down limits. */
+        run (&rig, 8U, 1.044f, -6.5f, 19.73f, 0.0f);
+        CHECK (ATTITUDE_CANDIDATE == rig.out.state && rig.out.tilt_deg > rig.ctx.cfg.tilt_envelope_deg);
+        run (&rig, 4U, 1.070f, 2.0f, 4.67f, 0.0f);
+        CHECK (ATTITUDE_CANDIDATE == rig.out.state && rig.out.tilt_deg < rig.ctx.cfg.tilt_envelope_deg);
+        for (unsigned i = 1U; i < rig.ctx.cfg.lift_samples; i++)
+        {
+            sample (&rig, 1.044f, -6.5f, 19.73f, 0.0f);
+            CHECK (ATTITUDE_CANDIDATE == rig.out.state);
+        }
+        sample (&rig, 1.044f, -6.5f, 19.73f, 0.0f);
+        CHECK (ATTITUDE_LIFTED == rig.out.state);
+    }
+}
+
+static void test_floor_bounce_ends_before_confirmation (void)
+{
+    rig_t rig;
+
+    rig_init (&rig);
+    /* A symmetric acceleration pulse returns a supported chassis to its
+     * initial height and vertical speed. At 50 Hz it lasts 160 ms. */
+    for (unsigned i = 0U; i < 8U; i++)
+    {
+        float const accel = (i < 2U || i >= 6U) ? 0.20f : -0.20f;
+        sample (&rig, 1.044f + accel, 0.0f, 0.0f, 0.0f);
+        CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
+    CHECK (ATTITUDE_CANDIDATE == rig.out.state);
+    for (unsigned i = 0U; i < rig.ctx.cfg.lift_hold_samples + rig.ctx.cfg.candidate_clear; i++)
+    {
+        sample (&rig, 1.044f, 0.0f, 0.0f, 0.0f);
+        CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
+    CHECK (ATTITUDE_OK == rig.out.state);
+}
+
+static void test_level_hand_pickup (void)
+{
+    rig_t rig;
+    bool lifted = false;
+
+    rig_init (&rig);
+    /* One smooth upward lift, ending at rest 250 mm higher after 0.8 s.
+     * Both halves of the acceleration profile matter for level pickups. */
+    for (unsigned i = 1U; i <= 40U; i++)
+    {
+        float const accel = 0.25f * sinf (360.0f * DEG_TO_RAD * (float)i / 40.0f);
+        sample (&rig, 1.0f + accel, 0.0f, 0.0f, 0.0f);
+        lifted |= (ATTITUDE_LIFTED == rig.out.state);
+    }
+    CHECK (lifted && ATTITUDE_LIFTED == rig.out.state);
+}
+
 static void test_tip_on_side (void)
 {
     rig_t    rig;
@@ -190,6 +254,14 @@ static void test_tip_on_side (void)
     CHECK (ATTITUDE_OVERTURNED == rig.out.state);
     CHECK (fabsf (rig.out.roll_deg) > 80.0f);
 
+    run (&rig, rig.ctx.cfg.clear_samples, 1.0f, 65.0f, 0.0f, 0.0f);
+    CHECK (fabsf (rig.out.roll_deg) < 1.0f && !rig.out.level_still);
+    run (&rig, rig.ctx.cfg.clear_samples, 1.2f, 0.0f, 0.0f, 0.0f);
+    CHECK (!rig.out.level_still);
+    run (&rig, rig.ctx.cfg.clear_samples - 1U, 1.0f, 0.0f, 0.0f, 0.0f);
+    CHECK (!rig.out.level_still);
+    sample (&rig, 1.0f, 0.0f, 0.0f, 0.0f);
+    CHECK (rig.out.level_still && ATTITUDE_OVERTURNED == rig.out.state);
     /* Upright again: it holds until a reset. */
     run (&rig, 200U, 1.0f, 0.0f, 0.0f, 0.01f);
     CHECK (ATTITUDE_OVERTURNED == rig.out.state);
@@ -244,6 +316,36 @@ static void test_failed_read_keeps_state (void)
     CHECK (ATTITUDE_OK == rig.ctx.state);
     CHECK (before.state == ATTITUDE_OK);
     CHECK (!attitude_update (NULL, &rig.in, &rig.out));
+}
+
+static void test_zero_reference_keeps_lift (void)
+{
+    rig_t rig;
+    bool rejected = true;
+
+    rig_init (&rig);
+    run (&rig, rig.ctx.cfg.lift_samples, 1.0f, 30.0f, 0.0f, 0.0f);
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+
+    rig.in.g0[2] = 0.0f;
+    rig.in.ax_g  = 0.0f;
+    rig.in.ay_g  = 0.0f;
+    rig.in.az_g  = 1.0f;
+    for (unsigned i = 0U; i < rig.ctx.cfg.clear_samples; i++)
+    {
+        if (attitude_update (&rig.ctx, &rig.in, &rig.out))
+        {
+            rejected = false;
+        }
+    }
+    CHECK (rejected);
+    CHECK (ATTITUDE_LIFTED == rig.ctx.state && ATTITUDE_LIFTED == rig.out.state);
+
+    rig.in.g0[2] = 1.0f;
+    sample (&rig, 0.0f, 0.0f, 0.0f, 0.0f);
+    CHECK (ATTITUDE_LIFTED == rig.out.state && rig.out.amag_g == 0.0f);
+    run (&rig, rig.ctx.cfg.clear_samples, 1.0f, 0.0f, 0.0f, 0.0f);
+    CHECK (ATTITUDE_OK == rig.out.state);
 }
 
 static void test_config_checks (void)
@@ -397,9 +499,13 @@ int main (int argc, char * argv[])
         {"hump-wheels-free", test_hump_keeps_wheels_free_candidate},
         {"hump-tilt", test_hump_keeps_tilt_breach},
         {"lift-set-down", test_lift_carry_level},
+        {"interrupted-floor-tilt", test_interrupted_floor_tilt},
+        {"floor-bounce-ends", test_floor_bounce_ends_before_confirmation},
+        {"level-hand-pickup", test_level_hand_pickup},
         {"overturn-tilt", test_tip_on_side},
         {"uncalibrated-placement", test_placement_by_hand},
         {"invalid-acceleration", test_failed_read_keeps_state},
+        {"zero-gravity-reference", test_zero_reference_keeps_lift},
     };
     size_t i;
 
@@ -426,10 +532,14 @@ int main (int argc, char * argv[])
     test_lift_and_tilt ();
     test_short_breach_is_ignored ();
     test_bump_is_not_a_lift ();
+    test_interrupted_floor_tilt ();
+    test_floor_bounce_ends_before_confirmation ();
+    test_level_hand_pickup ();
     test_tip_on_side ();
     test_upside_down ();
     test_placement_by_hand ();
     test_failed_read_keeps_state ();
+    test_zero_reference_keeps_lift ();
     test_config_checks ();
     test_config_refuses_long_hold ();
     test_wheels_free_only_candidate ();
