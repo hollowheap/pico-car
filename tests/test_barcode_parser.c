@@ -224,6 +224,41 @@ static void test_invalid_interchar_elements (void)
     assert_parser_reset(&parser);
 }
 
+static void test_only_letter_payloads (void)
+{
+    /* Two wide bars for each row A..J, then K..T and U..Z. The remaining
+     * patterns have valid Code 39 parity but are outside the route alphabet. */
+    static const uint8_t bars[][2] = {
+        {0,8}, {2,8}, {0,2}, {4,8}, {0,4}, {2,4}, {6,8}, {0,6}, {2,6}, {4,6}
+    };
+    static const uint8_t spaces[] = {5, 7, 1, 3};
+
+    for (unsigned reverse = 0; reverse <= 1; ++reverse)
+    {
+        for (unsigned i = 0; i < 40; ++i)
+        {
+            barcode_parser_t parser = BARCODE_PARSER_INIT;
+            uint8_t space = spaces[i / 10U];
+            uint8_t first = bars[i % 10U][0];
+            uint8_t second = bars[i % 10U][1];
+            if (reverse != 0U)
+            {
+                space = 8U - space;
+                first = 8U - first;
+                second = 8U - second;
+            }
+            uint8_t const stop_space = reverse != 0U ? 7U : 1U;
+            uint8_t const stop_bar = reverse != 0U ? 2U : 6U;
+            assert(put_char(&parser, stop_space, 4U, stop_bar) == BARCODE_NO_CHAR);
+            put_space(&parser);
+            assert(put_char(&parser, space, first, second) == BARCODE_NO_CHAR);
+            put_space(&parser);
+            assert(put_char(&parser, stop_space, 4U, stop_bar) == (i < 26U ? i : BARCODE_NO_CHAR));
+            assert_parser_reset(&parser);
+        }
+    }
+}
+
 static void test_start_boundaries_and_deadbands (void)
 {
     barcode_parser_t parser = BARCODE_PARSER_INIT;
@@ -495,6 +530,7 @@ static void test_continuous_streaming (void)
 
 int main (void)
 {
+    test_only_letter_payloads();
     test_forward_and_reverse_valid();
     test_invalid_interchar_elements();
     test_start_boundaries_and_deadbands();

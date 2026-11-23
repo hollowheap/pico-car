@@ -41,27 +41,36 @@ typedef struct
 STATIC_ASSERT(sizeof(line_sample_t) == 8U,
               line_sample_must_be_8_bytes);
 
-/** Initialise the IR sensor interrupt. */
+/**
+ * Initialise line sampling and barcode edge capture. Returns the setup error
+ * on failure, after releasing semaphores and interrupt resources.
+ */
 ER ir_capture_init (void);
 /** Get the current state of the IR sensors. */
 ir_sensors_state_t ir_get_state (void);
-/** Get the latest line sample with timestamp. */
+/** On the capture core, get the alarm-sampled barcode and debounced line levels
+ *  with their TIMER timestamp. */
 line_sample_t ir_get_line_sample (void);
 /** Wait for a change in the IR sensors of the given type. */
 ER ir_wait_change (uint8_t type, TMO tmout);
 
-/**
- * Pop one barcode edge. Returns false when the ring is empty. The timestamp
- * has 2 us resolution (bit 0 is always 0).
- */
-bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level);
+typedef enum
+{
+    IR_BARCODE_EMPTY = 0,
+    IR_BARCODE_EDGE,
+    IR_BARCODE_EDGE_AFTER_LOSS
+} ir_barcode_read_t;
 
-/** Barcode edges dropped because the ISR ring was full. */
+/** Pop a timestamped edge (2 us resolution). After a capture loss the next
+ * edge establishes a new baseline for measuring stripe widths. */
+ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level);
+
+/** Barcode edges lost to an ambiguous transition or a full ISR ring. */
 uint32_t ir_barcode_drops (void);
 
-/* True while the line follower must ignore the line sensors because of a barcode:
- * a barcode edge was seen less than BARCODE_SUPPRESS_US ago, by the sample
- * timestamp of the edge, not by the time a task woke up (D130). */
+/* A queued barcode edge qualifies for line suppression for BARCODE_SUPPRESS_US
+ * from its capture timestamp. After a lost edge, require a full quiet interval
+ * of that length before the next queued edge can qualify. */
 bool ir_barcode_recent (void);
 
 /** Line timer alarm overruns. */

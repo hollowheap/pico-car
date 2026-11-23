@@ -47,6 +47,7 @@
 #define DATA_ONES_BASE  1U
 #define DATA_ONES_SKIP  10U
 #define DATA_TENS_STEP  10U
+#define LETTER_COUNT    26U
 
 typedef enum
 {
@@ -140,7 +141,7 @@ static uint8_t decode_data (uint8_t data)
  * Returns whether there was an error.
  */
 static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
-                         elem_type_t elem_type)
+                         elem_type_t elem_type, uint8_t * p_reason)
 {
     const bool is_second_elem =
         (state->char_index == 0) && (state->elem_index == 1);
@@ -161,6 +162,7 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
             {
                 if (state->wide_space_count >= WIDE_SPACES_PER_CHARACTER)
                 {
+                    *p_reason = BARCODE_REJECT_PARITY;
                     return true;
                 }
                 state->wide_space_count = (uint8_t)(state->wide_space_count + 1U);
@@ -172,6 +174,7 @@ static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
             {
                 if (state->wide_bar_count >= WIDE_BARS_PER_CHARACTER)
                 {
+                    *p_reason = BARCODE_REJECT_PARITY;
                     return true;
                 }
                 state->wide_bar_count = (uint8_t)(state->wide_bar_count + 1U);
@@ -256,7 +259,7 @@ static bool process_elem (barcode_parser_t * state, bool is_elem_space,
     if (!b_invalid)
     {
         elem_type = get_elem_type(state, elem_width_um);
-        b_invalid = handle_elem(state, is_elem_space, elem_type);
+        b_invalid = handle_elem(state, is_elem_space, elem_type, p_reason);
     }
 
     if (!b_invalid && (state->elem_index > CHARACTER_ELEM_COUNT))
@@ -294,7 +297,13 @@ uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
         }
         else
         {
-            /* A closed barcode. */
+            result = decode_data(state->data_value);
+            if (result >= LETTER_COUNT)
+            {
+                b_invalid = true;
+                reason    = BARCODE_REJECT_SYMBOL;
+                result    = BARCODE_NO_CHAR;
+            }
         }
     }
 
@@ -306,13 +315,8 @@ uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
         p_info->reject = (b_invalid && b_progress) ? reason : BARCODE_REJECT_NONE;
     }
 
-    if (b_invalid)
+    if (b_invalid || b_at_end)
     {
-        *state = BARCODE_PARSER_INIT;
-    }
-    else if (b_at_end)
-    {
-        result = decode_data(state->data_value);
         *state = BARCODE_PARSER_INIT;
     }
     else

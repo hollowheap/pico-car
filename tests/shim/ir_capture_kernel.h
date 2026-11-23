@@ -9,6 +9,7 @@
 #define GPIO_IN 0xD0000004U
 #define GPIO(pin) (0x4001C004U + (4U * (pin)))
 #define TIMER_ALARM0 (TIMER_BASE + 0x10U)
+#define TIMER_ARMED (TIMER_BASE + 0x20U)
 #define TIMER_INTR (TIMER_BASE + 0x34U)
 #define TIMER_INTE (TIMER_BASE + 0x38U)
 

@@ -45,6 +45,7 @@ STATIC_ASSERT (sizeof(barcode_parser_t) == 6U, "barcode_parser_t size");
 #define BARCODE_REJECT_ELEMENT   (1U) /* element out of order, or the width fits no class */
 #define BARCODE_REJECT_PARITY    (2U) /* a character has the wrong number of wide elements */
 #define BARCODE_REJECT_DELIMITER (3U) /* the start or stop delimiter is wrong */
+#define BARCODE_REJECT_SYMBOL    (6U) /* correctly framed symbol outside A-Z */
 
 /** What the parser knew when it finished or rejected a barcode. */
 typedef struct

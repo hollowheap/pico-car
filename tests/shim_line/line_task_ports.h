@@ -3,6 +3,7 @@
 #define LINE_TASK_TEST_PORTS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <tk/tkernel.h>
 #include <tk/smp.h>
@@ -16,11 +17,7 @@ typedef struct
 
 ER tk_get_otm(SYSTIM * p_time);
 
-static inline ER ISpinLock(T_SPLOCK * p_lock, UINT * p_saved)
-{
-    *p_saved = 0U;
-    return SpinLock(p_lock);
-}
+ER ISpinLock(T_SPLOCK * p_lock, UINT * p_saved);
 
 static inline ER ISpinUnlock(T_SPLOCK * p_lock, UINT saved)
 {
@@ -32,9 +29,12 @@ static inline ER ISpinUnlock(T_SPLOCK * p_lock, UINT saved)
  * test drives the line task through the supervisor command queries it uses. */
 #define SUPERVISOR_SUPERVISOR_H
 #define SUPERVISOR_NO_TURN (0xFFU)
-uint8_t supervisor_take_turn(uint8_t * p_source);
+uint8_t supervisor_poll_turn(uint8_t * p_source);
+/* Select or cancel only the route instruction whose opcode still matches. */
+bool supervisor_route_pending(uint8_t expected_opcode, bool b_consume);
 uint8_t supervisor_reset_count(void);
-uint8_t supervisor_start_count(void);
+uint8_t supervisor_start_snapshot(bool * p_continuous_floor);
+uint8_t supervisor_recovery_snapshot(bool * p_clear);
 void supervisor_set_turning(bool b_turning);
 void supervisor_turn_refused(uint8_t opcode);
 

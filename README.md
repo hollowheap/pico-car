@@ -32,6 +32,8 @@ Build notes:
 - `configure.sh` initializes submodules before configuring CMake.
 - `CMakeLists.txt` pins `PICO_SDK_PATH` to the vendored `lib/pico-sdk` so a
   devshell environment variable cannot override it.
+- The firmware uses the kernel object limits in `cmake/mtk3smp_config.h.in`.
+  CMake applies those limits to the pinned kernel and firmware targets.
 - Kernel translation units build with `-std=gnu11`; only `src/` is held to
   BARR-C C99 with `-Werror`.
 - The kernel linker script asserts `.boot2` is exactly 256 bytes. Link with
@@ -84,32 +86,152 @@ loopback only. The dashboard build holds the bridge address, so rebuild it with
 
 The firmware publishes the status, motion, physics, obstacle, diag, heartbeat,
 event and profile packets on MQTT (topics `s m p o d h e f`) and accepts
-STOP/START/RESET commands. Broker settings are CMake cache values:
+STOP/START/RESET and E-STOP commands. Broker settings are CMake cache values:
 `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`, `PICO_CAR_MQTT_USERNAME`,
 `PICO_CAR_MQTT_PASSWORD`, `PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.
 
-The run state never starts the car by itself, with one exception: a pilot stop
-for a short sonar or stale-feedback fault resumes on its own when the fault
-clears within PILOT_SONAR_RESUME_MS (1 s). After a boot, a watchdog reset, a
-lift, an overturn or a lapsed motion permit (a stall or a long gap) it holds the
-wheels until an operator START from the dashboard or the CLI. A barcode turn is
-refused until then. START is refused while the attitude reads LIFTED or
-OVERTURNED, while the permit has lapsed, and while the lean is unknown. Once the
-attitude reads OK again (50 level samples, tilt under 5 deg), START is accepted,
-even while the car is held level in the air, because the operator chose to send
-it. RECAL is refused while the lean is unknown, and a running car keeps driving
-then. The car counts as upright when its lean is known, it is calibrated and its
-roll is within 60 deg. RESET is refused while the car is overturned and not upright, and is
-accepted once it is upright.
+A valid MQTT E-STOP latches the drive inhibit before command diagnostics or
+supervisor reporting. The motion task applies the brake to the outputs. The
+supervisor handles one pending E-STOP before queued commands, even if eight STOPs
+are waiting. The status packet reports the drive inhibit and uses zero as the
+speed fallback when wheel feedback is unavailable. Confirm brake application and
+vehicle rest separately.
 
-A link outage never stops the car. The `wifi_disconn` fault bit is set after 3 s
-without an MQTT session, for telemetry only.
+A falling edge on GP21 or an accepted firmware E-STOP request wakes the motion
+task immediately. The task alone controls the motor outputs and still samples
+wheel motion on a 10 ms schedule during normal operation. The electrical cutoff
+target is 5 ms from GP21 assertion or firmware acceptance. Verify cutoff at the
+motor pins and measure stopping time and distance on the car. Sonar detection
+and MQTT delivery add their own latency before firmware accepts a stop request.
 
-The status, motion and physics packets go out at 5 Hz. The obstacle packet goes
-out at 2 Hz and on change, and the diag and heartbeat packets at 1 Hz. Events go
-out when they happen, and the scan profile once per scan. The layout of every
-packet, the fault bits and the event types are in `protocol/telemetry.yaml`
-(schema 2). After you edit that file, run
+In `main.uf2`, wire a normally open momentary START switch between GP20 and
+GND. The input has an internal pull-up and Schmitt trigger. The supervisor
+requires a stable release and then a stable press, each debounced for 40 ms.
+A button held at boot issues no command. Each press submits one operator START
+through the same safety checks as dashboard and CLI START. After a refusal,
+release the button and press it again once the fault clears.
+
+The supervisor applies a STOP hold before acknowledging it. When START requires
+calibration, the calibration hold is in place before the existing holds are
+released. A motion timing fault stops permit renewal and watchdog feeding until
+reboot.
+
+On a power-up with no MQTT session, the car waits at least 10 seconds and
+starts once its calibration, motion feedback, and forward sonar are ready.
+A broker session during the wait leaves START with GP20, the dashboard or CLI.
+The offline start happens only once per boot and requires power-up evidence
+from the RP2040, which includes brownouts. A watchdog, RUN-pin, debugger,
+or unknown reset requires operator START. A lift, overturn, deliberate stop,
+or lapsed motion permit also requires operator recovery.
+
+On an unmarked bend, a single front line detector on tape steers the car even
+when the left barcode reader crosses the same tape. A confirmed change of side
+changes the steering direction on that control pass. The inside wheel can reach
+zero motor duty on a tight bend. With both readers clear, side-reader pulses
+alone can hold the heading for up to 100 mm from the last front sighting.
+Measured elements of a tentative barcode start extend that allowance by their
+width until the decoder accepts or rejects them. After a verified start, each
+accepted element renews the distance.
+
+At an unmarked square
+corner, the follower remembers where the front pair crossed the outgoing strip.
+If the line disappears as the axle approaches that crossing, the car searches
+from the corner for the outgoing tape.
+
+During a run, a barcode L, R or S requests the left, right or through exit
+at the next junction. The car follows ordinary bends with the instruction
+pending through an obstacle bypass or a temporary sensor hold. The fixed
+barcode reader is left of the line. The car uses that
+reader and the line sensors to locate a possible junction. A brief pause of
+the inside wheel preserves the approach while the outside wheel advances.
+The car then checks the outgoing tape with an encoder-guided pivot. Distinct tape directions with
+clear floor between them establish a choice. A T can offer left and right
+with no forward tape. When the requested exit is present the car aligns
+with it. When it is missing the car follows an observed exit and keeps the
+instruction for another junction. It prefers through tape when available.
+For S at a terminating T, it takes the side it verifies first during the
+return sweep. When the car has verified the only available exit, it can finish
+turning back to that tape with the instruction still pending.
+The car reports `turn_start` at selection and `turn_done` after alignment.
+An interrupted alignment reports `turn_abort` with elapsed time.
+
+A fully decoded U cancels a waiting barcode direction and turns back at
+the marker. If U arrives during a junction scan, the car uses the heading
+it had on approach to reacquire the same tape heading back. A committed
+maneuver stays busy until it finishes or is interrupted. Motion holds
+take priority. Operator turn buttons request immediate maneuvers.
+Reader placement, branch geometry and traction still need a physical run.
+
+After a pickup or overturn, set the car down upright and still. Once the
+IMU confirms recovery, one operator START clears resolved fault history,
+retries recoverable pilot faults and starts calibration on level ground.
+Active fault bits remain visible. A restart on a known hump retains the
+previous IMU reference. A latched E-stop requires a reboot.
+
+Normal START selects continuous floor and moving obstacle navigation. This also
+applies to the GP20 button and offline startup. On a course with possible
+drop-offs, send the stationary-course START command (opcode 10). The
+three-second limit on a planned obstacle pause uses wheel feedback. The pilot
+takes another observation from a new pose or sets up its next leg. The next
+physical run must establish the timing and rejoin. [Obstacle behavior](docs/obstacle.md#hug-pilot-path)
+
+START checks the motion permit, attitude and IMU and sonar connections.
+The wheels stay held if these checks fail. A timed-out calibration can be
+retried with START. Once it completes, press START again to authorize motion.
+A stationary car held level in the air can resemble a car on the ground to
+the IMU, so set it down before pressing START. The CLI also accepts RESET
+to acknowledge faults and keep the wheels held.
+During a run, an isolated missed accelerometer read preserves the attitude
+reference. After 25 consecutive failed cycles (about 500 ms), or when the last
+physics publication expires at 500 ms, the supervisor holds the wheels and
+keeps the run armed. It resumes automatically once the IMU reports calibrated,
+upright and still, both fresh wheel speeds are valid and zero, and a new
+centered forward ping arrives. An open path resumes line control. A nearby
+return on the normal build starts a stationary obstacle survey. An interrupted
+turn or bypass needs a fresh plan. A held-high sonar pulse at the echo deadline
+has no measured range and cannot clear the hold.
+
+A missed sample restarts the IMU's set-down confirmation. A pickup also cancels the active obstacle maneuver.
+If both tilt and acceleration evidence lapse, the next disturbance starts
+a fresh pickup count. The final sample must still show qualifying tilt or
+acceleration. Sustained tilt still counts over a hump, and a confirmed lift
+or overturn holds the wheels until operator recovery.
+
+A link outage during a run leaves local navigation active. With Wi-Fi configured,
+the car retries five seconds after a failed association or a lost link. The USB
+console reports a connection fault during this wait and joining during the next
+attempt. After association the car waits for a current DHCP lease and queues a
+heartbeat as soon as MQTT reconnects. The
+`wifi_disconn` fault bit is set after 3 s without a session, for telemetry only.
+Link events mark MQTT session changes. A link-down event can be delivered after
+reconnection if the telemetry queues retain it.
+The pilot allows 250 ms for the first centered sonar sample once the other
+drive inputs are ready. After a long sonar or stale-feedback dropout it
+requires three consecutive usable forward pings with fresh wheel feedback
+and the motion holds released. During parked course recovery, any observed
+movement restarts the clearance count. If a line sensor
+sample is more than 25 ms old, the line task stops the wheels and aborts any
+active turn. Fresh line samples let normal navigation resume.
+
+The status, motion and physics packets go out at 5 Hz, obstacle packets at 2 Hz,
+and diag and heartbeat packets at 1 Hz. Sonar aim events record the initial
+center and subsequent commanded angles before settling. Completed pilot sweeps
+publish sparse sonar samples for display. The legacy scanner reports a full
+profile from the completed scan before navigation can advance the state.
+Status carries the raw line and barcode sensor levels, the last measured
+barcode element (space, bar or block), and the latest decoder phase. The
+phase starts after the opening sentinel, advances on the first accepted
+payload element, and ends when the read completes or aborts. Best-effort
+`barcode_phase` events carry those transitions and the known scan direction.
+The latest phase remains in status if an event is dropped.
+An ambiguous IR pulse or a full capture buffer interrupts the current read.
+The next edge starts a fresh width measurement. A measured dark block also
+ends a partial read. Only a fully framed A–Z payload counts as a decoded
+letter and starts the 100 mm duplicate-suppression distance.
+The scan and connection tasks count each telemetry drop when the queue is
+busy or full. Packet layouts,
+fault bits and event types are in `protocol/telemetry.yaml` (schema 3).
+After you edit that file, run
 `npm --prefix host/dashboard run generate`.
 
 `lib/lwip` is a submodule used by the telemetry build; `configure.sh`
@@ -132,25 +254,38 @@ empty SSID keeps `TM_WIFI_JOIN=0`.
 
 ## Calibration and attitude
 
-The rest reference is set from 50 samples (1 s) taken with the car at rest. Each
-sample needs the total acceleration within 0.05 g of 1 g, the pitch varying by
-less than 2 deg across the window, the up axis (z) reading positive and the tilt
-from vertical within 10 deg. A sample that breaks any of these starts the count
-again, so an upside down car or one tilted past 10 deg never sets the reference.
-Calibration runs by itself while the car is uncalibrated: the supervisor's
-calibration hold releases as soon as `physics.calibrated` turns true, so no
-START is needed to finish it.
+The IMU acquires its rest reference from 50 consecutive samples (1 s). Each
+sample must have positive board Z, tilt within 10° of vertical and acceleration
+magnitude within 0.10 g of 1 g. Across the window, pitch may vary by up to 2°
+and acceleration magnitude by up to 0.05 g. The provisional mean tolerance is
+±0.075 g around 1 g. This accommodates the installed sensor's stationary readings
+around 1.04 g. Wheel speed above the calibration threshold or a break in
+sampling restarts acquisition. After calibration the set-down check compares
+acceleration with that measured reference. When START requests a new
+calibration, physics tags the first sample from that request. Motion waits
+for a calibrated upright sample carrying the matching request.
 
-The attitude reads unknown (`attitude_unknown`) until a rest reference is set:
-at boot, after a new run (RECAL) and after the IMU is lost. The supervisor
-refuses START and RECAL while it is unknown, and the attitude fields keep their
-last known values. A single failed accelerometer read does not make it unknown;
-the IMU counts as lost after 25 failed reads in a row (0.5 s), and then the
-reference is dropped.
+At boot, after RECAL and after IMU loss, attitude reads unknown until the rest
+reference is set. A fresh acceleration measurement still reports board Z and
+total magnitude during this time. A parked car can receive START during gravity
+calibration or during the subsequent level/still check. One press waits up to
+five seconds while upright rest samples continue. The operator hold stays on
+until both checks pass and wheel feedback is fresh and stationary. STOP, loss of
+supporting sensor evidence (including a break between supervisor polls), a
+hardware fault or expiry cancels the request. A subsequent START is required
+after cancellation. A calibrated car retains its reference
+across a single failed read and drops it after 25 consecutive failures (0.5 s).
+An interval longer than 50 ms between usable accelerometer readings clears
+partial pickup and overturn evidence. An already confirmed operator hold
+continues through the gap.
 
 Every 2 s the accelerometer configuration is read back. A mismatch means the
 sensor has reset, so it is initialised again. The readback is skipped on the
-cycle after a failed read and uses two attempts per transaction. The
+cycle after a failed read and uses two attempts per transaction. On sustained
+data loss, the driver retries initialization immediately and then every 50
+physics cycles (nominally 1 s) until accelerometer data returns. If the physics
+task itself stops running, the supervisor withholds the hardware watchdog feed.
+Resumed task heartbeats before the watchdog expires allow local recovery. The
 magnetometer configuration is checked only at init, so a magnetometer reset is
 not caught by the readback and affects the heading only.
 

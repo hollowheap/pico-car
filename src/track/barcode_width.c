@@ -27,9 +27,11 @@ void barcode_block_init (barcode_block_t * p_block)
     *p_block = (barcode_block_t)BARCODE_BLOCK_INIT;
 }
 
-uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t odo_mm)
+uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t odo_mm,
+                            bool * p_measured)
 {
     uint16_t report_mm = 0U;
+    bool b_measured = false;
 
     if (is_black)
     {
@@ -43,8 +45,8 @@ uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t 
         uint32_t const since_mm = odo_mm - p_block->last_event_mm;
 
         p_block->b_black = 0U;
-        if ((length_mm < ODO_BACKWARD) && (length_mm > (BARCODE_BLOCK_UM / UM_PER_MM)) &&
-            (since_mm >= BARCODE_BLOCK_EVENT_MM) && (since_mm <= ODO_MASK))
+        b_measured = (length_mm < ODO_BACKWARD) && (length_mm > (BARCODE_BLOCK_UM / UM_PER_MM));
+        if (b_measured && (since_mm >= BARCODE_BLOCK_EVENT_MM) && (since_mm <= ODO_MASK))
         {
             p_block->last_event_mm = odo_mm;
             report_mm = (length_mm > (uint32_t)INT16_MAX) ? (uint16_t)INT16_MAX
@@ -56,6 +58,10 @@ uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t 
         /* A white edge with no black edge before it. */
     }
 
+    if (p_measured != NULL)
+    {
+        *p_measured = b_measured;
+    }
     return report_mm;
 }
 

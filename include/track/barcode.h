@@ -31,6 +31,13 @@ STATIC_ASSERT (sizeof(barcode_stats_t) == 6U, "barcode_stats_t size");
 /* Consistent enough for telemetry: each field is read whole. */
 void barcode_stats (barcode_stats_t * p_stats);
 
+/* Return the wrapping accepted-element count after a verified start. Also
+ * report the measured length of the current tentative start, zero on rejection. */
+uint8_t barcode_progress_count (uint8_t * p_prefix_mm);
+
+/* Last measured element and parser phase packed for the status line byte. */
+uint8_t barcode_status_bits (void);
+
 /* Task body. Never returns. */
 void barcode_task_run (void);
 
@@ -99,12 +106,15 @@ void barcode_block_init (barcode_block_t * p_block);
  * @param p_block  State.
  * @param is_black The element that starts at this edge is black.
  * @param odo_mm   Odometer at the edge.
+ * @param p_measured True for any measured block ending here, even when its
+ *                   event is throttled. May be NULL.
  *
  * @return The length in mm of a block that just ended, saturated at
  *         INT16_MAX, when it is longer than BARCODE_BLOCK_UM and the last
  *         event is BARCODE_BLOCK_EVENT_MM back; otherwise 0.
  */
-uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t odo_mm);
+uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t odo_mm,
+                            bool * p_measured);
 
 #endif /* TRACK_BARCODE_H */
 

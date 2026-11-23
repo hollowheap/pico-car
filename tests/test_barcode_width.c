@@ -210,21 +210,21 @@ static void test_block_event_length (void)
 
     barcode_block_init(&block);
     /* A white edge with no black edge before it reports nothing. */
-    assert(0U == barcode_block_edge(&block, false, 100U));
+    assert(0U == barcode_block_edge(&block, false, 100U, NULL));
     /* A bar of 50 mm is not a block; 51 mm is. */
-    assert(0U == barcode_block_edge(&block, true, 1000U));
-    assert(0U == barcode_block_edge(&block, false, 1050U));
-    assert(0U == barcode_block_edge(&block, true, 2000U));
-    assert(51U == barcode_block_edge(&block, false, 2051U));
+    assert(0U == barcode_block_edge(&block, true, 1000U, NULL));
+    assert(0U == barcode_block_edge(&block, false, 1050U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 2000U, NULL));
+    assert(51U == barcode_block_edge(&block, false, 2051U, NULL));
     /* A long block keeps its true length. */
-    assert(0U == barcode_block_edge(&block, true, 3000U));
-    assert(300U == barcode_block_edge(&block, false, 3300U));
+    assert(0U == barcode_block_edge(&block, true, 3000U, NULL));
+    assert(300U == barcode_block_edge(&block, false, 3300U, NULL));
     /* The length saturates at the int16 event parameter. */
-    assert(0U == barcode_block_edge(&block, true, 10000U));
-    assert(INT16_MAX == barcode_block_edge(&block, false, 110000U));
+    assert(0U == barcode_block_edge(&block, true, 10000U, NULL));
+    assert(INT16_MAX == barcode_block_edge(&block, false, 110000U, NULL));
     /* The car backed up over the block: no length, no event. */
-    assert(0U == barcode_block_edge(&block, true, 200000U));
-    assert(0U == barcode_block_edge(&block, false, 199900U));
+    assert(0U == barcode_block_edge(&block, true, 200000U, NULL));
+    assert(0U == barcode_block_edge(&block, false, 199900U, NULL));
 }
 
 /* At most one block event per BARCODE_BLOCK_EVENT_MM of travel, so a striped
@@ -235,21 +235,21 @@ static void test_block_event_rate (void)
 
     barcode_block_init(&block);
     /* The first block reports even at odometer 0. */
-    assert(0U == barcode_block_edge(&block, true, 0U));
-    assert(60U == barcode_block_edge(&block, false, 60U));
+    assert(0U == barcode_block_edge(&block, true, 0U, NULL));
+    assert(60U == barcode_block_edge(&block, false, 60U, NULL));
     /* A second block that ends inside the spacing is silent. */
-    assert(0U == barcode_block_edge(&block, true, 80U));
-    assert(0U == barcode_block_edge(&block, false, 60U + BARCODE_BLOCK_EVENT_MM - 1U));
+    assert(0U == barcode_block_edge(&block, true, 80U, NULL));
+    assert(0U == barcode_block_edge(&block, false, 60U + BARCODE_BLOCK_EVENT_MM - 1U, NULL));
     /* The next one past the spacing reports. */
-    assert(0U == barcode_block_edge(&block, true, 400U));
-    assert(60U == barcode_block_edge(&block, false, 460U));
+    assert(0U == barcode_block_edge(&block, true, 400U, NULL));
+    assert(60U == barcode_block_edge(&block, false, 460U, NULL));
     /* The car backed up behind the last event: a block there is silent. */
-    assert(0U == barcode_block_edge(&block, true, 300U));
-    assert(0U == barcode_block_edge(&block, false, 360U));
+    assert(0U == barcode_block_edge(&block, true, 300U, NULL));
+    assert(0U == barcode_block_edge(&block, false, 360U, NULL));
     /* A repeated black edge moves the start of the stretch. */
-    assert(0U == barcode_block_edge(&block, true, 700U));
-    assert(0U == barcode_block_edge(&block, true, 760U));
-    assert(0U == barcode_block_edge(&block, false, 800U));
+    assert(0U == barcode_block_edge(&block, true, 700U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 760U, NULL));
+    assert(0U == barcode_block_edge(&block, false, 800U, NULL));
     assert(8U == sizeof(barcode_block_t));
 }
 

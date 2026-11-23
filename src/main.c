@@ -19,6 +19,7 @@
 #include "platform/liveness.h"
 #include "platform/log.h"
 #include "platform/static_assert.h"
+#include "supervisor/edge_events.h"
 #include "supervisor/supervisor.h"
 #include "telemetry/assemble.h"
 #include "telemetry/emit.h"
@@ -58,8 +59,8 @@
 #define FAULT_WORD_BITS              (16U)
 STATIC_ASSERT(FAULT_ALL_MASK <= UINT16_MAX, "fault bits fit the wire fields");
 
-/* Kernel objects the firmware creates, against the kernel limits in
-   lib/mtk3smp-rp2040/config/config.h. Tasks: the nine below, plus the
+/* Kernel objects the firmware creates, against the limits in
+   cmake/mtk3smp_config.h.in. Tasks: the nine below, plus the
    kernel's init, USB console and CYW43 tasks. Cyclic handlers: supervisor,
    telemetry, motion, physics and connection. Past a limit, tk_cre_* fails
    at boot with E_LIMIT. */
@@ -72,6 +73,12 @@ STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 #define STARTUP_FLAG_READY           (0x01U)
 #define STARTUP_FLAG_FAILED          (0x02U)
 
+/* GP20 is the active-low operator START input in the main firmware. */
+#define START_BUTTON_PIN             (20U)
+#define START_BUTTON_PULL_UP         (1UL << 3U)
+#define START_BUTTON_PULL_DOWN       (1UL << 2U)
+#define START_BUTTON_SCHMITT         (1UL << 1U)
+
 /* Telemetry pacing, in 50 ms passes of telemetry_task: status, motion
  * and physics every 200 ms (5 Hz), obstacle every 500 ms, diag every 1 s.
  * The heartbeat is sent by the connection task. */
@@ -80,11 +87,6 @@ STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 #define TELEMETRY_OBSTACLE_PASSES    (10U)
 #define TELEMETRY_DIAG_PASSES        (20U)
 #define TELEMETRY_SLEEP_TIMEOUT_MS   (250U)
-
-/* Line bits of the status packet (protocol/telemetry.yaml, line_bits). */
-#define LINE_BIT_LEFT                (1U << 0U)
-#define LINE_BIT_RIGHT               (1U << 1U)
-#define LINE_BIT_BARCODE             (1U << 2U)
 
 /* Telemetry reads the obstacle profile with the wire's slot count. */
 STATIC_ASSERT (OBSTACLE_PROFILE_SLOTS == TELEMETRY_PROFILE_COUNT_SLOTS,
@@ -254,6 +256,13 @@ LOCAL uint32_t current_odometer_mm (void)
     return telemetry_odometer_mm(&feedback);
 }
 
+LOCAL void telemetry_sonar_aim (int16_t commanded_deci)
+{
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_OBSTACLE,
+                                   (uint8_t)TELEMETRY_EVT_SONAR_AIM,
+                                   commanded_deci, 0U, current_odometer_mm());
+}
+
 LOCAL void supervisor_task (INT stacd, void * exinf)
 {
     (void)stacd;
@@ -295,9 +304,7 @@ typedef struct
     uint32_t edges;          /* ir_line_edges at the last diag frame     */
     uint32_t raw_edges;      /* ir_line_raw_edges at the last diag frame */
     uint32_t echo[OBSTACLE_ECHO_CLASSES]; /* ping counts at the last diag frame */
-    uint16_t fault_level;    /* fault word at the last pass              */
     uint16_t seq;            /* status frame counter                     */
-    uint8_t  obstacle_state; /* obstacle state at the last pass          */
 } telemetry_memory_t;
 
 static telemetry_memory_t g_tel;
@@ -315,19 +322,19 @@ LOCAL uint8_t clamp_u8 (uint32_t value)
 LOCAL uint8_t current_line_bits (void)
 {
     ir_sensors_state_t const ir   = ir_get_state();
-    uint8_t                  bits = 0U;
+    uint8_t                  bits = barcode_status_bits();
 
     if (ir.left)
     {
-        bits |= (uint8_t)LINE_BIT_LEFT;
+        bits |= (uint8_t)(1U << TELEMETRY_LINE_BITS_BIT_LEFT);
     }
     if (ir.right)
     {
-        bits |= (uint8_t)LINE_BIT_RIGHT;
+        bits |= (uint8_t)(1U << TELEMETRY_LINE_BITS_BIT_RIGHT);
     }
     if (ir.barcode)
     {
-        bits |= (uint8_t)LINE_BIT_BARCODE;
+        bits |= (uint8_t)(1U << TELEMETRY_LINE_BITS_BIT_BARCODE);
     }
     return bits;
 }
@@ -354,12 +361,14 @@ LOCAL void telemetry_send_fast (void)
     bool const           b_obstacle = (E_OK == obstacle_snapshot(&obstacle));
     line_task_stats_t    line;
 
+    uint32_t hug[HUG_WORD_COUNT];
+    line_task_hug(hug);
     line_task_stats(&line);
     telemetry_assemble_status(&status, b_motion ? &motion : NULL,
                               b_feedback ? &feedback : NULL,
                               b_physics ? &physics : NULL,
                               b_obstacle ? &obstacle : NULL, (uint16_t)system_fault_get(),
-                              g_tel.seq, current_line_bits(), line.b_turning);
+                              g_tel.seq, current_line_bits(), line.b_turning, hug);
     g_tel.seq++;
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_STATUS, packet,
@@ -393,10 +402,11 @@ LOCAL void telemetry_send_obstacle (void)
     uint32_t                hug[HUG_WORD_COUNT];
     bool const              b_status = (E_OK == obstacle_snapshot(&obstacle));
     bool const              b_plan   = (E_OK == obstacle_copy_plan(&plan));
+    uint32_t const          ping     = obstacle_ping_read();
 
     line_task_hug(hug);
     telemetry_assemble_obstacle(&frame, b_status ? &obstacle : NULL,
-                                b_plan ? &plan : NULL, hug);
+                                b_plan ? &plan : NULL, ping, hug);
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_OBSTACLE, packet,
         telemetry_pack_obstacle(packet, &frame), 0U);
@@ -432,7 +442,6 @@ LOCAL void telemetry_send_diag (void)
     connection_cmd_state(&cmd_state);
     diag.sticky_faults       = (uint16_t)system_fault_sticky_get();
     diag.line_lost_count     = lstats.lost_count;
-    diag.line_search_mm      = lstats.search_mm;
     diag.barcode_ok          = bstats.ok;
     diag.barcode_bad         = bstats.bad;
     diag.barcode_edge_drops  = clamp_u16(ir_barcode_drops());
@@ -483,63 +492,77 @@ LOCAL void telemetry_send_diag (void)
         telemetry_pack_diag(packet, &diag), 0U);
 }
 
-/*!
- * @brief Send one event for every fault bit that changed since the last pass.
- */
-LOCAL void telemetry_check_faults (void)
+LOCAL void telemetry_fault_changed (uint32_t changed, uint32_t level)
 {
-    uint16_t const level   = (uint16_t)system_fault_get();
-    uint16_t const changed = (uint16_t)(level ^ g_tel.fault_level);
+    uint32_t const odometer = current_odometer_mm();
 
-    if (0U != changed)
+    for (uint16_t bit = 0U; bit < FAULT_WORD_BITS; bit++)
+    {
+        uint32_t const mask = 1U << bit;
+
+        if (0U != (changed & mask))
+        {
+            (void)telemetry_try_emit_event(
+                (uint8_t)TELEMETRY_EVENT_SOURCE_TELEMETRY,
+                (0U != (level & mask)) ? (uint8_t)TELEMETRY_EVT_FAULT_SET
+                                      : (uint8_t)TELEMETRY_EVT_FAULT_CLEAR,
+                (int16_t)bit, (uint16_t)level, odometer);
+        }
+    }
+}
+
+#if !PICO_CAR_PILOT
+static edge_watch_t g_legacy_edges;
+
+LOCAL void telemetry_legacy_profile (const uint16_t * p_slots,
+                                     const obstacle_plan_summary_t * p_plan)
+{
+    uint8_t             packet[TELEMETRY_PROFILE_WIRE_SIZE + 1U];
+    telemetry_profile_t frame;
+
+    for (uint8_t slot = 0U; slot < OBSTACLE_PROFILE_SLOTS; slot++)
+    {
+        frame.slots[slot] = p_slots[slot];
+    }
+    telemetry_assemble_profile(&frame, p_plan);
+    packet[0] = (uint8_t)TELEMETRY_TOPIC_PROFILE;
+    (void)telemetry_pack_profile(&packet[1], &frame);
+    (void)telemetry_queue_try_push(packet, (uint16_t)sizeof(packet));
+}
+
+LOCAL void telemetry_legacy_transition (const obstacle_legacy_transition_t * p_transition)
+{
+    edge_event_t events[EDGE_EVENTS_MAX];
+    edge_obstacle_in_t const input = {
+        .state = p_transition->state,
+        .cause = p_transition->cause,
+        .echo_class = (TELEMETRY_OBSTACLE_CAUSE_BYPASS_GAVE_UP == p_transition->cause)
+                          ? p_transition->stop_reason : p_transition->echo_class,
+        .distance_mm = p_transition->distance_mm,
+        .plan_status = p_transition->plan.status,
+        .plan_side = p_transition->plan.side,
+        .plan_start_deg = p_transition->plan.start_deg,
+        .plan_width_mm = p_transition->plan.width_mm,
+    };
+    uint8_t const count = edge_obstacle(&g_legacy_edges, &input, events);
+
+    if (0U != count)
     {
         uint32_t const odometer = current_odometer_mm();
 
-        for (uint16_t bit = 0U; bit < FAULT_WORD_BITS; bit++)
+        for (uint8_t index = 0U; index < count; index++)
         {
-            uint16_t const mask = (uint16_t)(1U << bit);
-
-            if (0U != (changed & mask))
-            {
-                (void)telemetry_emit_event(
-                    (uint8_t)TELEMETRY_EVENT_SOURCE_TELEMETRY,
-                    (0U != (level & mask)) ? (uint8_t)TELEMETRY_EVT_FAULT_SET
-                                           : (uint8_t)TELEMETRY_EVT_FAULT_CLEAR,
-                    (int16_t)bit, level, odometer);
-            }
+            (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_OBSTACLE,
+                                           events[index].type, events[index].p1,
+                                           events[index].p2, odometer);
         }
-        g_tel.fault_level = level;
+    }
+    if (NULL != p_transition->p_completed_profile)
+    {
+        telemetry_legacy_profile(p_transition->p_completed_profile, &p_transition->plan);
     }
 }
-
-/*!
- * @brief When a scan finishes (SCANNING to PLAN), send its profile.
- */
-LOCAL void telemetry_check_profile (void)
-{
-    obstacle_status_t       obstacle;
-    obstacle_plan_summary_t plan;
-    uint8_t                 packet[TELEMETRY_WIRE_MAX];
-    telemetry_profile_t     frame;
-    uint8_t             previous = g_tel.obstacle_state;
-
-    if (E_OK != obstacle_snapshot(&obstacle))
-    {
-        return;
-    }
-    g_tel.obstacle_state = obstacle.state;
-    if ((previous == (uint8_t)TELEMETRY_OBSTACLE_STATE_SCANNING) &&
-        (obstacle.state == (uint8_t)TELEMETRY_OBSTACLE_STATE_PLAN) &&
-        (E_OK == obstacle_copy_profile(frame.slots)) && (E_OK == obstacle_copy_plan(&plan)))
-    {
-        /* The profile and the plan are published together, so they belong
-         * to the same scan. */
-        telemetry_assemble_profile(&frame, &plan);
-        (void)telemetry_queue_push_packet(
-            (uint8_t)TELEMETRY_TOPIC_PROFILE, packet,
-            telemetry_pack_profile(packet, &frame), 0U);
-    }
-}
+#endif
 
 /*!
  * @brief Drain the queue, then build the frames that are due this pass. Every
@@ -566,8 +589,6 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
         log_drain();
 
         pass++;
-        telemetry_check_faults();
-        telemetry_check_profile();
         if (0U == (pass % TELEMETRY_FAST_PASSES))
         {
             telemetry_send_fast();
@@ -690,6 +711,7 @@ LOCAL uint32_t stack_free (uint32_t idx)
 LOCAL void stack_report (void)
 {
     static uint32_t s_calls = 0U;
+    uint32_t        free_bytes[STACK_COUNT];
     uint32_t        idx     = 0U;
     uint32_t        thin    = 0U;
 
@@ -701,26 +723,26 @@ LOCAL void stack_report (void)
     }
     for (idx = 0U; idx < STACK_COUNT; idx++)
     {
-        uint32_t const free_bytes = stack_free(idx);
+        free_bytes[idx] = stack_free(idx);
 
-        if (free_bytes < STACK_MIN_FREE)
+        if (free_bytes[idx] < STACK_MIN_FREE)
         {
             thin |= (1UL << idx);
         }
         /* Keep the smallest mark for telemetry (no scan per packet). The
          * stored mark is at most 0xFFFF, so a smaller one fits 16 bits. */
-        if (free_bytes < (g_stack_mark & STACK_MARK_FREE_MASK))
+        if (free_bytes[idx] < (g_stack_mark & STACK_MARK_FREE_MASK))
         {
-            g_stack_mark = (idx << STACK_MARK_TASK_SHIFT) | free_bytes;
+            g_stack_mark = (idx << STACK_MARK_TASK_SHIFT) | free_bytes[idx];
         }
     }
     LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
              "stack free: startup %d motion %d physics %d obstacle %d",
-             (int)stack_free(0U), (int)stack_free(1U), (int)stack_free(2U), (int)stack_free(3U));
+             (int)free_bytes[0], (int)free_bytes[1], (int)free_bytes[2], (int)free_bytes[3]);
     LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
              "stack free: line %d telemetry %d connection %d barcode %d",
-             (int)stack_free(4U), (int)stack_free(5U), (int)stack_free(6U), (int)stack_free(7U));
-    LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "stack free: supervisor %d", (int)stack_free(8U));
+             (int)free_bytes[4], (int)free_bytes[5], (int)free_bytes[6], (int)free_bytes[7]);
+    LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "stack free: supervisor %d", (int)free_bytes[8]);
     if (0U != thin)
     {
         LOG_WARN(LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "thin stack margin, mask=%d", (int)thin);
@@ -914,6 +936,14 @@ LOCAL void init_services (task_set_t * p_tasks)
     p_tasks->b_telemetry = (E_OK == result);
     result = telemetry_net_queue_create();
     p_tasks->b_telemetry = p_tasks->b_telemetry && (E_OK == result);
+    if (p_tasks->b_telemetry)
+    {
+        obstacle_bind_sonar_aim(telemetry_sonar_aim);
+#if !PICO_CAR_PILOT
+        edge_init(&g_legacy_edges);
+        obstacle_bind_legacy_transition(telemetry_legacy_transition);
+#endif
+    }
     if (!p_tasks->b_telemetry)
     {
         LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "telemetry queues failed, er=%d",
@@ -951,6 +981,11 @@ LOCAL bool create_supervisor (task_set_t * p_tasks)
     return b_ok;
 }
 
+LOCAL bool start_button_pressed (void)
+{
+    return (0U == gpio_get_val(START_BUTTON_PIN));
+}
+
 /*!
  * @brief Give the supervisor the tasks that must show a pulse. A task that did
  *        not start is left out.
@@ -958,6 +993,7 @@ LOCAL bool create_supervisor (task_set_t * p_tasks)
 LOCAL bool init_supervisor (task_set_t const * p_tasks)
 {
     supervisor_config_t config = {0};
+    ER const button_result = gpio_set_pin(START_BUTTON_PIN, GPIO_MODE_IN);
 
     config.required_mask = (uint16_t)((1U << LIVE_MOTION) | (1U << LIVE_LINE) |
                                       (1U << LIVE_OBSTACLE) | (1U << LIVE_PHYSICS));
@@ -975,6 +1011,17 @@ LOCAL bool init_supervisor (task_set_t const * p_tasks)
     }
     config.p_background = stack_report;
     config.p_line_edges = ir_line_edges;
+    config.p_telemetry_seen = connection_mqtt_seen;
+    if (E_OK == button_result)
+    {
+        clr_w(GPIO(START_BUTTON_PIN), START_BUTTON_PULL_DOWN);
+        set_w(GPIO(START_BUTTON_PIN), START_BUTTON_PULL_UP | START_BUTTON_SCHMITT);
+        config.p_start_pressed = start_button_pressed;
+    }
+    else
+    {
+        LOG_WARN(LOG_TASK_BOOT, LOG_MOD_NONE, "GP20 START input setup failed, er=%d", (int)button_result);
+    }
     if (E_OK != supervisor_init(&config))
     {
         LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "supervisor_init failed");
@@ -1148,6 +1195,11 @@ EXPORT INT usermain (void)
     g_startup.h_flg = tk_cre_flg(&cflg);
 
     init_services(&tasks);
+    if (tasks.b_telemetry)
+    {
+        /* Capture supervisor startup faults as well as task reports. */
+        system_fault_bind_observer(telemetry_fault_changed);
+    }
 
     if (!create_tasks(&tasks))
     {

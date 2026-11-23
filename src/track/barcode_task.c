@@ -3,10 +3,9 @@
  * @brief Decode Code 39 elements from the ISR edge ring, and report each
  *        barcode.
  *
- * A decoded letter becomes the event `barcode`. S, L, R and U also become a
- * command for the supervisor with source barcode. Every barcode that is
- * refused (a parser error, a stale speed, the same marker twice) becomes the
- * event `barcode_bad` with a reason.
+ * A letter accepted by the distance gate becomes a `barcode` event. H, S,
+ * L, R and U also request a supervisor command. A rejected read emits
+ * `barcode_bad` with its reason.
  */
 
 #include <stdbool.h>
@@ -19,6 +18,7 @@
 #include "platform/liveness.h"
 #include "platform/log.h"
 #include "platform/static_assert.h"
+#include "platform/units.h"
 #include "supervisor/supervisor.h"
 #include "telemetry/assemble.h"
 #include "telemetry/emit.h"
@@ -43,10 +43,17 @@ STATIC_ASSERT((BARCODE_GAP_WAITS * LIVENESS_WAIT_MS) == BARCODE_GAP_MS, barcode_
 #define EVENT_WIDTH_DIV     (4U)
 #define EVENT_REVERSE_SHIFT (3U)
 
+#define STATUS_ELEMENT_MASK (3U << TELEMETRY_LINE_BITS_BIT_BARCODE_ELEMENT_LSB)
+#define STATUS_PHASE_MASK   (7U << TELEMETRY_LINE_BITS_BIT_BARCODE_PHASE_LSB)
+#define PHASE_REJECT_SHIFT  (8U)
+
 static volatile uint16_t g_ok;
 static volatile uint16_t g_bad;
+static volatile uint8_t  g_progress_count;
+static volatile uint32_t g_start_prefix_um;
 static volatile uint8_t  g_last_letter;
 static volatile uint8_t  g_last_action;
+static volatile uint8_t  g_status_bits;
 static barcode_gate_t    g_gate;
 static barcode_block_t   g_block = BARCODE_BLOCK_INIT;
 
@@ -58,6 +65,46 @@ void barcode_stats (barcode_stats_t * p_stats)
         p_stats->bad         = g_bad;
         p_stats->last_letter = g_last_letter;
         p_stats->last_action = g_last_action;
+    }
+}
+
+uint8_t barcode_progress_count (uint8_t * p_prefix_mm)
+{
+    uint32_t const mm = g_start_prefix_um / UM_PER_MM;
+    *p_prefix_mm = (uint8_t)((mm > UINT8_MAX) ? UINT8_MAX : mm);
+    return g_progress_count;
+}
+
+uint8_t barcode_status_bits (void)
+{
+    return g_status_bits;
+}
+
+static void record_element (uint8_t element)
+{
+    uint32_t const bits = ((uint32_t)g_status_bits & ~STATUS_ELEMENT_MASK) |
+                          ((uint32_t)element << TELEMETRY_LINE_BITS_BIT_BARCODE_ELEMENT_LSB);
+    g_status_bits = (uint8_t)bits;
+}
+
+static void report_phase (uint8_t phase, bool b_reverse, uint8_t reason, uint32_t odo_mm)
+{
+    uint32_t const bits = ((uint32_t)g_status_bits & ~STATUS_PHASE_MASK) |
+                          ((uint32_t)phase << TELEMETRY_LINE_BITS_BIT_BARCODE_PHASE_LSB);
+    uint16_t const details = (uint16_t)(((uint32_t)reason << PHASE_REJECT_SHIFT) |
+                                      (b_reverse ? 1U : 0U));
+
+    g_status_bits = (uint8_t)bits;
+    (void)telemetry_try_emit_event(TELEMETRY_EVENT_SOURCE_BARCODE, TELEMETRY_EVT_BARCODE_PHASE,
+                                   (int16_t)phase, details, odo_mm);
+}
+
+static void report_abort (barcode_parser_t const * p_parser, uint8_t reason, uint32_t odo_mm)
+{
+    g_start_prefix_um = 0U;
+    if (p_parser->char_index != 0U)
+    {
+        report_phase(TELEMETRY_BARCODE_PHASE_ABORTED, p_parser->is_reverse, reason, odo_mm);
     }
 }
 
@@ -74,16 +121,27 @@ static uint32_t odometer_mm (void)
     return mm;
 }
 
-static void report_bad (uint8_t reason)
+static void report_bad (uint8_t reason, uint16_t element_width_um)
 {
     g_bad++;
     (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
-                               (uint8_t)TELEMETRY_EVT_BARCODE_BAD, (int16_t)reason, 0U,
+                               (uint8_t)TELEMETRY_EVT_BARCODE_BAD, (int16_t)reason,
+                               element_width_um,
                                odometer_mm());
     LOG_WARN(LOG_TASK_BARCODE, LOG_MOD_NONE, "barcode refused, reason %d", (int)reason);
 }
 
-/* A decoded letter: gate it, report it, and post the command for S, L, R, U. */
+static void reject_partial (barcode_parser_t * p_parser, uint8_t reason, uint32_t odo_mm)
+{
+    if (0U != (p_parser->elem_index | p_parser->char_index))
+    {
+        report_abort(p_parser, reason, odo_mm);
+        report_bad(reason, 0U);
+    }
+    *p_parser = BARCODE_PARSER_INIT;
+}
+
+/* Publish an accepted letter and pass any mapped command to the supervisor. */
 static void report_decoded (uint8_t code, const barcode_info_t * p_info)
 {
     uint32_t const         odo    = odometer_mm();
@@ -97,7 +155,7 @@ static void report_decoded (uint8_t code, const barcode_info_t * p_info)
 
     if (!barcode_gate_pass(&g_gate, odo))
     {
-        report_bad(BARCODE_REJECT_DUPLICATE);
+        report_bad(BARCODE_REJECT_DUPLICATE, 0U);
         return;
     }
 
@@ -114,29 +172,107 @@ static void report_decoded (uint8_t code, const barcode_info_t * p_info)
              (int)act.action, p_info->is_reverse ? ", reversed" : "");
 }
 
-/* A black block that just ended becomes one event. The parser reset
- * for a block stays in the element path below. */
-static void report_block (bool level)
+/* Only displacement sampled near each edge can measure the intervening block. */
+static bool report_block (bool level, uint32_t timestamp_us, uint32_t odo_mm,
+                          motion_feedback_t const * p_feedback)
 {
-    motion_feedback_t feedback;
     bool const        is_black = (0U != BARCODE_LEVEL_SPACE) ? !level : level;
-    uint32_t          odo      = 0U;
+    bool              b_measured = false;
     uint16_t          block_mm = 0U;
 
-    /* Without a snapshot there is no odometer: skip the edge. A length
-     * measured against 0 would be a false block. */
-    if (E_OK == motion_feedback_snapshot(&feedback))
+    if (p_feedback->fresh && p_feedback->odometry_valid[0U] && p_feedback->odometry_valid[1U] &&
+        (((timestamp_us - p_feedback->timestamp_us) <= BARCODE_SPEED_SLACK_US) ||
+         ((p_feedback->timestamp_us - timestamp_us) <= BARCODE_SPEED_SLACK_US)))
     {
-        odo      = telemetry_odometer_mm(&feedback);
-        block_mm = barcode_block_edge(&g_block, is_black, odo);
+        block_mm = barcode_block_edge(&g_block, is_black, odo_mm, &b_measured);
+    }
+    else
+    {
+        g_block.b_black = 0U;
+    }
+
+    if (b_measured)
+    {
+        record_element(TELEMETRY_BARCODE_ELEMENT_BLOCK);
     }
 
     if (0U != block_mm)
     {
         (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
                                    (uint8_t)TELEMETRY_EVT_BARCODE_BLOCK, (int16_t)block_mm, 0U,
-                                   odo);
+                                   odo_mm);
         LOG_INFO(LOG_TASK_BARCODE, LOG_MOD_NONE, "block of %d mm on the track", (int)block_mm);
+    }
+    return b_measured;
+}
+
+static void feed_element (barcode_parser_t * p_parser, bool is_space, uint16_t width_um,
+                          uint32_t odo_mm)
+{
+    uint8_t const char_index = p_parser->char_index;
+    uint8_t const elem_index = p_parser->elem_index;
+    barcode_info_t info;
+    uint8_t const code = barcode_parser_input_info(p_parser, is_space, width_um, &info);
+
+    /* Credit only the measured portion of this tentative start symbol.
+     * Rejected candidates lose the allowance on the same element. */
+    if ((p_parser->char_index == 0U) && (p_parser->elem_index != 0U))
+    {
+        g_start_prefix_um = ((p_parser->elem_index == 1U) ? 0U : g_start_prefix_um) + width_um;
+    }
+    else
+    {
+        g_start_prefix_um = 0U;
+    }
+    if ((BARCODE_REJECT_NONE == info.reject) && ((p_parser->char_index != 0U) || (BARCODE_NO_CHAR != code)))
+    {
+        /* A verified start delimiter gives subsequent accepted elements meaning. */
+        ++g_progress_count;
+    }
+
+    if (BARCODE_REJECT_NONE != info.reject)
+    {
+        if (char_index != 0U)
+        {
+            report_phase(TELEMETRY_BARCODE_PHASE_ABORTED, info.is_reverse, info.reject, odo_mm);
+        }
+        report_bad(info.reject, width_um);
+    }
+    else if (BARCODE_NO_CHAR != code)
+    {
+        report_phase(TELEMETRY_BARCODE_PHASE_COMPLETE, info.is_reverse, BARCODE_REJECT_NONE, odo_mm);
+        report_decoded(code, &info);
+    }
+    else if ((char_index == 0U) && (p_parser->char_index == 1U))
+    {
+        report_phase(TELEMETRY_BARCODE_PHASE_START, info.is_reverse, BARCODE_REJECT_NONE, odo_mm);
+    }
+    else if ((char_index == 1U) && (elem_index == 0U) && (p_parser->elem_index == 1U))
+    {
+        report_phase(TELEMETRY_BARCODE_PHASE_DECODING, info.is_reverse, BARCODE_REJECT_NONE, odo_mm);
+    }
+    else
+    {
+        /* No parser phase change. */
+    }
+}
+
+static void read_stripe (barcode_parser_t * p_parser, bool is_space, uint16_t width_um,
+                         uint32_t odo_mm)
+{
+    if (barcode_element_is_block(is_space, width_um))
+    {
+        record_element(TELEMETRY_BARCODE_ELEMENT_BLOCK);
+        report_abort(p_parser, BARCODE_REJECT_NONE, odo_mm);
+        *p_parser = BARCODE_PARSER_INIT;
+    }
+    else
+    {
+        if (width_um != 0U)
+        {
+            record_element(is_space ? TELEMETRY_BARCODE_ELEMENT_SPACE : TELEMETRY_BARCODE_ELEMENT_BAR);
+        }
+        feed_element(p_parser, is_space, width_um, odo_mm);
     }
 }
 
@@ -166,10 +302,12 @@ void barcode_task_run (void)
 {
     barcode_parser_t parser = BARCODE_PARSER_INIT;
     uint32_t         previous_us = 0U;
+    uint32_t         edge_odo_mm = 0U;
     bool             previous_level = false;
     bool             have_previous = false;
     uint32_t         idle_waits = 0U;
 
+    g_start_prefix_um = 0U;
     barcode_gate_init(&g_gate);
 
     for (;;)
@@ -178,40 +316,49 @@ void barcode_task_run (void)
         bool     level        = false;
 
         liveness_kick(LIVE_BARCODE);
-        while (ir_barcode_pop(&timestamp_us, &level))
+        for (ir_barcode_read_t edge = ir_barcode_pop(&timestamp_us, &level);
+             IR_BARCODE_EMPTY != edge; edge = ir_barcode_pop(&timestamp_us, &level))
         {
             uint32_t const gap_us = timestamp_us - previous_us;
-
-            report_block(level);
-            if (have_previous && (gap_us > BARCODE_GAP_US))
+            bool const b_lost = (IR_BARCODE_EDGE_AFTER_LOSS == edge);
+            motion_feedback_t feedback = {0};
+            bool const b_feedback = (E_OK == motion_feedback_snapshot(&feedback));
+            edge_odo_mm = b_feedback ? telemetry_odometer_mm(&feedback) : 0U;
+            if (b_lost)
             {
-                /* A new barcode starts after a long gap. A barcode that had
-                 * begun was never closed. */
-                if (0U != (parser.elem_index | parser.char_index))
-                {
-                    report_bad(BARCODE_REJECT_DELIMITER);
-                }
-                parser        = (barcode_parser_t)BARCODE_PARSER_INIT;
+                /* Travel across missing transitions cannot measure a black block. */
+                g_block.b_black = 0U;
+            }
+            if (!b_feedback)
+            {
+                feedback.fresh = false;
+            }
+            bool const b_measured_block = report_block(level, timestamp_us, edge_odo_mm, &feedback);
+
+            if (b_lost || (have_previous && (gap_us > BARCODE_GAP_US)))
+            {
+                reject_partial(&parser, b_lost ? BARCODE_REJECT_CAPTURE : BARCODE_REJECT_DELIMITER,
+                               edge_odo_mm);
                 have_previous = false;
             }
 
-            if (have_previous)
+            if (b_measured_block)
             {
-                motion_feedback_t feedback = {0};
+                /* Encoder travel across this black stripe already rules out a bar. */
+                report_abort(&parser, BARCODE_REJECT_NONE, edge_odo_mm);
+                parser = BARCODE_PARSER_INIT;
+                have_previous = true;
+            }
+            else if (have_previous)
+            {
                 uint16_t          width_um = 0U;
-                bool              ok       = false;
-
-                if (E_OK == motion_feedback_snapshot(&feedback))
-                {
-                    ok = barcode_width_um(gap_us, timestamp_us, &feedback, &width_um);
-                }
-
-                if (!ok)
+                if (!barcode_width_um(gap_us, timestamp_us, &feedback, &width_um))
                 {
                     /* A stale snapshot, zero speed, or reversing speed rejects
                      * the current character instead of decoding a time-based width. */
-                    report_bad(BARCODE_REJECT_SPEED);
-                    parser        = (barcode_parser_t)BARCODE_PARSER_INIT;
+                    report_abort(&parser, BARCODE_REJECT_SPEED, edge_odo_mm);
+                    report_bad(BARCODE_REJECT_SPEED, 0U);
+                    parser        = BARCODE_PARSER_INIT;
                     have_previous = false;
                 }
                 else
@@ -219,28 +366,7 @@ void barcode_task_run (void)
                     bool const is_space = (0U != BARCODE_LEVEL_SPACE)
                                               ? previous_level
                                               : !previous_level;
-                    barcode_info_t info = {0U, false, BARCODE_REJECT_NONE, false};
-
-                    if (barcode_element_is_block(is_space, width_um))
-                    {
-                        /* A solid block on the track, not a bar:
-                         * start over quietly; a block is not a misread. */
-                        parser = (barcode_parser_t)BARCODE_PARSER_INIT;
-                    }
-                    else
-                    {
-                        uint8_t const code =
-                            barcode_parser_input_info(&parser, is_space, width_um, &info);
-
-                        if (BARCODE_REJECT_NONE != info.reject)
-                        {
-                            report_bad(info.reject);
-                        }
-                        if (BARCODE_NO_CHAR != code)
-                        {
-                            report_decoded(code, &info);
-                        }
-                    }
+                    read_stripe(&parser, is_space, width_um, edge_odo_mm);
                 }
             }
             else
@@ -254,11 +380,7 @@ void barcode_task_run (void)
 
         if (wait_for_gap(&idle_waits))
         {
-            if (0U != (parser.elem_index | parser.char_index))
-            {
-                report_bad(BARCODE_REJECT_DELIMITER);
-            }
-            parser        = (barcode_parser_t)BARCODE_PARSER_INIT;
+            reject_partial(&parser, BARCODE_REJECT_DELIMITER, edge_odo_mm);
             have_previous = false;
         }
     }
