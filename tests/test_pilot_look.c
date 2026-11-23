@@ -232,8 +232,8 @@ static void test_full_look_drops_and_counts(void)
     CHECK(!look_add(&look, &pose, 900, LOOK_ECHO_VALID, 300));
     CHECK(!look_add(&look, &pose, 910, LOOK_ECHO_OPEN, 0));
     CHECK(LOOK_RAYS_MAX == look.count);
-    CHECK(0 == look.rays[0].angle_deci);
-    CHECK(230 == look.rays[LOOK_RAYS_MAX - 1U].angle_deci);
+    CHECK(0 == look_ray_angle_deci(&look.rays[0]));
+    CHECK(230 == look_ray_angle_deci(&look.rays[LOOK_RAYS_MAX - 1U]));
 
     look_clear(&look);
     CHECK(0U == look.count);
@@ -249,8 +249,33 @@ static void test_ray_is_placed_from_the_pose(void)
     /* Sonar 70 mm ahead along +y, beam toward -x at 1800. */
     CHECK(100 == look.rays[0].x_mm);
     CHECK(abs(look.rays[0].y_mm - 270) <= 1);
-    CHECK(1800 == look.rays[0].angle_deci);
+    CHECK(1800 == look_ray_angle_deci(&look.rays[0]));
     CHECK(300U == look.rays[0].range_mm);
+}
+
+static void test_scan_buffer_keeps_full_range_in_eight_byte_rays(void)
+{
+    look_t look;
+
+    CHECK(8U == sizeof(look_ray_t));
+    CHECK(194U == sizeof(look_t));
+    look_clear(&look);
+    CHECK(look_add(&look, &g_origin, 1801, LOOK_ECHO_TOO_CLOSE, UINT16_MAX));
+    CHECK(look_add(&look, &g_origin, 1799, LOOK_ECHO_OPEN, 4000));
+    CHECK(-1799 == look_ray_angle_deci(&look.rays[0]));
+    CHECK(LOOK_ECHO_TOO_CLOSE == look_ray_echo(&look.rays[0]));
+    CHECK(UINT16_MAX == look.rays[0].range_mm);
+    CHECK(1799 == look_ray_angle_deci(&look.rays[1]));
+    CHECK(LOOK_ECHO_OPEN == look_ray_echo(&look.rays[1]));
+    CHECK(0U == look.rays[1].range_mm);
+
+    look_ray_set_angle(&look.rays[0], 1800);
+    CHECK(1800 == look_ray_angle_deci(&look.rays[0]));
+    CHECK(LOOK_ECHO_TOO_CLOSE == look_ray_echo(&look.rays[0]));
+    look_ray_mark_open(&look.rays[0]);
+    CHECK(1800 == look_ray_angle_deci(&look.rays[0]));
+    CHECK(LOOK_ECHO_OPEN == look_ray_echo(&look.rays[0]));
+    CHECK(0U == look.rays[0].range_mm);
 }
 
 static void test_too_few_points_give_no_face(void)
@@ -282,6 +307,7 @@ int main(void)
     test_valid_reading_beyond_step_is_an_edge();
     test_full_look_drops_and_counts();
     test_ray_is_placed_from_the_pose();
+    test_scan_buffer_keeps_full_range_in_eight_byte_rays();
     test_too_few_points_give_no_face();
 
     if (0 != g_failures)

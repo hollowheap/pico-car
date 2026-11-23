@@ -1,6 +1,6 @@
 /** @file scan_algo.h
  *
- * @brief Echo classification, ping agreement and the ±30° servo scan with
+ * @brief Echo classification, ping agreement and the servo scan with
  *        body-pivot windows. Pure C99, integer only and free of kernel
  *        calls.
  */
@@ -82,9 +82,8 @@ bool    scan_algo_finish_partial (scan_algo_ctx_t * p_ctx);
 bool    scan_algo_echo_noisy (scan_algo_ctx_t const * p_ctx);
 
 /* Servo travel check. A square wall straight ahead returns d(angle) =
- * d0 / cos(angle). The ratio of the readings at the slots of the servo limit
- * (+-15 degrees) to the reading straight ahead gives the angle the servo
- * really reached. */
+ * d0 / cos(angle). Comparing the readings at the servo limits with the
+ * reading straight ahead gives the angles the servo really reached. */
 typedef enum
 {
     SERVO_CHECK_OK = 0,       /* both sides within 3 degrees of the limit          */

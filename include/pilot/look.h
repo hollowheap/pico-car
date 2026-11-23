@@ -8,9 +8,8 @@
  * Frame: x and y in mm with x ahead of the car at heading 0 and y to its
  * left, angles in deci-degrees, counter-clockwise positive, 0 along +x, 900
  * along +y. A servo angle is relative to the car front, positive to the left.
- * The geometry.h pose frame swaps the axes (x left, y ahead): pass
- * x = geom_pose_y_mm(), y = geom_pose_x_mm() with the heading unchanged, and
- * swap the face and edge points back the same way.
+ * The legacy navigator uses x left and y ahead. To exchange points with it,
+ * swap x and y and keep the heading.
  *
  * Trigonometry comes from src/navigation/obstacle/geometry.c, which must be
  * linked next to look.c (include path src/navigation/obstacle).
@@ -22,6 +21,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/chassis.h"
 #include "platform/static_assert.h"
 
 /** Rays in one look. A full look refuses the new ray. */
@@ -39,26 +39,33 @@
  *  about the scene: look_add() refuses it and it is never OPEN. */
 #define LOOK_ECHO_NONE      (3U)
 
-/** Sonar position ahead of the axle. Copy of OBSTACLE_SONAR_FWD_MM. */
-#define LOOK_SONAR_FWD_MM (70)
+/** Sonar position ahead of the axle. */
+#define LOOK_SONAR_FWD_MM CHASSIS_SONAR_FORWARD_MM
 
 /** A ray whose incidence on the face is above this is never an edge. */
 #define LOOK_TRUST_DECI (250)
 
 /** Half-angle of the sonar beam. The reading is the nearest face inside it. */
-#define LOOK_BEAM_DECI (95)
+#define LOOK_BEAM_DECI CHASSIS_SONAR_BEAM_HALF_DECI
 
 /** A reading this far beyond the face line, or more, ends the face. */
 #define LOOK_EDGE_STEP_MM (60)
 
+/** Normal-distance tolerance for associating a return with a measured face. */
+#define LOOK_FACE_MATCH_MM (25)
+
+/* Offset the wrapped bearing (-1800, 1800] to keep all deci-degrees in 12 bits. */
+#define LOOK_RAY_ANGLE_BIAS  (1800)
+#define LOOK_RAY_ANGLE_MASK  (0x0FFFU)
+#define LOOK_RAY_ECHO_SHIFT  (12U)
+#define LOOK_RAY_ECHO_MASK   (0x3U)
+
 typedef struct
 {
-    int16_t  x_mm;       /* sonar position when the ping was sent */
+    int16_t  x_mm; /* sonar position when the ping was sent */
     int16_t  y_mm;
-    int16_t  angle_deci; /* world angle of the beam, (-1800, 1800] */
-    uint16_t range_mm;   /* 0 for OPEN */
-    uint8_t  echo;       /* LOOK_ECHO_* */
-    uint8_t  spare;
+    uint16_t range_mm; /* 0 for OPEN */
+    uint16_t angle_echo;
 } look_ray_t;
 
 typedef struct
@@ -67,8 +74,34 @@ typedef struct
     uint8_t    count;
 } look_t;
 
-STATIC_ASSERT(sizeof(look_ray_t) == 10U, "look_ray_t must stay 10 bytes");
-STATIC_ASSERT(sizeof(look_t) == 242U, "look_t must stay 242 bytes");
+STATIC_ASSERT((2U * LOOK_RAY_ANGLE_BIAS) <= LOOK_RAY_ANGLE_MASK, "bearing fits 12 bits");
+STATIC_ASSERT(LOOK_ECHO_NONE <= LOOK_RAY_ECHO_MASK, "echo fits 2 bits");
+STATIC_ASSERT(sizeof(look_ray_t) == 8U, "look_ray_t must stay 8 bytes");
+STATIC_ASSERT(sizeof(look_t) == 194U, "look_t must stay 194 bytes");
+
+static inline int32_t look_ray_angle_deci(look_ray_t const * p_ray)
+{
+    return ((int32_t)(p_ray->angle_echo & LOOK_RAY_ANGLE_MASK) - LOOK_RAY_ANGLE_BIAS);
+}
+
+static inline uint8_t look_ray_echo(look_ray_t const * p_ray)
+{
+    return ((uint8_t)(((uint32_t)p_ray->angle_echo >> LOOK_RAY_ECHO_SHIFT) & LOOK_RAY_ECHO_MASK));
+}
+
+/** Update the bearing after wrapping it into (-1800, 1800]. */
+static inline void look_ray_set_angle(look_ray_t * p_ray, int32_t angle_deci)
+{
+    p_ray->angle_echo = (uint16_t)((p_ray->angle_echo & (LOOK_RAY_ECHO_MASK << LOOK_RAY_ECHO_SHIFT))
+                                  | (uint32_t)(angle_deci + LOOK_RAY_ANGLE_BIAS));
+}
+
+static inline void look_ray_mark_open(look_ray_t * p_ray)
+{
+    p_ray->angle_echo = (uint16_t)((p_ray->angle_echo & LOOK_RAY_ANGLE_MASK)
+                                  | (LOOK_ECHO_OPEN << LOOK_RAY_ECHO_SHIFT));
+    p_ray->range_mm   = 0U;
+}
 
 typedef struct
 {
@@ -121,6 +154,16 @@ bool look_add(look_t * p_look, look_pose_t const * p_pose, int32_t servo_deci,
  */
 bool look_face(look_t const * p_look, look_pose_t const * p_from,
                look_face_t * p_face);
+
+/** Fit the face using only positive echoes up to max_range_mm. The complete
+ *  look remains available for checking which rays pass beyond that face. */
+bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
+                    uint16_t max_range_mm, look_face_t * p_face);
+
+/** Furthest beam-corrected on-face return along the selected side, measured
+ *  from the axle. Zero means no positive extent was observed there. */
+int32_t look_face_reach_mm(look_t const * p_look, look_pose_t const * p_from,
+                           look_face_t const * p_face, look_side_t side);
 
 /**
  * Find where the face ends on each side.

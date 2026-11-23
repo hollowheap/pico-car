@@ -2,20 +2,26 @@
  * @brief Hug: go round an obstacle on the line, keeping it at one side.
  *
  * Pure C99, integer only, no kernel and no driver calls. The pilot calls
- * hug_step() every tick. While the hug is idle it only watches the free-running
- * forward pings. After two of the last three are hits at or below the standoff
- * it takes the wheels and the sonar, looks at the face, goes up to it until
+ * hug_step() every tick. Two hits in the last three free-running forward
+ * pings normally start a survey. On an established tape bend, the follower
+ * can briefly recheck a return outside its measured turning path. A persistent
+ * return starts the survey. The hug takes the wheels and sonar, looks at the face, goes up to it until
  * the body is HUG_BODY_GAP_MM off, and goes round the obstacle: along the face
  * to its corner and past it, along the next face, and so on, round every
- * corner however many there are, until the line sensors see tape outside the
- * line the car came on. The car then drives onto it, turns away from the
- * obstacle and gives the wheels back to the line follower. The hug never
- * backs up.
+ * measured corner. On a quadrilateral the measured far vertex and rear face
+ * allow a return to the entry lateral coordinate for a bounded tape search.
+ * If the incoming line was observed, an empty search there permits one pass
+ * along the remaining perimeter for a bent exit. The car advances to an observed crossing and
+ * turns away from the obstacle. A line sensor must reacquire tape during
+ * that turn before the follower can take the wheels. An exhausted sweep
+ * stops the car.
  *
  * The hug keeps its own dead-reckoned pose in the look frame of look.h: the
  * origin is the axle at the hit and x runs along the heading of the hit. The
  * car turns in place only (speed 0, turn rate only), and the sonar looks
- * while the car stands still.
+ * while the car stands still. Once the body clears a measured endpoint, the
+ * axle stops abreast of it to look for the adjacent face. An inconclusive
+ * clearance survey can repeat once there before the pilot holds the wheels.
  *
  * A wheel stall in a leg is the pilot's: its safety back-off backs the car up
  * (pilot.c), and when that ends the hug gets b_stall and starts a look from the
@@ -33,7 +39,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "navigation/obstacle_ping.h"
 #include "pilot/look.h"
+#include "platform/chassis.h"
 #include "platform/static_assert.h"
 
 /** Trigger: this many of the last three forward pings are hits at or below
@@ -44,6 +52,7 @@
 /** A free-running forward ping at or below this during a leg means a face
  *  ahead (mm from the sonar). */
 #define HUG_GUARD_MM          (300)
+#define HUG_FORWARD_RESERVE_MM (120)
 
 /** Look: rays this far apart (deci-degrees) within HUG_NEAR_ZONE_DECI of the
  *  face normal. A face farther than HUG_FAR_MM from the sonar gets the finer
@@ -71,39 +80,47 @@
 #define HUG_REFINE_ZONE_DECI  (90)
 #define HUG_REFINE_FAR_STEP_DECI (12)
 #define HUG_REFINE_FAR_ZONE_DECI (60)
-#define HUG_REFINE_OUT_DECI   (95)
+#define HUG_REFINE_OUT_DECI   LOOK_BEAM_DECI
 #define HUG_REFINE_TOL_MM     (45)
 
-/** The servo reaches this far from the body; the body pivots in steps. */
-#define HUG_SERVO_MAX_DECI    (125)
+/** Body step and servo reach for the contact and inner looks. */
 #define HUG_PIVOT_STEP_DECI   (250)
+#define HUG_SERVO_MAX_DECI    (HUG_PIVOT_STEP_DECI / 2)
+STATIC_ASSERT(HUG_SERVO_MAX_DECI <= OBSTACLE_SERVO_LIMIT_DECI, "hug look fits servo travel");
+STATIC_ASSERT((HUG_REFINE_ZONE_DECI <= HUG_SERVO_MAX_DECI) &&
+              (HUG_REFINE_FAR_ZONE_DECI <= HUG_SERVO_MAX_DECI), "refinement fits hug servo travel");
 
 /** Car body: radius about the axle. The car keeps HUG_BODY_GAP_MM between its
  *  body and the face it goes along, so the axle runs HUG_AXLE_OFF_MM off it.
  *  The first approach goes up to that, and every leg after a look leans toward
  *  or away from the face (at most HUG_TRIM_MAX_DECI) to bring it back there.
- *  A leg ends HUG_BODY_MM + HUG_BODY_GAP_MM past a corner, so the body clears
- *  the next face by the same gap. An approach shorter than HUG_APPROACH_MIN_MM
- *  is not driven. */
-#define HUG_BODY_MM           (119)
-#define HUG_BODY_GAP_MM       (120)
-#define HUG_AXLE_OFF_MM       (HUG_BODY_MM + HUG_BODY_GAP_MM)
+ *  The ordinary wrap ends a leg this far past a corner. Two close front
+ *  endpoints permit a tighter straight diagonal between pivot-safe poses.
+ *  An approach shorter than HUG_APPROACH_MIN_MM is not driven. */
+#define HUG_BODY_MM           CHASSIS_BODY_RADIUS_MM
+#define HUG_SWEEP_RADIUS_MM   (145)
+/* Buddy 5's working margin outside our full axle-centred turning envelope. */
+#define HUG_BODY_GAP_MM       (50)
+#define HUG_AXLE_OFF_MM       (HUG_SWEEP_RADIUS_MM + HUG_BODY_GAP_MM)
 #define HUG_TRIM_MAX_DECI     (300)
 #define HUG_APPROACH_MIN_MM   (20)
 #define HUG_TURN_FWD_MM       (100)
 
-/** A hop along a face with no edge in trust is the face distance from the sonar
- *  times the tan of this angle, the incidence an edge is trusted at. */
+/** Fallback hop angle for a narrow or assumed face without a measured edge. */
 #define HUG_HOP_ANGLE_DECI    (250)
 #define HUG_LEG_MIN_MM        (60)
 #define HUG_LEG_MAX_MM        (1500)
 
 /** The approach zone: the line the car came on, in the frame of the hug (origin
  *  at the hit, x along its heading). The axle is in it up to HUG_EXIT_PAST_MM
- *  along x and HUG_LINE_WINDOW_MM across. Tape seen anywhere else during a
- *  drive is the way on, at any angle, and ends the hug. */
+ *  along x and HUG_LINE_WINDOW_MM across. Elsewhere an IR contact can start
+ *  optical alignment when its projected position clears the neighboring tape. */
 #define HUG_LINE_WINDOW_MM    (250)
 #define HUG_EXIT_PAST_MM      (150)
+/* Lateral positions of neighboring parallel tape, relative to the entry.
+ * Allow Buddy 5's tape-position tolerance on either side of each. */
+#define HUG_PARALLEL_SPACING_MM (300)
+#define HUG_TAPE_TOL_MM         (80)
 
 /** Side choice: edges within this of each other are a tie, a gap beside an
  *  edge narrower than this is blocked, and an OPEN ray counts as this much
@@ -143,6 +160,9 @@
 #define HUG_HOLD_GAIN         (3)
 #define HUG_HOLD_MAX_DECI_S   (300)
 #define HUG_REPLY_TIMEOUT_MS  (800U)
+#define HUG_STATIONARY_LIMIT_MS (3000U)
+/* Leave one reply window and time to start the next chassis movement. */
+#define HUG_SCAN_BATCH_MS (HUG_STATIONARY_LIMIT_MS - HUG_REPLY_TIMEOUT_MS - HUG_SETTLE_MS - HUG_SETTLE_MS)
 
 /** A pivot or a drive that runs longer than HUG_MOVE_TIMES times its planned
  *  time ends the hug, and the pilot stops with reason HUG_TIMEOUT. The plan
@@ -189,15 +209,21 @@ typedef struct
     int64_t  right_um;
     uint32_t now_ms;
     uint16_t ping_mm;
+    uint16_t bend_radius_mm; /* wider of requested and observed same-side line arcs, zero otherwise */
     int16_t  ping_servo_deci;
     uint8_t  ping_echo;
     uint8_t  ping_seq;
-    bool     b_ping_reply;
-    bool     b_line_left;
-    bool     b_line_right;
-    bool     b_stall;  /* a back-off after a stall has just ended              */
-    bool     b_other;  /* another behaviour owns the wheels: track the pose only */
+    bool     b_ping_reply : 1;
+    bool     b_line_left : 1;
+    bool     b_line_right : 1;
+    bool     b_stall : 1;  /* a back-off after a stall has just ended              */
+    bool     b_other : 1;  /* another behaviour owns the wheels: track the pose only */
+    bool     b_stationary : 1; /* current feedback confirms both wheels have settled */
+    bool     b_contact_backoff : 1; /* localized recovery on the same approach */
+    bool     b_relook : 1; /* a back-off after a sustained forward range plateau ended */
 } hug_in_t;
+
+STATIC_ASSERT(sizeof(hug_in_t) == 32U, "hug_in_t size");
 
 /** What the hug asks for: one motion command and one ping request. */
 typedef struct
@@ -209,9 +235,13 @@ typedef struct
     uint8_t b_req;
     uint8_t b_stop;    /* the sonar is dead: the pilot stands with reason SONAR */
     uint8_t b_timeout; /* a move ran out of time and the hug has ended          */
+    bool b_scan_pivot : 1;
+    bool b_rejoined : 1;   /* completed and settled on a measured optical crossing */
+    bool b_no_exit : 1; /* remaining measured contour exhausted after local search */
+    bool b_no_tape : 1;    /* aligned behind the measured box at the entry lateral coordinate */
 } hug_out_t;
 
-STATIC_ASSERT(sizeof(hug_out_t) == 10U, "hug_out_t size");
+STATIC_ASSERT(sizeof(hug_out_t) == 12U, "hug_out_t size");
 
 typedef struct
 {
@@ -220,9 +250,23 @@ typedef struct
     int32_t  diff_um;       /* right minus left travel, slip corrected           */
     uint32_t last_left_um;  /* low 32 bits of the last wheel travel              */
     uint32_t last_right_um;
+    uint32_t contact_scan_ms; /* start time of the full survey used for a stationary recheck */
+    uint32_t last_motion_ms; /* last measured wheel displacement while the hug owns the chassis */
     uint32_t t_ms;          /* start of the settle or request; end of a move     */
-    int32_t  x0_mm;         /* drive start, as wide as the pose                  */
-    int32_t  y0_mm;
+    union
+    {
+        struct { int32_t x_mm; int32_t y_mm; } drive;
+        struct { uint32_t left_um; uint32_t right_um; } survey;
+    } origin; /* Drive displacement or the contact survey's two encoder anchors. */
+    int16_t  side_end_x_mm; /* observed far vertex on the chosen side, positive when qualified */
+    int16_t  side_end_y_mm;
+    int32_t  face_line_mm;  /* full fit's projection on its normal, relative to the hit */
+    union
+    {
+        uint32_t idle_tape_ms; /* most recent actual approach-tape sample while idle */
+        struct { int32_t x_mm; int32_t y_mm; } point;
+        struct { int16_t heading_deci; uint8_t reader; } crossing;
+    } tape; /* Observed tape point, then optical capture during the exit pivot. */
     int16_t  goal_head;     /* pivot target, and the heading held in a drive     */
     int16_t  trav_head;     /* heading of the last leg                           */
     int16_t  center;        /* the scan is centred on this heading               */
@@ -245,25 +289,53 @@ typedef struct
     uint8_t  then;
     uint8_t  purpose;
     uint8_t  idx;           /* ray of the scan                                   */
-    uint8_t  body;          /* body step of the ray, in HUG_PIVOT_STEP_DECI      */
+    uint8_t  body;          /* body step of the ray within the current look      */
     uint8_t  hist;          /* last three forward pings, one bit each            */
     uint8_t  last_seq;      /* of the last forward ping seen                     */
     uint8_t  req_seq;
     int8_t   side;          /* +1 goes left, -1 goes right                       */
     uint8_t  lost;          /* requests in a row that got no reply               */
+    uint8_t  recheck_hits;  /* fresh near returns, or a completed inconclusive survey */
     uint16_t flags;
     int16_t  seen_mm;       /* axle to face line as measured, for the frame      */
-    uint8_t  b_note;        /* last hug began with a stall; HUG_STALL_PAST_MM */
+    bool b_note : 1;        /* last hug began with a stall; HUG_STALL_PAST_MM */
+    bool b_approach_tape : 1;
+    bool b_require_rear : 1;
+    bool b_can_resume : 1;
+    bool b_remaining : 1;
+    bool b_oblique : 1; /* fitted successor joined the last edge at an oblique angle */
+    bool b_survey_displaced : 1; /* another owner interrupted an off-line vertex survey */
+    bool b_close_front : 1; /* guarded diagonal past two close front endpoints */
+    int8_t scan_lead_deci; /* chassis offset from the remaining bearings of a slow sweep */
     uint8_t  n_rel;         /* releases since the last tape or HUG_NOTE_MS    */
+    bool b_bend_check : 1;  /* a forward return outside a traced bend is being rechecked */
+    bool b_probe_front : 1; /* stepping sideways to observe a sparsely sampled contact */
+    bool b_probe_retried : 1; /* repeated the look from the displaced axle */
+    bool b_left_scan_gap : 1;
+    bool b_right_scan_gap : 1;
+    bool b_pivot_reaimed : 1; /* one post-settlement correction before replanning */
+    uint32_t bend_start_ms;
+    uint32_t bend_outer_um; /* outer wheel at the first such return, low 32 bits */
 } hug_t;
 
-STATIC_ASSERT(sizeof(hug_t) == 92U, "hug_t size");
+STATIC_ASSERT(sizeof(hug_t) == 128U, "hug_t size");
 
 /** Idle, no memory of a face. */
 void hug_init(hug_t * p_hug);
 
+/** After a complete empty IR sweep, resume the remaining perimeter once if
+ *  actual approach tape was recorded and the localized car is back in pose. */
+bool hug_resume_remaining(hug_t * p_hug, int64_t left_um, int64_t right_um, uint32_t now_ms);
+
+/** Invalidate any previous run's eligibility for the alternate exit. */
+void hug_forget_approach(hug_t * p_hug);
+
 /** True while the hug has taken the wheels. */
 bool hug_active(hug_t const * p_hug);
+
+/** True while the follower is returning to a locally noted stall where the
+ *  hug found no face. */
+bool hug_reapproaching(hug_t const * p_hug);
 
 /** Body heading from the heading at the hit, deci-degrees, left positive. */
 int16_t hug_heading_deci(hug_t const * p_hug);

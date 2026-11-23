@@ -65,6 +65,9 @@ typedef struct
  * ------------------------------------------------------------------ */
 
 static comms_links_t g_links = {0, 0, NULL, NULL};
+#if !PICO_CAR_PILOT
+static obstacle_legacy_transition_fn_t gp_observe_legacy = NULL;
+#endif
 
 #define AIM_BODY_SHIFT (16U)
 
@@ -278,26 +281,26 @@ bool obstacle_comms_pop_cmd (uint8_t * p_cmd)
 }
 
 /*!
- * @brief Mirror the statechart fault bits into the shared system register.
+ * @brief Publish current echo health and the statechart stop fault.
  *
  * NO_ECHO is bit 8, a stuck or noisy ECHO line is bit 10, and any fault that leaves
  * the car stopped in the statechart is bit 13 (the car is already stopped).
  *
- * @param[in] faults The OBSTACLE_FAULT_* bits.
+ * @param[in] p_fsm Statechart after the step.
  */
-static void share_faults (uint16_t faults)
+static void share_faults (obstacle_statechart_t const * p_fsm)
 {
     uint16_t active = 0U;
 
-    if (0U != (faults & OBSTACLE_FAULT_NO_ECHO))
+    if (0U != (p_fsm->echo_faults & OBSTACLE_FAULT_NO_ECHO))
     {
         active |= FAULT_SONAR_NO_ECHO_BIT;
     }
-    if (0U != (faults & (OBSTACLE_FAULT_ECHO_STUCK | OBSTACLE_FAULT_ECHO_NOISE)))
+    if (0U != (p_fsm->echo_faults & (OBSTACLE_FAULT_ECHO_STUCK | OBSTACLE_FAULT_ECHO_NOISE)))
     {
         active |= FAULT_ECHO_LINE_BIT;
     }
-    if (0U != (faults & OBSTACLE_FAULTS_STOPPING))
+    if (0U != (p_fsm->faults & OBSTACLE_FAULTS_STOPPING))
     {
         active |= FAULT_OBSTACLE_STOPPED_BIT;
     }
@@ -306,6 +309,32 @@ static void share_faults (uint16_t faults)
                             FAULT_OBSTACLE_STOPPED_BIT,
                         active);
 }
+
+#if !PICO_CAR_PILOT
+void obstacle_bind_legacy_transition (obstacle_legacy_transition_fn_t p_observe)
+{
+    gp_observe_legacy = p_observe;
+}
+
+static void observe_legacy_transition (const obstacle_statechart_t * p_fsm,
+                                       bool b_profile_changed)
+{
+    obstacle_legacy_transition_t transition = {
+        .p_completed_profile = (b_profile_changed && (OBSTACLE_STATE_PLAN == p_fsm->state))
+                                   ? p_fsm->scan.profile : NULL,
+        .distance_mm = p_fsm->last_dist,
+        .state       = p_fsm->state,
+        .cause       = p_fsm->cause,
+        .echo_class  = p_fsm->last_class,
+        .stop_reason = p_fsm->reason,
+    };
+
+    /* Only this task publishes the plan, and the copy below is after its
+     * update. Navigation cannot advance the scan before this observation. */
+    (void)obstacle_comms_copy_plan(&transition.plan);
+    gp_observe_legacy(&transition);
+}
+#endif
 
 /*!
  * @brief Publish one statechart step: emergency stop, status, faults,
@@ -322,6 +351,9 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
     uint16_t faults = 0U;
     uint8_t  flags  = 0U;
     UINT     intsts = 0U;
+#if !PICO_CAR_PILOT
+    uint32_t const previous = obstacle_pack_get(g_status, OBSTACLE_ST_STATE_SH, OBSTACLE_ST_STATE_MK);
+#endif
 
     if (p_out->b_call_stop && (NULL != g_links.p_stop))
     {
@@ -330,8 +362,8 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
 
     status = obstacle_statechart_status(p_fsm);
     /* Bits 12 to 14 carry the give-up reason. */
-    faults = (uint16_t)(p_fsm->faults |
-                        (uint16_t)(((uint32_t)p_fsm->reason & OBSTACLE_STOP_REASON_MK) << OBSTACLE_STOP_REASON_SH));
+    faults = (uint16_t)((uint32_t)p_fsm->faults | (uint32_t)p_fsm->echo_faults |
+                        (((uint32_t)p_fsm->reason & OBSTACLE_STOP_REASON_MK) << OBSTACLE_STOP_REASON_SH));
     flags  = obstacle_statechart_flags(p_fsm);
     aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
              (uint32_t)(uint16_t)obstacle_statechart_servo_deci(p_fsm);
@@ -349,12 +381,19 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
         g_fsm_ping_seen = p_fsm->ping;
         g_ping          = p_fsm->ping;
     }
-    share_faults(p_fsm->faults);
+    share_faults(p_fsm);
 
     if (p_out->b_profile_changed)
     {
         publish_profile(p_fsm);
     }
+
+#if !PICO_CAR_PILOT
+    if ((NULL != gp_observe_legacy) && (previous != p_fsm->state))
+    {
+        observe_legacy_transition(p_fsm, p_out->b_profile_changed);
+    }
+#endif
 
     for (idx = 0U; idx < p_out->evt_count; idx++)
     {

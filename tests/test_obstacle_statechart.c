@@ -938,10 +938,14 @@ static void test_plan_timeout_boundary(void)
                                                            OBSTACLE_EV_CAUSE_MK));
 }
 
-/* Select explicitly while the implementation and the recorded timing differ. */
+/* Compile this case with the same mode definitions as the sonar task. */
 static void test_recorded_ping_budget(void)
 {
+#if defined(PICO_CAR_PILOT) && (PICO_CAR_PILOT != 0)
+    CHECK(50U == OBSTACLE_PING_PERIOD_MS);
+#else
     CHECK(60U == OBSTACLE_PING_PERIOD_MS);
+#endif
     CHECK(40U == OBSTACLE_ECHO_WAIT_MS);
     CHECK(OBSTACLE_ECHO_WAIT_MS < OBSTACLE_PING_PERIOD_MS);
 }
@@ -1439,6 +1443,7 @@ int main(int argc, char * argv[])
     test_blocked_escape_turns_further();
     test_escape_without_progress_hits_limit();
     test_plan_timeout_boundary();
+    test_recorded_ping_budget();
     test_pivot_stall_still_plans();
     test_wall_reaches_bypass();
     test_wall_flag();

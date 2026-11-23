@@ -55,6 +55,9 @@ OBSTACLE_CT_ASSERT(ping_too_close_mm, OBSTACLE_PING_TOO_CLOSE_MM == OBSTACLE_MIN
 #define OBSTACLE_CAUSE_ECHO_NOISE    (14U) /* ECHO line or edges are bad       */
 #define OBSTACLE_CAUSE_BYPASS_GAVE_UP (15U) /* the follow gave up             */
 
+#define OBSTACLE_FAULTS_ECHO \
+    (OBSTACLE_FAULT_NO_ECHO | OBSTACLE_FAULT_ECHO_STUCK | OBSTACLE_FAULT_ECHO_NOISE)
+
 /* Faults that leave the car stopped by a planner or bypass limit, as opposed
    to a sensor fault. They set the shared obstacle_stopped bit. */
 #define OBSTACLE_FAULTS_STOPPING \
@@ -285,17 +288,14 @@ static inline bool obstacle_pack_class_is_unresolved (uint32_t cls)
 }
 
 /*!
- * @brief Retry policy: tell whether the navigation side may send RESET and
- *        START by itself after the statechart stopped with this cause.
+ * @brief Tell whether the sonar bench can retry a stopped scan scenario.
  *
- * The first start after boot and a transient cause (a missed handshake, a
- * timeout, a limit) can be retried. A collision, a scan with no safe path, a
- * sensor fault, an external stop and a failed init wait for an explicit RESET
- * and START from the operator or the supervisor.
+ * The standalone bench has no drive motors. It can restart its scenario
+ * after boot or a transient handshake, scan or plan fault.
  *
  * @param[in] cause OBSTACLE_CAUSE_*.
  *
- * @return True if an automatic RESET and START is allowed.
+ * @return True if the bench may issue RESET and START.
  */
 static inline bool obstacle_pack_cause_may_auto_restart (uint32_t cause)
 {
@@ -329,7 +329,7 @@ static inline uint8_t obstacle_pack_cmd (uint32_t type, uint32_t req_id)
  * @param[in] seq        Ping sequence (wraps at 64).
  * @param[in] cls        Echo class (OBSTACLE_CLASS_*).
  * @param[in] dist_mm    Distance; 0 unless the class is VALID.
- * @param[in] servo_deci Servo angle during the ping, -300..300 deci-degrees.
+ * @param[in] servo_deci Servo angle during the ping, in deci-degrees.
  *
  * @return The packed 32-bit ping word.
  */

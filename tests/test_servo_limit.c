@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "obstacle_pack.h"
-#include "pilot_sim.h"
+#include "pilot/hug.h"
 #include "scan_algo.h"
 
 #define LIMIT_DECI (200)
@@ -62,27 +62,42 @@ static bool legacy_scan_stays_in_window (void)
 
 static bool hug_request_contract (bool check_consumer)
 {
-    static pilot_sim_t sim;
-    static pilot_sim_seg_t const line[] = {{8000.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+    hug_t hug;
+    look_t look;
+    hug_in_t in = {.b_stationary = true, .ping_echo = LOOK_ECHO_VALID, .ping_mm = 99U};
+    hug_out_t out = {0};
     bool got_angled_request = false;
-    unsigned step;
+    unsigned pose = 0U;
 
-    pilot_sim_init (&sim, line, 1U);
-    if (!pilot_sim_add_box (&sim, 650.0, 0.0, 200.0, 150.0, 0.0))
+    hug_init (&hug);
+    look_clear (&look);
+    for (unsigned step = 0U; step < 200U; ++step)
     {
-        (void)fputs ("failed to place the obstacle in the simulation\n", stderr);
-        return false;
-    }
-    for (step = 0U; step < 12000U; ++step)
-    {
-        int16_t angle;
-
-        pilot_sim_step (&sim);
-        if (0U == sim.cmd.b_ping_req)
+        in.now_ms += 10U;
+        in.b_ping_reply = out.b_req;
+        if (in.b_ping_reply)
+        {
+            in.ping_seq = out.seq;
+            in.ping_servo_deci = out.servo_deci;
+        }
+        else if (0U == step % 5U)
+        {
+            in.ping_servo_deci = 0;
+            in.ping_seq++;
+        }
+        (void)hug_step (&hug, &look, &in, &out);
+        if (out.turn_deci_s && pose < 2U)
+        {
+            /* Two measured encoder poses from the initial contact sweep. */
+            in.left_um = (pose == 0U) ? 87500 : 29200;
+            in.right_um = -in.left_um;
+            pose++;
+        }
+        if (!out.b_req)
         {
             continue;
         }
-        angle = sim.cmd.ping_servo_deci;
+        int16_t const angle = out.servo_deci;
         got_angled_request = got_angled_request || (0 != angle);
         if (check_consumer)
         {
@@ -101,7 +116,7 @@ static bool hug_request_contract (bool check_consumer)
     }
     if (!got_angled_request)
     {
-        (void)fputs ("the simulated box did not trigger an angled hug request\n", stderr);
+        (void)fputs ("the contact sweep did not request an angled ping\n", stderr);
     }
     return got_angled_request;
 }

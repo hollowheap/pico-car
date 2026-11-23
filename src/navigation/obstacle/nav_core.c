@@ -8,8 +8,8 @@
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
 #include "planner.h"
+#include "platform/units.h"
 
-#define UM_PER_MM (1000)
 #define Q14_ONE   (16384)
 
 /* Wheel path in mm for follow_in_t.travel_mm, saturating. */
@@ -51,10 +51,9 @@ int32_t nav_core_heading_deci (nav_core_t const * p_core,
 {
     int64_t const left_um  = p_wheel_um[NAV_CORE_LEFT] - p_core->base_um[NAV_CORE_LEFT];
     int64_t const right_um = p_wheel_um[NAV_CORE_RIGHT] - p_core->base_um[NAV_CORE_RIGHT];
-    int64_t const track_um = (int64_t)CHASSIS_WHEEL_TRACK_MM * UM_PER_MM;
 
     /* Cast is safe: a bypass turns the car far less than 2^31 deci-deg. */
-    return ((int32_t)(((right_um - left_um) * OBSTACLE_NAV_DECI_PER_RAD) / track_um));
+    return (int32_t)wheel_yaw_deci(right_um - left_um);
 }
 
 void nav_core_update_pose (nav_core_t * p_core, int64_t const p_wheel_um[NAV_CORE_WHEELS])

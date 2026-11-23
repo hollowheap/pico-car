@@ -5,44 +5,19 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "pilot/pilot.h"
+#include "navigation/obstacle_ping.h"
 #include "platform/chassis.h"
 #include "platform/units.h"
-#include "pilot_sim.h"
 
-#define SEEDS             (4U)
-#define LINE_END_MM       (4000.0)
-#define WIDE_END_MM       (2000.0)
-#define WIDE_ROW_MM       (8.0)
-#define PT_MM             (2.0)
-#define BARCODE_HOLD_MS   (250.0)
-#define STRIPES           (6)
-#define STRIPE_PITCH_MM   (30.0)
-#define STRIPE_WIDTH_MM   (10.0)
-#define STRIPE_HALF_MM    (40.0)
-#define BARCODE_X_MM      (800.0)
-#define HEADING_BOUND_DEG (6.0)
-#define RAD_DEG           (57.29577951308232)
-#define GAP_X_MM          (1000.0)
-#define GAP_LEN_MM        (400.0)
-#define PATCH_AHEAD_MM    (60.0)
-#define PATCH_HALF_MM     (30.0)
-#define BOX_X_MM          (900.0)
-#define BOX_W_MM          (250.0)
-#define BOX_D_MM          (150.0)
-#define RUN_MAX_S         (12.0)
-#define RETRY_RUN_MAX_S   (30.0)
+
 #define TICK_MS           (10U)
 #define MS_PER_S_I        (1000)
 #define BLIND_RUN_TICKS   (6000U)
 #define BARCODE_TICKS     (25U)
 #define REVERSE_TOL_MM    (10)
-
-static pilot_sim_t g_sim;
-
-static uint32_t const g_seeds[SEEDS] = {1U, 2U, 3U, 17U};
-
 static void check(bool b_ok, char const * p_what, uint32_t seed)
 {
     if (!b_ok)
@@ -52,255 +27,16 @@ static void check(bool b_ok, char const * p_what, uint32_t seed)
     }
 }
 
-static void add_pt(double x, double y)
-{
-    if (g_sim.line_n < PILOT_SIM_MAX_PTS)
-    {
-        g_sim.line_x[g_sim.line_n] = x;
-        g_sim.line_y[g_sim.line_n] = y;
-        g_sim.line_n++;
-    }
-}
-
-/* Black patch over x0..x1, -half..half across the line. */
-static void add_patch(double x0, double x1, double half)
-{
-    double x;
-    double y;
-
-    for (x = x0; x <= x1; x += PT_MM)
-    {
-        for (y = -half; y <= half; y += PT_MM)
-        {
-            add_pt(x, y);
-        }
-    }
-    pilot_sim_reindex(&g_sim);
-}
-
-/* Remove the line points in x0..x1. */
-static void cut_line(double x0, double x1)
-{
-    int i;
-    int n = 0;
-
-    for (i = 0; i < g_sim.line_n; i++)
-    {
-        if ((g_sim.line_x[i] < x0) || (g_sim.line_x[i] > x1))
-        {
-            g_sim.line_x[n] = g_sim.line_x[i];
-            g_sim.line_y[n] = g_sim.line_y[i];
-            n++;
-        }
-    }
-    g_sim.line_n = n;
-    pilot_sim_reindex(&g_sim);
-}
-
-static double sensor_x(void)
-{
-    return g_sim.x + (LINE_SENSOR_LEAD_MM * cos(g_sim.psi));
-}
-
-static line_follow_status_t status_now(void)
-{
-    return (line_follow_status_t)g_sim.pilot.follow.status;
-}
-
 static line_follow_status_t status_of(pilot_state_t const * p_st)
 {
     return (line_follow_status_t)p_st->follow.status;
 }
 
-static void init_straight(uint32_t seed)
+/* Direct line fixtures have an open course with the normal sonar cadence. */
+static void open_course(pilot_meas_t * p_meas)
 {
-    static pilot_sim_seg_t const straight[] = {{LINE_END_MM, 0.0, 0.0}, {0.0, 0.0, 0.0}};
-
-    pilot_sim_init(&g_sim, straight, seed);
-}
-
-/* A tape wide enough that a car a few mm off the middle always has a sensor on
- * it, so that the only line loss in a run is the one the test makes. */
-static void init_wide(uint32_t seed)
-{
-    static pilot_sim_seg_t const straight[] = {{WIDE_END_MM, 0.0, 0.0}, {0.0, 0.0, 0.0}};
-    int n;
-    int i;
-
-    pilot_sim_init(&g_sim, straight, seed);
-    n = g_sim.line_n;
-    for (i = 0; i < n; i++)
-    {
-        add_pt(g_sim.line_x[i], WIDE_ROW_MM);
-        add_pt(g_sim.line_x[i], -WIDE_ROW_MM);
-        add_pt(g_sim.line_x[i], 2.0 * WIDE_ROW_MM);
-        add_pt(g_sim.line_x[i], -2.0 * WIDE_ROW_MM);
-    }
-    pilot_sim_reindex(&g_sim);
-}
-
-/* (a) Stripes across the line under both sensors, with b_barcode set as the
- * barcode sensor sets it: the car keeps its heading and the search state
- * stays where it was. */
-static void test_barcode(uint32_t seed)
-{
-    double const end_x = BARCODE_X_MM + ((STRIPES - 1) * STRIPE_PITCH_MM) + STRIPE_WIDTH_MM;
-    double last_edge_s = -1.0;
-    double psi0 = 0.0;
-    bool b_in = false;
-    bool b_past = false;
-    line_follow_status_t status0 = LINE_FOLLOW_FOLLOWING;
-    double max_dev_deg = 0.0;
-    int i;
-
-    init_straight(seed);
-    for (i = 0; i < STRIPES; i++)
-    {
-        double const x0 = BARCODE_X_MM + (i * STRIPE_PITCH_MM);
-
-        add_patch(x0, x0 + STRIPE_WIDTH_MM, STRIPE_HALF_MM);
-    }
-    while ((g_sim.t_s < RUN_MAX_S) &&
-           (!b_past || ((g_sim.t_s - last_edge_s) <= (BARCODE_HOLD_MS / 1000.0))))
-    {
-        double const sx = sensor_x();
-
-        b_past = b_past || (sx > (end_x + PT_MM));
-        if (!b_past && (sx >= (BARCODE_X_MM - PT_MM)))
-        {
-            last_edge_s = g_sim.t_s;
-        }
-        g_sim.meas.b_barcode = (last_edge_s >= 0.0) &&
-                               ((g_sim.t_s - last_edge_s) <= (BARCODE_HOLD_MS / 1000.0));
-        if (g_sim.meas.b_barcode && !b_in)
-        {
-            b_in = true;
-            psi0 = g_sim.psi;
-            status0 = status_now();
-        }
-        pilot_sim_step(&g_sim);
-        if (b_in && g_sim.meas.b_barcode)
-        {
-            double const dev = fabs((g_sim.psi - psi0) * RAD_DEG);
-
-            max_dev_deg = (dev > max_dev_deg) ? dev : max_dev_deg;
-            check(status_now() == status0, "search state changed in a barcode", seed);
-        }
-    }
-    (void)printf("barcode seed %5u: heading change %.2f deg\n", (unsigned)seed, max_dev_deg);
-    check(b_in, "car reached the barcode", seed);
-    check(max_dev_deg < HEADING_BOUND_DEG, "barcode turned the car", seed);
-}
-
-static unsigned g_lost_in;
-static unsigned g_lost_out;
-static unsigned g_quiet;
-static line_watch_t g_watch;
-
-static void watch_tick(void)
-{
-    bool const b_was = (0U != g_watch.b_lost);
-    uint8_t const bits = line_watch_step(
-        &g_watch, PILOT_BEHAVIOUR_FOLLOW_LINE == g_sim.cmd.behaviour,
-        PILOT_BEHAVIOUR_HUG == g_sim.cmd.behaviour, status_now());
-
-    g_lost_in += ((0U != g_watch.b_lost) && !b_was) ? 1U : 0U;
-    g_lost_out += ((0U == g_watch.b_lost) && b_was && (0U == (bits & LINE_WATCH_QUIET))) ? 1U : 0U;
-    g_quiet += (0U != (bits & LINE_WATCH_QUIET)) ? 1U : 0U;
-}
-
-/* (b) A gap longer than the gap distance: one entry into lost, and one return
- * when the tape comes back under the sensors. */
-static void test_gap(uint32_t seed)
-{
-    bool b_patched = false;
-
-    g_watch = (line_watch_t){0U, 0U};
-    g_lost_in = 0U;
-    g_lost_out = 0U;
-    g_quiet = 0U;
-    init_wide(seed);
-    cut_line(GAP_X_MM, GAP_X_MM + GAP_LEN_MM);
-    while (g_sim.t_s < RUN_MAX_S)
-    {
-        pilot_sim_step(&g_sim);
-        watch_tick();
-        if (!b_patched && (LINE_FOLLOW_SEARCHING == status_now()))
-        {
-            b_patched = true;
-            add_patch(sensor_x() - PT_MM, sensor_x() + PATCH_AHEAD_MM, PATCH_HALF_MM);
-        }
-        if (b_patched && (g_sim.t_s > 0.0) && (LINE_FOLLOW_SEARCHING != status_now()) &&
-            (0U == g_watch.b_lost))
-        {
-            break;
-        }
-    }
-    (void)printf("gap seed %5u: lost %u found %u\n", (unsigned)seed, g_lost_in, g_lost_out);
-    check(b_patched, "the gap did not give a search", seed);
-    check(1U == g_lost_in, "not exactly one line-lost entry", seed);
-    check(1U == g_lost_out, "not exactly one line-found", seed);
-}
-
-/* (b2) A gap longer than the gap distance, and no tape in reach of the first
- * search. The tape comes back under the sensors only when the first search has
- * failed and the car has begun its retry: one line-lost entry, one line-found,
- * and the car never stops. */
-static void test_gap_retry(uint32_t seed)
-{
-    bool b_patched = false;
-    bool b_found = false;
-
-    g_watch = (line_watch_t){0U, 0U};
-    g_lost_in = 0U;
-    g_lost_out = 0U;
-    g_quiet = 0U;
-    init_wide(seed);
-    cut_line(GAP_X_MM, GAP_X_MM + GAP_LEN_MM);
-    while ((g_sim.t_s < RETRY_RUN_MAX_S) && !b_found)
-    {
-        pilot_sim_step(&g_sim);
-        watch_tick();
-        check(LINE_FOLLOW_STOPPED != status_now(), "the car stopped before the retry found the tape", seed);
-        if (!b_patched && (g_sim.pilot.follow.retry > 0U))
-        {
-            b_patched = true;
-            add_patch(sensor_x() - PT_MM, sensor_x() + PATCH_AHEAD_MM, PATCH_HALF_MM);
-        }
-        b_found = b_patched && (LINE_FOLLOW_SEARCHING != status_now()) && (0U == g_watch.b_lost);
-    }
-    (void)printf("gap retry seed %5u: lost %u found %u\n", (unsigned)seed, g_lost_in, g_lost_out);
-    check(b_patched, "the first search did not fail into a retry", seed);
-    check(b_found, "the retry did not find the tape", seed);
-    check(1U == g_lost_in, "not exactly one line-lost entry", seed);
-    check(1U == g_lost_out, "not exactly one line-found", seed);
-}
-
-/* (c) A box on the line: the hug has the wheels and the line is off the
- * sensors; that is not a lost line. */
-static void test_hug(uint32_t seed)
-{
-    bool b_hug = false;
-    bool b_back = false;
-
-    g_watch = (line_watch_t){0U, 0U};
-    g_lost_in = 0U;
-    g_lost_out = 0U;
-    g_quiet = 0U;
-    init_wide(seed);
-    (void)pilot_sim_add_box(&g_sim, BOX_X_MM, 0.0, BOX_W_MM, BOX_D_MM, 0.0);
-    while ((g_sim.t_s < RUN_MAX_S) && !b_back)
-    {
-        pilot_sim_step(&g_sim);
-        watch_tick();
-        b_hug = b_hug || (PILOT_BEHAVIOUR_HUG == g_sim.cmd.behaviour);
-        b_back = b_hug && (PILOT_BEHAVIOUR_FOLLOW_LINE == g_sim.cmd.behaviour) &&
-                 (g_sim.x > (BOX_X_MM + BOX_D_MM));
-    }
-    (void)printf("hug seed %5u: lost %u found %u\n", (unsigned)seed, g_lost_in, g_lost_out);
-    check(b_hug, "the car did not hug the box", seed);
-    check(0U == g_lost_in, "a hug counted as a lost line", seed);
-    check(0U == g_lost_out, "a hug raised a line-found", seed);
+    p_meas->ping_echo = LOOK_ECHO_OPEN;
+    p_meas->ping_seq = (uint8_t)((p_meas->now_ms / 60U) & OBSTACLE_PING_SEQ_MK);
 }
 
 /* A hug that ends while the follower was lost: the follower starts afresh, and
@@ -343,7 +79,8 @@ static void test_barcode_direct(void)
     check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour, "barcode: follower drives", 0U);
     check(cmd.speed_mm_s == (LINE_CRUISE_UM_S / 1000), "barcode: cruise speed", 0U);
     check(0 == cmd.turn_deci_s, "barcode: straight", 0U);
-    check(0U == (st.follow.flags & LINE_FOLLOW_STARTED), "barcode: follower not updated", 0U);
+    check(st.follow.last_ms == m.now_ms && st.follow.anchor_um == 0,
+          "barcode: next correction starts from the marker sample", 0U);
 
     st.follow.status = (uint8_t)LINE_FOLLOW_STOPPED;
     pilot_step(&st, &m, &cmd);
@@ -351,7 +88,27 @@ static void test_barcode_direct(void)
           "barcode: a stopped follower stays stopped", 0U);
 }
 
-/* The straight through a barcode does not count as blind travel: after it the
+static void test_barcode_reader_crosses_unmarked_bend(bool left)
+{
+    pilot_state_t st;
+    pilot_cmd_t cmd;
+    pilot_meas_t m = {.b_barcode = true, .b_line_left = left, .b_line_right = !left};
+    pilot_init(&st);
+    for (unsigned tick = 0U; tick < 4U; tick++)
+    {
+        m.now_ms = 1000U + tick * TICK_MS;
+        m.stamp_ms = m.now_ms;
+        m.left_um = (int64_t)tick * 1250;
+        m.right_um = m.left_um;
+        pilot_step(&st, &m, &cmd);
+    }
+    check(cmd.behaviour == PILOT_BEHAVIOUR_FOLLOW_LINE && cmd.speed_mm_s > 0,
+          "side reader crosses bend: still following", 0U);
+    check(left ? cmd.turn_deci_s > 0 : cmd.turn_deci_s < 0,
+          "side reader crosses bend: steer toward the line detector on tape", 0U);
+}
+
+/* Accepted elements during a verified marker renew the travel anchor. After it the
  * follower has the whole LINE_GAP_MM before it searches. */
 static void test_barcode_straight_keeps_the_gap(void)
 {
@@ -368,10 +125,12 @@ static void test_barcode_straight_keeps_the_gap(void)
     m.stamp_ms = 1000U;
     m.b_line_left = true;
     m.b_line_right = true;
+    open_course(&m);
     pilot_step(&st, &m, &cmd);
     m.b_line_left = false;
     m.b_line_right = false;
     m.b_barcode = true;
+    m.b_marker_progress = true;
     for (i = 0; i < STRAIGHT_STEPS; i++)
     {
         m.now_ms += STEP_MS;
@@ -379,9 +138,11 @@ static void test_barcode_straight_keeps_the_gap(void)
         travel_mm++;
         m.left_um = (int64_t)travel_mm * 1000;
         m.right_um = m.left_um;
+        open_course(&m);
         pilot_step(&st, &m, &cmd);
     }
     m.b_barcode = false;
+    m.b_marker_progress = false;
     resume_mm = travel_mm;
     for (i = 0; (i < MAX_STEPS) && ((uint8_t)LINE_FOLLOW_SEARCHING != st.follow.status); i++)
     {
@@ -390,6 +151,7 @@ static void test_barcode_straight_keeps_the_gap(void)
         travel_mm++;
         m.left_um = (int64_t)travel_mm * 1000;
         m.right_um = m.left_um;
+        open_course(&m);
         pilot_step(&st, &m, &cmd);
     }
     check((uint8_t)LINE_FOLLOW_SEARCHING == st.follow.status, "barcode gap: searches", 0U);
@@ -418,6 +180,7 @@ static void ideal_init(ideal_t * p_i)
     p_i->m.stamp_ms = 1000U;
     p_i->m.b_line_left = true;
     p_i->m.b_line_right = true;
+    open_course(&p_i->m);
     pilot_step(&p_i->st, &p_i->m, &p_i->cmd);
     p_i->m.b_line_left = false;
     p_i->m.b_line_right = false;
@@ -433,6 +196,7 @@ static void ideal_step(ideal_t * p_i)
 {
     p_i->m.now_ms += TICK_MS;
     p_i->m.stamp_ms = p_i->m.now_ms;
+    open_course(&p_i->m);
     pilot_step(&p_i->st, &p_i->m, &p_i->cmd);
     if (!(p_i->b_block && ideal_reversing(p_i)))
     {
@@ -556,23 +320,406 @@ static void test_barcode_during_the_reverse(void)
           "barcode in the reverse: it did not cover its distance", 0U);
 }
 
-int main(void)
+static void course_hold_tick(pilot_state_t * p_pilot, pilot_meas_t * p_meas, pilot_cmd_t * p_cmd)
 {
-    unsigned i;
+    p_meas->now_ms += TICK_MS;
+    p_meas->stamp_ms = p_meas->now_ms;
+    pilot_step(p_pilot, p_meas, p_cmd);
+}
 
+/* Use actual request/response and free-running sequence namespaces. More than
+ * 45 seconds with the same obstruction crosses both device timer wraps. */
+static void course_blocked_episode(pilot_state_t * p_pilot, pilot_meas_t * p_meas,
+                                   pilot_cmd_t * p_cmd, uint8_t * p_center_seq, unsigned ticks)
+{
+    int16_t const expected_angles[] = {-OBSTACLE_SERVO_LIMIT_DECI, 0, OBSTACLE_SERVO_LIMIT_DECI,
+        OBSTACLE_SERVO_LIMIT_DECI / 2, 0, -OBSTACLE_SERVO_LIMIT_DECI / 2};
+    unsigned completions = 0U;
+    unsigned requests = 0U;
+    bool b_angles_match = true;
+    drive_state_t drive = {120000, 120000};
+
+    for (unsigned tick = 0U; tick < ticks; tick++)
+    {
+        if (0U != p_cmd->b_ping_req)
+        {
+            b_angles_match &= p_cmd->ping_servo_deci == expected_angles[requests %
+                (sizeof(expected_angles) / sizeof(expected_angles[0]))];
+            p_meas->b_ping_reply = true;
+            p_meas->ping_servo_deci = p_cmd->ping_servo_deci;
+            p_meas->ping_seq = p_cmd->ping_seq;
+            requests++;
+        }
+        else if (0U == (tick % 6U))
+        {
+            *p_center_seq = (uint8_t)((*p_center_seq + 1U) & OBSTACLE_PING_SEQ_MK);
+            p_meas->b_ping_reply = false;
+            p_meas->ping_servo_deci = 0;
+            p_meas->ping_seq = *p_center_seq;
+        }
+        p_meas->ping_echo = LOOK_ECHO_VALID;
+        p_meas->ping_mm = (uint16_t)(77U + (tick % 24U));
+        p_meas->b_held = tick >= 1000U && tick < 1080U;
+        p_meas->b_sonar_fault = tick >= 2100U && tick < 2130U;
+        if (1020U == tick)
+        {
+            pilot_clear_latches(p_pilot);
+        }
+        course_hold_tick(p_pilot, p_meas, p_cmd);
+        check(0 == p_cmd->speed_mm_s && 0 == p_cmd->turn_deci_s,
+              "a stopped course moved against a 77–100 mm return", 0U);
+        int32_t left;
+        int32_t right;
+        pilot_drive(&drive, p_cmd, TICK_MS, &left, &right);
+        check(0 == left && 0 == right, "the parked course did not brake the wheel outputs", 0U);
+        completions += (0U != p_cmd->course_scan_samples) ? 1U : 0U;
+    }
+    (void)printf("blocked for %u ms: %u requested rays, %u completed sweeps\n",
+                 ticks * TICK_MS, requests, completions);
+    check(6U == requests && 2U == completions && b_angles_match,
+          "a blocked episode must request exactly two alternating three-angle sweeps", 0U);
+    check(0U == p_cmd->b_ping_req, "the free-running center stream must own the parked servo", 0U);
+}
+
+static void course_center_ping(pilot_state_t * p_pilot, pilot_meas_t * p_meas, pilot_cmd_t * p_cmd,
+                               uint8_t * p_center_seq, uint8_t echo, uint16_t range)
+{
+    *p_center_seq = (uint8_t)((*p_center_seq + 1U) & OBSTACLE_PING_SEQ_MK);
+    p_meas->ping_seq = *p_center_seq;
+    p_meas->ping_servo_deci = 0;
+    p_meas->b_ping_reply = false;
+    p_meas->ping_echo = echo;
+    p_meas->ping_mm = range;
+    course_hold_tick(p_pilot, p_meas, p_cmd);
+}
+
+static void test_bounded_course_contact_boundary(void)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd;
+    pilot_meas_t meas = {.b_line_left = true, .b_line_right = true, .b_bounded_course = true};
+    uint8_t sequence = 60U;
+
+    pilot_init(&pilot);
+    for (unsigned sample = 0U; sample < 4U; sample++)
+    {
+        course_center_ping(&pilot, &meas, &cmd, &sequence, LOOK_ECHO_VALID,
+                           (sample < 2U) ? 250U : 101U);
+        check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour && cmd.speed_mm_s > 0,
+              "returns outside 100 mm must not park the course", 0U);
+        check(0U == cmd.contact_mm, "outside cutoff must not be reported as contact", 0U);
+    }
+
+    for (unsigned sample = 0U; sample < 4U; sample++)
+    {
+        meas.ping_echo = LOOK_ECHO_VALID;
+        meas.ping_mm = 95U;
+        meas.ping_servo_deci = OBSTACLE_SERVO_LIMIT_DECI;
+        meas.b_ping_reply = (sample < 2U);
+        meas.ping_seq = (uint8_t)((meas.ping_seq + 1U) & OBSTACLE_PING_SEQ_MK);
+        course_hold_tick(&pilot, &meas, &cmd);
+        check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour && cmd.speed_mm_s > 0,
+              "an uncentered measurement must not park the course", 0U);
+    }
+    course_center_ping(&pilot, &meas, &cmd, &sequence, LOOK_ECHO_VALID, 0U);
+    check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour && cmd.speed_mm_s > 0,
+          "a malformed zero valid range must not park the course", 0U);
+    meas.ping_mm = 100U;
+    course_hold_tick(&pilot, &meas, &cmd);
+    check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour && cmd.speed_mm_s > 0,
+          "a changed reading with a cached sequence must not park the course", 0U);
+    course_center_ping(&pilot, &meas, &cmd, &sequence, LOOK_ECHO_VALID, 100U);
+    check(PILOT_REASON_COURSE_RECOVERY == cmd.reason && 0 == cmd.speed_mm_s &&
+              0 == cmd.turn_deci_s && 100U == cmd.contact_mm,
+          "the first fresh centered 100 mm reading must brake and report contact", 0U);
+
+    pilot_init(&pilot);
+    meas.b_commanded_turn = true;
+    course_center_ping(&pilot, &meas, &cmd, &sequence, LOOK_ECHO_VALID, 101U);
+    check(PILOT_BEHAVIOUR_NONE == cmd.behaviour, "101 mm must not abort a commanded maneuver", 0U);
+    course_center_ping(&pilot, &meas, &cmd, &sequence, LOOK_ECHO_VALID, 100U);
+    check(PILOT_REASON_COURSE_RECOVERY == cmd.reason && 100U == cmd.contact_mm,
+          "a fresh centered 100 mm reading must abort a commanded maneuver", 0U);
+
+    pilot_init(&pilot);
+    meas.b_commanded_turn = false;
+    course_center_ping(&pilot, &meas, &cmd, &sequence, LOOK_ECHO_TOO_CLOSE, 20U);
+    check(PILOT_REASON_COURSE_RECOVERY == cmd.reason && 0 == cmd.speed_mm_s,
+          "the first fresh blind-zone contact must brake", 0U);
+}
+
+static void test_bounded_course_scan_budget(void)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd = {0};
+    pilot_meas_t meas = {.now_ms = UINT32_MAX - 1000U, .b_line_left = true, .b_line_right = true,
+                         .b_stationary = true, .b_bounded_course = true};
+    uint8_t center_seq = 59U;
+
+    pilot_init(&pilot);
+    for (unsigned sample = 0U; sample < HUG_TRIGGER_HITS; sample++)
+    {
+        course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 100U);
+    }
+    check(PILOT_REASON_COURSE_RECOVERY == cmd.reason, "the centered obstacle starts course recovery", 0U);
+    course_blocked_episode(&pilot, &meas, &cmd, &center_seq, 4500U);
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_OPEN, 0U);
+    for (unsigned tick = 0U; tick < 26U; tick++)
+    {
+        course_hold_tick(&pilot, &meas, &cmd);
+        check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s && 0U == cmd.b_ping_req,
+              "a repeated or stale centered ping cannot advance the car or rearm the scan", 0U);
+    }
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_NONE, 0U);
+    meas.b_held = true;
+    for (unsigned sample = 0U; sample < 3U; sample++)
+    {
+        course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_OPEN, 0U);
+        check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s, "clear sonar cannot bypass a motion hold", 0U);
+    }
+    meas.b_held = false;
+    for (unsigned sample = 0U; sample < 3U; sample++)
+    {
+        course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 100U);
+        check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s, "100 mm cannot release a bounded course", 0U);
+    }
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 101U);
+    check(0 == cmd.speed_mm_s, "one valid clear ping is insufficient", 0U);
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_NONE, 0U);
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_OPEN, 0U);
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 101U);
+    check(0 == cmd.speed_mm_s, "invalid ping must reset the consecutive-clear count", 0U);
+
+    meas.b_ping_reply = true;
+    meas.ping_servo_deci = OBSTACLE_SERVO_LIMIT_DECI;
+    meas.ping_seq = (uint8_t)((center_seq + 1U) & OBSTACLE_PING_SEQ_MK);
+    course_hold_tick(&pilot, &meas, &cmd);
+    check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s, "a requested side ray cannot release the course", 0U);
+
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_OPEN, 0U);
+    check(cmd.speed_mm_s > 0 && PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour,
+          "three consecutive distinct usable centered pings release the course", 0U);
+
+    meas.left_um = 50000;
+    meas.right_um = 50000;
+    for (unsigned sample = 0U; sample < HUG_TRIGGER_HITS; sample++)
+    {
+        course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 100U);
+    }
+    check(PILOT_REASON_COURSE_RECOVERY == cmd.reason, "a new obstacle starts a new course recovery", 0U);
+    course_blocked_episode(&pilot, &meas, &cmd, &center_seq, 500U);
+}
+
+/* Neither optic sees tape. A perpendicular face ends on the requested side
+ * and continues beyond the opposite outer beam. The encoders start at two
+ * different nonzero counts, as on a car which has already followed a route. */
+static void test_stationary_course_edge(int side, bool move_encoder, bool far_wall, uint16_t face_mm)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd = {0};
+    pilot_meas_t meas = {.b_stationary = true, .b_bounded_course = true,
+                         .left_um = 83000, .right_um = 109000};
+    uint8_t center_seq = 0U;
+    unsigned requests = 0U;
+    unsigned completions = 0U;
+    int16_t const coarse[] = {-200, 0, 200};
+    int16_t const symmetric[] = {100, 0, -100};
+    int const expected_side = face_mm > 100U ? 0 : side;
+
+    pilot_init(&pilot);
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 90U);
+    for (unsigned tick = 0U; tick < 300U; tick++)
+    {
+        if (0U != cmd.b_ping_req)
+        {
+            check(requests < 6U, "a parked survey exceeded its request budget", 0U);
+            int const expected = (requests < 3U) ? coarse[requests] :
+                ((0 == expected_side || move_encoder) ? symmetric[requests - 3U] :
+                 expected_side * 50 * (int)(requests - 2U));
+            check(expected == cmd.ping_servo_deci, "the next probe must follow the observed edge", 0U);
+            bool const outside = (0 != side) && (side * cmd.ping_servo_deci >= 150);
+            meas.b_ping_reply = true;
+            meas.ping_servo_deci = cmd.ping_servo_deci;
+            meas.ping_seq = cmd.ping_seq;
+            meas.ping_echo = (outside && !far_wall) ? LOOK_ECHO_OPEN : LOOK_ECHO_VALID;
+            meas.ping_mm = outside ? (far_wall ? 280U : 0U) : ((0 == cmd.ping_servo_deci) ? face_mm : (uint16_t)(face_mm + 6U));
+            requests++;
+            course_hold_tick(&pilot, &meas, &cmd);
+        }
+        else
+        {
+            course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 90U);
+        }
+        check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s, "a measured edge cannot authorize wheel motion", 0U);
+        if (0U != cmd.course_scan_samples)
+        {
+            completions++;
+            unsigned const expected_rays = (1U == completions || move_encoder) ? 3U : 6U;
+            check(pilot.look.count == expected_rays && cmd.course_scan_samples == expected_rays + 1U,
+                  "the profile must retain exactly the measured rays from this stationary pose", 0U);
+            if (1U == completions)
+            {
+                check(pilot.course_side == expected_side, "observed geometry must support the provisional side", 0U);
+            }
+            if (1U == completions && move_encoder)
+            {
+                /* The speed observation still rounds to zero even though one encoder moved. */
+                meas.right_um += 2000;
+            }
+        }
+    }
+    check(2U == completions && 6U == requests, "both bounded surveys must complete without tape", 0U);
+    meas.b_held = true;
+    course_hold_tick(&pilot, &meas, &cmd);
+    check(0 == pilot.course_side && 0U == pilot.look.count && !pilot.b_course_anchor,
+          "a safety hold must retire the contact survey", 0U);
+}
+
+static void test_course_reply_deadline(uint32_t elapsed_ms)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd = {0};
+    pilot_meas_t meas = {.b_stationary = true, .b_bounded_course = true, .now_ms = UINT32_MAX - 400U};
+    uint8_t center_seq = 0U;
+    uint8_t late_seq = 0U;
+    unsigned served = 0U;
+    bool const fresh = elapsed_ms < 300U;
+
+    pilot_init(&pilot);
+    course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 90U);
+    for (unsigned ticks = 0U; ticks < 200U; ticks++)
+    {
+        if (0U == cmd.b_ping_req)
+        {
+            course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 90U);
+        }
+        else
+        {
+            if (3U == served)
+            {
+                check(cmd.ping_servo_deci == (fresh ? 50 : 100), "a timed-out edge must not direct the next scan", 0U);
+                meas.ping_seq = late_seq;
+                meas.ping_servo_deci = 200;
+                meas.ping_echo = LOOK_ECHO_OPEN;
+                meas.ping_mm = 0U;
+                meas.b_ping_reply = true;
+                course_hold_tick(&pilot, &meas, &cmd);
+                check(0U != cmd.b_ping_req && cmd.ping_seq != late_seq && pilot.look.count == (fresh ? 3U : 2U),
+                      "the old OPEN cannot answer the next scan", 0U);
+                return;
+            }
+            meas.b_ping_reply = true;
+            meas.ping_servo_deci = cmd.ping_servo_deci;
+            meas.ping_seq = cmd.ping_seq;
+            meas.ping_echo = (served == 2U) ? LOOK_ECHO_OPEN : LOOK_ECHO_VALID;
+            meas.ping_mm = (served == 0U) ? 96U : ((served == 1U) ? 90U : 0U);
+            if (2U == served)
+            {
+                late_seq = cmd.ping_seq;
+                meas.now_ms += elapsed_ms - TICK_MS;
+            }
+            course_hold_tick(&pilot, &meas, &cmd);
+            served++;
+            if (3U == served)
+            {
+                check(cmd.course_scan_samples == (fresh ? 4U : 3U) && pilot.course_side == (fresh ? 1 : 0),
+                      "a matching OPEN consumed at or after its deadline must not qualify as an edge", 0U);
+            }
+        }
+        check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s, "the reply timing cannot authorize wheel motion", 0U);
+    }
+    check(false, "the following survey was never requested", 0U);
+}
+
+static void test_interrupted_course_scan_budget(void)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd = {0};
+    pilot_meas_t meas = {.b_line_left = true, .b_line_right = true,
+                         .b_stationary = true, .b_bounded_course = true};
+    uint8_t center_seq = 0U;
+    unsigned requests = 0U;
+    unsigned hold_until = 0U;
+    bool b_angles_match = true;
+
+    pilot_init(&pilot);
+    for (unsigned sample = 0U; sample < HUG_TRIGGER_HITS; sample++)
+    {
+        course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 100U);
+    }
+    for (unsigned tick = 0U; tick < 1500U; tick++)
+    {
+        if (0U != cmd.b_ping_req)
+        {
+            int16_t const angle = (0U == requests) ? -OBSTACLE_SERVO_LIMIT_DECI : (OBSTACLE_SERVO_LIMIT_DECI / 2);
+
+            b_angles_match &= angle == cmd.ping_servo_deci;
+            requests++;
+            hold_until = tick + 20U;
+        }
+        meas.b_held = tick < hold_until;
+        if (0U == (tick % 6U))
+        {
+            course_center_ping(&pilot, &meas, &cmd, &center_seq, LOOK_ECHO_VALID, 100U);
+        }
+        else
+        {
+            course_hold_tick(&pilot, &meas, &cmd);
+        }
+        check(0 == cmd.speed_mm_s && 0 == cmd.turn_deci_s && 0U == cmd.course_scan_samples,
+              "an interrupted sweep leaves the wheels parked and publishes no completion", 0U);
+    }
+    (void)printf("interrupted sweeps: %u requested rays before the servo stays centered\n", requests);
+    check(2U == requests && b_angles_match, "interrupted sweeps must consume their budget", 0U);
+}
+
+int main(int argc, char * argv[])
+{
+    if (2 == argc && 0 == strcmp(argv[1], "course-reply-deadline"))
+    {
+        test_course_reply_deadline(299U);
+        test_course_reply_deadline(300U);
+        test_course_reply_deadline(301U);
+        return EXIT_SUCCESS;
+    }
+    if (2 == argc && 0 == strcmp(argv[1], "stationary-course-edge"))
+    {
+        test_stationary_course_edge(1, false, false, 90U);
+        test_stationary_course_edge(-1, false, false, 90U);
+        test_stationary_course_edge(-1, false, true, 90U);
+        test_stationary_course_edge(0, false, false, 90U);
+        test_stationary_course_edge(1, true, false, 90U);
+        test_stationary_course_edge(1, false, false, 135U);
+        return EXIT_SUCCESS;
+    }
+    if (2 == argc && 0 == strcmp(argv[1], "bounded-course-contact-boundary"))
+    {
+        test_bounded_course_contact_boundary();
+        return EXIT_SUCCESS;
+    }
+    if (2 == argc && 0 == strcmp(argv[1], "bounded-course-scan-budget"))
+    {
+    test_bounded_course_contact_boundary();
+    test_bounded_course_scan_budget();
+        return EXIT_SUCCESS;
+    }
+    if (2 == argc && 0 == strcmp(argv[1], "interrupted-course-scan-budget"))
+    {
+        test_interrupted_course_scan_budget();
+        return EXIT_SUCCESS;
+    }
+    if (1 != argc)
+    {
+        return EXIT_FAILURE;
+    }
     test_watch_direct();
     test_barcode_direct();
+    test_barcode_reader_crosses_unmarked_bend(true);
+    test_barcode_reader_crosses_unmarked_bend(false);
     test_barcode_straight_keeps_the_gap();
     test_blocked_reverse_stops_after_the_retries();
     test_one_wheel_jam_after_a_reverse_latches_encoder();
     test_barcode_during_the_reverse();
-    for (i = 0U; i < SEEDS; i++)
-    {
-        test_barcode(g_seeds[i]);
-        test_gap(g_seeds[i]);
-        test_gap_retry(g_seeds[i]);
-        test_hug(g_seeds[i]);
-    }
     (void)printf("pilot_line: ok\n");
     return EXIT_SUCCESS;
 }

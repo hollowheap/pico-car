@@ -48,6 +48,10 @@ STATIC_ASSERT(sizeof(drive_state_t) == 8U, "drive_state_t size");
 /** Both wheels at rest. */
 void drive_init(drive_state_t * p_drive);
 
+/** Forward axle-path radius from a pair of wheel speeds, rounded outward.
+ * Left turns are positive. Zero means no usable forward arc. */
+int16_t drive_forward_radius_mm(int32_t left_um_s, int32_t right_um_s);
+
 /**
  * One drive pass.
  *
@@ -66,8 +70,9 @@ void drive_step(drive_state_t * p_drive, int16_t speed_mm_s,
  * One pass of the line follower: the turn and a slower speed reach the wheel
  * targets at once, with the turn first as in drive_step(). A slewed steering
  * correction comes too late for a 150 mm corner. A faster forward speed rises
- * at DRIVE_ACCEL_MM_S2 from the mean of the last targets (0 if reversing). The
- * next drive_step() slews from these targets.
+ * at DRIVE_ACCEL_MM_S2 from the mean of the last targets (0 if reversing).
+ * Forward tracking limits the turn to keep both wheel targets nonnegative.
+ * The next drive_step() slews from these targets.
  *
  * @param[in,out] p_drive      Drive state.
  * @param[in]     speed_mm_s   Forward speed in mm/s.
@@ -79,6 +84,12 @@ void drive_step(drive_state_t * p_drive, int16_t speed_mm_s,
 void drive_follow(drive_state_t * p_drive, int16_t speed_mm_s,
                   int16_t turn_deci_s, uint32_t dt_ms, int32_t * p_left_um_s,
                   int32_t * p_right_um_s);
+
+/** Bias equal forward targets toward the slower uphill wheel while keeping
+ *  their mean speed. The caller supplies a known roll (left-down positive,
+ *  centi-degrees) and fresh, valid wheel speeds (um/s). */
+void drive_compensate_roll(drive_state_t * p_drive, int16_t roll_cdeg,
+                           int32_t left_speed_um_s, int32_t right_speed_um_s);
 
 /**
  * A safety stop: both wheel targets go to 0 at once, not through the slew

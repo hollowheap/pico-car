@@ -15,7 +15,6 @@
 #error "tests need assert()"
 #endif
 
-#define UM_PER_MM   1000
 #define STEP_MS     10U
 #define SETTLE_RUNS 200
 #define TURN_90_DPS 900
@@ -78,6 +77,21 @@ static void test_curve(void)
     settle(&d, 150, 300, &l, &r);
     assert(r > 150 * UM_PER_MM && l < 150 * UM_PER_MM);
     assert((l + r) / 2 == 150 * UM_PER_MM);
+}
+
+static void test_forward_radius(void)
+{
+    /* With a stopped inner wheel the axle traces half the 107 mm track.
+     * Round the predicted footprint outward in either direction. */
+    assert(drive_forward_radius_mm(0, 100000) == 54);
+    assert(drive_forward_radius_mm(100000, 0) == -54);
+    assert(drive_forward_radius_mm(20000, 100000) == 81);
+    assert(drive_forward_radius_mm(100000, 20000) == -81);
+    assert(drive_forward_radius_mm(50000, 50000) == 0);
+    assert(drive_forward_radius_mm(50000, 50001) == 0);
+    assert(drive_forward_radius_mm(-20000, 100000) == 0);
+    assert(drive_forward_radius_mm(0, 20000) == 0);
+    assert(drive_forward_radius_mm(0, INT32_MAX) == 0);
 }
 
 static void test_accel_limit(void)
@@ -288,9 +302,61 @@ static void test_follow_start_ramps(void)
     assert(l < -80 * UM_PER_MM && r > 80 * UM_PER_MM && l == -r);
 }
 
-/* The hug stops when its pings are lost: the car must not roll on blind
- * through the slew. A stop to look, with no reason, still slews. */
-static void test_pilot_stop_with_reason(void)
+/* Both mirrored searches can pick up the opposite sensor while the encoders
+ * still report the old pivot. A forward command cannot reverse either wheel. */
+static void test_follow_acquisition_after_pivot(void)
+{
+    for (int32_t side = -1; side <= 1; side += 2)
+    {
+        pilot_state_t pilot;
+        pilot_meas_t meas = {.b_line_left = (side > 0), .b_line_right = (side < 0),
+                             .ping_echo = LOOK_ECHO_OPEN};
+        drive_state_t drive;
+        pilot_cmd_t cmd;
+        int32_t left;
+        int32_t right;
+
+        pilot_init(&pilot);
+        drive_init(&drive);
+        pilot_step(&pilot, &meas, &cmd);
+        meas.b_line_left = false;
+        meas.b_line_right = false;
+        for (int32_t mm = 1; mm <= LINE_GAP_MM; mm++)
+        {
+            meas.left_um = (int64_t)mm * UM_PER_MM;
+            meas.right_um = meas.left_um;
+            meas.now_ms += STEP_MS;
+            meas.stamp_ms = meas.now_ms;
+            meas.ping_seq = (uint8_t)(mm / 5);
+            pilot_step(&pilot, &meas, &cmd);
+            pilot_drive(&drive, &cmd, STEP_MS, &left, &right);
+        }
+        assert(LINE_FOLLOW_SEARCHING == pilot.follow.status);
+        assert(left == -right && side * right > 0);
+
+        for (unsigned pass = 0U; pass < 5U; pass++)
+        {
+            int32_t const coast_um = (side * LINE_SEARCH_UM_S * (int32_t)STEP_MS) / 1000;
+
+            meas.left_um -= coast_um;
+            meas.right_um += coast_um;
+            meas.now_ms += STEP_MS;
+            meas.stamp_ms = meas.now_ms;
+            meas.b_line_left = (side < 0);
+            meas.b_line_right = (side > 0);
+            pilot_step(&pilot, &meas, &cmd);
+            assert(LINE_FOLLOW_FOLLOWING == pilot.follow.status);
+            assert(cmd.behaviour == PILOT_BEHAVIOUR_FOLLOW_LINE && cmd.speed_mm_s > 0);
+            assert(side * cmd.turn_deci_s < 0);
+            pilot_drive(&drive, &cmd, STEP_MS, &left, &right);
+            assert(left >= 0 && right >= 0);
+            assert(side * (left - right) > 0);
+        }
+    }
+}
+
+/* A scan pause and a sonar fault each hold both targets at zero. */
+static void test_pilot_stationary_targets(void)
 {
     drive_state_t d;
     pilot_cmd_t   cmd = { 0 };
@@ -302,9 +368,15 @@ static void test_pilot_stop_with_reason(void)
     cmd.behaviour = (uint8_t)PILOT_BEHAVIOUR_HUG;
     cmd.reason    = (uint8_t)PILOT_REASON_NONE;
     pilot_drive(&d, &cmd, STEP_MS, &l, &r);
-    assert(l == (120 * UM_PER_MM) - (DRIVE_ACCEL_MM_S2 * (int32_t)STEP_MS));
+    assert(l == 0 && r == 0);
+    pilot_drive(&d, &cmd, STEP_MS, &l, &r);
+    assert(l == 0 && r == 0);
+    cmd.turn_deci_s = HUG_PIVOT_MIN_DECI_S;
+    pilot_drive(&d, &cmd, STEP_MS, &l, &r);
+    assert(l < 0 && r > 0);
 
     settle(&d, 120, 0, &l, &r);
+    cmd.turn_deci_s = 0;
     cmd.reason = (uint8_t)PILOT_REASON_SONAR;
     pilot_drive(&d, &cmd, STEP_MS, &l, &r);
     assert(l == 0 && r == 0);
@@ -332,7 +404,7 @@ int main(int argc, char * argv[])
 {
     if (2 == argc && 0 == strcmp("sonar-sets-zero", argv[1]))
     {
-        test_pilot_stop_with_reason();
+        test_pilot_stationary_targets();
         return EXIT_SUCCESS;
     }
     if (1 != argc)
@@ -343,6 +415,7 @@ int main(int argc, char * argv[])
     test_straight();
     test_pure_turn();
     test_curve();
+    test_forward_radius();
     test_accel_limit();
     test_start_kick();
     test_small_target_is_zero();
@@ -352,8 +425,9 @@ int main(int argc, char * argv[])
     test_safety_stop_skips_slew();
     test_follow_skips_slew();
     test_follow_start_ramps();
-    test_pilot_stop_with_reason();
+    test_follow_acquisition_after_pivot();
+    test_pilot_stationary_targets();
     test_pilot_backoff_from_rest();
-    puts("test_pilot_drive: 14 tests passed");
+    puts("test_pilot_drive: 16 tests passed");
     return 0;
 }
