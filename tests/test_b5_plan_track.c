@@ -58,8 +58,22 @@ int main (void)
     check(!b5_plan_track_blocked(197, -95, 300U), "point beside the lane");
     check(!b5_plan_track_blocked(350, 0, 300U), "point past the lookahead");
 
-    check(b5_plan_track_near(100, 100), "inside the swing circle");
-    check(!b5_plan_track_near(120, 100), "outside the swing circle");
+    /* Asymmetric lane: 138 mm on the left (IR protrusion), 93 on the right. */
+    check(b5_plan_track_blocked(200, 130, 300U), "left point in the wider lane");
+    check(!b5_plan_track_blocked(200, -100, 300U), "right point beside the lane");
+    check(b5_plan_track_gap_mm(100) == 38, "left gap 138 - 100");
+    check(b5_plan_track_gap_mm(-80) == 13, "right gap 93 - 80");
+
+    /* Swing circle 172 mm (front of the left protrusion). */
+    check(b5_plan_track_near(130, 100), "inside the swing circle");
+    check(!b5_plan_track_near(140, 110), "outside the swing circle");
+
+    /* Bypass legs: first leg keeps the axle 192 mm from the face. */
+    check(b5_plan_ahead_mm(205U) == 82, "first leg cut short for B 205");
+    check(b5_plan_ahead_mm(400U) == 200, "first leg B / 2 for B 400");
+    check(b5_plan_ahead_mm(100U) == -23, "back up 23 mm for B 100");
+    check(b5_plan_out_mm(50U) == 242U, "E = A + 192");
+    check(b5_plan_level_mm(205U, 82) == 235U, "level 215 + 20 short");
 
     if (0U == failures)
     {

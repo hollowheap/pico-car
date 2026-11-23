@@ -166,7 +166,9 @@ These rules apply in every state:
 - **Collision guard** (REACQUIRE only): 2 readings under 80 mm → emergency
   stop. WAIT_STOP (already braking) and BYPASS (Navigation backs away from a
   close obstacle first) are not guarded; Navigation's virtual bumper covers
-  contact in every bypass phase.
+  contact in every bypass phase. During a side scan (SWEEP) the car stands
+  still, so Navigation switches the guard off (`obstacle_set_sweep()`): a
+  reading under 80 mm then only means "in the way".
 
 ### Scan
 
@@ -218,23 +220,30 @@ the middle of its axle (no shift). Headings are absolute (90° away, 0°,
 
 | Phase | What the car does | Ends when |
 |---|---|---|
-| AHEAD | straight on, towards the obstacle | moved B / 2 |
+| AHEAD | straight on, towards the obstacle (or straight back, if it stopped too close) | moved min(B / 2, B + 69 − 192): the axle stays ≥ 192 mm from the face |
 | SPIN_AWAY | rotate away (the direction is remembered) | heading 90° away |
-| OUT | straight, heading held | moved A + 63 + 20 |
+| OUT | straight, heading held | moved E = A + 192 |
 | SPIN_PARALLEL | rotate back | heading 0° |
-| LEVEL | straight, heading held | moved B + 10 mm (level with the near face) |
+| LEVEL | straight, heading held | moved B + 10 mm, plus what AHEAD fell short of B / 2 (level with the near face) |
 | SPIN_FACE | rotate to face the line (and the obstacle) | heading −90° |
-| SWEEP | stand still; servo −60°..+60° in 5° steps (the first scan's range), 2 pings each | judged (below) |
+| SWEEP | stand still (collision guard off); servo −60°..+60° in 5° steps (the first scan's range), 2 pings each | judged (below) |
 | TRACK_OUT | rotation scan pass 1: rotate 60° towards the obstacle's side at a constant ~50°/s, servo turning the other way so the beam points straight at the line | turned 60° → TRACK_BACK, or an echo in the lane / swing circle → blocked |
 | TRACK_BACK | pass 2: rotate back with the beam tilted 10° towards the obstacle's side | back at the start heading → TO_LINE if clear |
 | SPIN_BACK | rotate back | heading 0° |
-| MOVE_ON | straight, heading held | moved (D + 63 + 20) / 2, then SPIN_FACE and SWEEP again |
+| MOVE_ON | straight, heading held | moved (D + H + 20) / 2 (H = half width on the side passing the obstacle: 108 left, 63 right), then SPIN_FACE and SWEEP again |
 | TO_LINE | slowly (70 mm/s) at the line, heading held | IR black for ≥ 8 mm of travel, no more than 80 mm short of the line; stop 300 mm past it |
 | CENTRE | straight | 127 mm more (axle on the line) |
 | MAP | rotate in the remembered direction (same way as SPIN_AWAY), slowly, servo at 0° | an IR sensor finds the line → LINE_FOUND, line following resumes; none in a full turn → stop |
 
-The numbers (measured: half width 63 mm, axle → sonar 68.5 mm, axle → IR
-123.5 mm, tape 17.5 mm, track 107 mm):
+The numbers (measured: half width 63 mm, plus a 45 mm IR protrusion on the
+left, so 108 mm left / 63 mm right; axle → sonar 68.5 mm, axle → IR
+123.5 mm, axle → front 133 mm, tape 17.5 mm, track 107 mm):
+
+- **S** = swing radius = `√(133² + 108²)` ≈ 172 mm (the left protrusion at
+  the front of the car; FILL: 165 if it sits only at the IR sensors).
+- **E** = `A + max(S + 20, 69 + 80 + 20)` = `A + max(192, 169)` = A + 192:
+  the rotation to face the obstacle clears it with 20 mm to spare, and the
+  sonar stays at least 100 mm (the 80 mm guard + 20) from it.
 
 - **B** = the closest reading of the first scan; detection is now 220 mm
   (`B5_DETECT_MM`), so B ≈ 205 mm.
@@ -244,10 +253,13 @@ The numbers (measured: half width 63 mm, axle → sonar 68.5 mm, axle → IR
   line. Each reading becomes a point `f = r·cos α` towards the line and
   `s = r·sin α` along it (α positive = forward along the line). Points past
   the line + 100 mm are ignored.
-  - **Completely clear** (no point with |s| ≤ C = 63 + 30 = 93 mm) →
-    the rotation scan (below), then TO_LINE.
+  - **Completely clear** (no point in the lane C = half width + 30 on each
+    side: 138 mm on the car's left, 93 mm on its right) → the rotation scan
+    (below), then TO_LINE. Passing right, the car's left faces back along
+    the line (towards the obstacle); passing left, it faces forward.
   - **Cleared angle found, still in the way**: `D = d · tan(forward cleared
-    angle)`, d = the closest point; move on `(D + 63 + 20) / 2`.
+    angle)`, d = the closest point; move on `(D + H + 20) / 2`, H = the
+    half width on the obstacle side (108 passing right, 63 passing left).
   - **No cleared angle** (hits up to +60°): θ = 30°, same move.
   - There is no limit on the number of scans (only the REACQUIRE time and
     distance limits).
@@ -266,14 +278,14 @@ The numbers (measured: half width 63 mm, axle → sonar 68.5 mm, axle → IR
   - `forward = 69·cos psi + (15 + p)·cos gaze`,
     `side = 69·sin psi + (15 + p)·sin gaze` (`b5_plan_track_point()`;
     15 mm = servo shaft to sensor face, FILL)
-  - **blocked** if `0 < forward < lookahead` and `|side| < 93`
+  - **blocked** if `0 < forward < lookahead` and `−93 < side < 138`
     (lookahead = side offset at the start + 100 mm, to 100 mm past the
-    line), or if `forward² + side² < 148²` (inside the swing circle of the
-    front corners).
+    line), or if `forward² + side² < 172²` (inside the swing circle).
   - Pass 1 gaze 0; pass 2 gaze 10° towards the obstacle's side (FILL; 12°
     if echoes survive 15° off square).
-  - **Blocked** → SPIN_BACK, MOVE_ON `93 − closest blocked side`, at least
-    30 mm, then SPIN_FACE and SWEEP again. More than 3 UNKNOWN / STUCK pings
+  - **Blocked** → SPIN_BACK, MOVE_ON = how far the deepest blocked point
+    reaches into the lane on its side (`138 − side` left, `93 − |side|`
+    right, `b5_plan_track_gap_mm()`), at least 30 mm, then SPIN_FACE and SWEEP again. More than 3 UNKNOWN / STUCK pings
     → the scan is repeated once, then counted as blocked (30 mm).
   - Before rotating at all, the SWEEP echoes are checked against the swing
     circle; if one is inside it, the car does not rotate there but moves
@@ -301,18 +313,19 @@ for 300 ms.
 
 **Known risks (host simulation of the real `b5_nav.c`):**
 
-- The front corners swing about 148 mm round the axle in a rotation. At
-  SPIN_FACE the axle is only `63 + 20 + (A − true half width)` from the
-  obstacle's side, so for every box tried (80–300 mm wide, 150–400 mm deep,
-  rotated, offset) that rotation touched the box and the bumper stopped the
-  car.
+- Fixed (E = A + 192): the old E = A + 83 left the axle only
+  `83 + (A − true half width)` from the obstacle's side while the car (and
+  the left protrusion, 172 mm swing) rotated to face it; on the car the
+  sonar read 77 mm in SWEEP and the guard stopped it. Host simulation with
+  the protrusion modelled (boxes 100–200 mm wide, offset ±30 mm, both
+  sides, B 90–220 mm including a back-up): no contact, sonar never under
+  152 mm while guarded.
 - Car run (earlier full-turn MAP): the car rejoined the line 137 mm past the
   obstacle; turning back towards it, the sonar read 68 mm and the collision
   guard stopped the car. The MAP now stops at the first line end (about
   90°), before the car faces back along the line.
-- AHEAD (B / 2) brings the front within about `B / 2 − 64` mm of the face,
-  and the first rotation needs `B / 2 + 69 ≥ 148`, so B must stay above
-  about 160 mm.
+- Still true: E and the clearances assume A is not below the obstacle's
+  true half width (the raw cleared angle normally overestimates it).
 
 **Rotation scan checks on the car** (USB serial monitor open):
 
@@ -462,6 +475,8 @@ Search `b5_cfg.h` for **FILL**. Status:
 | Setting | Status |
 |---|---|
 | Car half-width `B5_CAR_HALF_W_MM` | **Done:** 63 mm (car is 126 mm wide) |
+| IR protrusion `B5_IR_PROTRUDE_MM` | **Done:** 45 mm on the left (left half width 108 mm) |
+| Swing radius `B5_SWING_MM` | 172 mm, assuming the protrusion reaches the front of the car (FILL: 165 if only at the IR sensors) |
 | Free floor `B5_FREE_FLOOR_MM` | **Done:** 500 mm cap; the course has no side boundary, and the planner always uses the smaller offset |
 | Servo direction `B5_SERVO_DIR` | **Confirmed** on the bench (+1) |
 | Bypass speed `B5_BYPASS_SPEED_MM_S` | 140 mm/s (the 25 % duty cap tops out near 142 mm/s) |
@@ -557,7 +572,7 @@ FAULT, every SCAN_RESULT with the full 25-slot profile, every steering
 change with how far the car has turned, every bypass phase, the PLAN (B,
 cleared angle, A, out), every side scan (judgement, d, move on, and its
 readings), every rotation scan result (TRACK: pass, clear or blocked,
-closest side, unknown pings, move on), the MAP (line found, and after how
+depth into the lane, unknown pings, move on), the MAP (line found, and after how
 many degrees), every line
 contact
 (found, or ignored and why), a BUMP or HALT, every motion-service

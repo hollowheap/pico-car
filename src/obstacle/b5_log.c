@@ -63,6 +63,7 @@
 #include "b5_cfg.h"
 #include "b5_log.h"
 #include "b5_pack.h"
+#include "b5_plan.h"
 
 /* The ring index wraps with a mask, so the size must be a power of two. */
 #define LOG_MASK (B5_LOG_RECORDS - 1U)
@@ -526,9 +527,10 @@ static void print_bypass_record (b5_log_rec_t const * p_rec)
                       t_ms, g_side_name[p_rec->val_a % FIELD2_NAMES],
                       (INT)p_rec->val_d, (INT)(p_rec->val_f / DECI_PER_DEG),
                       (INT)p_rec->val_e,
-                      (INT)(p_rec->val_e + (int16_t)B5_CAR_HALF_W_MM +
-                            (int16_t)B5_OUT_BUFFER_MM),
-                      (INT)(p_rec->val_d + (int16_t)B5_LEVEL_BUFFER_MM));
+                      (INT)b5_plan_out_mm((uint32_t)p_rec->val_e),
+                      (INT)b5_plan_level_mm(
+                          (uint32_t)p_rec->val_d,
+                          b5_plan_ahead_mm((uint32_t)p_rec->val_d)));
         break;
 
         case B5_LOG_MAP:
@@ -538,7 +540,7 @@ static void print_bypass_record (b5_log_rec_t const * p_rec)
         break;
 
         case B5_LOG_TRACK:
-            tm_printf((UB const *)"%8d TRACK pass %d: %s, closest side %d mm, "
+            tm_printf((UB const *)"%8d TRACK pass %d: %s, into the lane %d mm, "
                                   "%d unknown, turned %d deg, move on %d mm\n",
                       t_ms, (INT)p_rec->val_a,
                       g_track_name[p_rec->val_b % TRACK_NAMES],

@@ -386,6 +386,7 @@ static void ping_and_step (void)
 
     ping(&cls, &dist_mm);
     b5_fsm_out_clear(&out);
+    b5_fsm_set_guard_off(&g_fsm, b5_comms_sweep());
     b5_fsm_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
     b5_comms_publish(&out, &g_fsm);
 }

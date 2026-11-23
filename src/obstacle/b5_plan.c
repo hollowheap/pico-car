@@ -366,7 +366,10 @@ uint8_t b5_plan_steer_toward (uint8_t side)
 
 /*!
  * @brief Revised bypass, first leg: the car drives on B / 2 towards the
- *        obstacle before its first rotation.
+ *        obstacle before its first rotation, but no closer than
+ *        B5_OUT_SWING_MM between the axle and the obstacle face (the
+ *        axle starts B + B5_AXLE_TO_SONAR_MM from it). A negative result
+ *        means the car backs up.
  *
  * Frame for the bypass helpers: the middle of the wheel axle where the
  * car stopped is the origin, "ahead" runs along the original line and
@@ -376,9 +379,15 @@ uint8_t b5_plan_steer_toward (uint8_t side)
  *
  * @return Ahead position of the axle for the first rotation, mm.
  */
-uint32_t b5_plan_ahead_mm (uint32_t closest_mm)
+int32_t b5_plan_ahead_mm (uint32_t closest_mm)
 {
-    return (closest_mm / (uint32_t)HALF);
+    /* Casts are safe: closest_mm is 12 bits. */
+    int32_t const half_mm = (int32_t)(closest_mm / (uint32_t)HALF);
+    int32_t const room_mm =
+        ((int32_t)closest_mm + (int32_t)B5_AXLE_TO_SONAR_MM) -
+        (int32_t)B5_OUT_SWING_MM;
+
+    return ((room_mm < half_mm) ? room_mm : half_mm);
 }
 
 /*!
@@ -412,7 +421,9 @@ uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci)
 
 /*!
  * @brief Revised bypass: E, how far the car moves out after the first
- *        rotation: A + half car width + B5_OUT_BUFFER_MM.
+ *        rotation: A + B5_OUT_SIDE_MM, so that the rotation to face the
+ *        obstacle beside it neither touches it (left protrusion included)
+ *        nor brings the sonar inside the collision guard's range.
  *
  * @param[in] room_mm A (b5_plan_room_mm()).
  *
@@ -420,20 +431,27 @@ uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci)
  */
 uint32_t b5_plan_out_mm (uint32_t room_mm)
 {
-    return (room_mm + B5_CAR_HALF_W_MM + B5_OUT_BUFFER_MM);
+    return (room_mm + B5_OUT_SIDE_MM);
 }
 
 /*!
  * @brief Revised bypass: how far the car drives on after rotating back,
- *        to come level with the obstacle's near face: B + B5_LEVEL_BUFFER_MM.
+ *        to come level with the obstacle's near face: B +
+ *        B5_LEVEL_BUFFER_MM, plus whatever the first leg fell short of
+ *        B / 2 (b5_plan_ahead_mm()), so the car ends in the same place.
  *
  * @param[in] closest_mm B, the closest scan reading (from the sensor).
+ * @param[in] ahead_mm   First leg (b5_plan_ahead_mm()).
  *
  * @return Distance in mm.
  */
-uint32_t b5_plan_level_mm (uint32_t closest_mm)
+uint32_t b5_plan_level_mm (uint32_t closest_mm, int32_t ahead_mm)
 {
-    return (closest_mm + B5_LEVEL_BUFFER_MM);
+    /* Casts are safe: closest_mm is 12 bits and ahead_mm is at most
+     * closest_mm / 2, so the shortfall is not negative. */
+    int32_t const short_mm = (int32_t)(closest_mm / (uint32_t)HALF) - ahead_mm;
+
+    return (closest_mm + B5_LEVEL_BUFFER_MM + (uint32_t)short_mm);
 }
 
 /*!
@@ -444,13 +462,17 @@ uint32_t b5_plan_level_mm (uint32_t closest_mm)
  * along the line) is a point f = r cos(alpha) towards the line and
  * s = r sin(alpha) along it. Readings outside +-pan_deci and points with f
  * beyond lane_mm (past the line) are ignored; the rest are "hits".
- *   - Lane: a hit with |s| <= B5_LANE_HALF_MM blocks the way to the line.
+ *   - Lane: a hit with -lane_back <= s <= lane_fwd blocks the way to the
+ *     line. The car's left faces forward along the line when fwd_sign is
+ *     +1, so its left lane (B5_LANE_LEFT_MM, IR protrusion) is lane_fwd;
+ *     otherwise its right lane (B5_LANE_RIGHT_MM) is.
  *   - d: the closest hit.
  *   - Forward cleared angle: one slot past the last hit with alpha >= 0;
  *     0 with no forward hit; none (B5_SIDE_ASSUMED_DECI is used) when the
  *     hits reach pan_deci.
- *   - Move on: (d x tan(cleared angle) + half car width +
- *     B5_MOVE_BUFFER_MM) / B5_MOVE_DIVISOR.
+ *   - Move on: (d x tan(cleared angle) + H + B5_MOVE_BUFFER_MM) /
+ *     B5_MOVE_DIVISOR, H = the car's half width on its back side (the
+ *     side that passes the obstacle).
  *
  * @param[in]  p_mm     B5_SLOT_COUNT readings in slot order (mm, or
  *                      B5_PLAN_NO_ECHO).
@@ -466,10 +488,17 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
 {
     /* Cast is safe: line_mm is a few hundred mm. */
     int32_t const lane_mm    = (int32_t)line_mm + (int32_t)B5_LANE_EXTRA_MM;
-    uint32_t      closest_mm = B5_PLAN_NO_ECHO;
-    int32_t       last_deci  = -1;
-    bool          b_blocked  = false;
-    uint32_t      slot       = 0U;
+    bool const    b_left_fwd = (fwd_sign > 0);
+    int32_t const fwd_lane_mm =
+        b_left_fwd ? (int32_t)B5_LANE_LEFT_MM : (int32_t)B5_LANE_RIGHT_MM;
+    int32_t const back_lane_mm =
+        b_left_fwd ? (int32_t)B5_LANE_RIGHT_MM : (int32_t)B5_LANE_LEFT_MM;
+    uint32_t const back_half_mm =
+        b_left_fwd ? B5_HALF_W_RIGHT_MM : B5_HALF_W_LEFT_MM;
+    uint32_t closest_mm = B5_PLAN_NO_ECHO;
+    int32_t  last_deci  = -1;
+    bool     b_blocked  = false;
+    uint32_t slot       = 0U;
 
     for (slot = 0U; slot < B5_SLOT_COUNT; slot++)
     {
@@ -488,9 +517,8 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
             if (to_line_mm <= lane_mm)
             {
                 closest_mm = (range_mm < closest_mm) ? range_mm : closest_mm;
-                b_blocked =
-                    b_blocked || ((along_mm <= (int32_t)B5_LANE_HALF_MM) &&
-                                  (along_mm >= -(int32_t)B5_LANE_HALF_MM));
+                b_blocked  = b_blocked || ((along_mm <= fwd_lane_mm) &&
+                                          (along_mm >= -back_lane_mm));
                 last_deci =
                     ((alpha >= 0) && (alpha > last_deci)) ? alpha : last_deci;
             }
@@ -518,8 +546,7 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
     if (B5_PLAN_NO_ECHO == closest_mm)
     {
         p_side->closest_mm = 0U;
-        p_side->move_mm =
-            (B5_CAR_HALF_W_MM + B5_MOVE_BUFFER_MM) / B5_MOVE_DIVISOR;
+        p_side->move_mm = (back_half_mm + B5_MOVE_BUFFER_MM) / B5_MOVE_DIVISOR;
     }
     else
     {
@@ -527,7 +554,7 @@ void b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
         p_side->move_mm =
             ((uint32_t)mul_q14(closest_mm,
                                b5_plan_tan_q14(p_side->clear_deci)) +
-             B5_CAR_HALF_W_MM + B5_MOVE_BUFFER_MM) /
+             back_half_mm + B5_MOVE_BUFFER_MM) /
             B5_MOVE_DIVISOR;
     }
 }
@@ -593,21 +620,49 @@ void b5_plan_track_point (int32_t psi_deci, int32_t gaze_deci,
  * @param[in] side_mm      Side position (b5_plan_track_point()).
  * @param[in] lookahead_mm How far the lane runs forward from the axle.
  *
- * @return True if 0 < forward < lookahead and |side| < B5_LANE_HALF_MM.
+ * @return True if 0 < forward < lookahead and -B5_LANE_RIGHT_MM < side <
+ *         B5_LANE_LEFT_MM.
  */
 bool b5_plan_track_blocked (int32_t fwd_mm, int32_t side_mm,
                             uint32_t lookahead_mm)
 {
     /* Casts are safe: the lookahead is a few hundred mm. */
     return ((fwd_mm > 0) && (fwd_mm < (int32_t)lookahead_mm) &&
-            (side_mm < (int32_t)B5_LANE_HALF_MM) &&
-            (side_mm > -(int32_t)B5_LANE_HALF_MM));
+            (side_mm < (int32_t)B5_LANE_LEFT_MM) &&
+            (side_mm > -(int32_t)B5_LANE_RIGHT_MM));
+}
+
+/*!
+ * @brief Chicken-head rotation scan: how far a floor point reaches into
+ *        the lane on its own side (B5_LANE_LEFT_MM for side >= 0,
+ *        B5_LANE_RIGHT_MM otherwise), i.e. how far the car must move
+ *        sideways to clear it. Not positive if the point is outside.
+ *
+ * @param[in] side_mm Side position (b5_plan_track_point()).
+ *
+ * @return Depth into the lane, mm.
+ */
+int32_t b5_plan_track_gap_mm (int32_t side_mm)
+{
+    int32_t gap_mm = 0;
+
+    if (side_mm >= 0)
+    {
+        gap_mm = (int32_t)B5_LANE_LEFT_MM - side_mm;
+    }
+    else
+    {
+        gap_mm = (int32_t)B5_LANE_RIGHT_MM + side_mm;
+    }
+
+    return (gap_mm);
 }
 
 /*!
  * @brief Chicken-head rotation scan: tell whether a floor point lies
- *        inside the circle the front corners sweep when the car rotates
- *        on the middle of its axle (B5_SWING_MM).
+ *        inside the circle the car's furthest point (the left protrusion)
+ *        sweeps when the car rotates on the middle of its axle
+ *        (B5_SWING_MM).
  *
  * @param[in] fwd_mm  Forward position (b5_plan_track_point()).
  * @param[in] side_mm Side position (b5_plan_track_point()).

@@ -77,20 +77,21 @@ void b5_fsm_out_clear (b5_fsm_out_t * p_out)
 void b5_fsm_init (b5_fsm_t * p_fsm, b5_plan_cfg_t const * p_cfg,
                   uint32_t now_ms)
 {
-    p_fsm->state      = B5_STATE_STOPPED;
-    p_fsm->cause      = B5_CAUSE_BOOT;
-    p_fsm->faults     = 0U;
-    p_fsm->req_id     = 0U;
-    p_fsm->last_class = B5_CLASS_UNKNOWN;
-    p_fsm->last_dist  = 0U;
-    p_fsm->seq        = 0U;
-    p_fsm->steer      = B5_STEER_HOLD;
-    p_fsm->steer_seq  = 0U;
-    p_fsm->counters   = 0U;
-    p_fsm->b_reset_ok = false;
-    p_fsm->since_ms   = now_ms;
-    p_fsm->bypass_mm  = 0U;
-    p_fsm->cfg        = *p_cfg;
+    p_fsm->state       = B5_STATE_STOPPED;
+    p_fsm->cause       = B5_CAUSE_BOOT;
+    p_fsm->faults      = 0U;
+    p_fsm->req_id      = 0U;
+    p_fsm->last_class  = B5_CLASS_UNKNOWN;
+    p_fsm->last_dist   = 0U;
+    p_fsm->seq         = 0U;
+    p_fsm->steer       = B5_STEER_HOLD;
+    p_fsm->steer_seq   = 0U;
+    p_fsm->counters    = 0U;
+    p_fsm->b_reset_ok  = false;
+    p_fsm->b_guard_off = false;
+    p_fsm->since_ms    = now_ms;
+    p_fsm->bypass_mm   = 0U;
+    p_fsm->cfg         = *p_cfg;
     scan_algo_start(&p_fsm->scan);
 
     p_fsm->plan.status                 = B5_RESULT_FAILED;
@@ -733,7 +734,9 @@ static bool check_health (b5_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
  * is too close (b5_plan_ahead_mm()), so a close reading straight ahead
  * there is expected; stopping for it would leave the car stuck in front of
  * the obstacle. Navigation's virtual bumper covers contact in every
- * bypass phase.
+ * bypass phase. While Navigation's side scan runs (b5_fsm_set_guard_off())
+ * the car stands still, so a close reading only means "in the way" and
+ * clears the count instead.
  *
  * @param[in,out] p_fsm   Statechart.
  * @param[in]     cls     Ping class.
@@ -747,8 +750,9 @@ static bool check_collision (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                              uint32_t now_ms, b5_fsm_out_t * p_out)
 {
     bool const b_guarded = (B5_STATE_REACQUIRE == p_fsm->state);
-    bool const b_close = (B5_CLASS_VALID == cls) && (dist_mm < B5_COLLISION_MM);
-    bool       b_stopped = false;
+    bool const b_close   = (!p_fsm->b_guard_off) && (B5_CLASS_VALID == cls) &&
+                         (dist_mm < B5_COLLISION_MM);
+    bool b_stopped = false;
 
     if (!b_guarded)
     {
@@ -879,6 +883,18 @@ static void ping_bypass (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
     {
         emit_steer(p_fsm, p_out, b5_plan_steer_away(p_fsm->plan.side));
     }
+}
+
+/*!
+ * @brief Switch the collision guard off (or back on) while Navigation's
+ *        side scan runs (b5_comms_sweep()).
+ *
+ * @param[in,out] p_fsm Statechart.
+ * @param[in]     b_off True while the car stands still for the sweep.
+ */
+void b5_fsm_set_guard_off (b5_fsm_t * p_fsm, bool b_off)
+{
+    p_fsm->b_guard_off = b_off;
 }
 
 /*** end of file ***/

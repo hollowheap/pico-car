@@ -52,6 +52,7 @@ ER obstacle_get_event (uint32_t * p_evt, TMO tmout);
 uint32_t obstacle_get_steer (void);
 void     obstacle_set_look (int16_t deci);
 void     obstacle_set_track (bool b_on);
+void     obstacle_set_sweep (bool b_on);
 uint32_t obstacle_get_status (void);
 uint8_t  obstacle_get_faults (void);
 uint8_t  obstacle_dropped_events (void);

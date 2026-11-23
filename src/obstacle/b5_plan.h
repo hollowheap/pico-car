@@ -70,10 +70,10 @@ bool    b5_plan_is_escape_clear (uint8_t cls, uint16_t dist_mm,
 uint8_t b5_plan_steer_away (uint8_t side);
 uint8_t b5_plan_steer_toward (uint8_t side);
 
-uint32_t b5_plan_ahead_mm (uint32_t closest_mm);
+int32_t  b5_plan_ahead_mm (uint32_t closest_mm);
 uint32_t b5_plan_room_mm (uint32_t closest_mm, int32_t clear_deci);
 uint32_t b5_plan_out_mm (uint32_t room_mm);
-uint32_t b5_plan_level_mm (uint32_t closest_mm);
+uint32_t b5_plan_level_mm (uint32_t closest_mm, int32_t ahead_mm);
 void     b5_plan_side_scan (uint16_t const * p_mm, int32_t fwd_sign,
                             uint32_t line_mm, int32_t pan_deci,
                             b5_plan_side_t * p_side);
@@ -81,12 +81,13 @@ int32_t  b5_plan_point_side_mm (int32_t side_mm, int32_t away_deci,
                                 uint32_t ahead_mm);
 
 /* Chicken-head rotation scan (see b5_nav.c). */
-void b5_plan_track_point (int32_t psi_deci, int32_t gaze_deci,
-                          uint32_t range_mm, int32_t * p_fwd_mm,
-                          int32_t * p_side_mm);
-bool b5_plan_track_blocked (int32_t fwd_mm, int32_t side_mm,
-                            uint32_t lookahead_mm);
-bool b5_plan_track_near (int32_t fwd_mm, int32_t side_mm);
+void    b5_plan_track_point (int32_t psi_deci, int32_t gaze_deci,
+                             uint32_t range_mm, int32_t * p_fwd_mm,
+                             int32_t * p_side_mm);
+bool    b5_plan_track_blocked (int32_t fwd_mm, int32_t side_mm,
+                               uint32_t lookahead_mm);
+bool    b5_plan_track_near (int32_t fwd_mm, int32_t side_mm);
+int32_t b5_plan_track_gap_mm (int32_t side_mm);
 
 int32_t  b5_plan_sin_q14 (int32_t deci);
 int32_t  b5_plan_cos_q14 (int32_t deci);

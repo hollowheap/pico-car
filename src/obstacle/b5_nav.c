@@ -12,17 +12,22 @@
  *     REACQUIRE     (positions are for the middle of the wheel axle). Every
  *                   change of heading is a rotation: both wheels opposite,
  *                   so the car turns on the middle of its axle.
- *       AHEAD       straight on B / 2 towards the obstacle.
+ *       AHEAD       straight on B / 2 towards the obstacle, but keeping the
+ *                   axle B5_OUT_SWING_MM from it; backs up when the car
+ *                   stopped closer than that (b5_plan_ahead_mm()).
  *       SPIN_AWAY   rotate 90 degrees away from the line, the side the
  *                   planner chose (remembered for the 360 degree map).
- *       OUT         straight on E = A + half car width + B5_OUT_BUFFER_MM,
+ *       OUT         straight on E = A + B5_OUT_SIDE_MM (room for the
+ *                   rotation beside the obstacle, IR protrusion included),
  *                   A = B x tan(cleared angle) from the first scan, capped
  *                   (b5_plan_room_mm()).
  *       SPIN_PARALLEL rotate back, parallel to the line.
- *       LEVEL       straight on B + B5_LEVEL_BUFFER_MM, level with the
- *                   obstacle's near face.
+ *       LEVEL       straight on B + B5_LEVEL_BUFFER_MM (plus what AHEAD
+ *                   fell short of B / 2), level with the obstacle's near
+ *                   face.
  *       SPIN_FACE   rotate to face the line (and the obstacle).
- *       SWEEP       stand still and sweep the servo +-B5_SIDE_PAN_DECI, then
+ *       SWEEP       stand still (collision guard off, obstacle_set_sweep())
+ *                   and sweep the servo +-B5_SIDE_PAN_DECI, then
  *                   judge the readings (b5_plan_side_scan()):
  *                     lane to the line clear -> TRACK_OUT (or, if an echo
  *                     lies inside the swing circle, SPIN_BACK and MOVE_ON
@@ -42,7 +47,8 @@
  *                   B5_TRACK_MIN_MOVE_MM); too many unknown pings -> one
  *                   retry, then blocked.
  *       SPIN_BACK   rotate back, parallel to the line.
- *       MOVE_ON     straight on (D + half car width + B5_MOVE_BUFFER_MM) / 2,
+ *       MOVE_ON     straight on (D + H + B5_MOVE_BUFFER_MM) / 2, H = half
+ *                   width on the obstacle side (IR protrusion on the left),
  *                   D from the forward cleared angle (or
  *                   B5_SIDE_ASSUMED_DECI when there is none).
  *       TO_LINE     slowly straight at the line until an IR sensor has seen
@@ -249,12 +255,12 @@ typedef struct
     uint32_t level_mm;
     uint32_t move_mm;
     uint32_t low_ms[WHEELS];
-    uint32_t ahead_end_mm;
+    int32_t  ahead_end_mm;
     int32_t  map_start;
     int32_t  track_h0;
     int32_t  track_away0;
     int32_t  track_gaze;
-    int32_t  track_min_side_mm;
+    int32_t  track_gap_mm;
     uint32_t track_lookahead_mm;
     int32_t  phase_mm;
     int32_t  black_mm;
@@ -318,12 +324,12 @@ static nav_state_t g_nav = {
     .level_mm           = 0U,
     .move_mm            = 0U,
     .low_ms             = {0U, 0U},
-    .ahead_end_mm       = 0U,
+    .ahead_end_mm       = 0,
     .map_start          = 0,
     .track_h0           = 0,
     .track_away0        = 0,
     .track_gaze         = 0,
-    .track_min_side_mm  = INT32_MAX,
+    .track_gap_mm       = 0,
     .track_lookahead_mm = 0U,
     .phase_mm           = 0,
     .black_mm           = 0,
@@ -647,7 +653,22 @@ static void run_leg (void)
     switch (g_nav.phase)
     {
         case PHASE_AHEAD:
-            if (moved_mm >= (int32_t)g_nav.ahead_end_mm)
+            if (g_nav.ahead_end_mm < 0)
+            {
+                /* Too close to rotate: back straight up (no heading hold,
+                 * the leg is short). */
+                if (moved_mm <= g_nav.ahead_end_mm)
+                {
+                    set_phase(PHASE_SPIN_AWAY);
+                }
+                else
+                {
+                    drive_speeds(B5_STEER_STRAIGHT,
+                                 -(int32_t)B5_NAV_BACKUP_UM_S,
+                                 -(int32_t)B5_NAV_BACKUP_UM_S);
+                }
+            }
+            else if (moved_mm >= g_nav.ahead_end_mm)
             {
                 set_phase(PHASE_SPIN_AWAY);
             }
@@ -902,7 +923,7 @@ static void run_map (bool b_line_seen)
 
 /*!
  * @brief SWEEP: tell whether the car may rotate where it stands, i.e. no
- *        sweep echo lies inside the circle its front corners sweep
+ *        sweep echo lies inside the circle its furthest point sweeps
  *        (b5_plan_track_near(), the sweep taken with psi = 0 and the beam
  *        at each servo angle).
  *
@@ -1027,13 +1048,13 @@ static void track_echo (uint32_t dist_mm, int32_t psi)
     if ((b5_plan_track_near(fwd_mm, side_mm)) ||
         (b5_plan_track_blocked(fwd_mm, side_mm, g_nav.track_lookahead_mm)))
     {
-        int32_t const abs_side = (side_mm < 0) ? -side_mm : side_mm;
+        int32_t const gap_mm = b5_plan_track_gap_mm(side_mm);
 
         g_nav.b_track_blocked = true;
 
-        if (abs_side < g_nav.track_min_side_mm)
+        if (gap_mm > g_nav.track_gap_mm)
         {
-            g_nav.track_min_side_mm = abs_side;
+            g_nav.track_gap_mm = gap_mm;
         }
 
         finish_track();
@@ -1089,8 +1110,7 @@ static void finish_track (void)
 
     if (g_nav.b_track_blocked)
     {
-        int32_t const gap_mm =
-            (int32_t)B5_LANE_HALF_MM - g_nav.track_min_side_mm;
+        int32_t const gap_mm = g_nav.track_gap_mm;
 
         /* Cast is safe: gap_mm is checked to be above the minimum. */
         if (gap_mm > (int32_t)B5_TRACK_MIN_MOVE_MM)
@@ -1143,17 +1163,15 @@ static void log_track (uint8_t result, uint32_t move_mm)
     uint8_t const             pass =
         (PHASE_TRACK_OUT == g_nav.phase) ? TRACK_PASS_OUT : TRACK_PASS_BACK;
 
-    tm_printf(
-        (UB *)"[b5-nav] track pass %d: %s, closest side %d mm, %d "
-              "unknown, turned %d deg, move on %d mm\n",
-        (INT)pass, g_what[result % (TRACK_UNKNOWN_STOP + 1U)],
-        (INT)((INT32_MAX == g_nav.track_min_side_mm) ? -1
-                                                     : g_nav.track_min_side_mm),
-        (INT)g_nav.track_unknown, (INT)(psi / DECI_PER_DEG), (INT)move_mm);
+    tm_printf((UB *)"[b5-nav] track pass %d: %s, into the lane %d mm, %d "
+                    "unknown, turned %d deg, move on %d mm\n",
+              (INT)pass, g_what[result % (TRACK_UNKNOWN_STOP + 1U)],
+              (INT)g_nav.track_gap_mm, (INT)g_nav.track_unknown,
+              (INT)(psi / DECI_PER_DEG), (INT)move_mm);
 
     /* Cast is safe: move_mm is a few hundred mm. */
-    log_rec(B5_LOG_TRACK, pass, result, g_nav.track_unknown,
-            g_nav.track_min_side_mm, psi, (int32_t)move_mm);
+    log_rec(B5_LOG_TRACK, pass, result, g_nav.track_unknown, g_nav.track_gap_mm,
+            psi, (int32_t)move_mm);
 }
 
 /*!
@@ -1208,11 +1226,11 @@ static void start_track_pass (uint8_t phase)
         /* Cast is safe: side_mm is non-negative here and a few hundred mm. */
         g_nav.track_lookahead_mm =
             ((side_mm > 0) ? (uint32_t)side_mm : 0U) + B5_LANE_EXTRA_MM;
-        g_nav.track_gaze        = 0;
-        g_nav.track_sent        = g_nav.look_deci;
-        g_nav.track_unknown     = 0U;
-        g_nav.b_track_blocked   = false;
-        g_nav.track_min_side_mm = INT32_MAX;
+        g_nav.track_gaze      = 0;
+        g_nav.track_sent      = g_nav.look_deci;
+        g_nav.track_unknown   = 0U;
+        g_nav.b_track_blocked = false;
+        g_nav.track_gap_mm    = 0;
         obstacle_set_track(true);
     }
     else
@@ -1690,6 +1708,10 @@ static void set_phase (uint8_t phase)
     g_nav.phase    = phase;
     g_nav.phase_mm = travel_mm();
 
+    /* The collision guard is off only while the car stands still for a
+     * side scan; every other phase (HALT included) turns it back on. */
+    obstacle_set_sweep(PHASE_SWEEP == phase);
+
     if (PHASE_SWEEP == phase)
     {
         for (slot = 0U; slot < B5_SLOT_COUNT; slot++)
@@ -2074,9 +2096,9 @@ static void report_state (uint32_t status)
 
         if (B5_STATE_REACQUIRE != state)
         {
-            /* Servo tracking belongs to the rotation scan in REACQUIRE
-             * only. */
+            /* Servo tracking and the sweep belong to REACQUIRE only. */
             obstacle_set_track(false);
+            obstacle_set_sweep(false);
         }
 
         if (B5_STATE_BYPASS == state)
@@ -2177,7 +2199,7 @@ static void keep_plan (b5_plan_result_t const * p_result, uint32_t side)
     g_nav.ahead_end_mm = b5_plan_ahead_mm(g_nav.closest_mm);
     g_nav.room_mm      = b5_plan_room_mm(g_nav.closest_mm, clear_deci);
     g_nav.out_mm       = b5_plan_out_mm(g_nav.room_mm);
-    g_nav.level_mm     = b5_plan_level_mm(g_nav.closest_mm);
+    g_nav.level_mm     = b5_plan_level_mm(g_nav.closest_mm, g_nav.ahead_end_mm);
 
     tm_printf((UB *)"[b5-nav] plan: B %d mm, cleared %d deg, A %d mm, first "
                     "leg %d mm, out %d mm, level %d mm\n",

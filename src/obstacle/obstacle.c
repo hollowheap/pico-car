@@ -173,6 +173,19 @@ void obstacle_set_track (bool b_on)
 }
 
 /*!
+ * @brief Tell Buddy 5 that Navigation's side scan (SWEEP) is running
+ *        (REACQUIRE only): the car stands still, so the collision guard
+ *        ignores close readings, which only mean "in the way". Navigation
+ *        turns it off again on every way out of the sweep.
+ *
+ * @param[in] b_on True while the side scan runs.
+ */
+void obstacle_set_sweep (bool b_on)
+{
+    b5_comms_set_sweep(b_on);
+}
+
+/*!
  * @brief Packed status word, read in one 32-bit load.
  *
  * @return The status word.

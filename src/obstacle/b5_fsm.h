@@ -44,6 +44,7 @@ typedef struct
     uint8_t          steer_seq;
     uint16_t         counters;
     bool             b_reset_ok;
+    bool             b_guard_off;
     uint32_t         since_ms;
     uint32_t         bypass_mm;
     scan_algo_ctx_t  scan;
@@ -65,6 +66,7 @@ void b5_fsm_tick (b5_fsm_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
 
 int16_t  b5_fsm_servo_deci (b5_fsm_t const * p_fsm, int16_t look_deci);
 uint32_t b5_fsm_status (b5_fsm_t const * p_fsm);
+void     b5_fsm_set_guard_off (b5_fsm_t * p_fsm, bool b_off);
 
 #endif /* B5_FSM_H */
 

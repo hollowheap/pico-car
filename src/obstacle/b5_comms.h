@@ -31,6 +31,8 @@ void     b5_comms_set_look (int16_t deci);
 int16_t  b5_comms_look (void);
 void     b5_comms_set_track (bool b_on);
 bool     b5_comms_track (void);
+void     b5_comms_set_sweep (bool b_on);
+bool     b5_comms_sweep (void);
 uint32_t b5_comms_status (void);
 uint8_t  b5_comms_faults (void);
 uint8_t  b5_comms_drops (void);

@@ -60,13 +60,15 @@ typedef struct
     obstacle_distance_fn_t volatile p_get_distance_mm;
 } comms_links_t;
 
-/* Servo tracking flag (chicken-head rotation scan). NOTE: The Boolean is a
- * b_ member of a g_ struct, which satisfies both BARR-C 7.1.m/7.1.o and the
- * team .clang-tidy. */
+/* Flags Navigation sets for the Buddy 5 task: servo tracking (chicken-head
+ * rotation scan) and sweep (collision guard off while the car stands still
+ * for a side scan). NOTE: Each Boolean is a b_ member of a g_ struct, which
+ * satisfies both BARR-C 7.1.m/7.1.o and the team .clang-tidy. */
 typedef struct
 {
-    bool volatile b_on;
-} comms_track_t;
+    bool volatile b_track;
+    bool volatile b_sweep;
+} comms_flags_t;
 
 /* ------------------------------------------------------------------ *
  * Static data. Every item is shared between tasks or with the ISR side,
@@ -78,7 +80,7 @@ static comms_links_t g_links = {0, 0, NULL, NULL};
 static uint32_t volatile g_status = 0U;
 static uint32_t volatile g_steer  = 0U;
 static int16_t volatile g_look    = 0;
-static comms_track_t g_track      = {false};
+static comms_flags_t g_flags      = {false, false};
 static uint8_t volatile g_faults  = 0U;
 static uint8_t volatile g_drops   = 0U;
 
@@ -394,7 +396,7 @@ int16_t b5_comms_look (void)
  */
 void b5_comms_set_track (bool b_on)
 {
-    g_track.b_on = b_on;
+    g_flags.b_track = b_on;
 }
 
 /*!
@@ -404,7 +406,30 @@ void b5_comms_set_track (bool b_on)
  */
 bool b5_comms_track (void)
 {
-    return (g_track.b_on);
+    return (g_flags.b_track);
+}
+
+/*!
+ * @brief Turn the sweep flag on or off (Navigation's side scan, REACQUIRE
+ *        only): while it is on, the car stands still and the collision
+ *        guard ignores close readings, which then only mean "in the way"
+ *        (b5_fsm.c).
+ *
+ * @param[in] b_on True while the side scan runs.
+ */
+void b5_comms_set_sweep (bool b_on)
+{
+    g_flags.b_sweep = b_on;
+}
+
+/*!
+ * @brief Tell whether Navigation has the sweep flag on.
+ *
+ * @return True while the side scan runs.
+ */
+bool b5_comms_sweep (void)
+{
+    return (g_flags.b_sweep);
 }
 
 /*!
