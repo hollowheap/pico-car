@@ -60,6 +60,10 @@ bool odometry_init (odometry_t *      p_sampler,
                           const motion_config_t * p_config,
                           const motion_input_t *  p_baseline);
 
+/* Resume from a fresh capture, discarding the unobserved interval while
+ * preserving accumulated travel and sample diagnostics. */
+bool odometry_rebase (odometry_t * p_sampler, const motion_input_t * p_baseline);
+
 /* Failure (null/uninitialised input, zero dt or arithmetic overflow) changes
  * neither state nor output. Success may publish invalid quality flags:
  * a capture invalid or an excessive dt makes that interval's speed and

@@ -27,10 +27,8 @@ typedef enum
     MOTION_FAULT_OUTPUT
 } motion_fault_t;
 
-/* An encoder fault (FEEDBACK) brakes the car without the output
- * latch, and clears after the car has stood braked this long, so a glitch or
- * a stalled pivot never stops the car until a reboot. The old command is
- * dropped: the car drives again only on a new command. [Default] */
+/* Earliest release of the brake after an encoder fault. Both encoders must
+ * also supply a fresh valid interval. Driving needs a new command. [Default] */
 #define MOTION_FAULT_CLEAR_US (500000U)
 
 typedef struct
@@ -39,6 +37,7 @@ typedef struct
     uint32_t issued_us;
     uint32_t ttl_us;
     int32_t  target_um_s[ENCODER_WHEELS];
+    bool     b_scan_pivot;
 } motion_command_t;
 
 typedef struct
@@ -48,17 +47,20 @@ typedef struct
     uint32_t           max_command_ttl_us;
     uint32_t           max_control_gap_us;
     uint32_t           reversal_brake_us;
+    uint16_t           pivot_duty_permille; /* Zero uses the normal limit. */
 } controller_config_t;
 
 typedef enum
 {
     MOTION_APPLIED = 0,
     MOTION_BRAKED_RETRY,
-    MOTION_OUTPUT_FAILED
+    MOTION_OUTPUT_FAILED,
+    MOTION_STOP_PENDING
 } motion_apply_result_t;
 
 /* Callbacks belong to the PWM owner. RETRY means the driver has braked both
- * wheels; the controller enforces a timed brake interval before retrying. */
+ * wheels; the controller enforces a timed brake interval before retrying.
+ * STOP_PENDING means drive was inhibited and the controller must latch brake. */
 typedef struct
 {
     void * context;
@@ -101,13 +103,14 @@ typedef struct
     uint32_t                fault_us;
     bool                    braked;
     bool                    initialised;
+    bool                    recovery_baseline;
 } controller_t;
 
 /* No default speed/gain/timing settings. Init issues brake through the output
  * callback; the hardware owner must already be initialised. One task owns all
  * calls. Stop and the COMMAND, EXPIRED, GAP and OUTPUT faults are terminal:
- * no public reset/rearm operation. FEEDBACK clears on its own
- * after MOTION_FAULT_CLEAR_US. */
+ * no public reset/rearm operation. FEEDBACK clears on a valid capture
+ * interval once the brake has held for MOTION_FAULT_CLEAR_US. */
 bool controller_init (controller_t *              p_control,
                           const controller_config_t * p_config,
                           const motion_input_t *          p_baseline,

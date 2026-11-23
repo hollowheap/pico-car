@@ -10,6 +10,7 @@
 #define TA_STA (0x02U)
 #define TA_ASSPRC (0x04U)
 #define GPIO_MODE_IN (0U)
+#define TIMER_TIMERAWH (TIMER_BASE + 0x24U)
 
 typedef uint32_t RELTIM;
 typedef struct
@@ -23,6 +24,7 @@ typedef struct
 
 ID tk_get_tid(void);
 ID tk_cre_cyc(const T_CCYC * p_config);
+ER tk_del_cyc(ID cyclic_id);
 ER tk_wup_tsk(ID task_id);
 ER tk_slp_tsk(TMO timeout);
 INT tk_can_wup(ID task_id);

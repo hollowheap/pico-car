@@ -6,6 +6,8 @@
 
 #include "odometry.h"
 
+#define PID_DUTY_PERMILLE_FULL (1000U)
+
 typedef struct
 {
     /* Q16 gains: real coefficient = stored value / 65536.
@@ -18,6 +20,7 @@ typedef struct
     uint32_t max_interval_us;
     uint32_t max_sample_age_us;
     uint16_t max_duty_permille; /* 1..1000. */
+    uint16_t base_duty_permille; /* Zero uses the fixed maximum. */
 } pid_config_t;
 
 typedef struct
@@ -39,6 +42,8 @@ void pid_reset (pid_t * p_pid);
  * state is unchanged and *p_duty is set to zero when nonnull. The motor owner
  * must apply brake/latch its fault; do not continue a previous PWM command.
  * Uses derivative on measurement and conditional integration anti-windup.
+ * With a base duty limit, grants extra duty in proportion to the speed
+ * shortfall while feedback shows travel in the target direction.
  * Output is signed permille. It can request reversal; the owner must enforce
  * the motor driver's braked reversal interval. A zero target resets integral
  * and returns zero. It commands brake rather than holding position.

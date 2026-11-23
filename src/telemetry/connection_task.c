@@ -47,6 +47,7 @@ static const char g_topic_heartbeat[] = TELEMETRY_TOPIC_PREFIX "/h";
 static const char g_topic_command[]   = TELEMETRY_TOPIC_PREFIX "/c";
 
 static volatile connection_state_t g_state = CONNECTION_DISCONNECTED;
+static volatile bool               g_b_mqtt_seen;
 static mqtt_client_t               g_mqtt;
 static telemetry_cmd_state_t       g_cmd_state;
 static connection_cmd_dispatch_t   gp_dispatch;
@@ -420,6 +421,7 @@ connection_run (void)
             }
             if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
             {
+                g_b_mqtt_seen = true;
                 last_mqtt_up_ms = now_ms;
                 telemetry_publisher_run(net_pull, publish_frame);
                 publish_heartbeat(now_ms, &g_status);
@@ -433,6 +435,12 @@ connection_run (void)
 
         wait_connection_cycle();
     }
+}
+
+bool
+connection_mqtt_seen (void)
+{
+    return g_b_mqtt_seen;
 }
 
 connection_state_t

@@ -36,6 +36,11 @@ ER telemetry_queue_create(void);
    one to the drop counter. Safe to call from several tasks on both cores. */
 ER telemetry_queue_push(const uint8_t *frame, uint16_t len, uint8_t qos);
 
+/* Same frame contract, with one poll of the producer mutex and one send.
+   Never evicts. Contention or a full buffer returns E_TMOUT and counts a drop.
+   Call from a task outside interrupt handlers and other locks. */
+ER telemetry_queue_try_push(const uint8_t *frame, uint16_t len);
+
 /* Push a wire packet under `topic`: builds topic || packet and calls
    telemetry_queue_push. packet_len is the packet's TELEMETRY_<NAME>_WIRE_SIZE.
    Returns E_PAR for a NULL packet or a length above TELEMETRY_WIRE_MAX. */
@@ -46,9 +51,9 @@ ER telemetry_queue_push_packet(uint8_t topic, const uint8_t *packet,
    TELEMETRY_QUEUE_MAX_MSG bytes. Returns the frame length, or an error code. */
 INT telemetry_queue_pop(uint8_t *frame, TMO tmout);
 
-/* Frames lost since boot: evicted, rejected on a full queue at any qos, or
-   foreign on pop. The diag frame reports it; the heartbeat adds it to the
-   net queue's count. */
+/* Frames lost since boot: evicted, rejected on a full queue at any qos,
+   dropped on try-lock contention, or foreign on pop. The diag frame reports
+   it; the heartbeat adds it to the net queue's count. */
 UW telemetry_queue_drop_count(void);
 
 /* Host tests only: forget the queue so that the next telemetry_queue_create

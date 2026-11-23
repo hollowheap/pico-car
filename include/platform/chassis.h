@@ -15,6 +15,22 @@
 /* [Measured] Wheel centre to wheel centre. */
 #define CHASSIS_WHEEL_TRACK_MM   (107)
 
+/* [Measured] Widest point of the car, across the outside edges of the tires. */
+#define CHASSIS_OUTER_WIDTH_MM   (126U)
+
+/* Axle-centred envelope of the nominal 200 × 126 mm body (sensors excluded). */
+#define CHASSIS_BODY_RADIUS_MM   (119)
+
+/* Nominal sonar offset ahead of the axle. */
+#define CHASSIS_SONAR_FORWARD_MM (70)
+
+/* At 300 mm range the near edge dropped out at 50 mm left and 65 mm
+ * right. The narrower observed half-angle is 9.5 degrees. */
+#define CHASSIS_SONAR_BEAM_HALF_DECI (95)
+/* Round the wider observed side (65 mm at 300 mm, 12.2 degrees) outward
+ * when deciding whether a return could lie inside a turn. */
+#define CHASSIS_SONAR_OUTER_HALF_DECI (130)
+
 /* [Measured] Wheel diameter 65 mm: pi x 65 mm of travel per wheel turn. */
 #define CHASSIS_WHEEL_TRAVEL_UM  (204204U)
 

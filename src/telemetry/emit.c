@@ -3,6 +3,7 @@
  *	Queue one telemetry event. See emit.h.
  */
 
+#include <stdbool.h>
 #include <tk/smp.h>
 
 #include "telemetry/emit.h"
@@ -15,11 +16,11 @@
    emit at once. */
 static UW g_next_event_id;
 
-ER
-telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
-                      uint32_t odometer_mm)
+static ER
+emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
+            uint32_t odometer_mm, bool b_try)
 {
-    uint8_t           packet[TELEMETRY_EVENT_WIRE_SIZE];
+    uint8_t           frame[TELEMETRY_EVENT_QUEUED_SIZE];
     telemetry_event_t event;
 
     event.odometer_mm = odometer_mm;
@@ -28,9 +29,24 @@ telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
     event.p2          = p2;
     event.event_type  = type;
     event.source      = source;
-    (void) telemetry_pack_event(packet, &event);
-    return telemetry_queue_push_packet((uint8_t) TELEMETRY_TOPIC_EVENT, packet,
-                                       TELEMETRY_EVENT_WIRE_SIZE, EVENT_QOS);
+    frame[0] = (uint8_t) TELEMETRY_TOPIC_EVENT;
+    (void) telemetry_pack_event(&frame[1], &event);
+    return b_try ? telemetry_queue_try_push(frame, TELEMETRY_EVENT_QUEUED_SIZE)
+                 : telemetry_queue_push(frame, TELEMETRY_EVENT_QUEUED_SIZE, EVENT_QOS);
+}
+
+ER
+telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
+                      uint32_t odometer_mm)
+{
+    return emit_event(source, type, p1, p2, odometer_mm, false);
+}
+
+ER
+telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1,
+                          uint16_t p2, uint32_t odometer_mm)
+{
+    return emit_event(source, type, p1, p2, odometer_mm, true);
 }
 
 uint16_t

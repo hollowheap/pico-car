@@ -16,7 +16,7 @@
 #include "platform/static_assert.h"
 
 #define MOTION_WHEELS              2U
-#define MOTION_FEEDBACK_MAX_AGE_US 600000U
+#define MOTION_FEEDBACK_MAX_AGE_US 25000U
 
 /* State and fault values are the controller's; the dashboard owns the
  * decoded names. */
@@ -38,7 +38,8 @@
 #define MOTION_HOLD_ALL       UINT32_C(125)
 
 /* One coherent feedback snapshot. Speeds and displacements are signed and
- * positive car-forward. fresh means the sample is within the age limit. */
+ * positive car-forward. Encoder recovery retains accumulated displacement.
+ * fresh means the sample is within the age limit. */
 typedef struct
 {
     int32_t  left_speed_um_s;
@@ -84,11 +85,13 @@ STATIC_ASSERT (sizeof(motion_diag_t) == 16U, "motion_diag_t size");
 int motion_feedback_snapshot (motion_feedback_t * p_feedback);
 int motion_status (motion_status_t * p_status);
 int motion_diag_snapshot (motion_diag_t * p_diag);
-/* All three from one controller pass, for frames that must agree. */
+/* Status and feedback from one controller pass. Diagnostics are optional. */
 int motion_snapshot (motion_status_t * p_status, motion_feedback_t * p_feedback,
                      motion_diag_t * p_diag);
 
 int motion_set_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us);
+/* A scan aiming pivot uses the normal speed-loop duty ceiling. */
+int motion_set_scan_pivot (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us);
 int motion_set_hold (uint32_t reason, bool held);
 int motion_request_stop (void);
 

@@ -47,12 +47,12 @@ bool motion_inbox_take (motion_inbox_t * p_inbox, uint32_t now_us,
 
 /* The run permit lapses once more than lease_us has passed since its renewal,
  * and at once before the first renewal. */
-bool motion_permit_lapsed (bool b_armed, uint32_t renewed_us, uint32_t lease_us,
-                           uint32_t now_us);
+bool motion_permit_lapsed (bool b_armed, uint64_t renewed_us, uint64_t lease_us,
+                           uint64_t now_us);
 /* Whole ms since the renewal, rounded up, so that the elapsed time is over the
  * lease in ms exactly when motion_permit_lapsed holds. UINT32_MAX before the
  * first renewal. */
-uint32_t motion_permit_elapsed_ms (bool b_armed, uint32_t renewed_us,
-                                   uint32_t now_us);
+uint32_t motion_permit_elapsed_ms (bool b_armed, uint64_t renewed_us,
+                                   uint64_t now_us);
 
 #endif /* MOTION_INBOX_H */

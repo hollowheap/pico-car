@@ -19,7 +19,12 @@
 ER telemetry_emit_event(uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
                         uint32_t odometer_mm);
 
-/* Events queued since boot (the next id), for tests and diagnostics. */
+/* Emits the same event format without waiting for the queue mutex or evicting.
+   Task context only, outside locks. Contention and a full queue count drops. */
+ER telemetry_try_emit_event(uint8_t source, uint8_t type, int16_t p1,
+                            uint16_t p2, uint32_t odometer_mm);
+
+/* Event IDs issued since boot (including dropped events). */
 uint16_t telemetry_event_count(void);
 
 #endif /* TELEMETRY_EMIT_H */

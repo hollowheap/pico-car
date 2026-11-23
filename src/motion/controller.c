@@ -67,25 +67,46 @@ static void fault (controller_t * p_control, uint32_t now_us,
     p_control->status.state = MOTION_FAULT;
     p_control->status.fault = reason;
     p_control->fault_us     = now_us;
+    p_control->recovery_baseline = false;
     reset_pid(p_control);
     brake(p_control, now_us, MOTION_FAULT_FEEDBACK != reason);
     LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE, "fault=%s, stopped",
               fault_name(reason));
 }
 
-/* Clear an encoder fault once the car has stood braked for
- * MOTION_FAULT_CLEAR_US: count from the present encoder reading and drop the
- * old command. */
+/* Evaluate the normal encoder checks without booking travel during braking. */
+static bool recovery_interval_valid (const controller_t * p_control, const motion_input_t * p_input)
+{
+    odometry_t probe = p_control->sampler;
+    motion_sample_t sample;
+
+    return odometry_update(&probe, p_input, &sample) &&
+           (sample.elapsed_us <= p_control->config.max_control_gap_us) &&
+           sample.wheel[ENCODER_LEFT].speed_valid && sample.wheel[ENCODER_RIGHT].speed_valid;
+}
+
 static void clear_encoder_fault (controller_t * p_control, const motion_input_t * p_input,
                                  uint32_t now_us)
 {
     unsigned int wheel = 0U;
+    bool clean = false;
 
-    if ((MOTION_FAULT == p_control->status.state) &&
-        (MOTION_FAULT_FEEDBACK == p_control->status.fault) &&
-        !p_control->status.brake_failed && (p_input != NULL) &&
-        ((uint32_t)(now_us - p_control->fault_us) >= MOTION_FAULT_CLEAR_US) &&
-        odometry_init(&p_control->sampler, &p_control->config.sampling, p_input))
+    if ((MOTION_FAULT_FEEDBACK != p_control->status.fault) || p_control->status.brake_failed)
+    {
+        return;
+    }
+    if ((p_input == NULL) ||
+        ((uint32_t)(now_us - p_input->timestamp_us) > p_control->config.speed[ENCODER_LEFT].max_sample_age_us) ||
+        ((uint32_t)(now_us - p_input->timestamp_us) > p_control->config.speed[ENCODER_RIGHT].max_sample_age_us))
+    {
+        p_control->recovery_baseline = false;
+        return;
+    }
+    clean = p_control->recovery_baseline &&
+            ((uint32_t)(now_us - p_control->fault_us) >= MOTION_FAULT_CLEAR_US) &&
+            recovery_interval_valid(p_control, p_input);
+    p_control->recovery_baseline = odometry_rebase(&p_control->sampler, p_input);
+    if (clean)
     {
         reset_pid(p_control);
         for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
@@ -115,6 +136,7 @@ bool controller_config_valid (const controller_config_t * p_config)
         (p_config->max_control_gap_us > p_config->sampling.max_interval_us) ||
         (p_config->reversal_brake_us == 0U) ||
         (p_config->reversal_brake_us > (uint32_t)INT32_MAX) ||
+        (p_config->pivot_duty_permille > PID_DUTY_PERMILLE_FULL) ||
         !odometry_init(&sampler, &p_config->sampling, &baseline))
     {
         return false;
@@ -122,6 +144,8 @@ bool controller_config_valid (const controller_config_t * p_config)
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         if (!pid_init(&pid, &p_config->speed[wheel]) ||
+            ((0U != p_config->pivot_duty_permille) &&
+             (p_config->pivot_duty_permille < p_config->speed[wheel].max_duty_permille)) ||
             ((p_config->speed[wheel].kp_q16 == 0U) &&
              (p_config->speed[wheel].ki_q16 == 0U)) ||
             (p_config->max_control_gap_us >
@@ -191,9 +215,8 @@ static bool valid_command (const controller_t * p_control,
     return true;
 }
 
-/* Stopped and faulted states are terminal, and a stop request has priority
- * over everything else. Also faults on a control gap or an expired lease.
- * Returns false when the tick has already finished. */
+/* Latch a stop even while a fault holds the wheels. Also faults on a control
+ * gap or an expired lease. Returns false when the tick has already finished. */
 static bool tick_admit (controller_t * p_control, uint32_t now_us,
                         bool stop_requested)
 {
@@ -201,8 +224,7 @@ static bool tick_admit (controller_t * p_control, uint32_t now_us,
 
     p_control->status.timestamp_us     = now_us;
     p_control->status.sample_available = false;
-    if ((p_control->status.state == MOTION_STOPPED) ||
-        (p_control->status.state == MOTION_FAULT))
+    if (p_control->status.state == MOTION_STOPPED)
     {
         return false;
     }
@@ -211,6 +233,10 @@ static bool tick_admit (controller_t * p_control, uint32_t now_us,
         p_control->status.state = MOTION_STOPPED;
         reset_pid(p_control);
         brake(p_control, now_us, true);
+        return false;
+    }
+    if (p_control->status.state == MOTION_FAULT)
+    {
         return false;
     }
     active = p_control->status.state != MOTION_IDLE;
@@ -285,19 +311,42 @@ static bool speed_loop (controller_t * p_control, uint32_t now_us,
                         int16_t * p_requested, bool * p_reversal)
 {
     unsigned int wheel = 0U;
+    int32_t const left = p_control->command.target_um_s[ENCODER_LEFT];
+    int32_t const right = p_control->command.target_um_s[ENCODER_RIGHT];
+    bool const b_pivot = (0 != left) && ((int64_t)left + (int64_t)right == 0) &&
+                         !p_control->command.b_scan_pivot &&
+                         (0U != p_control->config.pivot_duty_permille);
 
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
-        if (!p_control->status.sample.wheel[wheel].speed_valid &&
+        motion_sample_t const * const p_sample = &p_control->status.sample;
+        pid_config_t const * const p_speed = &p_control->config.speed[wheel];
+
+        /* Only a timely quadrature glitch qualifies for the ride-through. */
+        if (!p_sample->wheel[wheel].speed_valid &&
+            (p_sample->elapsed_us <= p_control->config.sampling.max_interval_us) &&
+            (p_sample->elapsed_us <= p_speed->max_interval_us) &&
+            motion_sample_fresh(p_sample, now_us, p_speed->max_sample_age_us) &&
             (p_control->bad_samples[wheel] < MAX_BAD_SAMPLES))
         {
-            /* Isolated encoder glitch: keep the duty already applied and
-             * skip this controller update instead of latching FEEDBACK. */
+            int16_t const previous = p_control->status.duty[wheel];
+            int32_t const target = p_control->command.target_um_s[wheel];
+            int16_t const duty = (sign(previous) == sign(target)) ? previous : 0;
+            int16_t const base = (int16_t)p_control->config.speed[wheel].base_duty_permille;
+
+            /* Ride through an isolated glitch only in the commanded direction,
+             * with the extra duty for current tracking feedback removed. */
             p_control->bad_samples[wheel]++;
-            p_requested[wheel] = p_control->status.duty[wheel];
+            p_requested[wheel] = duty;
+            if ((base > 0) && ((duty > base) || (duty < -base)))
+            {
+                p_requested[wheel] = (int16_t)(sign(duty) * base);
+            }
             continue;
         }
         p_control->bad_samples[wheel] = 0U;
+        p_control->pid[wheel].config.max_duty_permille = b_pivot ?
+            p_control->config.pivot_duty_permille : p_control->config.speed[wheel].max_duty_permille;
         if (!pid_update(
                 &p_control->pid[wheel], p_control->command.target_um_s[wheel],
                 &p_control->status.sample, wheel, now_us, &p_requested[wheel]))
@@ -305,13 +354,18 @@ static bool speed_loop (controller_t * p_control, uint32_t now_us,
             fault(p_control, now_us, MOTION_FAULT_FEEDBACK);
             return false;
         }
-        /* Decelerate by brake rather than applying reverse drive when the
-         * signed speed controller asks to oppose the current target. */
+        /* Zero is the available effort limit when the wheel overspeeds.
+         * Its load estimate can unwind to zero while feedback stays continuous. */
         if (sign(p_requested[wheel]) !=
             sign(p_control->command.target_um_s[wheel]))
         {
             p_requested[wheel] = 0;
-            pid_reset(&p_control->pid[wheel]);
+            int64_t const integral = p_control->pid[wheel].integral_q16;
+            if (((p_control->command.target_um_s[wheel] > 0) && (integral < 0)) ||
+                ((p_control->command.target_um_s[wheel] < 0) && (integral > 0)))
+            {
+                p_control->pid[wheel].integral_q16 = 0;
+            }
         }
         if ((p_requested[wheel] != 0) && (p_control->drive_sign[wheel] != 0) &&
             (sign(p_requested[wheel]) != p_control->drive_sign[wheel]))
@@ -349,9 +403,9 @@ static void apply_requested (controller_t * p_control, uint32_t now_us,
 
     applied = p_control->output.apply(p_control->output.context,
                                       p_requested[0], p_requested[1]);
-    if (applied == MOTION_OUTPUT_FAILED)
+    if (applied == MOTION_STOP_PENDING)
     {
-        fault(p_control, now_us, MOTION_FAULT_OUTPUT);
+        (void)tick_admit(p_control, now_us, true);
     }
     else if (applied == MOTION_BRAKED_RETRY)
     {
@@ -394,9 +448,13 @@ void controller_tick (controller_t *     p_control,
     {
         return;
     }
-    clear_encoder_fault(p_control, p_input, now_us);
     if (!tick_admit(p_control, now_us, stop_requested))
     {
+        if (!stop_requested && (MOTION_FAULT == p_control->status.state))
+        {
+            /* Commands already in flight during the fault do not rearm motion. */
+            clear_encoder_fault(p_control, p_input, now_us);
+        }
         return;
     }
     if ((p_command != NULL) && !accept_command(p_control, p_command, now_us))
