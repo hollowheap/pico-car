@@ -102,14 +102,15 @@ export function createCommandSession(firstCmdId: number) {
   let runId: number | null = null;
   let uptimeS = 0;
   let seenMs = 0;
-  let haveDiag = false;
+  // Newest accepted or issued id on this run; ignores stale diags once next crosses the 16-bit half-space.
+  let floor: number | null = null;
   let next = firstCmdId & 0xffff;
 
   return {
     noteHeartbeat(values: Record<string, number>, atMs: number): void {
       if (values.run_id !== undefined && values.uptime_s !== undefined) {
         if (runId !== null && values.run_id !== runId) {
-          haveDiag = false;
+          floor = null;
         }
         runId = values.run_id;
         uptimeS = values.uptime_s;
@@ -117,21 +118,24 @@ export function createCommandSession(firstCmdId: number) {
       }
     },
     noteDiag(values: Record<string, number>): void {
-      const last = values.cmd_last_id;
-      if (last === undefined) {
+      if (values.cmd_last_id === undefined) {
         return;
       }
-      haveDiag = true;
-      if (!isNewer(next, last)) {
-        next = (last + 1) & 0xffff;
+      const last = values.cmd_last_id & 0xffff;
+      if (floor === null || isNewer(last, floor)) {
+        floor = last;
+        if (!isNewer(next, last)) {
+          next = (last + 1) & 0xffff;
+        }
       }
     },
     /** The frame for an action, or null without a fresh heartbeat and a diag frame. */
     frame(schema: ProtocolSchema, action: string, atMs: number): Buffer | null {
-      if (runId === null || !haveDiag || atMs - seenMs > HEARTBEAT_FRESH_MS) {
+      if (runId === null || floor === null || atMs - seenMs > HEARTBEAT_FRESH_MS) {
         return null;
       }
       const frame = encodeCommand(schema, action, next, runId, uptimeS);
+      floor = next;
       next = (next + 1) & 0xffff;
       return frame;
     },
