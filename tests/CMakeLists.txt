@@ -261,6 +261,22 @@ foreach(name IN ITEMS queue net_queue worker publisher)
     add_test(NAME telemetry_${name} COMMAND test_telemetry_${name})
 endforeach()
 
+add_executable(test_telemetry_connection_cmd test_telemetry_connection_cmd.c
+    ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c
+    ${TELEMETRY_SRC}/packet.c ${TELEMETRY_SRC}/publisher.c)
+target_include_directories(test_telemetry_connection_cmd PRIVATE
+    ${TELEMETRY_TEST_INCLUDES} ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/mtk3smp-rp2040/lib/libwifi/sysdepend/pico_rp2040)
+target_compile_options(test_telemetry_connection_cmd PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection/kernel.h"
+    -ffunction-sections -fdata-sections ${TELEMETRY_TEST_FLAGS})
+target_link_options(test_telemetry_connection_cmd PRIVATE
+    -Wl,--gc-sections -Wl,--wrap=telemetry_cmd_receive)
+add_test(NAME telemetry_connection_cmd COMMAND test_telemetry_connection_cmd)
+add_test(NAME telemetry_connection_publish_failure COMMAND test_telemetry_connection_cmd publish-failure)
+add_test(NAME telemetry_connection_data_publish_failure COMMAND test_telemetry_connection_cmd data-publish-failure)
+add_test(NAME telemetry_connection_join_failure COMMAND test_telemetry_connection_cmd join-failure)
+
 add_executable(test_line_control test_line_control.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
 target_include_directories(test_line_control PRIVATE
