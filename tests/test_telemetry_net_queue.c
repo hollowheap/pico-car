@@ -321,6 +321,17 @@ static void test_wraparound_fuzz (void)
     pass("net_wraparound_fuzz", before);
 }
 
+static void test_barcode_burst_preserves_events (void)
+{
+    setup();
+    uint8_t const sample[1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE] = {TELEMETRY_TOPIC_BARCODE_SAMPLE};
+    uint8_t const event[1U + TELEMETRY_EVENT_WIRE_SIZE] = {TELEMETRY_TOPIC_EVENT};
+    unsigned stored = 0U;
+    while (stored < 100U && telemetry_net_queue_push(sample, sizeof(sample)) == E_OK) ++stored;
+    CHECK(stored > 0U && stored < 100U);
+    CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
+}
+
 int main (void)
 {
     test_create_failure_paths();
@@ -331,6 +342,7 @@ int main (void)
     test_capacity_by_size();
     test_other_errors_not_counted();
     test_wraparound_fuzz();
+    test_barcode_burst_preserves_events();
 
     (void)printf("%u checks, %u failed\n", g_checks, g_fail);
     return (g_fail == 0U) ? 0 : 1;

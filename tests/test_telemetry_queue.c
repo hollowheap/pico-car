@@ -37,7 +37,7 @@
 #define COST_EVENT     20U
 #define COST_STATUS    24U
 #define COST_PHYSICS   32U
-#define COST_DIAG      52U /* 45 B diag + topic byte = 46, rounded to 48, + 4 */
+#define COST_DIAG      80U /* 73 B diag + topic byte = 74, rounded to 76, + 4 */
 #define COST_PROFILE   88U
 #define FILL_LEN       28U /* kernel math only: a 28 B message costs 32 B */
 #define CAP_FILL       32U
@@ -92,7 +92,7 @@ static uint16_t frame_len (uint8_t topic)
         case 'o':
             return FRAME_PHYSICS;
         case 'd':
-            return TELEMETRY_DIAG_WIRE_SIZE + 1U;
+            return TELEMETRY_DIAG_COUNTS_WIRE_SIZE + 1U;
         case 'f':
             return FRAME_PROFILE;
         default:

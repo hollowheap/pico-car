@@ -58,6 +58,24 @@ put_u32 (uint8_t * dst, uint32_t off, uint32_t value)
 }
 
 uint16_t
+telemetry_pack_barcode_sample (uint8_t * dst, const telemetry_barcode_sample_t * p_src)
+{
+    if ((dst == NULL) || (p_src == NULL))
+    {
+        return 0U;
+    }
+    put_u32(dst, TELEMETRY_BARCODE_SAMPLE_OFF_EDGE_US, p_src->edge_us);
+    put_u32(dst, TELEMETRY_BARCODE_SAMPLE_OFF_INTERVAL_US, p_src->interval_us);
+    put_u32(dst, TELEMETRY_BARCODE_SAMPLE_OFF_ODOMETER_MM, p_src->odometer_mm);
+    put_u16(dst, TELEMETRY_BARCODE_SAMPLE_OFF_WIDTH_UM, p_src->width_um);
+    put_u8(dst, TELEMETRY_BARCODE_SAMPLE_OFF_SEQ, p_src->seq);
+    put_u8(dst, TELEMETRY_BARCODE_SAMPLE_OFF_LEVEL_HIGH, p_src->level_high);
+    put_u8(dst, TELEMETRY_BARCODE_SAMPLE_OFF_WIDTH_VALID, p_src->width_valid);
+    put_u8(dst, TELEMETRY_BARCODE_SAMPLE_OFF_CAPTURE_LOSS, p_src->capture_loss);
+    return TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE;
+}
+
+uint16_t
 telemetry_pack_status (uint8_t * dst, const telemetry_status_t * p_src)
 {
     if ((dst == NULL) || (p_src == NULL))
@@ -159,43 +177,43 @@ telemetry_pack_diag (uint8_t * dst, const telemetry_diag_t * p_src)
     {
         return 0u;
     }
-    put_u16 (dst, TELEMETRY_DIAG_OFF_STICKY_FAULTS, p_src->sticky_faults);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_TASK_ALIVE_MASK, p_src->task_alive_mask);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_LINE_LOST_COUNT, p_src->line_lost_count);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_LINE_SEARCH_MM, p_src->line_search_mm);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_BARCODE_OK, p_src->barcode_ok);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_BARCODE_BAD, p_src->barcode_bad);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_BARCODE_EDGE_DROPS,
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_STICKY_FAULTS, p_src->sticky_faults);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_TASK_ALIVE_MASK, p_src->task_alive_mask);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_LINE_LOST_COUNT, p_src->line_lost_count);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_RESERVED, 0u);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_BARCODE_OK, p_src->barcode_ok);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_BARCODE_BAD, p_src->barcode_bad);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_BARCODE_EDGE_DROPS,
              p_src->barcode_edge_drops);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_LAST_BARCODE, p_src->last_barcode);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_LAST_BARCODE_ACTION,
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_LAST_BARCODE, p_src->last_barcode);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_LAST_BARCODE_ACTION,
             p_src->last_barcode_action);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_TELEM_QUEUE_DROPS, p_src->telem_queue_drops);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_NET_QUEUE_DROPS, p_src->net_queue_drops);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_PHYSICS_OVERRUNS, p_src->physics_overruns);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_TELEMETRY_OVERRUNS,
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_TELEM_QUEUE_DROPS, p_src->telem_queue_drops);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_NET_QUEUE_DROPS, p_src->net_queue_drops);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_PHYSICS_OVERRUNS, p_src->physics_overruns);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_TELEMETRY_OVERRUNS,
              p_src->telemetry_overruns);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_ECHO_VALID, p_src->echo_valid);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_ECHO_OPEN, p_src->echo_open);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_ECHO_TOO_CLOSE, p_src->echo_too_close);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_ECHO_NO_ECHO, p_src->echo_no_echo);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_ECHO_GLITCH, p_src->echo_glitch);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_ECHO_STUCK, p_src->echo_stuck);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_LINE_EDGES_PER_S, p_src->line_edges_per_s);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_LINE_RAW_EDGES_PER_S,
-            p_src->line_raw_edges_per_s);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_SUPERVISOR_PASSES, p_src->supervisor_passes);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_STACK_MIN_FREE, p_src->stack_min_free);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_STACK_MIN_TASK, p_src->stack_min_task);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_RING_DROPS, p_src->cmd_ring_drops);
-    put_u16 (dst, TELEMETRY_DIAG_OFF_CMD_LAST_ID, p_src->cmd_last_id);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_LENGTH, p_src->cmd_rej_length);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_OPCODE, p_src->cmd_rej_opcode);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_RUN, p_src->cmd_rej_run);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_OLD_ID, p_src->cmd_rej_old_id);
-    put_u8 (dst, TELEMETRY_DIAG_OFF_CMD_REJ_AGE, p_src->cmd_rej_age);
+    put_u32 (dst, TELEMETRY_DIAG_COUNTS_OFF_LINE_EDGES_TOTAL, p_src->line_edges_total);
+    put_u32 (dst, TELEMETRY_DIAG_COUNTS_OFF_LINE_RAW_EDGES_TOTAL, p_src->line_raw_edges_total);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_SUPERVISOR_PASSES, p_src->supervisor_passes);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_STACK_MIN_FREE, p_src->stack_min_free);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_STACK_MIN_TASK, p_src->stack_min_task);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_RING_DROPS, p_src->cmd_ring_drops);
+    put_u16 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_LAST_ID, p_src->cmd_last_id);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_REJ_LENGTH, p_src->cmd_rej_length);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_REJ_OPCODE, p_src->cmd_rej_opcode);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_REJ_RUN, p_src->cmd_rej_run);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_REJ_OLD_ID, p_src->cmd_rej_old_id);
+    put_u8 (dst, TELEMETRY_DIAG_COUNTS_OFF_CMD_REJ_AGE, p_src->cmd_rej_age);
 
-    return TELEMETRY_DIAG_WIRE_SIZE;
+    for (uint16_t i = 0u; i < TELEMETRY_DIAG_COUNTS_COUNT_ECHO_TOTAL; i++)
+    {
+        put_u32 (dst, TELEMETRY_DIAG_COUNTS_OFF_ECHO_TOTAL + (i * (uint32_t)sizeof(uint32_t)),
+                 p_src->echo_total[i]);
+    }
+    put_u32 (dst, TELEMETRY_DIAG_COUNTS_OFF_SENSOR_SAMPLE_US, p_src->sensor_sample_us);
+
+    return TELEMETRY_DIAG_COUNTS_WIRE_SIZE;
 }
 
 uint16_t

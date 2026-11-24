@@ -183,7 +183,7 @@ static void test_timeout_forwarded (void)
         CHECK(g_pop_calls == 3U);
         for (unsigned c = 0U; c < g_pop_calls; c++)
         {
-            CHECK(g_pop_tmo[c] == values[v]);
+            CHECK(g_pop_tmo[c] == ((c == 0U) ? values[v] : TMO_POL));
         }
     }
     pass("worker_timeout_forwarded", before);
@@ -295,11 +295,22 @@ static void test_runs_again_after_stop (void)
     pass("worker_runs_again_after_stop", before);
 }
 
+static void test_burst_yields_between_batches (void)
+{
+    reset();
+    for (unsigned i = 0; i < SCRIPT_MAX; ++i) add(2, 2, (uint8_t)i);
+    telemetry_worker_run(fake_pop, fake_sink, 50);
+    CHECK(g_sink_calls > 0 && g_sink_calls < SCRIPT_MAX);
+    while (g_sink_calls < SCRIPT_MAX) telemetry_worker_run(fake_pop, fake_sink, TMO_POL);
+    for (unsigned i = 0; i < SCRIPT_MAX; ++i) CHECK(sink_got(i, 2, (uint8_t)i));
+}
+
 int main (void)
 {
     test_drains_all_frames();
     test_length_is_the_pop_return();
     test_timeout_forwarded();
+    test_burst_yields_between_batches();
     test_same_buffer_for_pop_and_sink();
     test_empty_queue_does_nothing();
     test_stops_on_pop_error();

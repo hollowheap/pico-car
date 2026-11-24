@@ -177,6 +177,22 @@ static void test_try_event_preserves_full_queue (void)
 
 int main (void)
 {
+    setup();
+    telemetry_barcode_sample_t sample = {
+        .edge_us = 1234567U, .interval_us = 20000U, .odometer_mm = 522U,
+        .width_um = 3000U, .seq = 255U, .level_high = 1U, .width_valid = 1U
+    };
+    uint8_t frame[TELEMETRY_FRAME_MAX];
+    CHECK(telemetry_try_emit_barcode_sample(&sample) == E_OK);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)(1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE));
+    CHECK(frame[0] == 'b' && be32(&frame[1]) == 1234567U && be32(&frame[5]) == 20000U);
+    CHECK(be32(&frame[9]) == 522U && be16(&frame[13]) == 3000U && frame[15] == 255U);
+    CHECK(frame[16] == 1U && frame[17] == 1U && frame[18] == 0U);
+    unsigned accepted = 0U;
+    while (accepted < 100U && telemetry_try_emit_barcode_sample(&sample) == E_OK) ++accepted;
+    CHECK(accepted > 0U && accepted < 100U);
+    CHECK(telemetry_emit_event(TELEMETRY_EVENT_SOURCE_BARCODE, TELEMETRY_EVT_BARCODE,
+                               'Z', 0, 522U) == E_OK);
     test_event_fields_and_ids();
     test_event_is_qos1();
     test_try_event_on_contended_queue();

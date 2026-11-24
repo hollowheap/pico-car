@@ -62,10 +62,10 @@ STATIC_ASSERT(FAULT_ALL_MASK <= UINT16_MAX, "fault bits fit the wire fields");
 /* Kernel objects the firmware creates, against the limits in
    cmake/mtk3smp_config.h.in. Tasks: the nine below, plus the
    kernel's init, USB console and CYW43 tasks. Cyclic handlers: supervisor,
-   telemetry, motion, physics and connection. Past a limit, tk_cre_* fails
+   motion and physics. Past a limit, tk_cre_* fails
    at boot with E_LIMIT. */
 #define FIRMWARE_TASKS   (12U)
-#define FIRMWARE_CYCLICS (5U)
+#define FIRMWARE_CYCLICS (3U)
 STATIC_ASSERT(FIRMWARE_TASKS <= CNF_MAX_TSKID, "task limit");
 STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 
@@ -79,18 +79,18 @@ STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 #define START_BUTTON_PULL_DOWN       (1UL << 2U)
 #define START_BUTTON_SCHMITT         (1UL << 1U)
 
-/* Telemetry pacing, in 50 ms passes of telemetry_task: status, motion
- * and physics every 200 ms (5 Hz), obstacle every 500 ms, diag every 1 s.
- * The heartbeat is sent by the connection task. */
+/* Periodic snapshots use a 50 ms timebase. Queue arrivals wake telemetry immediately. */
 #define TELEMETRY_PASS_MS            (50U)
 #define TELEMETRY_FAST_PASSES        (4U)
 #define TELEMETRY_OBSTACLE_PASSES    (10U)
 #define TELEMETRY_DIAG_PASSES        (20U)
-#define TELEMETRY_SLEEP_TIMEOUT_MS   (250U)
+
 
 /* Telemetry reads the obstacle profile with the wire's slot count. */
 STATIC_ASSERT (OBSTACLE_PROFILE_SLOTS == TELEMETRY_PROFILE_COUNT_SLOTS,
                "profile slots match the wire");
+STATIC_ASSERT (OBSTACLE_ECHO_CLASSES == TELEMETRY_DIAG_COUNTS_COUNT_ECHO_TOTAL,
+               "echo counters match the wire");
 
 /* Startup barrier. This file creates every task; one startup task owns the
  * shared hardware init and the others wait for it. Subsystems never call
@@ -100,19 +100,12 @@ typedef struct
     ID h_flg;
     ID motion_tid;
     ID physics_tid;
-    ID telemetry_tid;
+    ID connection_tid;
     ID supervisor_tid;
 } startup_state_t;
 
 static startup_state_t g_startup = {0, 0, 0, 0, 0};
-static ID              g_telemetry_cyc_id;
 static uint32_t        g_telemetry_overruns;
-
-LOCAL void telemetry_cyclic_wakeup (void * p_exinf)
-{
-    (void)p_exinf;
-    (void)tk_wup_tsk(g_startup.telemetry_tid);
-}
 
 LOCAL void supervisor_cyclic_wakeup (void * p_exinf)
 {
@@ -294,29 +287,19 @@ LOCAL void barcode_task (INT stacd, void * exinf)
  */
 LOCAL int net_sink (const uint8_t * frame, uint16_t len)
 {
-    (void)telemetry_net_queue_push(frame, len);
+    if ((E_OK == telemetry_net_queue_push(frame, len)) && (g_startup.connection_tid > 0))
+    {
+        (void)tk_wup_tsk(g_startup.connection_tid);
+    }
     return 0;
 }
 
-/* What the telemetry task remembers between passes. Only that task uses it. */
-typedef struct
-{
-    uint32_t edges;          /* ir_line_edges at the last diag frame     */
-    uint32_t raw_edges;      /* ir_line_raw_edges at the last diag frame */
-    uint32_t echo[OBSTACLE_ECHO_CLASSES]; /* ping counts at the last diag frame */
-    uint16_t seq;            /* status frame counter                     */
-} telemetry_memory_t;
-
-static telemetry_memory_t g_tel;
+/* Only the telemetry task advances the status frame counter. */
+static uint16_t g_status_seq;
 
 LOCAL uint16_t clamp_u16 (uint32_t value)
 {
     return (value > UINT16_MAX) ? (uint16_t)UINT16_MAX : (uint16_t)value;
-}
-
-LOCAL uint8_t clamp_u8 (uint32_t value)
-{
-    return (value > UINT8_MAX) ? (uint8_t)UINT8_MAX : (uint8_t)value;
 }
 
 LOCAL uint8_t current_line_bits (void)
@@ -368,8 +351,8 @@ LOCAL void telemetry_send_fast (void)
                               b_feedback ? &feedback : NULL,
                               b_physics ? &physics : NULL,
                               b_obstacle ? &obstacle : NULL, (uint16_t)system_fault_get(),
-                              g_tel.seq, current_line_bits(), line.b_turning, hug);
-    g_tel.seq++;
+                              g_status_seq, current_line_bits(), line.b_turning, hug);
+    g_status_seq++;
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_STATUS, packet,
         telemetry_pack_status(packet, &status), 0U);
@@ -429,9 +412,6 @@ LOCAL void telemetry_send_diag (void)
     uint8_t           packet[TELEMETRY_WIRE_MAX];
     physics_status_t  physics;
     telemetry_diag_t  diag = {0};
-    uint32_t const    edges     = ir_line_edges();
-    uint32_t const    raw_edges = ir_line_raw_edges();
-    uint32_t          echo[OBSTACLE_ECHO_CLASSES] = {0};
     barcode_stats_t   bstats;
     line_task_stats_t lstats;
     uint32_t const    stack_mark = g_stack_mark;
@@ -468,30 +448,19 @@ LOCAL void telemetry_send_diag (void)
     {
         diag.physics_overruns = clamp_u16(physics.overruns);
     }
-    /* Flips since the last diag frame, which is about one second ago. */
-    diag.line_edges_per_s     = clamp_u8(edges - g_tel.edges);
-    diag.line_raw_edges_per_s = clamp_u8(raw_edges - g_tel.raw_edges);
-    g_tel.edges     = edges;
-    g_tel.raw_edges = raw_edges;
-
-    /* Pings per class since the last diag frame. */
-    obstacle_echo_counts(echo);
-    diag.echo_valid     = clamp_u8(echo[OBSTACLE_ECHO_IDX_VALID] - g_tel.echo[OBSTACLE_ECHO_IDX_VALID]);
-    diag.echo_open      = clamp_u8(echo[OBSTACLE_ECHO_IDX_OPEN] - g_tel.echo[OBSTACLE_ECHO_IDX_OPEN]);
-    diag.echo_too_close = clamp_u8(echo[OBSTACLE_ECHO_IDX_TOO_CLOSE] - g_tel.echo[OBSTACLE_ECHO_IDX_TOO_CLOSE]);
-    diag.echo_no_echo   = clamp_u8(echo[OBSTACLE_ECHO_IDX_NO_ECHO] - g_tel.echo[OBSTACLE_ECHO_IDX_NO_ECHO]);
-    diag.echo_glitch    = clamp_u8(echo[OBSTACLE_ECHO_IDX_GLITCH] - g_tel.echo[OBSTACLE_ECHO_IDX_GLITCH]);
-    diag.echo_stuck     = clamp_u8(echo[OBSTACLE_ECHO_IDX_STUCK] - g_tel.echo[OBSTACLE_ECHO_IDX_STUCK]);
-    for (uint8_t idx = 0U; idx < OBSTACLE_ECHO_CLASSES; idx++)
-    {
-        g_tel.echo[idx] = echo[idx];
-    }
+    diag.line_edges_total     = ir_line_edges();
+    diag.line_raw_edges_total = ir_line_raw_edges();
+    obstacle_echo_counts(diag.echo_total);
+    diag.sensor_sample_us = in_w(TIMER_TIMERAWL);
 
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_DIAG, packet,
         telemetry_pack_diag(packet, &diag), 0U);
 }
 
+/*!
+ * @brief Offer one event per changed bit without delaying the fault owner.
+ */
 LOCAL void telemetry_fault_changed (uint32_t changed, uint32_t level)
 {
     uint32_t const odometer = current_odometer_mm();
@@ -565,51 +534,51 @@ LOCAL void telemetry_legacy_transition (const obstacle_legacy_transition_t * p_t
 #endif
 
 /*!
- * @brief Drain the queue, then build the frames that are due this pass. Every
- *        pass is 50 ms. Status, motion and physics go out every fourth pass
- *        (200 ms), the obstacle frame every tenth, the diag frame every
- *        twentieth.
+ * @brief Forward arriving events and check periodic deadlines between bursts.
  */
 LOCAL void telemetry_task (INT stacd, void * exinf)
 {
+    SYSTIM now = {0};
     uint32_t pass = 0U;
 
     (void)stacd;
     (void)exinf;
-
     if (!wait_startup())
     {
         park();
     }
 
+    (void)tk_get_otm(&now);
+    uint32_t last_ms = now.lo;
     for (;;)
     {
         liveness_kick(LIVE_TELEMETRY);
-        telemetry_worker_run(telemetry_queue_pop, net_sink, TMO_POL);
-        log_drain();
-
-        pass++;
-        if (0U == (pass % TELEMETRY_FAST_PASSES))
+        (void)tk_get_otm(&now);
+        uint32_t const elapsed = now.lo - last_ms;
+        uint32_t const ticks = elapsed / TELEMETRY_PASS_MS;
+        if (ticks != 0U)
         {
-            telemetry_send_fast();
+            g_telemetry_overruns += ticks - 1U;
+            if (ticks >= TELEMETRY_FAST_PASSES - pass % TELEMETRY_FAST_PASSES)
+            {
+                telemetry_send_fast();
+            }
+            if (ticks >= TELEMETRY_OBSTACLE_PASSES - pass % TELEMETRY_OBSTACLE_PASSES)
+            {
+                telemetry_send_obstacle();
+            }
+            if (ticks >= TELEMETRY_DIAG_PASSES - pass % TELEMETRY_DIAG_PASSES)
+            {
+                telemetry_send_diag();
+            }
+            pass = (pass + ticks) % TELEMETRY_DIAG_PASSES;
+            last_ms += ticks * TELEMETRY_PASS_MS;
+            log_drain();
         }
-        if (0U == (pass % TELEMETRY_OBSTACLE_PASSES))
-        {
-            telemetry_send_obstacle();
-        }
-        if (0U == (pass % TELEMETRY_DIAG_PASSES))
-        {
-            telemetry_send_diag();
-        }
-
-        INT queued = 0;
-        ER const er = tk_slp_tsk((TMO)TELEMETRY_SLEEP_TIMEOUT_MS);
-
-        queued = tk_can_wup(TSK_SELF);
-        if ((E_OK == er) && (queued > 0))
-        {
-            g_telemetry_overruns += (uint32_t)queued;
-        }
+        (void)tk_get_otm(&now);
+        uint32_t const used_ms = now.lo - last_ms;
+        TMO const wait = (used_ms < TELEMETRY_PASS_MS) ? (TMO)(TELEMETRY_PASS_MS - used_ms) : TMO_POL;
+        telemetry_worker_run(telemetry_queue_pop, net_sink, wait);
     }
 }
 
@@ -1090,18 +1059,7 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
         {
             p_tasks->b_telemetry = false;
         }
-        else
-        {
-            T_CCYC ccyc = {0};
 
-            g_startup.telemetry_tid = p_tasks->telemetry_tid;
-            ccyc.cycatr = TA_HLNG | TA_STA;
-            ccyc.cychdr = (FP)telemetry_cyclic_wakeup;
-            ccyc.cyctim = (RELTIM)TELEMETRY_PASS_MS;
-            ccyc.cycphs = (RELTIM)TELEMETRY_PASS_MS;
-            g_telemetry_cyc_id = tk_cre_cyc(&ccyc);
-            (void)made("cyc(telemetry)", g_telemetry_cyc_id);
-        }
     }
 
     p_tasks->barcode_tid = tk_cre_tsk(&g_ctsk_barcode);
@@ -1113,6 +1071,10 @@ LOCAL bool create_tasks (task_set_t * p_tasks)
         if (!made("tsk(connection)", p_tasks->connection_tid))
         {
             p_tasks->b_connection = false;
+        }
+        else
+        {
+            g_startup.connection_tid = p_tasks->connection_tid;
         }
     }
 
