@@ -94,22 +94,15 @@
 /* [Spec] Consecutive VALID hits needed to report an obstacle. */
 #define B5_DETECT_HITS (2U)
 
-/* [Default] Readings closer than this call the emergency stop (only in
- * REACQUIRE, see check_collision() in b5_fsm.c). */
-#define B5_COLLISION_MM (80U)
-
-/* [Default] Consecutive close readings needed for the emergency stop. */
-#define B5_COLLISION_HITS (2U)
-
 /* ------------------------------------------------------------------ *
  * Scan grid [Spec].
  * ------------------------------------------------------------------ */
 
-/* 25 slots from -60 to +60 degrees in 5 degree steps; slot 12 is ahead. */
+/* 25 slots from -48 to +48 degrees in 4 degree steps; slot 12 is ahead. */
 #define B5_SLOT_COUNT      (25U)
 #define B5_SLOT_CENTRE     (12U)
-#define B5_SLOT_STEP_DECI  (50)
-#define B5_SLOT_FIRST_DECI (-600)
+#define B5_SLOT_STEP_DECI  (40)
+#define B5_SLOT_FIRST_DECI (-530)
 
 /* The coarse scan measures every third slot. */
 #define B5_COARSE_STRIDE (3U)
@@ -157,10 +150,10 @@
 #define B5_AGREE_MM  (15U)
 #define B5_MAX_PINGS (4U)
 
-/* [Chat][Default] The car's path: +-30 degrees of straight ahead. CLEAR
+/* [Chat][Default] The car's path: +-24 degrees of straight ahead. CLEAR
  * needs a real reading in every slot of it, and the scan looks for the
  * closest reading here before it looks at the whole sweep. */
-#define B5_PATH_HALF_DECI (300)
+#define B5_PATH_HALF_DECI (240)
 
 /* ------------------------------------------------------------------ *
  * Servo (SG90 on servo port 1). The datasheet gives both "1-2 ms for
@@ -169,7 +162,7 @@
  * ------------------------------------------------------------------ */
 
 /* FILL: pulse width that points the sensor straight ahead. */
-#define B5_SERVO_CENTRE_US (1500U)
+#define B5_SERVO_CENTRE_US (1450U)
 
 /* FILL: microseconds per 10 degrees (a safe 5.6 us per degree guess). */
 #define B5_SERVO_US_PER_10DEG (56U)
@@ -177,8 +170,8 @@
 /* FILL: +1 if a longer pulse turns the sensor left, -1 otherwise. */
 #define B5_SERVO_DIR (1)
 
-/* [Spec] The scan covers +-60 degrees. */
-#define B5_SERVO_LIMIT_DECI (600)
+/* [Spec] The scan covers +-48 degrees. */
+#define B5_SERVO_LIMIT_DECI (480)
 
 /* Never command a pulse outside the datasheet range. */
 #define B5_SERVO_MIN_US (500U)
@@ -345,7 +338,7 @@
  * margin) between the obstacle and the sonar while the car rotates beside
  * it. */
 #define B5_SPIN_CLEAR_MM   (20U)
-#define B5_SENSOR_CLEAR_MM (B5_COLLISION_MM + 20U)
+#define B5_SENSOR_CLEAR_MM (100U)
 
 /* [Chat] Revised bypass, first leg: the car drives on B / 2 towards the
  * obstacle before its first rotation, but keeps the axle at least
@@ -368,7 +361,7 @@
  *     of the collision guard's range while the car rotates.
  * NOTE: Both hold only while A is not below the obstacle's true half
  * width (the raw cleared angle normally makes A larger). */
-#define B5_ROOM_MAX_MM   (150U)
+#define B5_ROOM_MAX_MM   (200U)
 #define B5_OUT_SWING_MM  (B5_SWING_MM + B5_SPIN_CLEAR_MM)
 #define B5_OUT_SENSOR_MM (B5_AXLE_TO_SONAR_MM + B5_SENSOR_CLEAR_MM)
 #define B5_OUT_SIDE_MM                                                         \
@@ -390,7 +383,7 @@
  * to the line is blocked. While the car stands still for the sweep, the
  * collision guard is off: a close reading is "in the way", not a
  * collision. */
-#define B5_SIDE_PAN_DECI  (600)
+#define B5_SIDE_PAN_DECI  (480)
 #define B5_SWEEP_PINGS    (1U)
 #define B5_LANE_BUFFER_MM (30U)
 #define B5_LANE_LEFT_MM   (B5_HALF_W_LEFT_MM + B5_LANE_BUFFER_MM)
@@ -438,7 +431,7 @@
  * off square). */
 #define B5_SONAR_FACE_MM       (15U)
 #define B5_TRACK_PERIOD_MS     (20U)
-#define B5_TRACK_PAN_DECI      (600)
+#define B5_TRACK_PAN_DECI      (480)
 #define B5_TRACK_TILT_DECI     (100)
 #define B5_TRACK_MIN_STEP_DECI (10)
 #define B5_TRACK_SPIN_UM_S     (B5_NAV_SPIN_UM_S)
@@ -467,8 +460,8 @@
  * past it without a line, the car stops. */
 #define B5_TAPE_W_MM       (18U)
 #define B5_LINE_MIN_MM     (8U)
-#define B5_LINE_WINDOW_MM  (80U)
-#define B5_LINE_GIVE_UP_MM (300U)
+#define B5_LINE_WINDOW_MM  (100U)
+#define B5_LINE_GIVE_UP_MM (600U)
 #define B5_NAV_LINE_UM_S   (B5_NAV_SPEED_UM_S / 2U)
 #define B5_LINE_SLOW_MM    (B5_LINE_WINDOW_MM + 40U)
 
@@ -610,13 +603,11 @@ B5_CT_ASSERT(ping_after_wait, B5_ECHO_WAIT_MS < B5_PING_PERIOD_MS);
 B5_CT_ASSERT(unknown_cnt_fits, B5_NO_ECHO_COUNT <= B5_CNT3_MAX);
 B5_CT_ASSERT(stuck_cnt_fits, B5_STUCK_COUNT <= B5_CNT2_MAX);
 B5_CT_ASSERT(hit_cnt_fits, B5_DETECT_HITS <= B5_CNT3_MAX);
-B5_CT_ASSERT(coll_cnt_fits, B5_COLLISION_HITS <= B5_CNT2_MAX);
 B5_CT_ASSERT(clear_cnt_fits, B5_ESCAPE_CLEAR_PINGS <= B5_CNT3_MAX);
 B5_CT_ASSERT(nav_brake_in_time, B5_NAV_BRAKE_MS < B5_WAIT_STOP_MS);
 B5_CT_ASSERT(nav_speed_in_range, B5_NAV_SPEED_UM_S <= 200000U);
 B5_CT_ASSERT(sensors_in_front, (B5_AXLE_TO_SONAR_MM < B5_AXLE_TO_FRONT_MM) &&
                                    (B5_AXLE_TO_IR_MM < B5_AXLE_TO_FRONT_MM));
-B5_CT_ASSERT(sweep_reading_safe, B5_COLLISION_MM < B5_LANE_RIGHT_MM);
 B5_CT_ASSERT(sweep_pings_fit, (B5_SWEEP_PINGS > 0U) && (B5_SWEEP_PINGS < 8U));
 B5_CT_ASSERT(side_assumed_in_range,
              (B5_SIDE_ASSUMED_DECI > 0) &&

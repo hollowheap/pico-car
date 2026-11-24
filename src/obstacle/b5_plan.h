@@ -21,7 +21,7 @@
 
 /* clear_deci of an edge that is not bounded: one 5 degree slot past the
  * 60 degree servo limit (checked in b5_plan.c), so A is always the cap. */
-#define B5_PLAN_CLEAR_UNBOUNDED (650)
+#define B5_PLAN_CLEAR_UNBOUNDED (520)
 
 /* Car and course numbers the planner needs. */
 typedef struct
