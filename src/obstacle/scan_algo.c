@@ -9,13 +9,17 @@
  *      neighbours that are VALID and within closest + 250 mm. The closest
  *      reading is looked for inside the car's path (+-30 degrees) first,
  *      so clutter off to one side cannot take the place of the obstacle
- *      that stopped the car.
+ *      that stopped the car. If both end slots are too short to be real
+ *      by trigonometry (a flat face square to the car, heard at every
+ *      angle), side echoes are left out of the region
+ *      (scan_algo_is_side_echo()).
  *   3. Fine, left edge first because the servo is already on the left:
  *      the slots are walked outward until the first real miss (OPEN, or
  *      VALID beyond closest + 250 mm). An UNKNOWN or STUCK slot proves
  *      nothing, so the walk assumes the obstacle goes on and steps past
- *      it. An edge that reaches +-60 degrees without a miss is
- *      UNBOUNDED, so the planner treats that side as unsafe.
+ *      it. A side echo counts as a miss. An edge that reaches +-60
+ *      degrees without a miss is UNBOUNDED, so the planner treats that
+ *      side as unsafe.
  */
 
 #include <stdbool.h>
@@ -41,12 +45,22 @@
 /* Largest angle of the sweep in deci-degrees (600). */
 #define SWEEP_HALF_DECI (-B5_SLOT_FIRST_DECI)
 
+/* Q14 fixed point: 16384 = 1.0. Divisors of the cosine series. */
+#define Q14_ONE    (16384)
+#define COS_X2_DIV (2)
+#define COS_X4_DIV (24)
+
 static bool    find_closest (scan_algo_ctx_t * p_ctx, int32_t half_deci,
                              uint16_t * p_best_mm);
 static void    finish_coarse (scan_algo_ctx_t * p_ctx);
 static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                           uint8_t * p_miss);
 static void    run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first);
+static bool    is_region_hit (scan_algo_ctx_t const * p_ctx, uint8_t slot);
+static uint8_t find_face (scan_algo_ctx_t const * p_ctx);
+static bool    is_flat (scan_algo_ctx_t const * p_ctx);
+static bool    is_too_short (scan_algo_ctx_t const * p_ctx, uint8_t slot);
+static int32_t cos_q14 (int32_t deci);
 
 /*!
  * @brief Convert an echo width to a distance (integer maths, 343 m/s).
@@ -260,6 +274,23 @@ bool scan_algo_is_miss (uint16_t slot_val, uint16_t closest_mm)
 }
 
 /*!
+ * @brief Tell whether a slot is a side echo: in a flat scan (a flat face
+ *        square to the car), a reading too short to be a real point at
+ *        its angle (is_too_short()). It is the face straight ahead, heard
+ *        through the edge of the beam, so it does not count as the
+ *        obstacle (see b5_cfg.h).
+ *
+ * @param[in] p_ctx Scan engine state (closest_mm, face_slot, b_flat).
+ * @param[in] slot  Slot number, 0..24.
+ *
+ * @return True for a side echo.
+ */
+bool scan_algo_is_side_echo (scan_algo_ctx_t const * p_ctx, uint8_t slot)
+{
+    return ((p_ctx->b_flat) && (is_too_short(p_ctx, slot)));
+}
+
+/*!
  * @brief Start a new scan.
  *
  * @param[out] p_ctx Scan engine state.
@@ -280,6 +311,8 @@ void scan_algo_start (scan_algo_ctx_t * p_ctx)
     p_ctx->closest_mm   = 0U;
     p_ctx->region_lo    = 0U;
     p_ctx->region_hi    = 0U;
+    p_ctx->face_slot    = B5_SLOT_CENTRE;
+    p_ctx->b_flat       = false;
 
     for (idx = 0U; idx < SCAN_ALGO_SIDES; idx++)
     {
@@ -430,20 +463,21 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
         p_ctx->closest_mm = best_mm;
         p_ctx->region_lo  = p_ctx->closest_slot;
         p_ctx->region_hi  = p_ctx->closest_slot;
+        p_ctx->face_slot  = find_face(p_ctx);
+        p_ctx->b_flat     = is_flat(p_ctx);
 
-        while (
-            ((p_ctx->region_hi + B5_COARSE_STRIDE) <= LAST_SLOT) &&
-            (scan_algo_is_hit(
-                p_ctx->profile[p_ctx->region_hi + B5_COARSE_STRIDE], best_mm)))
+        /* Casts are safe: the loop tests keep the slots within 0..24. */
+        while (((p_ctx->region_hi + B5_COARSE_STRIDE) <= LAST_SLOT) &&
+               (is_region_hit(p_ctx,
+                              (uint8_t)(p_ctx->region_hi + B5_COARSE_STRIDE))))
         {
             /* Cast is safe: the loop test keeps the result <= 24. */
             p_ctx->region_hi = (uint8_t)(p_ctx->region_hi + B5_COARSE_STRIDE);
         }
 
-        while (
-            (p_ctx->region_lo >= B5_COARSE_STRIDE) &&
-            (scan_algo_is_hit(
-                p_ctx->profile[p_ctx->region_lo - B5_COARSE_STRIDE], best_mm)))
+        while ((p_ctx->region_lo >= B5_COARSE_STRIDE) &&
+               (is_region_hit(p_ctx,
+                              (uint8_t)(p_ctx->region_lo - B5_COARSE_STRIDE))))
         {
             /* Cast is safe: the loop test keeps the result >= 0. */
             p_ctx->region_lo = (uint8_t)(p_ctx->region_lo - B5_COARSE_STRIDE);
@@ -500,8 +534,10 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
             result      = WALK_MEASURE;
             b_more      = false;
         }
-        else if (scan_algo_is_miss(slot_val, p_ctx->closest_mm))
+        else if ((scan_algo_is_miss(slot_val, p_ctx->closest_mm)) ||
+                 (scan_algo_is_side_echo(p_ctx, (uint8_t)slot)))
         {
+            /* A side echo is the face straight ahead, not this slot. */
             /* Cast is safe: slot is 0..24 here. */
             *p_miss = (uint8_t)slot;
             result  = WALK_BOUNDED;
@@ -568,6 +604,153 @@ static void run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first)
             }
         }
     }
+}
+
+/*!
+ * @brief Tell whether a coarse slot belongs to the region: a hit that is
+ *        not a side echo.
+ *
+ * @param[in] p_ctx Scan engine state.
+ * @param[in] slot  Slot number, 0..24.
+ *
+ * @return True if the slot grows the region.
+ */
+static bool is_region_hit (scan_algo_ctx_t const * p_ctx, uint8_t slot)
+{
+    return ((scan_algo_is_hit(p_ctx->profile[slot], p_ctx->closest_mm)) &&
+            (!scan_algo_is_side_echo(p_ctx, slot)));
+}
+
+/*!
+ * @brief The slot where the servo points most directly at the face: the
+ *        coarse slot in the car's path (+-B5_PATH_HALF_DECI) nearest
+ *        straight ahead whose reading is within B5_AGREE_MM (ping noise)
+ *        of the closest reading. On a face square to the car every slot
+ *        reads about the same, so noise alone must not move it off
+ *        straight ahead.
+ *
+ * @param[in] p_ctx Scan engine state after the coarse scan (closest_mm
+ *                  set).
+ *
+ * @return Slot number, 0..24.
+ */
+static uint8_t find_face (scan_algo_ctx_t const * p_ctx)
+{
+    uint32_t const limit_mm = (uint32_t)p_ctx->closest_mm + B5_AGREE_MM;
+    uint8_t        face     = p_ctx->closest_slot;
+    int32_t        best     = SWEEP_HALF_DECI + 1;
+    uint32_t       slot     = 0U;
+
+    for (slot = 0U; slot <= LAST_SLOT; slot += B5_COARSE_STRIDE)
+    {
+        /* Cast is safe: slot is at most 24. */
+        uint16_t const slot_val = p_ctx->profile[slot];
+        int32_t        deci     = scan_algo_slot_deci((uint8_t)slot);
+
+        deci = (deci < 0) ? -deci : deci;
+
+        if ((deci <= B5_PATH_HALF_DECI) && (deci < best) &&
+            (b5_pack_slot_is_measured(slot_val)) &&
+            (B5_CLASS_VALID == b5_pack_slot_class(slot_val)) &&
+            ((uint32_t)b5_pack_slot_dist(slot_val) <= limit_mm))
+        {
+            /* Cast is safe: slot is at most 24. */
+            face = (uint8_t)slot;
+            best = deci;
+        }
+    }
+
+    return (face);
+}
+
+/*!
+ * @brief Tell whether the coarse scan is flat: every coarse slot VALID and
+ *        both end slots (-60 and +60 degrees) too short to be real
+ *        (is_too_short()), i.e. a flat face square to the car, heard at
+ *        every angle.
+ *
+ * @param[in] p_ctx Scan engine state after the coarse scan (closest_mm and
+ *                  face_slot set).
+ *
+ * @return True if the scan is flat.
+ */
+static bool is_flat (scan_algo_ctx_t const * p_ctx)
+{
+    uint32_t slot   = 0U;
+    bool     b_flat = true;
+
+    for (slot = 0U; (slot <= LAST_SLOT) && b_flat; slot += B5_COARSE_STRIDE)
+    {
+        uint16_t const slot_val = p_ctx->profile[slot];
+
+        b_flat = (b5_pack_slot_is_measured(slot_val)) &&
+                 (B5_CLASS_VALID == b5_pack_slot_class(slot_val));
+    }
+
+    return (b_flat && (is_too_short(p_ctx, 0U)) &&
+            (is_too_short(p_ctx, (uint8_t)LAST_SLOT)));
+}
+
+/*!
+ * @brief Trigonometry check of one reading: the closest coarse reading B
+ *        is the adjacent side, so a real surface at this slot must read at
+ *        least the hypotenuse B / cos(d), d = the angle from the nearer of
+ *        the face slot (find_face()) and straight ahead, less the beam
+ *        half-angle
+ *        (the sensor hears anything within its beam). Slots with d up to
+ *        B5_ECHO_BEAM_DECI always pass.
+ *
+ * @param[in] p_ctx Scan engine state (closest_mm and face_slot set).
+ * @param[in] slot  Slot number, 0..24.
+ *
+ * @return True for a VALID reading too short to be real at its angle.
+ */
+static bool is_too_short (scan_algo_ctx_t const * p_ctx, uint8_t slot)
+{
+    uint16_t const slot_val = p_ctx->profile[slot % B5_SLOT_COUNT];
+    int32_t const  deci     = scan_algo_slot_deci(slot);
+    int32_t const  from_b =
+        deci - scan_algo_slot_deci(p_ctx->face_slot % B5_SLOT_COUNT);
+    int32_t const abs_ahead = (deci < 0) ? -deci : deci;
+    int32_t const abs_b     = (from_b < 0) ? -from_b : from_b;
+    int32_t const off_deci  = (abs_b < abs_ahead) ? abs_b : abs_ahead;
+    bool          b_short   = false;
+
+    if ((off_deci > B5_ECHO_BEAM_DECI) &&
+        (b5_pack_slot_is_measured(slot_val)) &&
+        (B5_CLASS_VALID == b5_pack_slot_class(slot_val)))
+    {
+        /* Casts are safe: ranges are 12 bits and the cosine is 0..16384,
+         * so both products stay below 2^27. */
+        uint32_t const hyp =
+            ((uint32_t)b5_pack_slot_dist(slot_val) + B5_SONAR_FACE_MM) *
+            (uint32_t)cos_q14(off_deci - B5_BEAM_HALF_DECI);
+        uint32_t const adj = ((uint32_t)p_ctx->closest_mm + B5_SONAR_FACE_MM) *
+                             (uint32_t)Q14_ONE;
+
+        b_short = (hyp < adj);
+    }
+
+    return (b_short);
+}
+
+/*!
+ * @brief Cosine in Q14 for the angles of the sweep (series
+ *        1 - x^2/2 + x^4/24, within 0.2 % up to 51 degrees, the most it is used
+ *        for).
+ *
+ * @param[in] deci Angle in deci-degrees, |deci| <= 600.
+ *
+ * @return cos(deci) x 16384.
+ */
+static int32_t cos_q14 (int32_t deci)
+{
+    /* x in Q14 radians: at most 600 x 16384 / 573 = 17157. */
+    int32_t const x_q14  = (deci * Q14_ONE) / B5_NAV_DECI_PER_RAD;
+    int32_t const x2_q14 = (x_q14 * x_q14) / Q14_ONE;
+    int32_t const x4_q14 = (x2_q14 * x2_q14) / Q14_ONE;
+
+    return ((Q14_ONE - (x2_q14 / COS_X2_DIV)) + (x4_q14 / COS_X4_DIV));
 }
 
 /*** end of file ***/

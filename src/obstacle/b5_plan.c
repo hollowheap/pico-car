@@ -756,7 +756,8 @@ static int32_t mul_q14 (uint32_t range_mm, int32_t q14)
  * @param[in] band_x    Sideways extent of the band, mm.
  * @param[in] band_y    Forward extent of the band, mm.
  *
- * @return True for UNKNOWN or STUCK, or a VALID point inside the band.
+ * @return True for UNKNOWN or STUCK, or a VALID point inside the band
+ *         that is not a side echo (scan_algo_is_side_echo()).
  */
 static bool slot_blocks (scan_algo_ctx_t const * p_scan, int32_t slot,
                          int32_t sign, int32_t band_x, int32_t band_y)
@@ -765,8 +766,11 @@ static bool slot_blocks (scan_algo_ctx_t const * p_scan, int32_t slot,
     uint8_t const  cls       = b5_pack_slot_class(slot_val);
     bool           b_blocked = false;
 
-    if (!b5_pack_slot_is_measured(slot_val))
+    /* Cast is safe: slot is 0..24 here. */
+    if ((!b5_pack_slot_is_measured(slot_val)) ||
+        (scan_algo_is_side_echo(p_scan, (uint8_t)slot)))
     {
+        /* Not measured, or the face straight ahead heard off to the side. */
         b_blocked = false;
     }
     else if ((B5_CLASS_UNKNOWN == cls) || (B5_CLASS_STUCK == cls))

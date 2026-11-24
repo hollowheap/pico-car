@@ -105,3 +105,10 @@ target_include_directories(test_b5_plan_track PRIVATE ../src/obstacle)
 target_compile_options(test_b5_plan_track PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
 add_test(NAME b5_plan_track_geometry COMMAND test_b5_plan_track)
+
+add_executable(test_scan_algo_flat test_scan_algo_flat.c
+    ../src/obstacle/b5_plan.c ../src/obstacle/scan_algo.c)
+target_include_directories(test_scan_algo_flat PRIVATE ../src/obstacle)
+target_compile_options(test_scan_algo_flat PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
+add_test(NAME scan_algo_flat_face COMMAND test_scan_algo_flat)

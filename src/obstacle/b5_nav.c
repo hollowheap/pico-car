@@ -185,6 +185,7 @@
 #define HALT_BUMP      (0U)
 #define HALT_MISSED    (1U)
 #define HALT_COLLISION (2U)
+#define HALT_NO_PATH   (3U)
 
 /* Reading used for OPEN, UNKNOWN and STUCK pings (farther than any echo). */
 #define NAV_FAR_MM (4095U)
@@ -229,6 +230,7 @@ typedef struct
     bool     b_vel_ok[WHEELS];
     uint8_t  req_id;
     uint8_t  next_id;
+    uint8_t  no_path_count;
     uint8_t  last_state;
     uint8_t  side;
     uint8_t  phase;
@@ -298,6 +300,7 @@ static nav_state_t g_nav = {
     .b_vel_ok           = {false, false},
     .req_id             = 0U,
     .next_id            = 0U,
+    .no_path_count      = 0U,
     .last_state         = NAV_UNSEEN,
     .side               = B5_SIDE_LEFT,
     .phase              = PHASE_DONE,
@@ -1787,7 +1790,8 @@ static void begin_bypass (void)
 static void halt_bypass (uint8_t reason)
 {
     static char const * const g_why[] = {"bumped into something",
-                                         "the line was not found", "collision"};
+                                         "the line was not found", "collision",
+                                         "no way past the obstacle"};
 
     drive_stop();
     hold_car(true);
@@ -1795,7 +1799,7 @@ static void halt_bypass (uint8_t reason)
     set_phase(PHASE_HALT);
     g_nav.b_no_retry = true;
     tm_printf((UB *)"[b5-nav] HALT: %s. Reset the car to go on.\n",
-              g_why[reason % (HALT_COLLISION + 1U)]);
+              g_why[reason % (HALT_NO_PATH + 1U)]);
     log_rec(B5_LOG_HALT, reason, 0U, 0U, lateral_mm(), ahead_mm(), away_deci());
     post(B5_CMD_STOP, g_nav.req_id);
 }
@@ -2158,7 +2162,9 @@ static void report_state (uint32_t status)
  *        B5_NAV_RETRY_MS, except after a collision or a bypass Navigation
  *        gave up on (bump, blocked, line missed): retrying would send the
  *        car back to line following, straight into the obstacle. Those
- *        stay stopped until the car is reset.
+ *        stay stopped until the car is reset, and so does a car that got
+ *        NO_SAFE_PATH B5_NO_PATH_TRIES times in a row (the same scan would
+ *        only repeat).
  *
  * @param[in] status Packed Buddy 5 status word.
  * @param[in] now    Current time, ms.
@@ -2175,6 +2181,18 @@ static void step_stopped (uint32_t status, uint32_t now)
         g_nav.phase      = PHASE_HALT;
         tm_printf((UB *)"[b5-nav] HALT: collision. Reset the car to go on.\n");
         log_rec(B5_LOG_HALT, HALT_COLLISION, 0U, 0U, lateral_mm(), ahead_mm(),
+                away_deci());
+    }
+
+    if ((B5_CAUSE_NO_SAFE_PATH == cause) &&
+        (g_nav.no_path_count >= B5_NO_PATH_TRIES) && (!g_nav.b_no_retry))
+    {
+        g_nav.b_no_retry = true;
+        g_nav.phase      = PHASE_HALT;
+        tm_printf((UB *)"[b5-nav] HALT: no way past the obstacle (NO_SAFE_PATH "
+                        "%d times in a row). Reset the car to go on.\n",
+                  (INT)g_nav.no_path_count);
+        log_rec(B5_LOG_HALT, HALT_NO_PATH, 0U, 0U, lateral_mm(), ahead_mm(),
                 away_deci());
     }
 
@@ -2328,10 +2346,11 @@ static void explain_scan (uint16_t const *   p_profile,
 
     /* Edge states: 0 none, 1 bounded, 2 unbounded (reaches +-60 deg).
      * need 65535 = side blocked (unbounded, too far out, or something in
-     * the way beyond the edge). */
+     * the way beyond the edge). flat face 1 = side echoes were left out
+     * (scan_algo_is_side_echo()). */
     tm_printf((UB *)"[b5-nav] scan: closest %d mm, region %d..%d deg | LEFT "
                     "edge %d last hit %d deg need %d mm | RIGHT edge %d last "
-                    "hit %d deg need %d mm\n",
+                    "hit %d deg need %d mm | flat face %d\n",
               (INT)g_replay.closest_mm,
               (INT)(scan_algo_slot_deci(g_replay.region_lo) / DECI_PER_DEG),
               (INT)(scan_algo_slot_deci(g_replay.region_hi) / DECI_PER_DEG),
@@ -2342,7 +2361,7 @@ static void explain_scan (uint16_t const *   p_profile,
               (INT)g_replay.edge_state[SCAN_ALGO_RIGHT],
               (INT)(scan_algo_slot_deci(g_replay.edge_hit[SCAN_ALGO_RIGHT]) /
                     DECI_PER_DEG),
-              (INT)p_result->need_mm[B5_SIDE_RIGHT]);
+              (INT)p_result->need_mm[B5_SIDE_RIGHT], (INT)g_replay.b_flat);
 }
 
 /*!
@@ -2387,6 +2406,13 @@ static void handle_event (uint32_t evt, uint32_t now)
         hold_car(true);
         g_nav.b_scan_pending = false;
         g_nav.retry_ms       = now;
+
+        /* Cast is safe: the count stops at B5_NO_PATH_TRIES. */
+        if ((B5_CAUSE_NO_SAFE_PATH == cause) &&
+            (g_nav.no_path_count < B5_NO_PATH_TRIES))
+        {
+            g_nav.no_path_count = (uint8_t)(g_nav.no_path_count + 1U);
+        }
     }
     else if (B5_EVT_SCAN_RESULT == type)
     {
@@ -2421,7 +2447,8 @@ static void handle_event (uint32_t evt, uint32_t now)
         if ((g_nav.req_id == req_id) && b_go)
         {
             /* Cast is safe: the side field is 1 bit wide. */
-            g_nav.side = (uint8_t)side;
+            g_nav.no_path_count = 0U;
+            g_nav.side          = (uint8_t)side;
             keep_plan(&result, side);
             post(B5_CMD_ACCEPT, g_nav.req_id);
         }

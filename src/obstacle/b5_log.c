@@ -45,7 +45,7 @@
  *           f = distance along the line (mm)
  *   LINE    a = 0 found / 1 outside the window / 2 too short, d = IR side
  *           offset (mm), e = black for (mm), f = distance along the line
- *   HALT    a = reason (0 bump, 1 line missed, 2 collision),
+ *   HALT    a = reason (0 bump, 1 line missed, 2 collision, 3 no way past),
  *           d = side offset, e = distance along the line (mm), f = heading
  *
  * NOTE: The kernel types UB, INT, UINT and SYSTIM are used where the
@@ -81,7 +81,7 @@
 #define TRACK_NAMES  (4U)
 #define SWEEP_NAMES  (3U)
 #define LINE_NAMES   (3U)
-#define HALT_NAMES   (3U)
+#define HALT_NAMES   (4U)
 
 /* Slots printed per profile line. */
 #define SLOTS_PER_LINE (5U)
@@ -171,8 +171,8 @@ static char const * const g_sweep_name[SWEEP_NAMES] = {
     "blocked, no cleared angle (assumed)"};
 static char const * const g_line_name[LINE_NAMES] = {
     "found", "ignored: outside the window", "ignored: too short"};
-static char const * const g_halt_name[HALT_NAMES] = {"bump", "line missed",
-                                                     "collision"};
+static char const * const g_halt_name[HALT_NAMES] = {
+    "bump", "line missed", "collision", "no way past"};
 
 static uint32_t now_ms (void);
 static void     print_profile (uint32_t index, uint32_t t_ms);

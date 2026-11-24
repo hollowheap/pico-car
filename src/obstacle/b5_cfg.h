@@ -119,6 +119,39 @@
 #define B5_REGION_MAX_MM   (600U)
 #define B5_REGION_EXTRA_MM (250U)
 
+/* [Chat] Flat face square to the car. A flat face straight ahead echoes
+ * straight back so strongly that the sensor still hears it when the servo
+ * points far off to the side, so every slot reads about the same distance
+ * and the obstacle looks wider than the whole sweep (seen on the car as
+ * NO_SAFE_PATH for a box and a wall faced square-on).
+ * [Chat] Trigonometry check (the user's idea): the closest coarse reading
+ * B is the adjacent side, taken where the servo points most directly at
+ * the face (t0: the path slot nearest straight ahead reading within
+ * B5_AGREE_MM of B, since on a square face every slot reads about B and
+ * ping noise must not move t0). At servo angle t a real surface must read
+ * at least the hypotenuse B / cos(d), d = the angle from the nearer of t0
+ * and straight ahead. A reading r is "too short to be
+ * real" when
+ *   (r + B5_SONAR_FACE_MM) x cos(d - B5_BEAM_HALF_DECI)
+ *       < B + B5_SONAR_FACE_MM
+ * (B5_SONAR_FACE_MM: the sensor face sits in front of the servo shaft;
+ * B5_BEAM_HALF_DECI: the sensor hears anything within its beam, so a real
+ * corner near the beam's edge may read a little short). Readings with d
+ * up to B5_ECHO_BEAM_DECI always count.
+ *   - Flat: every coarse slot is VALID and both end slots (-60 and +60
+ *     degrees) are too short to be real.
+ *   - Only in a flat scan, every slot too short to be real is a side echo
+ *     and does not count as the obstacle (scan_algo_is_side_echo()).
+ * NOTE: A wall faced square-on then looks like a box too; the bypass stops
+ * at the collision guard. A box wider than about 300 mm faced square-on
+ * looks narrower than it is (its real side echoes arrive after the one
+ * from straight ahead). */
+#define B5_ECHO_BEAM_DECI (150)
+
+/* [Chat] After this many NO_SAFE_PATH results in a row, Navigation stops
+ * retrying and halts until the car is reset (b5_nav.c). */
+#define B5_NO_PATH_TRIES (2U)
+
 /* [Spec 3e] Two pings agree when within 15 mm; four pings without
  * agreement make the slot UNKNOWN. */
 #define B5_AGREE_MM  (15U)

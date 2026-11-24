@@ -184,6 +184,33 @@ These rules apply in every state:
     goes on and steps past it (the car gets more room, never less).
   - An edge that reaches ±60° without a miss is **unbounded**, and that side
     is treated as unsafe.
+- **Flat face square to the car** (`scan_algo_is_side_echo()`). A flat face
+  straight ahead echoes straight back so strongly that the sensor still hears
+  it when the servo points far to the side: every slot reads about B, the
+  obstacle looks wider than the sweep, and the car used to stop with
+  NO_SAFE_PATH (a box and a wall faced square-on; turning the car slightly
+  made it work).
+  - **Trigonometry check.** The closest reading B is the adjacent side,
+    taken at t0, where the servo points most directly at the face (the path
+    slot nearest straight ahead that reads within 15 mm of B, so ping noise
+    cannot move it). At servo angle θ a real surface must read at least the
+    hypotenuse B / cos(d), d = angle from the nearer of t0 and straight
+    ahead. With the sensor face 15 mm in front of the servo shaft and the
+    9.5° beam allowance, a reading r is **too short to be real** when
+    `(r + 15) · cos(d − 9.5°) < B + 15`. Readings with d ≤ 15°
+    (`B5_ECHO_BEAM_DECI`) always count.
+  - **Flat** = all 9 coarse slots VALID and both ends (−60° and +60°) too
+    short to be real. A face turned enough that one end reads long (or
+    goes quiet) is not flat, so its scan is unchanged.
+  - **Only in a flat scan**, every reading too short to be real is a **side
+    echo**: it counts as a miss, ends the region and never blocks a side.
+  - All five car-log scans (three from the first test, two from
+    2026-11-24 that failed the earlier "within B + 50 mm" test by 6 and
+    1 mm) now give bounded edges and a plan (`tests/test_scan_algo_flat.c`).
+  - A wall faced square-on now looks like a box too; the bypass then stops
+    at the collision guard. A box wider than about 300 mm faced square-on
+    looks narrower than it is (its real side echoes arrive after the one
+    from straight ahead).
 - **Per slot:**
   - settle for 3 ms/° + 20 ms;
   - ping until two pings agree (same class, within 15 mm), keeping the closer
@@ -531,7 +558,7 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 | WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id) | paused |
 | BYPASS | releases the hold; starts the bypass (AHEAD, then SPIN_AWAY); Buddy 5 moves on to REACQUIRE once the way ahead is clear | paused |
 | REACQUIRE | the rest of the bypass (see Plan and bypass); sets the servo angle with `obstacle_set_look()`; ends with LINE_FOUND(id) (at most every 100 ms) after MAP | paused |
-| STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR, except after a collision or a bypass Navigation gave up on (bump, line missed): those stay stopped until the car is reset | paused |
+| STOPPED (fault) | holds the car; sends RESET + START every 3 s until Buddy 5 is back in MONITOR, except after a collision, a bypass Navigation gave up on (bump, line missed), or NO_SAFE_PATH twice in a row (`B5_NO_PATH_TRIES`, "HALT: no way past the obstacle"): those stay stopped until the car is reset | paused |
 
 **Speeds** (`motion_service_set_speed()`, lease 100 ms). The car stands
 still whenever the servo turns (entering BYPASS or MONITOR, and every look

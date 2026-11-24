@@ -50,6 +50,8 @@ typedef struct
     uint8_t           edge_state[SCAN_ALGO_SIDES];
     uint8_t           edge_hit[SCAN_ALGO_SIDES];
     uint8_t           edge_miss[SCAN_ALGO_SIDES];
+    uint8_t           face_slot;
+    bool              b_flat;
 } scan_algo_ctx_t;
 
 uint16_t scan_algo_dist_mm (uint32_t width_us);
@@ -63,6 +65,7 @@ bool scan_algo_agree_add (scan_algo_agree_t * p_agree, uint8_t cls,
 
 bool scan_algo_is_hit (uint16_t slot_val, uint16_t closest_mm);
 bool scan_algo_is_miss (uint16_t slot_val, uint16_t closest_mm);
+bool scan_algo_is_side_echo (scan_algo_ctx_t const * p_ctx, uint8_t slot);
 
 void    scan_algo_start (scan_algo_ctx_t * p_ctx);
 uint8_t scan_algo_target (scan_algo_ctx_t const * p_ctx);
