@@ -24,14 +24,15 @@
 /* Assumes the first element is narrow. */
 #define START_MIN_UM 638U
 #define START_MAX_UM 12765U
-/* 16-bit fixed point. 2-bit integer, 14-bit fraction */
-#define FP16_OFFSET        14U
-#define NARROW_WIDTH_MASK  0x3FFFU
-/* Limits based on empirical testing */
-#define NARROW_MIN_SCALE 9830U  /* 0.6 */
-#define NARROW_MAX_SCALE 24576U /* 1.5 */
-#define WIDE_MIN_SCALE   39321U /* 2.4 */
-#define WIDE_MAX_SCALE   58982U /* 3.6 */
+#define PERCENT_FULL        (100U)
+#define NARROW_MIN_PCT      (60U)
+#define NARROW_MAX_PCT      (150U)
+#define FIRST_WIDE_MIN_PCT  (180U)
+#define FIRST_WIDE_MAX_PCT  (360U)
+#define LEARNED_WIDE_MIN_PCT (80U)
+#define LEARNED_WIDE_MAX_PCT (120U)
+#define WIDTH_FILTER_WEIGHT (4U)
+#define RATIO_ONE           (256U)
 
 /* Bar code table: 3 bits per entry, bar indices 0 to 4 */
 #define BAR_CODE_BITS 3U
@@ -56,9 +57,10 @@ typedef enum
     ELEM_TYPE_WIDE,
 } elem_type_t;
 
-static uint16_t fp16_mul (uint16_t a, uint16_t b)
+static bool in_width_band (uint16_t sample, uint32_t reference, uint32_t low, uint32_t high)
 {
-    return (uint16_t)(((uint32_t)a * (uint32_t)b) >> FP16_OFFSET);
+    uint32_t const scaled = (uint32_t)sample * PERCENT_FULL;
+    return (scaled >= (uint32_t)reference * low) && (scaled <= (uint32_t)reference * high);
 }
 
 /**
@@ -103,23 +105,24 @@ static uint8_t decode_space_value (uint8_t idx, bool is_reverse)
 static elem_type_t get_elem_type (barcode_parser_t * state,
                                   uint16_t           elem_width_um)
 {
-    const uint16_t narrow_min =
-        fp16_mul(state->narrow_width_um, NARROW_MIN_SCALE);
-    const uint16_t narrow_max =
-        fp16_mul(state->narrow_width_um, NARROW_MAX_SCALE);
-    if ((elem_width_um >= narrow_min) && (elem_width_um <= narrow_max))
+    bool const b_narrow = in_width_band(elem_width_um, state->narrow_width_um, NARROW_MIN_PCT, NARROW_MAX_PCT);
+    uint32_t const wide_um = (uint32_t)state->narrow_width_um * state->wide_ratio_q8 / RATIO_ONE;
+    bool const b_wide = (0U == state->wide_ratio_q8)
+        ? in_width_band(elem_width_um, state->narrow_width_um, FIRST_WIDE_MIN_PCT, FIRST_WIDE_MAX_PCT)
+        : in_width_band(elem_width_um, wide_um, LEARNED_WIDE_MIN_PCT, LEARNED_WIDE_MAX_PCT);
+    if (b_narrow == b_wide)
     {
-        return ELEM_TYPE_NARROW;
+        return ELEM_TYPE_INVALID;
     }
+    return b_narrow ? ELEM_TYPE_NARROW : ELEM_TYPE_WIDE;
+}
 
-    const uint16_t wide_min = fp16_mul(state->narrow_width_um, WIDE_MIN_SCALE);
-    const uint16_t wide_max = fp16_mul(state->narrow_width_um, WIDE_MAX_SCALE);
-    if ((elem_width_um >= wide_min) && (elem_width_um <= wide_max))
-    {
-        return ELEM_TYPE_WIDE;
-    }
-
-    return ELEM_TYPE_INVALID;
+/* A candidate learns only from unambiguous bars and spaces. Its separator
+ * and every rejected element are excluded from the two running estimates. */
+static uint16_t learn_width (uint16_t previous, uint16_t sample)
+{
+    return (0U == previous) ? sample :
+        (uint16_t)(((WIDTH_FILTER_WEIGHT - 1U) * previous + sample + (WIDTH_FILTER_WEIGHT >> 1U)) / WIDTH_FILTER_WEIGHT);
 }
 
 /** Converts the internal encoding to 0-25, representing 'A'-'Z'. */
@@ -252,14 +255,27 @@ static bool process_elem (barcode_parser_t * state, bool is_elem_space,
     {
         b_invalid = is_start_invalid(is_elem_space, elem_width_um);
         /* First element is assumed to be narrow */
-        state->narrow_width_um =
-            (uint16_t)((uint32_t)elem_width_um & NARROW_WIDTH_MASK);
+        state->narrow_width_um = elem_width_um;
     }
 
     if (!b_invalid)
     {
         elem_type = get_elem_type(state, elem_width_um);
         b_invalid = handle_elem(state, is_elem_space, elem_type, p_reason);
+        if (!b_invalid && (state->elem_index <= CHARACTER_ELEM_COUNT))
+        {
+            if (ELEM_TYPE_NARROW == elem_type)
+            {
+                state->narrow_width_um = learn_width(state->narrow_width_um, elem_width_um);
+            }
+            else
+            {
+                /* Track the printed ratio so subsequent narrow samples
+                 * also rescale the expected wide element during a turn. */
+                uint16_t const ratio = (uint16_t)((uint32_t)elem_width_um * RATIO_ONE / state->narrow_width_um);
+                state->wide_ratio_q8 = learn_width(state->wide_ratio_q8, ratio);
+            }
+        }
     }
 
     if (!b_invalid && (state->elem_index > CHARACTER_ELEM_COUNT))

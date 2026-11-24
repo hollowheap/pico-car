@@ -1,7 +1,7 @@
 /** @file parser.h
  * @brief Parses single-character Code 39 barcodes.
  * Only supports 'A' to 'Z' characters.
- * Only supports barcodes that are 50-400mm in length.2
+ * The initial narrow bar is bounded for the supported 50–400 mm markers.
  */
 
 #ifndef BARCODE_PARSER_H
@@ -18,7 +18,8 @@
 typedef struct
 {
     /** Width of a narrow element. */
-    uint16_t narrow_width_um : 14;
+    uint16_t narrow_width_um;
+    uint16_t wide_ratio_q8;
     /** Value of the middle data character. */
     uint8_t data_value;
     /** Value of the character. */
@@ -38,7 +39,7 @@ typedef struct
     bool is_reverse : 1;
 } barcode_parser_t;
 
-STATIC_ASSERT (sizeof(barcode_parser_t) == 6U, "barcode_parser_t size");
+STATIC_ASSERT (sizeof(barcode_parser_t) == 8U, "barcode_parser_t size");
 
 /** Why a barcode was rejected (D130). */
 #define BARCODE_REJECT_NONE      (0U)

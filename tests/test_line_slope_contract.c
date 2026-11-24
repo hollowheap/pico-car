@@ -327,7 +327,7 @@ ir_sensors_state_t ir_get_state(void)
 {
     if (g_junction_pause)
     {
-        return (ir_sensors_state_t){.left = g_tick < 30U, .right = g_tick >= 126U, .barcode = g_tick >= 30U};
+        return (ir_sensors_state_t){.left = g_tick < 30U, .right = g_tick >= 126U, .barcode = g_tick < 30U};
     }
     if (g_retry_case)
     {
