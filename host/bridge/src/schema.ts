@@ -13,6 +13,7 @@ type Field = {
 type Packet = {
   wire_size: number;
   fields: Field[];
+  variant_of?: string;
 };
 
 export type ProtocolSchema = {
@@ -65,7 +66,9 @@ export function decodePacket(
   name: string,
   payload: Uint8Array,
 ): DecodedPacket {
-  const packet = schema.packets[name];
+  const base = schema.packets[name];
+  const packet = base?.wire_size === payload.byteLength ? base :
+    Object.values(schema.packets).find((layout) => layout.variant_of === name && layout.wire_size === payload.byteLength) ?? base;
   if (!packet) {
     throw new Error(`unknown packet: ${name}`);
   }

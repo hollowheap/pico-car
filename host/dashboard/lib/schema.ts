@@ -38,7 +38,8 @@ function readField(view: DataView, type: FieldType, offset: number): number {
  * `slots` with count N becomes slots_0 .. slots_<N-1>.
  */
 export function decodePacket(name: PacketName, payload: Uint8Array): Record<string, number> {
-  const packet = PACKETS[name] as AnyPacket;
+  const layout = name === 'diag' && payload.byteLength === PACKETS.diag_counts.wireSize ? 'diag_counts' : name;
+  const packet: AnyPacket = PACKETS[layout];
   if (payload.byteLength !== packet.wireSize) {
     throw new RangeError(`${name} packet is ${payload.byteLength} bytes, expected ${packet.wireSize}`);
   }

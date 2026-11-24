@@ -85,6 +85,8 @@ def load_schema(path: str | Path) -> dict:
                 schema["packets"][packet]["wire_size"] = int(
                     text.split(":", 1)[1], 0
                 )
+            elif indent == 4 and text.startswith("variant_of:"):
+                schema["packets"][packet]["variant_of"] = text.split(":", 1)[1].strip()
             elif indent == 4 and text == "fields:":
                 in_fields = True
             elif in_fields and text.startswith("-"):
@@ -129,6 +131,12 @@ def decode_packet(schema: dict, name: str, payload: bytes) -> dict:
         packet = schema["packets"][name]
     except KeyError as exc:
         raise SchemaError(f"unknown packet: {name}") from exc
+    if len(payload) != packet["wire_size"]:
+        packet = next(
+            (layout for layout in schema["packets"].values()
+             if layout.get("variant_of") == name and layout["wire_size"] == len(payload)),
+            packet,
+        )
     if len(payload) != packet["wire_size"]:
         raise SchemaError(
             f"{name} is {len(payload)} bytes, expected {packet['wire_size']}"

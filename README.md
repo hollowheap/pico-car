@@ -85,8 +85,8 @@ loopback only. The dashboard build holds the bridge address, so rebuild it with
 
 ## Telemetry
 
-The firmware publishes the status, motion, physics, obstacle, diag, heartbeat,
-event and profile packets on MQTT (topics `s m p o d h e f`) and accepts
+The firmware publishes status, motion, physics, obstacle, diag, heartbeat,
+event, profile and barcode sample packets on MQTT (topics `s m p o d h e f b`) and accepts
 STOP/START/RESET and E-STOP commands. Broker settings are CMake cache values:
 `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`, `PICO_CAR_MQTT_USERNAME`,
 `PICO_CAR_MQTT_PASSWORD`, `PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.
