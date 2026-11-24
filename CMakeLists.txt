@@ -68,9 +68,9 @@ if (NOT EXISTS "${MTK3SMP_PATH}/include/tk/tkernel.h")
 endif()
 
 configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mtk3smp_config.h.in
+    ${MTK3SMP_PATH}/config/config.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/config.h
-    @ONLY
+    COPYONLY
 )
 
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
@@ -165,7 +165,7 @@ set(PICO_SDK_INCLUDES
 )
 
 set(PICO_CAR_BOARD_INCLUDES
-    # The project config supplies the object budget to the kernel and its callers.
+    # The pinned kernel configuration is shared by the port and its callers.
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${MTK3SMP_PATH}/include
     ${MTK3SMP_PATH}/config

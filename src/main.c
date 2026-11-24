@@ -60,7 +60,7 @@
 STATIC_ASSERT(FAULT_ALL_MASK <= UINT16_MAX, "fault bits fit the wire fields");
 
 /* Kernel objects the firmware creates, against the limits in
-   cmake/mtk3smp_config.h.in. Tasks: the nine below, plus the
+   the pinned kernel config/config.h. Tasks: the nine below, plus the
    kernel's init, USB console and CYW43 tasks. Cyclic handlers: supervisor,
    motion and physics. Past a limit, tk_cre_* fails
    at boot with E_LIMIT. */

@@ -1,0 +1,3 @@
+#define UTK_WIFI_SSID "test-ap"
+#define UTK_WIFI_PASSWORD ""
+#define UTK_WIFI_AUTH CYW43_AUTH_OPEN

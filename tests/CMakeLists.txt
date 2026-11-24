@@ -490,6 +490,22 @@ target_include_directories(test_tcp_transport SYSTEM PRIVATE
 target_compile_options(test_tcp_transport PRIVATE ${TELEMETRY_TEST_FLAGS})
 add_test(NAME tcp_transport COMMAND test_tcp_transport)
 
+# Run the production radio owner loop with simulated CYW43 events and leases.
+set(RADIO_PORT ${CMAKE_CURRENT_SOURCE_DIR}/../lib/mtk3smp-rp2040/lib/libwifi/sysdepend/pico_rp2040)
+add_executable(test_wifi_recovery test_wifi_recovery.c ${RADIO_PORT}/cyw43_utk.c)
+set_property(TARGET test_wifi_recovery PROPERTY C_STANDARD 11)
+target_include_directories(test_wifi_recovery PRIVATE shim_wifi shim_tcp ${RADIO_PORT}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/pico-sdk/lib/cyw43-driver/src
+    ${LWIP_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/../lib/mtk3smp-rp2040/lib/libnet/lwip/include)
+target_compile_definitions(test_wifi_recovery PRIVATE TK_SUPPORT_SMP=1 TM_WIFI_JOIN=1
+    TM_WIFI_NETIF=1 TM_WIFI_DHCP=1 TM_WIFI_DNS=0 TM_WIFI_UDP=0 TM_WIFI_TCP=0
+    TM_WIFI_TCPBULK=0 TM_WIFI_STATIC=0 CYW43_LWIP=1 LWIP_DHCP=1
+    CYW43_CONFIG_FILE="radio_port.h")
+target_compile_options(test_wifi_recovery PRIVATE -Wall -Wextra -Werror)
+foreach(reason async request timeout late-link)
+    add_test(NAME wifi_join_${reason} COMMAND test_wifi_recovery ${reason})
+endforeach()
+
 # The command ring, the run state and the health checks.
 set(SUPERVISOR_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/supervisor)
 set(SUPERVISOR_TEST_CORE

@@ -32,8 +32,8 @@ Build notes:
 - `configure.sh` initializes submodules before configuring CMake.
 - `CMakeLists.txt` pins `PICO_SDK_PATH` to the vendored `lib/pico-sdk` so a
   devshell environment variable cannot override it.
-- The firmware uses the kernel object limits in `cmake/mtk3smp_config.h.in`.
-  CMake applies those limits to the pinned kernel and firmware targets.
+- The kernel and firmware use the object limits in the pinned port's
+  `lib/mtk3smp-rp2040/config/config.h`.
 - Application C, the PIO adapter, and the compiled SDK, lwIP and TinyUSB sources
   build with `-std=c99` using the pinned `hollowheap/pico-sdk` C99 fork.
   The kernel port builds with `-std=gnu11`. Application warnings are errors.
