@@ -1,11 +1,10 @@
-# Buddy 5 hardware test checklist
+# Obstacle hardware tests
 
-Build with the normal `./configure.sh` and `./build.sh`, then flash
-`build/obstacle_bench.uf2` (hold BOOTSEL, plug in, copy the file). Run these
-in order with the USB serial monitor open. Write the result and date next to
-each step: these are your evidence for the tribunal.
+H1–H8 use the Buddy 5 bench firmware, `build/obstacle_bench.uf2`, with USB
+serial open. For an already configured checkout, `./build.sh` produces the
+bench and installed images. Record the image, result and date for each trial.
 
-- **Wheels:** keep them off the floor (on a block) until H6.
+- Support the chassis with the wheels clear of the floor for the bench tests.
 - **Tool:** a ruler is enough for most steps; a multimeter is needed for H1.
 - **Values:** the numbers in this list come from `obstacle_config.h`. The
   `statechart.c` lists the states and the faults.
@@ -14,8 +13,8 @@ each step: these are your evidence for the tribunal.
 |---|---|---|---|---|
 | H1 | ECHO voltage is safe | Meter the Grove 1 VCC pin. Then power the sensor from Grove 1 with the ECHO wire **not** connected to GP1, and meter ECHO against GND while waving a hand in front. | VCC ≈ 3.3 V and ECHO high ≤ 3.4 V (HC-SR04+ or HC-SR04P). Only then connect ECHO to GP1. If ECHO reads about 5 V, do not connect it; fit the divider in the [wiring section](obstacle.md#wiring). | |
 | H2a | Servo centre | After boot the servo should point straight ahead. If not, adjust `OBSTACLE_SERVO_CENTRE_US` in steps of 10 µs. | Sensor faces straight ahead | |
-| H2b | Servo direction | Watch the start of a scan (GP20 to SCAN_REQ after an OBSTACLE). The servo moves to -15° = **right** first (slot 15 of 37). | First move goes right. If it goes left, set `OBSTACLE_SERVO_DIR` to -1. | |
-| H2c | Servo scale | Protractor under the sensor. Compare the ±15° servo positions with the real angle and adjust `OBSTACLE_SERVO_US_PER_10DEG`. Or run SERVO CHECK. | ±15° within ±3° | |
+| H2b | Servo direction | Watch the start of the centered legacy scan after SCAN_REQ. Its first slot is 14 of 0–36, at −20°. | The first move goes right. | |
+| H2c | Servo scale | Use a protractor at the ±15° test points and check clearance at the ±20° travel limits. | The ±15° positions are within ±3° and the sensor clears the mount at both limits. | |
 | H2d | Settle on a low battery | Repeat a scan on a LiPo at ~3.5 V. Then double `OBSTACLE_SETTLE_MS_PER_DEG`, rebuild and scan again. | The two profiles match within 15 mm | |
 | H3 | Detection distance | Status lines show distance and class. Slide a flat box toward the sensor. | OBSTACLE event at 250 ± 15 mm, after 2 hits among 3 pings | |
 | H3b | One outlier | Hold a box at 200 mm. Pass a hand through the beam for one ping only (about 60 ms). | The OBSTACLE event still comes from the box. A single hand ping alone does not raise it. | |
@@ -32,8 +31,15 @@ each step: these are your evidence for the tribunal.
 | H7d | Blind zone | Hold a flat card 30–60 mm in front of the sensor. | Class TOO_CLOSE (`echo_too_close` in the `d` packet). 2 of 3 pings stop the car with cause COLLISION. If the sensor reports something else under 60 mm, note the class and the distance. | |
 | H7e | TRIG readback (P4) | In MONITOR, watch the class counts in the `d` packet. Then pull the TRIG wire from GP0. | With TRIG connected the pings are VALID or OPEN. With TRIG unplugged or shorted to ground they become `NO_ECHO` within 3 pings and the car stops with cause `NO_ECHO`. If good pings read `NO_ECHO` at once, the pad does not read back: set `OBSTACLE_TRIG_READBACK` to 0. | |
 | H8 | Open room | Point the sensor at open space for 30 s. | Only OPEN or far VALID. No STUCK, NO_ECHO or GLITCH in the `d` packet. If STUCK appears, the module holds ECHO high longer than 60 ms on no-echo: report it. | |
-| H9a | Phase 2, wheels up | Flash `main.uf2`, wheels off the floor. Let the wheels spin, then put a hand 20 cm in front of the sensor. | Wheels stop; `[INFO](line:nav)` shows the OBSTACLE state; servo sweeps; after you remove your hand the wheels turn again (SCAN_RESULT CLEAR → ACCEPT) | |
-| H9 | Hug on the car (Phase 2) | Flash `main.uf2`. Box on the line, car following the line towards it. Nothing else within 600 mm of the box. After the run keep the car on, plug in USB and open the serial monitor to print the flight log. | Car stops, scans, pivots until the way is clear and the planned angle is reached, drives out, passes the obstacle with stop-and-look checks, turns back at 45°, line following resumes at the first line contact. Takes about 20–30 s. Flight log: no `MOTION ... fault=` other than NONE, no FAULT lines. Try boxes 100, 180, 260 and 340 mm wide. Boxes 240 mm and wider are expected to fail until the edge limit is measured. | |
+| H9a | Fixed IR floor qualification | With the chassis supported at its installed ride height, pass course floor, tape and an exposed edge under each digital IR sensor. Record its bit, surface and edge position across repeated passes in course lighting. | Record which observations reliably identify support, including any ambiguity. For each proposed wheel or caster path, measure detection lead and compare it with sensing delay and braking travel. | |
+| H9 | Installed obstacle hold | On supported track with braking room, select **Stop at obstacles** in Start and approach a stationary box. Leave it in place through the survey, then lift the box away from the line. Record sonar class and range, both wheel targets, valid wheel speeds, and any independent holds. | A fresh centered VALID at ≤100 mm from the sonar face or a centered TOO_CLOSE commands both targets to zero. The wheels come to rest before contact and stay at zero during at most two stationary servo sweeps. An armed run can continue along the original tape after three consecutive fresh centered clear returns, with motion ready and all independent holds released. | |
+
+For the continuous-floor trial, use normal Start and leave the box in place.
+Record both encoder speeds, wheel targets, obstacle state and odometer from
+contact through the first side leg, subsequent scans and optical rejoin.
+During a planned pause, measured wheel motion should resume within three
+seconds. Identify a safety hold or a gap in telemetry separately. A total
+duration over 30 s calls for inspection of the path. [Pilot behavior](obstacle.md#hug-pilot-path)
 
 Settings named in this list (`OBSTACLE_SERVO_CENTRE_US`, `OBSTACLE_SERVO_DIR`,
 `OBSTACLE_SERVO_US_PER_10DEG`, `OBSTACLE_SETTLE_MS_PER_DEG`, `OBSTACLE_BEAM_HALF_DECI`) are in

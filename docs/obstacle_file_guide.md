@@ -33,7 +33,8 @@ src/navigation/obstacle/
 ├── comms.c / .h                       queues, outbox, shared copies     (kernel)
 ├── obstacle.c / .h                    implementation; obstacle.h is private (kernel)
 │
-├── obstacle_nav.c / .h                Phase 2 glue used by main.c       (kernel)
+├── motion_link.c / .h                 sonar startup and wheel travel   (kernel)
+├── obstacle_nav.c / .h                legacy route controller          (kernel)
 ├── flight_log.c / .h                  flight recorder, printed over USB (kernel)
 └── bench_main.c                       bench program with a pretend Navigation
 ```
@@ -214,23 +215,23 @@ functions, who uses it, and when you would edit it.
   `obstacle_get_steer`, `obstacle_get_status`,
   `obstacle_get_faults`, `obstacle_copy_profile`, `obstacle_flag_id`,
   `obstacle_dropped_events`.
-- **Used by:** `obstacle_nav.c` (in `main.uf2`) and `bench_main.c`.
+The car starts this service through `motion_link.c`. The standalone bench supplies its own links.
 - **Edit it when:** the interface agreed with other buddies changes.
 
+#### `motion_link.c / .h`
+
+Both car builds call `obstacle_line_init` here. The adapter supplies forward
+and backward wheel travel to the sonar service. The legacy build also starts
+its navigator and installs its obstacle stop callback.
+
 #### `obstacle_nav.c / .h`
-- **What it does:** the Phase 2 glue. Starts Buddy 5 with links to the
-  motion service. Handles line task passes, commands, and events. Drives
-  stop-and-look bypass: turn, out, along with forward sonar check, stop-and-look
-  side pings, extra drive, and return pivot.
-- **Main functions:** `obstacle_nav_init`, `obstacle_nav_step`; private
-  `drive_reacquire`, `reacquire_look_cycle`, `reacquire_drive_and_return`,
-  `step_pivot`, `step_look_ping`, `drive_wheels`.
-- **Used by:** `line_task` in `src/main.c`.
-- **Edit it when:** changing the bypass sequence, stop-and-look ping timing, or
-  line-follower handshakes.
+
+With `PICO_CAR_PILOT=OFF`, the line task calls `obstacle_line_step` to run
+the legacy stop-and-look maneuver. The default build runs the pilot and its
+avoidance functions from the same line-task loop.
 
 #### `flight_log.c / .h`
-- **What it does:** the flight recorder. Keeps the last 1024 records
+- **What it does:** the flight recorder. Keeps the last 512 records
   (states, causes, scan results with profiles, steering, motion faults,
   commands and a trace of the echo, IR sensors and wheel distances) in RAM
   and prints them when a USB serial monitor is opened.
@@ -252,7 +253,7 @@ functions, who uses it, and when you would edit it.
 
 #### The "Buddy 5" block in the team `CMakeLists.txt` (repo root)
 - **What it does:** the last block of the repo's `CMakeLists.txt` builds the
-  `obstacle` and `obstacle_nav` libraries and `obstacle_bench.uf2` with the
+  `obstacle` and `obstacle_motion` libraries and `obstacle_bench.uf2` with the
   team's warning flags, and links `obstacle_nav` into `main`. It runs on
   every normal `./configure.sh` + `./build.sh`; no extra flags.
 - **Build it:** `./configure.sh` then `./build.sh`; flash

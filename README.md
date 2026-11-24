@@ -125,10 +125,20 @@ from the RP2040, which includes brownouts. A watchdog, RUN-pin, debugger,
 or unknown reset requires operator START. A lift, overturn, deliberate stop,
 or lapsed motion permit also requires operator recovery.
 
+On continuous floor, START permits forward travel with both front readers on
+bare floor. The pilot holds its encoder heading until tape guides a correction
+or another behavior takes control. Missing tape alone has no distance limit.
+The **Stop at obstacles** setting retains the bounded line search for courses
+where floor support is uncertain.
+
 On an unmarked bend, a single front line detector on tape steers the car even
 when the left barcode reader crosses the same tape. A confirmed change of side
 changes the steering direction on that control pass. The inside wheel can reach
-zero motor duty on a tight bend. With both readers clear, side-reader pulses
+zero motor duty on a tight bend. On continuous floor, after one reader stays
+on tape for 25 mm, a gap of up to 25 mm retains steering into that bend.
+If the tape remains missing for 130 mm from the last contact, the axle starts
+a bounded optical sweep toward the last-seen side. An opposite reader hit takes
+effect immediately. Outside a sustained bend, with both readers clear, side-reader pulses
 alone can hold the heading for up to 100 mm from the last front sighting.
 Measured elements of a tentative barcode start extend that allowance by their
 width until the decoder accepts or rejects them. After a verified start, each
@@ -137,7 +147,8 @@ accepted element renews the distance.
 At an unmarked square
 corner, the follower remembers where the front pair crossed the outgoing strip.
 If the line disappears as the axle approaches that crossing, the car searches
-from the corner for the outgoing tape.
+from the corner for the outgoing tape. On continuous floor, one unsuccessful
+sweep returns to its approach heading and it continues forward.
 
 During a run, a barcode L, R or S requests the left, right or through exit
 at the next junction. The car follows ordinary bends with the instruction
@@ -224,6 +235,23 @@ and the motion holds released. During parked course recovery, any observed
 movement restarts the clearance count. If a line sensor
 sample is more than 25 ms old, the line task stops the wheels and aborts any
 active turn. Fresh line samples let normal navigation resume.
+
+The barcode reader sends best-effort `barcode_sample` frames on topic `b`.
+Each queued edge wakes the telemetry worker and forwarding wakes the MQTT task.
+Use edge timestamps for stripe timing. Task scheduling and network delivery
+can group several edges into one burst.
+The installed-reader setting interprets GP26 LOW as light floor and HIGH as
+a dark bar. Status and edge frames carry the raw electrical level.
+They record the GP26 level after each edge, its microsecond timestamp,
+interval, sequence, and the estimated width when wheel feedback permits.
+An unmeasured interval starts a new span. Capture loss and unavailable
+speed are explicit. A complete framed Z is reported as a letter with no
+driving action. The decoder learns each marker's narrow width and wide-to-narrow
+ratio, updating them as unambiguous elements arrive.
+
+The vehicle IMU uses board −Y for forward and +Z for up. Raising the nose
+produces positive pitch. Raising the left side produces negative roll under
+the dashboard and wheel controller's left-down-positive convention.
 
 The status, motion and physics packets go out at 5 Hz, obstacle packets at 2 Hz,
 and diag and heartbeat packets at 1 Hz. Sonar aim events record the initial
