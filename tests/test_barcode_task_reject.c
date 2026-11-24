@@ -37,6 +37,7 @@ static uint32_t g_start_mm;
 static uint32_t g_tick_remainder;
 static bool g_b_drop_phase;
 static bool g_b_stall_letter_report;
+static unsigned g_stalled_emit_count;
 static uint8_t g_expected_opcode = VEHICLE_CMD_LEFT;
 static unsigned g_command_count;
 static unsigned g_idle_waits;
@@ -208,28 +209,39 @@ static void record_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
 ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
                          uint32_t odometer_mm)
 {
-    assert(type != TELEMETRY_EVT_BARCODE_PHASE);
-    if (g_b_stall_letter_report && (type == TELEMETRY_EVT_BARCODE))
-    {
-        longjmp(g_finish, 1);
-    }
-    record_event(source, type, p1, p2, odometer_mm);
-    return E_OK;
+    (void)source;
+    (void)type;
+    (void)p1;
+    (void)p2;
+    (void)odometer_mm;
+    assert(false && "barcode_task must not call blocking telemetry_emit_event");
+    return E_TMOUT;
 }
 
-ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
-                             uint32_t odometer_mm)
+ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1,
+                             uint16_t p2, uint32_t odometer_mm)
 {
-    assert((type == TELEMETRY_EVT_BARCODE_PHASE) || (type == TELEMETRY_EVT_BARCODE));
+    assert((type == TELEMETRY_EVT_BARCODE_PHASE) ||
+           (type == TELEMETRY_EVT_BARCODE) ||
+           (type == TELEMETRY_EVT_BARCODE_BAD) ||
+           (type == TELEMETRY_EVT_BARCODE_BLOCK));
     record_event(source, type, p1, p2, odometer_mm);
-    bool const b_blocked = ((type == TELEMETRY_EVT_BARCODE_PHASE) && g_b_drop_phase) ||
-                           ((type == TELEMETRY_EVT_BARCODE) && g_b_stall_letter_report);
+    bool const b_stalled = (type != TELEMETRY_EVT_BARCODE_PHASE) &&
+                           g_b_stall_letter_report;
+    if (b_stalled)
+    {
+        g_stalled_emit_count++;
+    }
+    bool const b_blocked = ((type == TELEMETRY_EVT_BARCODE_PHASE) &&
+                            g_b_drop_phase) || b_stalled;
     return b_blocked ? E_TMOUT : E_OK;
 }
 
 ER vehicle_command_post (uint8_t opcode, uint8_t source)
 {
     assert(opcode == g_expected_opcode && source == VEHICLE_SRC_BARCODE);
+    assert((g_event_count == 0U) ||
+           (g_events[g_event_count - 1U].type != TELEMETRY_EVT_BARCODE));
     g_command_count++;
     return E_OK;
 }
@@ -255,8 +267,9 @@ static void replay (uint8_t const * p_delimiter, uint8_t const * p_widths, size_
     g_start_us = g_timestamp_us;
     g_start_mm = g_odometer_mm;
     g_tick_remainder = 0U;
-    g_event_count  = 0U;
-    g_sample_count = 0U;
+    g_event_count        = 0U;
+    g_sample_count       = 0U;
+    g_stalled_emit_count = 0U;
     if (setjmp(g_finish) == 0)
     {
         barcode_task_run();
@@ -359,20 +372,42 @@ static void test_full_sized_markers (void)
 static void test_halt_with_stalled_report (void)
 {
     static uint8_t const h[] = {3U, 1U, 1U, 1U, 1U, 3U, 3U, 1U, 1U, 1U};
+    uint8_t const  saved_opcode   = g_expected_opcode;
+    uint32_t const saved_speed    = g_speed_mm_s;
+    unsigned const saved_commands = g_command_count;
+
     g_expected_opcode = VEHICLE_CMD_STOP;
-    g_speed_mm_s = 120U;
+    g_speed_mm_s      = 120U;
+    g_command_count   = 0U;
 
     replay(g_delimiter, h, 19U);
     assert(g_command_count == 1U);
+    assert((g_event_count == 4U) && (g_stalled_emit_count == 0U));
+    assert((g_events[3U].type == TELEMETRY_EVT_BARCODE) &&
+           (g_events[3U].p1 == 'H') &&
+           ((g_events[3U].p2 & 15U) == BARCODE_ACTION_STOP) &&
+           (g_events[3U].stripe == 29U));
 
-    g_command_count = 0U;
-    g_b_stall_letter_report = true;
+    g_command_count            = 0U;
+    g_b_stall_letter_report    = true;
+    g_follow_with_clean_marker = true;
     replay(g_delimiter, h, 19U);
 
     barcode_stats_t stats;
     barcode_stats(&stats);
-    assert(stats.last_letter == 'H' && stats.last_action == BARCODE_ACTION_STOP);
+    assert((stats.last_letter == 'H') &&
+           (stats.last_action == BARCODE_ACTION_STOP));
     assert(g_command_count == 1U);
+    assert((g_event_count == 8U) && (g_stalled_emit_count == 2U));
+    expect_phase(6U, TELEMETRY_BARCODE_PHASE_COMPLETE, 0U, 29U);
+    expect_event(7U, TELEMETRY_EVT_BARCODE_BAD,
+                 BARCODE_REJECT_DUPLICATE, 0U, 29U);
+
+    g_b_stall_letter_report    = false;
+    g_follow_with_clean_marker = false;
+    g_expected_opcode          = saved_opcode;
+    g_speed_mm_s               = saved_speed;
+    g_command_count            = saved_commands;
 }
 
 int main (int argc, char ** argv)
@@ -504,5 +539,6 @@ int main (int argc, char ** argv)
            (g_events[1].p1 == TELEMETRY_BARCODE_PHASE_DECODING));
     expect_phase(2U, TELEMETRY_BARCODE_PHASE_COMPLETE, 0U, 29U);
     expect_event(3U, TELEMETRY_EVT_BARCODE, 'A', (uint16_t)((250U << 4U) | BARCODE_ACTION_REJECTED), 29U);
+    test_halt_with_stalled_report();
     return 0;
 }
