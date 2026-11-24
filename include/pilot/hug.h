@@ -5,16 +5,10 @@
  * hug_step() every tick. Two hits in the last three free-running forward
  * pings normally start a survey. On an established tape bend, the follower
  * can briefly recheck a return outside its measured turning path. A persistent
- * return starts the survey. The hug takes the wheels and sonar, looks at the face, goes up to it until
- * the body is HUG_BODY_GAP_MM off, and goes round the obstacle: along the face
- * to its corner and past it, along the next face, and so on, round every
- * measured corner. On a quadrilateral the measured far vertex and rear face
- * allow a return to the entry lateral coordinate for a bounded tape search.
- * If the incoming line was observed, an empty search there permits one pass
- * along the remaining perimeter for a bent exit. The car advances to an observed crossing and
- * turns away from the obstacle. A line sensor must reacquire tape during
- * that turn before the follower can take the wheels. An exhausted sweep
- * stops the car.
+ * return starts the survey. A sonar-confirmed contact runs the Buddy 5 signed
+ * approach, outward and parallel legs, return scans and optical rejoin in
+ * bypass.c. A wheel-only stall without a usable sonar range uses the geometric
+ * face recovery below.
  *
  * The hug keeps its own dead-reckoned pose in the look frame of look.h: the
  * origin is the axle at the hit and x runs along the heading of the hit. The
@@ -41,6 +35,7 @@
 
 #include "navigation/obstacle_ping.h"
 #include "pilot/look.h"
+#include "pilot/bypass.h"
 #include "platform/chassis.h"
 #include "platform/static_assert.h"
 
@@ -98,7 +93,7 @@ STATIC_ASSERT((HUG_REFINE_ZONE_DECI <= HUG_SERVO_MAX_DECI) &&
  *  endpoints permit a tighter straight diagonal between pivot-safe poses.
  *  An approach shorter than HUG_APPROACH_MIN_MM is not driven. */
 #define HUG_BODY_MM           CHASSIS_BODY_RADIUS_MM
-#define HUG_SWEEP_RADIUS_MM   (145)
+#define HUG_SWEEP_RADIUS_MM   (169)
 /* Buddy 5's working margin outside our full axle-centred turning envelope. */
 #define HUG_BODY_GAP_MM       (50)
 #define HUG_AXLE_OFF_MM       (HUG_SWEEP_RADIUS_MM + HUG_BODY_GAP_MM)
@@ -245,6 +240,7 @@ STATIC_ASSERT(sizeof(hug_out_t) == 12U, "hug_out_t size");
 
 typedef struct
 {
+    bypass_t bypass;
     int32_t  x_um;          /* axle, look frame; kept idle with b_note   */
     int32_t  y_um;
     int32_t  diff_um;       /* right minus left travel, slip corrected           */
@@ -318,7 +314,7 @@ typedef struct
     uint32_t bend_outer_um; /* outer wheel at the first such return, low 32 bits */
 } hug_t;
 
-STATIC_ASSERT(sizeof(hug_t) == 128U, "hug_t size");
+STATIC_ASSERT(sizeof(hug_t) == 200U, "hug_t size");
 
 /** Idle, no memory of a face. */
 void hug_init(hug_t * p_hug);

@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 
+#include "hug_internal.h"
 #include "geometry.h"
 #include "obstacle_config.h"
 #include "platform/chassis.h"
@@ -123,9 +124,9 @@
 #define RIGHT           ((uint8_t)LOOK_SIDE_RIGHT)
 
 /* The longer end of the chassis determines the swept diagonal. */
-#define HUG_LONG_END_MM ((LINE_SENSOR_LEAD_MM > CHASSIS_AXLE_TO_CASTER_MM) ? \
-                          LINE_SENSOR_LEAD_MM : CHASSIS_AXLE_TO_CASTER_MM)
-#define HUG_SWEEP_SQ_MM (HUG_LONG_END_MM * HUG_LONG_END_MM + OBSTACLE_CAR_HALF_W_MM * OBSTACLE_CAR_HALF_W_MM)
+#define HUG_LONG_END_MM ((CHASSIS_FRONT_TIP_MM > CHASSIS_AXLE_TO_CASTER_MM) ? \
+                          CHASSIS_FRONT_TIP_MM : CHASSIS_AXLE_TO_CASTER_MM)
+#define HUG_SWEEP_SQ_MM (HUG_LONG_END_MM * HUG_LONG_END_MM + CHASSIS_LEFT_REACH_MM * CHASSIS_LEFT_REACH_MM)
 #define BEND_FRONT_RESERVE_MM (HUG_LONG_END_MM - LOOK_SONAR_FWD_MM + HUG_FORWARD_RESERVE_MM)
 #define BEND_OUTER_TRAVEL_UM ((uint32_t)(HUG_FORWARD_RESERVE_MM / HALVES) * UM_PER_MM)
 STATIC_ASSERT(((HUG_SWEEP_RADIUS_MM - 1) * (HUG_SWEEP_RADIUS_MM - 1) < HUG_SWEEP_SQ_MM) &&
@@ -152,7 +153,7 @@ typedef struct
 } hug_edges_t;
 
 /* Encoders only: no gyro; the uncalibrated compass by the motors is worse. */
-static int32_t head_deci(hug_t const * p_hug)
+int32_t hug_pose_heading_deci(hug_t const * p_hug)
 {
     return geom_wrap_deci((int32_t)wheel_yaw_deci(p_hug->diff_um));
 }
@@ -165,6 +166,11 @@ static int32_t pos_x_mm(hug_t const * p_hug)
 static int32_t pos_y_mm(hug_t const * p_hug)
 {
     return p_hug->y_um / UM_PER_MM;
+}
+
+look_pose_t hug_axle_pose(hug_t const * p_hug)
+{
+    return (look_pose_t){pos_x_mm(p_hug), pos_y_mm(p_hug), hug_pose_heading_deci(p_hug)};
 }
 
 static bool flag_get(hug_t const * p_hug, uint32_t mask)
@@ -203,7 +209,7 @@ static void odo_update(hug_t * p_hug, hug_in_t const * p_in)
     int32_t const dr = (int32_t)((uint32_t)p_in->right_um - p_hug->last_right_um);
     int32_t const ds = (dl + dr) / HALVES;
     int32_t dd = dr - dl;
-    int32_t const before = head_deci(p_hug);
+    int32_t const before = hug_pose_heading_deci(p_hug);
     int32_t mid = 0;
 
     if ((0 != dl) || (0 != dr) || p_in->b_other)
@@ -212,12 +218,12 @@ static void odo_update(hug_t * p_hug, hug_in_t const * p_in)
     }
     p_hug->last_left_um = (uint32_t)p_in->left_um;
     p_hug->last_right_um = (uint32_t)p_in->right_um;
-    if (((dl > 0) && (dr < 0)) || ((dl < 0) && (dr > 0)))
+    if ((BYPASS_IDLE == p_hug->bypass.phase) && (((dl > 0) && (dr < 0)) || ((dl < 0) && (dr > 0))))
     {
         dd = (dd * HUG_PIVOT_PCT) / PERCENT;
     }
     p_hug->diff_um += dd;
-    mid = before + (geom_wrap_deci(head_deci(p_hug) - before) / HALVES);
+    mid = before + (geom_wrap_deci(hug_pose_heading_deci(p_hug) - before) / HALVES);
     p_hug->x_um += (int32_t)(((int64_t)ds * geom_cos_q14(mid)) / GEOM_Q14_ONE);
     p_hug->y_um += (int32_t)(((int64_t)ds * geom_sin_q14(mid)) / GEOM_Q14_ONE);
 }
@@ -278,11 +284,11 @@ static bool triggered(hug_t const * p_hug)
 /* Relative to the instantaneous turn centre, every body corner travels
  * within the circle through the outermost corner. Compare the nearest
  * possible echo in the beam to that circle, including tracking margin. */
-static bool echo_outside_bend(uint16_t radius_mm, uint16_t range_mm)
+static bool echo_outside_bend(uint16_t radius_mm, uint16_t range_mm, bool b_left_turn)
 {
     int32_t const radius = radius_mm;
     int32_t const margin = (int32_t)OBSTACLE_PLAN_MARGIN_MM;
-    int32_t const outer = radius + (int32_t)OBSTACLE_CAR_HALF_W_MM + margin;
+    int32_t const outer = radius + (int32_t)(b_left_turn ? CHASSIS_RIGHT_REACH_MM : CHASSIS_LEFT_REACH_MM) + margin;
     int32_t const end = HUG_LONG_END_MM + margin;
     int32_t const ahead = LOOK_SONAR_FWD_MM + geom_mul_q14((int32_t)range_mm - (int32_t)OBSTACLE_AGREE_MM,
                                                            geom_cos_q14(CHASSIS_SONAR_OUTER_HALF_DECI));
@@ -314,7 +320,7 @@ static bool recheck_on_bend(hug_t * p_hug, hug_in_t const * p_in, bool b_forward
         return true;
     }
     if ((LOOK_ECHO_VALID != p_in->ping_echo) || (p_in->ping_mm <= BEND_FRONT_RESERVE_MM) ||
-        (p_in->ping_mm > HUG_STANDOFF_MM) || !echo_outside_bend(p_in->bend_radius_mm, p_in->ping_mm))
+        (p_in->ping_mm > HUG_STANDOFF_MM) || !echo_outside_bend(p_in->bend_radius_mm, p_in->ping_mm, p_in->b_line_left))
     {
         p_hug->b_bend_check = false;
         return false;
@@ -365,7 +371,7 @@ bool hug_reapproaching(hug_t const * p_hug)
 int16_t hug_heading_deci(hug_t const * p_hug)
 {
     /* Cast is safe: the heading is wrapped to -1800..1800. */
-    return (ST_IDLE == p_hug->state) ? (int16_t)0 : (int16_t)head_deci(p_hug);
+    return (ST_IDLE == p_hug->state) ? (int16_t)0 : (int16_t)hug_pose_heading_deci(p_hug);
 }
 
 /* ---- motions ---- */
@@ -446,7 +452,7 @@ static void start_scan(hug_t * p_hug, look_t * p_look, uint32_t purpose, int32_t
 /* Turn in place toward the target. True when within the tolerance. */
 static bool pivot_cmd(hug_t const * p_hug, int32_t target, hug_out_t * p_out)
 {
-    int32_t const err = geom_wrap_deci(target - head_deci(p_hug));
+    int32_t const err = geom_wrap_deci(target - hug_pose_heading_deci(p_hug));
     bool const b_done = geom_abs(err) <= HUG_HEAD_TOL_DECI;
 
     if (!b_done)
@@ -474,7 +480,7 @@ static bool drive_cmd(hug_t const * p_hug, int32_t speed_mm_s, hug_out_t * p_out
 
     if (!b_done)
     {
-        int32_t const err = geom_wrap_deci(p_hug->goal_head - head_deci(p_hug));
+        int32_t const err = geom_wrap_deci(p_hug->goal_head - hug_pose_heading_deci(p_hug));
 
         p_out->speed_mm_s = (int16_t)((p_hug->goal_len_mm < 0) ? -speed_mm_s : speed_mm_s);
         p_out->turn_deci_s = (int16_t)clamp_i32(err * HUG_HOLD_GAIN, -HUG_HOLD_MAX_DECI_S,
@@ -623,7 +629,7 @@ static void scan_record(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
 {
     /* A ping carries no time: the reply pairs with the pose when it arrives,
      * which is right because the look runs only while the car stands still. */
-    look_pose_t const pose = {pos_x_mm(p_hug), pos_y_mm(p_hug), head_deci(p_hug)};
+    look_pose_t const pose = hug_axle_pose(p_hug);
     bool const b_usable = look_add(p_look, &pose, p_in->ping_servo_deci, p_in->ping_echo,
                                    (int32_t)p_in->ping_mm);
 
@@ -755,12 +761,11 @@ static void scan_reply(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
 {
     int32_t const servo_deci = offset - scan_body_aim(p_hug, offset);
     bool const b_recheck = flag_get(p_hug, F_RECHECK);
-    /* The wire angle is quantized to whole degrees. */
-    bool const b_angle_ok = geom_abs(p_in->ping_servo_deci - servo_deci) < OBSTACLE_PING_DECI_PER_DEG;
     bool const b_expired = (p_in->now_ms - p_hug->t_ms) > HUG_REPLY_TIMEOUT_MS;
     bool const b_short = (PU_CHECK == p_hug->purpose);
-    bool const b_match = p_in->b_ping_reply && (p_in->ping_seq == p_hug->req_seq) && b_angle_ok
-                         && !b_expired;
+    bool const b_match = !b_expired && obstacle_ping_reply_matches(
+        p_in->b_ping_reply, p_in->ping_seq, p_in->ping_servo_deci,
+        p_hug->req_seq, servo_deci, OBSTACLE_PING_MAX_QUANTIZATION_DECI);
     bool const b_corner_unknown = (LOOK_ECHO_OPEN != p_in->ping_echo) &&
         (LOOK_ECHO_TOO_CLOSE != p_in->ping_echo) &&
         ((LOOK_ECHO_VALID != p_in->ping_echo) || (0U == p_in->ping_mm));
@@ -961,9 +966,15 @@ static int32_t from_edge_mm(hug_t const * p_hug, int32_t axis)
 /* Where the lateral setup leg ends. The following straight line passes the
  * vertex at half the body width plus the working gap, measured perpendicular
  * to travel. The pivot here still has the full front standoff. */
-static int32_t flank_setup_mm(int32_t front_mm)
+/* Passing the obstacle on its right puts the left reader next to its face. */
+static int32_t obstacle_side_reach_mm(hug_t const * p_hug)
 {
-    int32_t const across = (int32_t)OBSTACLE_CAR_HALF_W_MM + HUG_FLANK_GAP_MM
+    return (int32_t)((p_hug->side < 0) ? CHASSIS_LEFT_REACH_MM : CHASSIS_RIGHT_REACH_MM);
+}
+
+static int32_t flank_setup_mm(int32_t front_mm, int32_t side_reach_mm)
+{
+    int32_t const across = side_reach_mm + HUG_FLANK_GAP_MM
                           - geom_mul_q14(front_mm, geom_sin_q14(HUG_FLANK_DECI));
     int32_t const cosine = geom_cos_q14(HUG_FLANK_DECI);
     return (across * GEOM_Q14_ONE + cosine - 1) / cosine;
@@ -1018,7 +1029,7 @@ static void plan_leg(hug_t * p_hug, look_face_t const * p_face,
                      p_edges->edge[s].y_mm - pos_y_mm(p_hug));
         if (p_hug->b_close_front)
         {
-            leg += flank_setup_mm(p_face->dist_mm - app);
+            leg += flank_setup_mm(p_face->dist_mm - app, obstacle_side_reach_mm(p_hug));
         }
         else
         {
@@ -1037,7 +1048,7 @@ static void plan_leg(hug_t * p_hug, look_face_t const * p_face,
     }
     else if (b_measured)
     {
-        look_pose_t const pose = {pos_x_mm(p_hug), pos_y_mm(p_hug), head_deci(p_hug)};
+        look_pose_t const pose = hug_axle_pose(p_hug);
         look_side_t const side = (p_hug->side > 0) ? LOOK_SIDE_LEFT : LOOK_SIDE_RIGHT;
         look_side_t const other = (LOOK_SIDE_LEFT == side) ? LOOK_SIDE_RIGHT : LOOK_SIDE_LEFT;
         int32_t const reach = look_face_reach_mm(p_look, &pose, p_face, side);
@@ -1232,7 +1243,7 @@ static void after_center(hug_t * p_hug, look_t const * p_look, look_face_t const
  * with the rays moved there; the rays go back afterwards. */
 static bool fit_beam(hug_t const * p_hug, look_t * p_look, look_face_t * p_face)
 {
-    look_pose_t const pose = {pos_x_mm(p_hug), pos_y_mm(p_hug), head_deci(p_hug)};
+    look_pose_t const pose = hug_axle_pose(p_hug);
     int16_t moved[LOOK_RAYS_MAX];
     bool b_ok = false;
 
@@ -1282,7 +1293,7 @@ static void after_refine(hug_t * p_hug, look_t * p_look)
     }
     else
     {
-        look_pose_t const pose = {pos_x_mm(p_hug), pos_y_mm(p_hug), head_deci(p_hug)};
+        look_pose_t const pose = hug_axle_pose(p_hug);
         look_face_t face = {0, 0, 0, 0};
         hug_edges_t edges;
         bool b_fine = look_face(p_look, &pose, &face);
@@ -1344,7 +1355,7 @@ static void end_stationary_batch(hug_t * p_hug, look_t * p_look)
     else if (!corner_scan(p_hug))
     {
         int32_t const offset = ray_offset(p_hug, p_hug->idx);
-        int32_t const delta = geom_wrap_deci(p_hug->center + offset - head_deci(p_hug));
+        int32_t const delta = geom_wrap_deci(p_hug->center + offset - hug_pose_heading_deci(p_hug));
         p_hug->scan_lead_deci = (int8_t)((delta >= 0) ? HUG_NEAR_STEP_DECI : -HUG_NEAR_STEP_DECI);
         p_hug->sub = (uint8_t)SUB_START;
         flag_set(p_hug, F_AIMED, false);
@@ -1366,7 +1377,7 @@ static int32_t along_head(hug_t const * p_hug)
 static bool side_check_supported(hug_t const * p_hug, look_t const * p_look)
 {
     int32_t const normal = p_hug->look_head;
-    look_pose_t const pose = {pos_x_mm(p_hug), pos_y_mm(p_hug), head_deci(p_hug)};
+    look_pose_t const pose = hug_axle_pose(p_hug);
     int32_t const expected = p_hug->face_line_mm - geom_dot_mm(normal, pose.x_mm, pose.y_mm);
     look_face_t const face = {0, 0, normal, expected};
     look_side_t const side = (p_hug->side > 0) ? LOOK_SIDE_LEFT : LOOK_SIDE_RIGHT;
@@ -1437,7 +1448,7 @@ static int32_t flank_drive_mm(hug_t const * p_hug)
     int32_t const front = -from_edge_mm(p_hug, p_hug->look_head);
     int32_t const nearest = from_edge_mm(p_hug, p_hug->center + outward);
     if ((front < HUG_SCAN_CLEARANCE_MM) ||
-        (nearest < (int32_t)OBSTACLE_CAR_HALF_W_MM + (int32_t)OBSTACLE_PLAN_MARGIN_MM))
+        (nearest < obstacle_side_reach_mm(p_hug) + (int32_t)OBSTACLE_PLAN_MARGIN_MM))
     {
         return 0;
     }
@@ -1883,7 +1894,7 @@ static void after_edge_sweep(hug_t * p_hug, look_t * p_look, look_face_t const *
 static void after_scan(hug_t * p_hug, look_t * p_look, hug_out_t * p_out)
 {
     uint16_t guard_ranges[RAY_CONTACT_N];
-    look_pose_t const pose = {pos_x_mm(p_hug), pos_y_mm(p_hug), head_deci(p_hug)};
+    look_pose_t const pose = hug_axle_pose(p_hug);
 
     if (corner_scan(p_hug))
     {
@@ -2159,7 +2170,7 @@ static void observe_exit_tape(hug_t * p_hug, hug_in_t const * p_in)
     {
         return;
     }
-    int32_t const head = head_deci(p_hug);
+    int32_t const head = hug_pose_heading_deci(p_hug);
     int32_t const left_mm = ((int32_t)p_in->b_line_left - (int32_t)p_in->b_line_right)
                             * (LINE_SENSOR_SPACING_MM / HALVES);
     int32_t const cos_head = geom_cos_q14(head);
@@ -2229,7 +2240,7 @@ static void drive_tick(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
     bool const b_leg = drive_is_leg(p_hug);
     bool const b_blocked_leg = b_leg && b_guard &&
         (!flag_get(p_hug, F_MEASURED_FACE) ||
-         (geom_abs(geom_wrap_deci(p_hug->goal_head - head_deci(p_hug))) > HUG_HEAD_TOL_DECI) ||
+         (geom_abs(geom_wrap_deci(p_hug->goal_head - hug_pose_heading_deci(p_hug))) > HUG_HEAD_TOL_DECI) ||
          side_leg_blocked(p_in, drive_remaining_mm(p_hug)));
     if (p_hug->b_probe_front && (p_in->b_stall || b_blocked_leg))
     {
@@ -2241,7 +2252,7 @@ static void drive_tick(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
     {
         flag_set(p_hug, F_STALL, p_in->b_stall);
         flag_set(p_hug, F_EDGE_LEG | F_EXIT | F_EXIT_TAPE, false);
-        start_scan(p_hug, p_look, PU_INNER, head_deci(p_hug));
+        start_scan(p_hug, p_look, PU_INNER, hug_pose_heading_deci(p_hug));
     }
     else if (SUB_SETTLE == p_hug->sub)
     {
@@ -2252,7 +2263,7 @@ static void drive_tick(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
     }
     else if ((THEN_EXIT_TURN != p_hug->then) && flag_get(p_hug, F_EXIT_TAPE))
     {
-        int32_t const head = head_deci(p_hug);
+        int32_t const head = hug_pose_heading_deci(p_hug);
         /* A sensor can find the tape while the chassis is still turning.
          * The crossing distance belongs to that measured point. */
         int32_t const advance = geom_dot_mm(head, p_hug->tape.point.x_mm - pos_x_mm(p_hug),
@@ -2279,7 +2290,7 @@ static bool exit_crossed(hug_t * p_hug, hug_in_t const * p_in)
     uint8_t const reader = (uint8_t)((p_in->b_line_left ? EXIT_LEFT : 0U) |
                                      (p_in->b_line_right ? EXIT_RIGHT : 0U));
     uint8_t const leading = (p_hug->side > 0) ? (uint8_t)EXIT_LEFT : (uint8_t)EXIT_RIGHT;
-    int32_t const head = head_deci(p_hug);
+    int32_t const head = hug_pose_heading_deci(p_hug);
     if ((EXIT_CLEAR == reader) && (leading == p_hug->tape.crossing.reader))
     {
         int32_t const sweep = p_hug->side * geom_wrap_deci(head - p_hug->tape.crossing.heading_deci);
@@ -2308,7 +2319,7 @@ static bool exit_settled(hug_t const * p_hug)
 {
     int32_t const dx = pos_x_mm(p_hug) - p_hug->origin.drive.x_mm;
     int32_t const dy = pos_y_mm(p_hug) - p_hug->origin.drive.y_mm;
-    int32_t const angle = geom_abs(geom_wrap_deci(head_deci(p_hug) - p_hug->tape.crossing.heading_deci));
+    int32_t const angle = geom_abs(geom_wrap_deci(hug_pose_heading_deci(p_hug) - p_hug->tape.crossing.heading_deci));
     return (geom_abs(dx) + geom_abs(dy) <= LINE_WIDTH_MM / HALVES) &&
            (angle * LINE_SENSOR_LEAD_MM <= LINE_WIDTH_MM * DECI_PER_RAD);
 }
@@ -2332,7 +2343,7 @@ static void rear_settled(hug_t * p_hug, hug_in_t const * p_in, bool b_forward, h
     }
     else if (b_ping && b_clear && p_in->b_stationary)
     {
-        if (geom_abs(geom_wrap_deci(head_deci(p_hug) - p_hug->goal_head)) > HUG_HEAD_TOL_DECI)
+        if (geom_abs(geom_wrap_deci(hug_pose_heading_deci(p_hug) - p_hug->goal_head)) > HUG_HEAD_TOL_DECI)
         {
             p_hug->sub = (uint8_t)SUB_START;
         }
@@ -2420,7 +2431,7 @@ static void settle_contact(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in
         restart_contact(p_hug, p_look);
     }
     else if (b_forward && p_in->b_stationary && (0 == p_in->ping_servo_deci) &&
-             (geom_abs(head_deci(p_hug)) <= HUG_HEAD_TOL_DECI))
+             (geom_abs(hug_pose_heading_deci(p_hug)) <= HUG_HEAD_TOL_DECI))
     {
         if ((LOOK_ECHO_OPEN == p_in->ping_echo) ||
             ((LOOK_ECHO_VALID == p_in->ping_echo) && (p_in->ping_mm > HUG_GUARD_MM)))
@@ -2448,7 +2459,7 @@ static void settle_contact(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in
 static void settle_leg(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
                        bool b_forward, bool b_guard)
 {
-    int32_t const error = geom_wrap_deci(p_hug->goal_head - head_deci(p_hug));
+    int32_t const error = geom_wrap_deci(p_hug->goal_head - hug_pose_heading_deci(p_hug));
     bool const b_aligned = (geom_abs(error) <= HUG_HEAD_TOL_DECI);
     bool const b_ready = b_aligned && b_forward && p_in->b_stationary && (0 == p_in->ping_servo_deci);
     bool const b_blocked = b_ready && b_guard &&
@@ -2462,7 +2473,7 @@ static void settle_leg(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
         }
         else if (b_blocked)
         {
-            start_scan(p_hug, p_look, PU_INNER, head_deci(p_hug));
+            start_scan(p_hug, p_look, PU_INNER, hug_pose_heading_deci(p_hug));
         }
         else
         {
@@ -2497,7 +2508,7 @@ static void pivot_tick(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
          * a sensor on it: the turn stops when one sees it. */
         if (flag_get(p_hug, F_EXIT) && exit_crossed(p_hug, p_in))
         {
-            p_hug->tape.crossing.heading_deci = (int16_t)head_deci(p_hug);
+            p_hug->tape.crossing.heading_deci = (int16_t)hug_pose_heading_deci(p_hug);
             p_hug->origin.drive.x_mm = pos_x_mm(p_hug);
             p_hug->origin.drive.y_mm = pos_y_mm(p_hug);
             p_out->turn_deci_s = 0;
@@ -2532,7 +2543,7 @@ static void pivot_tick(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
         else if (((THEN_RELEASE == p_hug->then) || (THEN_LEG == p_hug->then)) &&
                  p_in->b_stationary && !p_hug->b_pivot_reaimed &&
                  (p_in->now_ms - p_hug->t_ms < HUG_SETTLE_MS + HUG_REPLY_TIMEOUT_MS) &&
-                 (geom_abs(geom_wrap_deci(p_hug->goal_head - head_deci(p_hug))) > HUG_HEAD_TOL_DECI))
+                 (geom_abs(geom_wrap_deci(p_hug->goal_head - hug_pose_heading_deci(p_hug))) > HUG_HEAD_TOL_DECI))
         {
             p_hug->b_pivot_reaimed = true;
             p_hug->sub = (uint8_t)SUB_START;
@@ -2574,7 +2585,7 @@ static uint32_t move_limit_ms(hug_t const * p_hug)
                                    ? (p_hug->center
                                       + scan_body_aim(p_hug, ray_offset(p_hug, p_hug->idx)))
                                    : p_hug->goal_head;
-        uint32_t const angle = (uint32_t)geom_abs(geom_wrap_deci(target - head_deci(p_hug)));
+        uint32_t const angle = (uint32_t)geom_abs(geom_wrap_deci(target - hug_pose_heading_deci(p_hug)));
 
         plan_ms = (angle * MS_PER_S * (uint32_t)PERCENT)
                   / ((uint32_t)HUG_PIVOT_MIN_DECI_S * (uint32_t)HUG_PIVOT_PCT);
@@ -2656,6 +2667,57 @@ static void observe_approach_tape(hug_t * p_hug, hug_in_t const * p_in)
     }
 }
 
+void hug_begin_bypass(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, uint16_t range_mm)
+{
+    begin(p_hug, p_look, p_in);
+    look_clear(p_look);
+    bypass_begin(p_hug, p_in, range_mm);
+}
+
+static void observe_idle(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, bool b_forward)
+{
+    bool const b_rechecking = recheck_on_bend(p_hug, p_in, b_forward);
+    observe_approach_tape(p_hug, p_in);
+    /* A stall with the follower driving is a contact: the sonar did not see
+     * the face, so look from the backed-off pose. */
+    if (!p_in->b_other && ((!b_rechecking && triggered(p_hug)) || p_in->b_stall || p_in->b_relook))
+    {
+        uint16_t range = (!p_in->b_ping_reply && (0 == p_in->ping_servo_deci) &&
+            look_echo_is_point(p_in->ping_echo) && (p_in->ping_mm <= HUG_STANDOFF_MM))
+            ? p_in->ping_mm : 0U;
+        if (!p_in->b_ping_reply && (p_in->ping_servo_deci == 0) && (p_in->ping_echo == LOOK_ECHO_TOO_CLOSE))
+        {
+            range = OBSTACLE_PING_TOO_CLOSE_MM;
+        }
+        if ((range == 0U) && !p_in->b_stall && !p_in->b_relook)
+        {
+            return;
+        }
+        if (p_in->b_relook)
+        {
+            /* A post-recovery contact may be on a side ray while the
+             * latest centre ping is open. Save it before begin resets the look. */
+            for (uint8_t i = 0U; i < p_look->count; i++)
+            {
+                look_ray_t const * const p_ray = &p_look->rays[i];
+                if (look_echo_is_point(look_ray_echo(p_ray)) && p_ray->range_mm <= HUG_STANDOFF_MM &&
+                    (range == 0U || p_ray->range_mm < range))
+                {
+                    range = p_ray->range_mm;
+                }
+            }
+        }
+        if (range != 0U)
+        {
+            hug_begin_bypass(p_hug, p_look, p_in, range);
+        }
+        else
+        {
+            begin(p_hug, p_look, p_in);
+        }
+    }
+}
+
 bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
 {
     bool const b_was_active = (ST_IDLE != p_hug->state);
@@ -2681,6 +2743,11 @@ bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t *
     {
         /* Nothing to track while idle. */
     }
+    if (p_hug->bypass.phase != BYPASS_IDLE)
+    {
+        bypass_step(p_hug, p_look, p_in, p_out);
+        return !p_in->b_other && (ST_IDLE != p_hug->state);
+    }
     if (p_in->b_other)
     {
         interrupt_observations(p_hug, p_look, p_in->b_contact_backoff);
@@ -2694,14 +2761,12 @@ bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t *
     b_forward = forward_ping(p_hug, p_in, &b_guard);
     if (ST_IDLE == p_hug->state)
     {
-        bool const b_rechecking = recheck_on_bend(p_hug, p_in, b_forward);
-        observe_approach_tape(p_hug, p_in);
-        /* A stall with the follower driving is a contact: the sonar did not see
-         * the face, so look from the backed-off pose. */
-        if (!p_in->b_other && ((!b_rechecking && triggered(p_hug)) || p_in->b_stall || p_in->b_relook))
-        {
-            begin(p_hug, p_look, p_in);
-        }
+        observe_idle(p_hug, p_look, p_in, b_forward);
+    }
+    if (p_hug->bypass.phase != BYPASS_IDLE)
+    {
+        bypass_step(p_hug, p_look, p_in, p_out);
+        return true;
     }
     if (!p_in->b_other && (ST_IDLE != p_hug->state))
     {

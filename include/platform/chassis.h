@@ -15,8 +15,22 @@
 /* [Measured] Wheel centre to wheel centre. */
 #define CHASSIS_WHEEL_TRACK_MM   (107)
 
-/* [Measured] Widest point of the car, across the outside edges of the tires. */
+/* [Measured] Outside tire face to outside tire face. */
 #define CHASSIS_OUTER_WIDTH_MM   (126U)
+/* The outer left barcode corner is 45 mm ahead of the drive axle and
+ * 44 mm beyond the outside tire face (107 mm from the centreline). */
+#define CHASSIS_BARCODE_FORWARD_MM (45)
+#define CHASSIS_RIGHT_REACH_MM ((CHASSIS_OUTER_WIDTH_MM + 1U) / 2U)
+#define CHASSIS_LEFT_REACH_MM  (CHASSIS_RIGHT_REACH_MM + 44U)
+
+/* Owner's front outline measured along the chassis from the drive axle.
+ * Widths are full widths. The optical and acoustic origins have their own offsets. */
+#define CHASSIS_NOSE_FORWARD_MM  (110)
+#define CHASSIS_NOSE_WIDTH_MM    (90)
+#define CHASSIS_NOSE_LEFT_MM     (65)
+#define CHASSIS_IR_EXTENSION_MM  (20)
+#define CHASSIS_IR_WIDTH_MM      (45)
+#define CHASSIS_FRONT_TIP_MM     (CHASSIS_NOSE_FORWARD_MM + CHASSIS_IR_EXTENSION_MM)
 
 /* Axle-centred envelope of the nominal 200 × 126 mm body (sensors excluded). */
 #define CHASSIS_BODY_RADIUS_MM   (119)

@@ -497,6 +497,15 @@ static void test_obstacle_hug (void)
     hug.width_mm   = 4096U;
     hug.breadth_mm = 65535U;
     hug.seen_mm    = 4096;
+    hug.bypass.phase = BYPASS_OUT;
+    hug.bypass.b_wall = true;
+    hug_word_pack(words, &hug, 0, 0);
+    telemetry_assemble_obstacle(&out, &o, NULL, ping, words);
+    CHECK((out.flags & (1U << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL)) != 0U);
+    hug.bypass.phase = BYPASS_IDLE;
+    hug_word_pack(words, &hug, 0, 0);
+    telemetry_assemble_obstacle(&out, &o, NULL, ping, words);
+    CHECK((out.flags & (1U << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL)) == 0U);
     hug_word_pack(words, &hug, 157, 0);
     telemetry_assemble_obstacle(&out, &o, NULL, ping, words);
     CHECK(out.width_mm == 4095U);

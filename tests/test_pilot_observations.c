@@ -129,104 +129,53 @@ static void test_slow_wheel_seam(void)
     (void)printf("slow wheel seam ok\n");
 }
 
-/* After a back-off and the retry, a stale window ends the retry: later
- * commands are not labelled STUCK once both wheels move again. */
+/* With an obstruction confirmed and both encoders fixed, a retry must
+ * remeasure from rest. Changing course cannot inherit the failed drive. */
 static void test_retry_label_seam(void)
 {
     pilot_state_t st;
     pilot_cmd_t cmd = {0};
     pilot_meas_t m = fresh_meas(1000U);
-    unsigned t;
-    bool b_back = false, b_retry = false;
-    bool saw_obstacle = false;
-    drive_state_t drive;
-
+    bool saw_drive = false;
+    bool saw_probe = false;
     pilot_init(&st);
-    drive_init(&drive);
-    check((uint8_t)PILOT_PHASE_TRY == st.phase, "a fresh pilot tries");
-    /* The wheels jam during recovery of a sonar-confirmed obstruction. */
     m.b_stationary = true;
-    open_sonar(&m);
-    pilot_step(&st, &m, &cmd);
-    m.left_um = 5000;
-    m.right_um = 5000;
-    for (t = 0U; t < 1000U && !b_retry; t++)
+    for (unsigned tick = 0; tick < 800 && !saw_probe; tick++)
     {
-        m.now_ms = 1000U + ((t + 1U) * TICK_MS);
-        m.stamp_ms = m.now_ms;
+        m.now_ms = m.stamp_ms = 1000U + tick * TICK_MS;
         open_sonar(&m);
-        m.b_ping_reply = cmd.b_ping_req;
+        m.b_ping_reply = cmd.b_ping_req != 0;
         m.ping_servo_deci = cmd.b_ping_req ? cmd.ping_servo_deci : 0;
         if (cmd.b_ping_req)
         {
             m.ping_seq = cmd.ping_seq;
         }
-        m.ping_echo = LOOK_ECHO_VALID;
-        m.ping_mm = 90U;
+        if (m.ping_servo_deci < 100)
+        {
+            m.ping_echo = LOOK_ECHO_VALID;
+            m.ping_mm = 205U;
+        }
         pilot_step(&st, &m, &cmd);
-        int32_t left, right;
-        pilot_drive(&drive, &cmd, TICK_MS, &left, &right);
-        saw_obstacle |= cmd.behaviour == PILOT_BEHAVIOUR_HUG;
-        check((PILOT_REASON_STUCK != cmd.reason) || (0 != cmd.speed_mm_s) ||
-                  (0 != cmd.turn_deci_s), "a zero command is labelled STUCK");
-        if ((PILOT_REASON_STUCK == cmd.reason) && (cmd.speed_mm_s < 0))
-        {
-            check(saw_obstacle && left < 0 && right < 0,
-                  "back-off must follow observed contact and reach both wheels");
-            if (!b_back)
-            {
-                pilot_state_t new_course = st;
-                pilot_cmd_t next;
-                pilot_meas_t clear = m;
-                clear.now_ms += TICK_MS;
-                clear.stamp_ms = clear.now_ms;
-                clear.b_ping_reply = false;
-                clear.ping_servo_deci = 0;
-                clear.ping_mm = 0U;
-                open_sonar(&clear);
-                pilot_change_floor(&new_course, true);
-                pilot_step(&new_course, &clear, &next);
-                check(next.speed_mm_s >= 0, "a new course inherited the previous obstacle reverse");
-            }
-            b_back = true;
-            check((PILOT_BEHAVIOUR_SAFETY != cmd.behaviour) ||
-                      ((uint8_t)PILOT_PHASE_BACKOFF == st.phase),
-                  "a back-off of both wheels is BACKOFF");
-        }
-        /* The retry after a stall is a contact look first (a pivot), the follower
-         * after it. */
-        if (b_back && (PILOT_REASON_STUCK == cmd.reason) &&
-            ((cmd.speed_mm_s > 0) || (0 != cmd.turn_deci_s)))
-        {
-            b_retry = true;
-            check((uint8_t)PILOT_PHASE_RETRY == st.phase, "the try after a back-off is RETRY");
-        }
+        check(cmd.speed_mm_s >= 0, "a frozen outward drive reversed without a new measurement");
+        saw_probe |= saw_drive && cmd.b_ping_req && cmd.speed_mm_s == 0 && cmd.turn_deci_s == 0;
+        saw_drive |= cmd.behaviour == PILOT_BEHAVIOUR_HUG && cmd.speed_mm_s > 0;
     }
-    check(b_back && b_retry, "no back-off and retry labelled STUCK");
-    /* This seam is the follower's label: drop the look, as when it ends. */
-    hug_init(&st.hug);
-    look_clear(&st.look);
+    check(saw_drive && saw_probe, "a stationary axle must get a new look after the drive request");
+    pilot_change_floor(&st, true);
     m.b_ping_reply = false;
     m.ping_servo_deci = 0;
-    m.ping_mm = 0U;
     m.now_ms += TICK_MS;
-    m.stamp_ms = m.now_ms - PILOT_STALE_MS - 50U;
+    m.stamp_ms = m.now_ms - PILOT_STALE_MS - 1U;
     open_sonar(&m);
     pilot_step(&st, &m, &cmd);
-    check(PILOT_REASON_STALE == cmd.reason, "stale window stops");
-    check((uint8_t)PILOT_PHASE_TRY == st.phase, "a stale window ends the retry");
-    for (t = 0U; t < 100U; t++)
-    {
-        m.now_ms += TICK_MS;
-        m.stamp_ms = m.now_ms;
-        m.left_um += 3000;
-        m.right_um += 3000;
-        open_sonar(&m);
-        pilot_step(&st, &m, &cmd);
-        check(PILOT_REASON_NONE == cmd.reason, "STUCK left on after a stale window");
-        check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour, "follower runs again");
-    }
-    (void)printf("retry label seam ok\n");
+    check(cmd.reason == PILOT_REASON_STALE && !cmd.speed_mm_s && !cmd.turn_deci_s,
+          "stale wheels cannot carry the obstacle drive onto a new course");
+    m.now_ms += TICK_MS;
+    m.stamp_ms = m.now_ms;
+    open_sonar(&m);
+    pilot_step(&st, &m, &cmd);
+    check(cmd.behaviour == PILOT_BEHAVIOUR_FOLLOW_LINE && cmd.speed_mm_s > 0,
+          "clear course with fresh feedback must start forward");
 }
 
 /* While motion holds the wheels the pilot stops with HELD and does not read
@@ -469,168 +418,6 @@ static void aim_head(hug_t * p_hug, int32_t deci)
     double const rad = ((double)deci / 1800.0) * 3.14159265358979323846;
 
     p_hug->diff_um = (int32_t)(rad * (double)CHASSIS_WHEEL_TRACK_MM * 1000.0);
-}
-
-/* Supply encoder positions at a surveyed heading without integrating commands. */
-static void pivot_counts(hug_in_t *in, int heading_deci)
-{
-    int64_t const center = (in->left_um + in->right_um) / 2;
-    double const angle = heading_deci * acos(-1.0) / 1800.0;
-    int64_t const half = lround(angle * CHASSIS_WHEEL_TRACK_MM * 500.0 * 100.0 / HUG_PIVOT_PCT);
-    in->left_um = center - half;
-    in->right_um = center + half;
-}
-
-static void supply_ray(hug_t *hug, look_t *look, hug_in_t *in, hug_out_t *out,
-                       int heading, int bearing, uint16_t range, bool missing)
-{
-    pivot_counts(in, heading);
-    in->b_ping_reply = false;
-    for (unsigned i = 0; !out->b_req && i < 100U; i++)
-    {
-        in->now_ms += 10U;
-        check(hug_step(hug, look, in, out), "the hug retains ownership while aiming");
-    }
-    check(out->b_req && abs(out->servo_deci + heading - bearing) <= HUG_HEAD_TOL_DECI,
-          "the requested bearing matches the surveyed chassis pose");
-    in->now_ms += 60U;
-    in->b_ping_reply = true;
-    in->ping_seq = out->seq;
-    in->ping_servo_deci = out->servo_deci;
-    in->ping_echo = (uint8_t)(missing ? LOOK_ECHO_NONE : range > 0U ? LOOK_ECHO_VALID : LOOK_ECHO_OPEN);
-    in->ping_mm = range;
-    (void)hug_step(hug, look, in, out);
-}
-
-typedef enum { SIDE_CLEAR, SIDE_BLOCKED, FACE_UNRESOLVED, OPPOSITE_MISS, CHOSEN_MISS } sparse_case_t;
-
-static void test_sparse_contact_leg(int side, sparse_case_t scenario)
-{
-    int16_t const angles[] = {HUG_CONTACT_RAYS};
-    look_t look;
-    hug_t hug;
-    hug_out_t out;
-    hug_in_t in = {.now_ms = 100U, .b_stationary = true, .ping_seq = 1U,
-                   .ping_echo = LOOK_ECHO_VALID, .ping_mm = 200U};
-    hug_init(&hug);
-    look_clear(&look);
-    check(!hug_step(&hug, &look, &in, &out), "one return does not establish contact");
-    in.now_ms += 60U;
-    in.ping_seq++;
-    check(hug_step(&hug, &look, &in, &out), "repeated centered contact starts the hug");
-    in.now_ms += HUG_SETTLE_MS;
-    (void)hug_step(&hug, &look, &in, &out);
-    for (size_t i = 0; i < sizeof(angles) / sizeof(angles[0]); i++)
-    {
-        int const heading = (int)lround((double)angles[i] / HUG_PIVOT_STEP_DECI) * HUG_PIVOT_STEP_DECI;
-        bool const wall = angles[i] * side < -HUG_CONTACT_NEAR_DECI;
-        uint16_t const range = abs(angles[i]) <= 50 ? 200U : wall ? 120U : 0U;
-        bool const missing = (scenario == OPPOSITE_MISS && side * angles[i] == -650) ||
-                             (scenario == CHOSEN_MISS && side * angles[i] == 650);
-        supply_ray(&hug, &look, &in, &out, heading, angles[i], range, missing);
-    }
-    pivot_counts(&in, 0);
-    in.b_ping_reply = false;
-    in.ping_servo_deci = 0;
-    in.ping_mm = 200U;
-    in.ping_echo = LOOK_ECHO_VALID;
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    if (side < 0)
-    {
-        pivot_counts(&in, -35);
-        in.now_ms += HUG_SETTLE_MS;
-        in.ping_seq++;
-        (void)hug_step(&hug, &look, &in, &out);
-        in.now_ms += 10U;
-        (void)hug_step(&hug, &look, &in, &out);
-        check(out.turn_deci_s > 0 && !out.speed_mm_s, "correct the contact heading before inspecting the post");
-        pivot_counts(&in, 0);
-        in.now_ms += 10U;
-        (void)hug_step(&hug, &look, &in, &out);
-    }
-    in.now_ms += HUG_SETTLE_MS;
-    in.ping_seq++;
-    in.ping_echo = LOOK_ECHO_NONE;
-    check(hug_step(&hug, &look, &in, &out) && !out.speed_mm_s && !out.turn_deci_s,
-          "a missing first centered reply waits at the original pose");
-    in.ping_echo = LOOK_ECHO_VALID;
-    in.now_ms += 60U;
-    in.ping_seq++;
-    check(hug_step(&hug, &look, &in, &out), "a confirmed post still ahead cannot release the wheels");
-    if (scenario == CHOSEN_MISS)
-    {
-        check(hug.state == HUG_CODE_ST_SCAN && !out.speed_mm_s, "an unmeasured departure side needs a new survey");
-        return;
-    }
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    check(side * out.turn_deci_s > 0 && !out.speed_mm_s, "align the chassis toward the open side");
-
-    pivot_counts(&in, side * 900);
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    in.now_ms += HUG_SETTLE_MS;
-    in.ping_seq++;
-    in.ping_echo = (uint8_t)(scenario == SIDE_BLOCKED ? LOOK_ECHO_VALID : LOOK_ECHO_OPEN);
-    in.ping_mm = scenario == SIDE_BLOCKED ? 90U : 0U;
-    (void)hug_step(&hug, &look, &in, &out);
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    if (scenario == SIDE_BLOCKED)
-    {
-        check(!out.speed_mm_s, "an obstacle on the selected side prevents the leg");
-        return;
-    }
-    check(out.speed_mm_s > 0 && !out.turn_deci_s, "both wheels drive the side leg without tape");
-    in.left_um += HUG_LEG_MIN_MM * 1000;
-    in.right_um += HUG_LEG_MIN_MM * 1000;
-    in.now_ms += 500U;
-    (void)hug_step(&hug, &look, &in, &out);
-    check(!out.speed_mm_s, "the first leg ends at its measured distance");
-    in.now_ms += HUG_SETTLE_MS;
-    (void)hug_step(&hug, &look, &in, &out);
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    check(out.turn_deci_s * side < 0 && !out.speed_mm_s, "look back toward the post from the new position");
-
-    /* Observe the front from the displaced axle. On the right the first
-     * look misses the surface entirely. */
-    int const center = hug.look_head;
-    bool const miss_first = side < 0 || scenario == FACE_UNRESOLVED;
-    for (int survey = 0; survey < (miss_first ? 2 : 1); survey++)
-    {
-        bool const resolved = scenario != FACE_UNRESOLVED && (!miss_first || survey > 0);
-        for (int offset = -HUG_NEAR_ZONE_DECI; offset <= HUG_NEAR_ZONE_DECI; offset += HUG_NEAR_STEP_DECI)
-        {
-            int const scan_angle = side * offset;
-            int const heading = center + ((scan_angle > 0) ? 150 : -150);
-            uint16_t const range = (resolved && abs(scan_angle) <= 200) ? 200U : 0U;
-            supply_ray(&hug, &look, &in, &out, heading, center + scan_angle, range, false);
-        }
-        if (!resolved && survey == 0)
-        {
-            check(hug_active(&hug) && !out.b_timeout && !out.speed_mm_s, "rescan at this station after a miss");
-        }
-    }
-    if (scenario == FACE_UNRESOLVED)
-    {
-        check(out.b_timeout && !out.speed_mm_s && !hug_active(&hug), "no second blind side leg");
-        return;
-    }
-    check(hug_active(&hug) && hug.side == side && !out.b_timeout, "resolving the face keeps the chosen side");
-    pivot_counts(&in, hug.u_head);
-    in.b_ping_reply = false;
-    in.ping_servo_deci = 0;
-    in.ping_echo = LOOK_ECHO_OPEN;
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    in.now_ms += HUG_SETTLE_MS;
-    in.ping_seq++;
-    (void)hug_step(&hug, &look, &in, &out);
-    in.now_ms += 10U;
-    (void)hug_step(&hug, &look, &in, &out);
-    check(out.speed_mm_s > 0 && !out.turn_deci_s, "the observed face produces the next drive leg");
 }
 
 static void test_missed_rear_leg_reply(uint8_t next_echo)
@@ -1007,7 +794,6 @@ static void test_measured_corner_checks_next_leg(corner_check_t scenario)
 #define NOTE_WAIT_MS         (60000U)
 #define NOTE_ARC_RADIUS_MM   (300)
 #define NOTE_LONG_HUG_MS     (20000U)
-#define NOTE_HIST_HITS       (0x07U)
 
 typedef struct
 {
@@ -1187,11 +973,29 @@ static void test_note(void)
     /* A hug that began with no stall (the sonar) starts the count again. */
     note_start(&car);
     car.hug.n_rel = (uint8_t)HUG_RELEASES_MAX;
-    car.hug.hist = (uint8_t)NOTE_HIST_HITS;
+    car.in.b_stationary = true;
+    car.in.ping_echo = LOOK_ECHO_VALID;
+    car.in.ping_mm = 205U;
+    car.in.ping_seq++;
+    note_tick(&car, 0, 0, NOTE_TICK_MS);
+    car.in.ping_seq++;
     note_tick(&car, 0, 0, NOTE_TICK_MS);
     check(hug_active(&car.hug) && (0U == car.hug.n_rel),
           "a hug started by the sonar starts the count again");
-    car.hug.state = 0U;
+    hug_out_t out = {0};
+    car.in.ping_mm = 0U;
+    car.in.ping_echo = LOOK_ECHO_OPEN;
+    for (unsigned tick = 0U; hug_active(&car.hug) && tick < 40U; tick++)
+    {
+        car.in.now_ms += NOTE_TICK_MS;
+        car.in.b_ping_reply = out.b_req != 0U;
+        car.in.ping_seq = out.seq;
+        car.in.ping_servo_deci = out.servo_deci;
+        (void)hug_step(&car.hug, &g_note_look, &car.in, &out);
+    }
+    check(!hug_active(&car.hug), "clear readings from the stopped pose release the old contact");
+    car.in.b_ping_reply = false;
+    car.in.ping_servo_deci = 0;
     b_repeat = note_stall_is_repeat(&car);
     check(!b_repeat, "a stall after a hug the sonar started is not a repeat");
 
@@ -1318,48 +1122,33 @@ static void test_move_timeout(void)
 static void test_hug_timeout(void)
 {
     pilot_state_t st;
-    pilot_cmd_t cmd = {0};
     pilot_meas_t m = fresh_meas(1000U);
-    unsigned t;
-    bool b_hug = false;
-    bool b_out = false;
-
+    pilot_cmd_t cmd = {0};
+    bool requested = false;
+    bool resumed = false;
     pilot_init(&st);
-    m.ping_echo = LOOK_ECHO_VALID;
-    m.ping_mm = HIT_MM;
-    for (t = 0U; (t < 3000U) && !b_out; t++)
+    m.b_stationary = true;
+    for (unsigned i = 0; i < 650U && !resumed; i++)
     {
-        int64_t const step_um = (int64_t)cmd.speed_mm_s * UM_PER_MM_S_TICK;
-
-        m.now_ms = 1000U + (t * TICK_MS);
-        m.stamp_ms = m.now_ms;
-        if (0U == (t % FREE_PING_TICKS))
+        m.now_ms = m.stamp_ms = 1000U + i * TICK_MS;
+        m.ping_seq = (uint8_t)((i / 6U) & 63U);
+        m.b_ping_reply = i > 400U && cmd.b_ping_req;
+        m.ping_servo_deci = m.b_ping_reply ? cmd.ping_servo_deci : 0;
+        if (m.b_ping_reply)
         {
-            m.ping_seq = (uint8_t)((m.ping_seq + 1U) & 0x3FU);
+            m.ping_seq = cmd.ping_seq;
         }
-        m.left_um += step_um + ((cmd.turn_deci_s > 0) ? -CRAWL_UM_TICK
-                                : ((cmd.turn_deci_s < 0) ? CRAWL_UM_TICK : 0));
-        m.right_um += step_um + ((cmd.turn_deci_s > 0) ? CRAWL_UM_TICK
-                                 : ((cmd.turn_deci_s < 0) ? -CRAWL_UM_TICK : 0));
+        m.ping_echo = (m.ping_servo_deci >= 100) ? LOOK_ECHO_OPEN : LOOK_ECHO_VALID;
+        m.ping_mm = (m.ping_echo == LOOK_ECHO_OPEN) ? 0U : 205U;
         pilot_step(&st, &m, &cmd);
-        b_hug = b_hug || (PILOT_BEHAVIOUR_HUG == cmd.behaviour);
-        b_out = (PILOT_REASON_HUG_TIMEOUT == cmd.reason);
-        check(b_out || (PILOT_REASON_NONE == cmd.reason), "a crawling pivot gives another reason");
+        requested |= cmd.b_ping_req != 0U;
+        if (requested && i <= 400U)
+        {
+            check(!cmd.speed_mm_s && !cmd.turn_deci_s, "a missing requested scan cannot authorize motion");
+        }
+        resumed |= requested && cmd.behaviour == PILOT_BEHAVIOUR_HUG && cmd.speed_mm_s > 0;
     }
-    check(b_hug, "the hug did not take the wheels");
-    check(b_out, "a crawling pivot did not time out");
-    for (t = 0U; t < 100U; t++)
-    {
-        m.now_ms += TICK_MS;
-        m.stamp_ms = m.now_ms;
-        m.left_um += 3000;
-        m.right_um += 3000;
-        pilot_step(&st, &m, &cmd);
-        check((PILOT_REASON_HUG_TIMEOUT == cmd.reason) && (PILOT_BEHAVIOUR_SAFETY == cmd.behaviour) &&
-                  (0 == cmd.speed_mm_s) && (0 == cmd.turn_deci_s),
-              "the HUG_TIMEOUT stop does not hold");
-    }
-    (void)printf("hug timeout ok\n");
+    check(resumed, "fresh matching replies must resume a transiently silent survey without START");
 }
 
 static void test_slip_evidence(void)
@@ -1791,17 +1580,10 @@ int main(void)
     test_forward_ping_recovery_window(1000U, false);
     test_forward_ping_recovery_window(1001U, true);
     test_breadth_kept();
-    test_sparse_contact_leg(1, SIDE_CLEAR);
     test_leg_pivot_coast();
     test_missed_rear_leg_reply(LOOK_ECHO_OPEN);
     test_missed_rear_leg_reply(LOOK_ECHO_TOO_CLOSE);
     test_missed_rear_leg_reply(LOOK_ECHO_NONE);
-    test_sparse_contact_leg(-1, SIDE_CLEAR);
-    test_sparse_contact_leg(1, SIDE_BLOCKED);
-    test_sparse_contact_leg(1, FACE_UNRESOLVED);
-    test_sparse_contact_leg(1, OPPOSITE_MISS);
-    test_sparse_contact_leg(-1, OPPOSITE_MISS);
-    test_sparse_contact_leg(1, CHOSEN_MISS);
     test_contact_side_uses_usable_rays();
     test_aimed_settle();
     test_scan_requests_the_next_bearing();

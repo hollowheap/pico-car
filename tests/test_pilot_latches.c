@@ -172,6 +172,45 @@ static void test_encoder_cleared(void)
     assert_stopped(&st, &cmd, PILOT_REASON_ESTOP);
 }
 
+static void test_no_guide_after_completed_sweep(void)
+{
+    int32_t const wheel_um[] = {0, 28150, -28150, 0};
+    for (unsigned near = 0; near < 2; ++near)
+    {
+        pilot_state_t pilot;
+        pilot_cmd_t cmd;
+        pilot_meas_t m = {.ping_echo = LOOK_ECHO_OPEN, .ping_seq = 1U};
+        pilot_init(&pilot);
+        line_follow_start_local_search(&pilot.follow);
+        for (unsigned i = 0; i < sizeof(wheel_um) / sizeof(wheel_um[0]); ++i)
+        {
+            m.left_um = -wheel_um[i];
+            m.right_um = wheel_um[i];
+            m.now_ms = m.stamp_ms = i * 10U;
+            pilot_step(&pilot, &m, &cmd);
+        }
+        assert(line_follow_local_missed(&pilot.follow));
+        m.now_ms = m.stamp_ms = 40U;
+        m.b_stationary = true;
+        m.ping_seq++;
+        m.ping_echo = (uint8_t)(near ? LOOK_ECHO_VALID : LOOK_ECHO_OPEN);
+        m.ping_mm = near ? 205 : 0;
+        pilot_step(&pilot, &m, &cmd);
+        assert(!cmd.b_rejoined);
+        if (near)
+        {
+            assert(!cmd.speed_mm_s && !cmd.turn_deci_s && pilot.avoidance.b_course_hold);
+            m.now_ms = m.stamp_ms = 50U;
+            pilot_step(&pilot, &m, &cmd);
+            assert(cmd.reason == PILOT_REASON_COURSE_RECOVERY);
+        }
+        else
+        {
+            assert(cmd.speed_mm_s > 0 && cmd.reason == PILOT_REASON_NONE);
+        }
+    }
+}
+
 static void test_local_search_interruption(void)
 {
     pilot_state_t pilot;
@@ -726,7 +765,7 @@ static void test_course_recovery_brakes(bool b_slip)
             assert(left > 0 && right > 0);
         }
         assert(left >= 0 && right >= 0);
-        if (pilot.b_course_stuck)
+        if (pilot.avoidance.b_course_stuck)
         {
             assert(!left && !right && cmd.reason == PILOT_REASON_COURSE_CLEARANCE);
         }
@@ -1142,15 +1181,23 @@ static void test_hug_stationary_feedback(void)
     look_t look;
     hug_in_t in = {0};
     hug_out_t out;
-    uint32_t const contact_ms = begin_stationary_contact(&hug, &look, &in, &out);
-    in.now_ms += 210U;
-    assert(hug_step(&hug, &look, &in, &out));
+    (void)begin_stationary_contact(&hug, &look, &in, &out);
+    assert(out.b_req);
+    in.b_stationary = false;
+    in.b_ping_reply = true;
+    in.ping_seq = out.seq;
+    in.ping_servo_deci = out.servo_deci;
+    in.ping_echo = LOOK_ECHO_OPEN;
+    for (unsigned i = 0; i < 350; ++i)
+    {
+        in.now_ms += TICK_MS;
+        assert(hug_step(&hug, &look, &in, &out));
+        assert(!out.b_req && !out.turn_deci_s && !out.speed_mm_s && look.count == 0);
+    }
+    in.b_stationary = true;
     in.now_ms += TICK_MS;
-    assert(hug_step(&hug, &look, &in, &out) && out.turn_deci_s < 0);
-    /* A requested pivot with unchanged encoders is still a stationary car. */
-    in.now_ms = contact_ms + 3000U;
-    assert(!hug_step(&hug, &look, &in, &out));
-    assert(out.b_timeout && !out.turn_deci_s && !out.speed_mm_s);
+    assert(hug_step(&hug, &look, &in, &out) && out.b_req);
+    assert(out.seq != in.ping_seq && look.count == 0);
 }
 
 static void test_hug_slow_scan_pause(void)
@@ -1159,80 +1206,41 @@ static void test_hug_slow_scan_pause(void)
     look_t look;
     hug_in_t in = {0};
     hug_out_t out;
-    uint32_t const contact_ms = begin_stationary_contact(&hug, &look, &in, &out);
-    uint32_t at_pose_ms = contact_ms;
-    uint32_t sent_ms = contact_ms;
-    unsigned pose = 0U;
-    unsigned replies = 0U;
-    /* Present two encoder snapshots, then leave them stationary. The sonar
-     * keeps answering below its individual 800 ms request timeout. */
-    for (unsigned i = 0U; i < 800U; i++)
+    uint32_t const start = begin_stationary_contact(&hug, &look, &in, &out);
+    unsigned replies = 0;
+    while (in.now_ms - start < HUG_STATIONARY_LIMIT_MS)
     {
-        in.now_ms += TICK_MS;
-        in.b_ping_reply = out.b_req && (in.now_ms - sent_ms >= 680U);
-        if (in.b_ping_reply)
-        {
-            in.ping_seq = out.seq;
-            in.ping_servo_deci = out.servo_deci;
-            in.ping_echo = pose == 1U ? LOOK_ECHO_OPEN : LOOK_ECHO_VALID;
-            in.ping_mm = pose == 1U ? 0U : 99U;
-            sent_ms = in.now_ms;
-            replies++;
-        }
+        assert(out.b_req);
+        in.b_ping_reply = true;
+        in.ping_seq = out.seq;
+        in.ping_servo_deci = (int16_t)(out.servo_deci + 100);
+        in.now_ms += 300;
+        assert(hug_step(&hug, &look, &in, &out) && out.b_req && out.seq == in.ping_seq);
+        assert(look.count == replies);
+        in.now_ms += 380;
+        in.ping_servo_deci = out.servo_deci;
+        in.ping_echo = LOOK_ECHO_VALID;
+        in.ping_mm = 99;
         assert(hug_step(&hug, &look, &in, &out));
-        if (out.turn_deci_s && pose < 2U)
+        ++replies;
+        in.b_ping_reply = false;
+        in.now_ms += TICK_MS;
+        assert(hug_step(&hug, &look, &in, &out));
+        if (out.speed_mm_s != 0 || out.turn_deci_s != 0)
         {
-            in.left_um = (pose == 0U) ? 87500 : 29200;
-            in.right_um = -in.left_um;
-            pose++;
-            at_pose_ms = in.now_ms + TICK_MS;
-            sent_ms = at_pose_ms;
-            replies = 0U;
-        }
-        else if ((pose == 2U) && out.turn_deci_s)
-        {
-            assert(replies >= 2U && look.count >= replies);
-            assert(in.now_ms - at_pose_ms < 3000U);
-            uint8_t const retained = look.count;
-            /* The next contact bearing is -20 degrees. The chassis points
-             * at -15 and the servo supplies the remaining -5 degrees. */
-            in.left_um = 17500;
-            in.right_um = -17500;
-            in.b_ping_reply = false;
-            in.b_stationary = false;
-            for (unsigned tick = 0U; tick < 25U; tick++)
-            {
-                in.now_ms += TICK_MS;
-                assert(hug_step(&hug, &look, &in, &out) && !out.b_req);
-            }
-            in.b_stationary = true;
-            for (unsigned tick = 0U; !out.b_req && tick < 30U; tick++)
-            {
-                in.now_ms += TICK_MS;
-                assert(hug_step(&hug, &look, &in, &out));
-            }
-            assert(out.b_req && out.servo_deci == -50);
-            in.ping_seq = out.seq;
-            in.b_ping_reply = true;
-            in.ping_servo_deci = 100;
-            in.now_ms += TICK_MS;
-            assert(hug_step(&hug, &look, &in, &out));
-            assert(look.count == retained && out.b_req && out.seq == in.ping_seq);
-            in.ping_servo_deci = -50;
-            in.now_ms += TICK_MS;
-            assert(hug_step(&hug, &look, &in, &out));
-            assert(look.count == retained + 1U);
+            assert(replies >= 3 && in.now_ms - start < HUG_STATIONARY_LIMIT_MS);
+            assert(out.speed_mm_s < 0 && !out.turn_deci_s);
             return;
         }
     }
-    assert(!"slow healthy scan never requested the next observation pose");
+    assert(!"usable close readings must produce movement within the stationary budget");
 }
 
 static void test_short_leg_clearance(void)
 {
     hug_t hug;
     look_t look;
-    hug_in_t in = {.now_ms = 10U, .ping_echo = LOOK_ECHO_VALID, .ping_mm = 290U, .ping_seq = 1U};
+    hug_in_t in = {.now_ms = 10U, .ping_echo = LOOK_ECHO_VALID, .ping_mm = 320U, .ping_seq = 1U};
     hug_out_t out;
     hug_init(&hug);
     look_clear(&look);
@@ -1247,7 +1255,7 @@ static void test_short_leg_clearance(void)
     hug_t blocked = hug;
     hug_t too_close = hug;
     in.ping_seq++;
-    in.ping_mm = 240U;
+    in.ping_mm = 290U;
     assert(hug_step(&blocked, &look, &in, &out) && !out.speed_mm_s);
     assert(blocked.state == HUG_WORD_ST_SCAN);
     in.ping_echo = LOOK_ECHO_TOO_CLOSE;
@@ -1419,9 +1427,9 @@ static void test_front_edge_leg(void)
             assert(hug.state == HUG_WORD_ST_SCAN);
             double const radians = hug.side * hug.center * acos(-1.0) / 1800.0;
             double const corner_distance = front_gap * sin(radians) + (hug.leg_mm - half) * cos(radians);
-            /* Closest separation between the side of a 126 mm car and a
-             * circle enclosed by the supplied front and side extents. */
-            double const gap = corner_distance + half * (sin(radians) + cos(radians) - 1.0) - 63.0;
+            /* From the obstacle-facing outer edge, including the left reader. */
+            double const side_reach = hug.side < 0 ? 107.0 : 63.0;
+            double const gap = corner_distance + half * (sin(radians) + cos(radians) - 1.0) - side_reach;
             assert(radians > 0.0 && radians < acos(-1.0) / 2);
             assert(gap >= 40.0 && gap <= 50.0);
             check_flank_drive(hug, look, in, half);
@@ -1488,7 +1496,7 @@ static void check_unconfirmed_marker(void)
 {
     pilot_state_t pilot;
     pilot_cmd_t command;
-    pilot_meas_t m = {.b_barcode = true, .ping_echo = LOOK_ECHO_OPEN};
+    pilot_meas_t m = {.b_bounded_course = true, .b_barcode = true, .ping_echo = LOOK_ECHO_OPEN};
     pilot_init(&pilot);
     bool searched = false;
     for (unsigned tick_no = 0; tick_no <= 200U; ++tick_no)
@@ -1784,6 +1792,7 @@ int main(int argc, char * argv[])
     }
     test_encoder_cleared();
     test_local_search_interruption();
+    test_no_guide_after_completed_sweep();
     test_timeout_cleared();
     test_estop_kept();
     test_clear_keeps_the_side();

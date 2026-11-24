@@ -8,7 +8,7 @@
  * repeat. A zero word 0 means "never published".
  *
  * Word 0: width 12 | breadth 12 | state 4 | side 1 | seq 2 | valid 1.
- * Word 1: face 12 | servo 6 (whole degrees + 30) | heading 12 (deci-degrees + 1800) | spare 2.
+ * Word 1: face 12 | servo 6 (whole degrees + 30) | heading 12 (deci-degrees + 1800) | wall 1 | spare 1.
  *
  * Pure C99, no kernel. Only static inline functions and macros.
  */
@@ -40,6 +40,7 @@
 #define HUG_WORD_FACE_MK    (0xFFFU)
 #define HUG_WORD_SERVO_SH   (12U)
 #define HUG_WORD_SERVO_MK   (0x3FU)
+#define HUG_WORD_WALL_SH    (30U)
 #define HUG_WORD_HEAD_SH    (18U)
 #define HUG_WORD_HEAD_MK    (0xFFFU)
 
@@ -99,6 +100,40 @@ static inline uint32_t hug_word_clamp (int32_t value, uint32_t mask)
 static inline uint8_t hug_word_state (hug_t const * p_hug)
 {
     uint8_t state = (uint8_t)TELEMETRY_HUG_STATE_IDLE;
+
+    if (p_hug->bypass.phase != BYPASS_IDLE)
+    {
+        switch (p_hug->bypass.phase)
+        {
+        case BYPASS_CONTACT:
+            return (uint8_t)TELEMETRY_HUG_STATE_CONTACT;
+        case BYPASS_AHEAD:
+            return (p_hug->bypass.target_mm < 0) ? (uint8_t)TELEMETRY_HUG_STATE_BACKOFF :
+                                                   (uint8_t)TELEMETRY_HUG_STATE_ALIGN;
+        case BYPASS_WALL_BACK:
+        case BYPASS_RETRACE:
+            return (uint8_t)TELEMETRY_HUG_STATE_BACKOFF;
+        case BYPASS_OUT:
+        case BYPASS_SIDE_STEP:
+        case BYPASS_LEVEL:
+        case BYPASS_MOVE:
+            return (uint8_t)TELEMETRY_HUG_STATE_LEG;
+        case BYPASS_SIDE_FAN:
+        case BYPASS_WALL_CHECK:
+        case BYPASS_SWEEP:
+        case BYPASS_LOOK_BACK:
+        case BYPASS_TRACK_OUT:
+        case BYPASS_TRACK_BACK:
+            return (uint8_t)TELEMETRY_HUG_STATE_LOOK;
+        case BYPASS_TO_LINE:
+        case BYPASS_CENTRE:
+        case BYPASS_MAP:
+        case BYPASS_EXIT_AHEAD:
+            return (uint8_t)TELEMETRY_HUG_STATE_EXIT;
+        default:
+            return (uint8_t)TELEMETRY_HUG_STATE_TURN;
+        }
+    }
 
     if (HUG_WORD_ST_IDLE != p_hug->state)
     {
@@ -191,7 +226,8 @@ static inline void hug_word_pack (uint32_t * p_word, hug_t const * p_hug, int32_
                 hug_word_put(hug_word_state(p_hug), HUG_WORD_STATE_SH, HUG_WORD_STATE_MK) |
                 hug_word_put(side, HUG_WORD_SIDE_SH, HUG_WORD_SIDE_MK) |
                 hug_word_put(1U, HUG_WORD_VALID_SH, HUG_WORD_VALID_MK);
-    p_word[1] = hug_word_put(hug_word_clamp(face, HUG_WORD_FACE_MK), HUG_WORD_FACE_SH,
+    p_word[1] = hug_word_put((p_hug->bypass.phase != BYPASS_IDLE) && p_hug->bypass.b_wall, HUG_WORD_WALL_SH, 1U) |
+                hug_word_put(hug_word_clamp(face, HUG_WORD_FACE_MK), HUG_WORD_FACE_SH,
                              HUG_WORD_FACE_MK) |
                 hug_word_put(hug_word_clamp(head + HUG_WORD_HEAD_OFFSET, HUG_WORD_HEAD_MK),
                              HUG_WORD_HEAD_SH, HUG_WORD_HEAD_MK) |

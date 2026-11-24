@@ -2,18 +2,17 @@
  *
  * @brief Obstacle public facade.
  *
- * This is the only obstacle header another subsystem may include. The
- * packed status word, the echo flags, the scan profile layout and the
- * statechart are private to src/navigation/obstacle/.
+ * The scan task owns the ultrasonic trigger, echo capture and servo during
+ * a run. Consumers decode published measurements using obstacle_ping.h.
  *
  * Start-up order (on processor 1, which is RP2040 core 0):
  *   1. gpio_irq_init()            shared dispatcher
  *   2. motion_service_init()      by the composition root
  *   3. obstacle_line_init()       pins, servo, ISR and obstacle resources
  *
- * The line follower then calls obstacle_line_step() every pass. Telemetry
- * reads obstacle_snapshot() whenever it needs the latest state; it does
- * not read the packed word.
+ * In the pilot build the line task reads the latest ping and submits the
+ * selected maneuver's scan request. The legacy build runs obstacle_line_step().
+ * Telemetry can read obstacle_snapshot() independently.
  */
 
 #ifndef NAVIGATION_OBSTACLE_H
@@ -137,8 +136,8 @@ void obstacle_bind_legacy_transition (obstacle_legacy_transition_fn_t p_observe)
 /* Task body. Never returns. */
 void obstacle_run (void);
 
-/* One handshake pass. Call every line-task loop. Returns true when obstacle
- * owns the motors this pass, so the line follower must send no speed. */
+/* Legacy build only. True means the obstacle navigator supplied this tick's
+ * movement request. In the pilot build the line task calls pilot_step(). */
 bool obstacle_line_step (bool b_line_left, bool b_line_right);
 
 /* Lower-level API used when the caller needs its own links. */
@@ -170,8 +169,8 @@ void obstacle_echo_counts (uint32_t * p_counts);
  * not started. Returns E_OBJ before init. */
 ER obstacle_ping_request (int16_t servo_deci, uint8_t seq);
 
-/* Latest ping word (obstacle_pack_ping() layout, reply flag in bit 27 when
- * it answers a request). Never blocks. */
+/* Non-consuming latest ping, shared by readers. Bit 27 identifies a reply.
+ * The servo field records the commanded bearing. There is no capture timestamp. */
 uint32_t obstacle_ping_read (void);
 
 /* Event flag for NAV_EVT and NAV_STEER waits. E_OBJ before init. */

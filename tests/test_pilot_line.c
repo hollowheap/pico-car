@@ -115,7 +115,7 @@ static void test_barcode_straight_keeps_the_gap(void)
     enum { STEP_MS = 10, STRAIGHT_STEPS = 25, MAX_STEPS = 400 };
     pilot_state_t st;
     pilot_cmd_t cmd;
-    pilot_meas_t m = {0};
+    pilot_meas_t m = {.b_bounded_course = true};
     int32_t travel_mm = 0;
     int32_t resume_mm;
     int i;
@@ -175,6 +175,7 @@ typedef struct
 static void ideal_init(ideal_t * p_i)
 {
     *p_i = (ideal_t){0};
+    p_i->m.b_bounded_course = true;
     pilot_init(&p_i->st);
     p_i->m.now_ms = 1000U;
     p_i->m.stamp_ms = 1000U;
@@ -555,11 +556,11 @@ static void test_stationary_course_edge(int side, bool move_encoder, bool far_wa
         {
             completions++;
             unsigned const expected_rays = (1U == completions || move_encoder) ? 3U : 6U;
-            check(pilot.look.count == expected_rays && cmd.course_scan_samples == expected_rays + 1U,
+            check(pilot.avoidance.look.count == expected_rays && cmd.course_scan_samples == expected_rays + 1U,
                   "the profile must retain exactly the measured rays from this stationary pose", 0U);
             if (1U == completions)
             {
-                check(pilot.course_side == expected_side, "observed geometry must support the provisional side", 0U);
+                check(pilot.avoidance.course_side == expected_side, "observed geometry must support the provisional side", 0U);
             }
             if (1U == completions && move_encoder)
             {
@@ -571,7 +572,7 @@ static void test_stationary_course_edge(int side, bool move_encoder, bool far_wa
     check(2U == completions && 6U == requests, "both bounded surveys must complete without tape", 0U);
     meas.b_held = true;
     course_hold_tick(&pilot, &meas, &cmd);
-    check(0 == pilot.course_side && 0U == pilot.look.count && !pilot.b_course_anchor,
+    check(0 == pilot.avoidance.course_side && 0U == pilot.avoidance.look.count && !pilot.avoidance.b_course_anchor,
           "a safety hold must retire the contact survey", 0U);
 }
 
@@ -604,7 +605,7 @@ static void test_course_reply_deadline(uint32_t elapsed_ms)
                 meas.ping_mm = 0U;
                 meas.b_ping_reply = true;
                 course_hold_tick(&pilot, &meas, &cmd);
-                check(0U != cmd.b_ping_req && cmd.ping_seq != late_seq && pilot.look.count == (fresh ? 3U : 2U),
+                check(0U != cmd.b_ping_req && cmd.ping_seq != late_seq && pilot.avoidance.look.count == (fresh ? 3U : 2U),
                       "the old OPEN cannot answer the next scan", 0U);
                 return;
             }
@@ -622,7 +623,7 @@ static void test_course_reply_deadline(uint32_t elapsed_ms)
             served++;
             if (3U == served)
             {
-                check(cmd.course_scan_samples == (fresh ? 4U : 3U) && pilot.course_side == (fresh ? 1 : 0),
+                check(cmd.course_scan_samples == (fresh ? 4U : 3U) && pilot.avoidance.course_side == (fresh ? 1 : 0),
                       "a matching OPEN consumed at or after its deadline must not qualify as an edge", 0U);
             }
         }
@@ -673,6 +674,32 @@ static void test_interrupted_course_scan_budget(void)
     check(2U == requests && b_angles_match, "interrupted sweeps must consume their budget", 0U);
 }
 
+static void test_tape_is_a_direction_guide(void)
+{
+    pilot_state_t st;
+    pilot_cmd_t cmd;
+    pilot_meas_t m = {0};
+    pilot_init(&st);
+    for (unsigned tick = 0; tick <= 1200; tick++)
+    {
+        m.now_ms = 1000U + tick * 10U;
+        m.stamp_ms = m.now_ms;
+        m.left_um = (int64_t)tick * 1400;
+        m.right_um = m.left_um;
+        m.b_line_left = tick >= 400 && tick < 405;
+        open_course(&m);
+        pilot_step(&st, &m, &cmd);
+        check(cmd.speed_mm_s > 0 && cmd.reason == PILOT_REASON_NONE, "clear floor carries forward", tick);
+        if (tick == 404) check(cmd.turn_deci_s > 0, "fresh tape guides the heading", tick);
+        if (tick == 250) check(cmd.turn_deci_s == 0, "unmarked start holds its bearing", tick);
+    }
+    m.now_ms += 10U;
+    m.stamp_ms = m.now_ms;
+    m.b_held = true;
+    pilot_step(&st, &m, &cmd);
+    check(!cmd.speed_mm_s && !cmd.turn_deci_s, "motor hold owns bare-floor travel", 0U);
+}
+
 int main(int argc, char * argv[])
 {
     if (2 == argc && 0 == strcmp(argv[1], "course-reply-deadline"))
@@ -713,6 +740,7 @@ int main(int argc, char * argv[])
         return EXIT_FAILURE;
     }
     test_watch_direct();
+    test_tape_is_a_direction_guide();
     test_barcode_direct();
     test_barcode_reader_crosses_unmarked_bend(true);
     test_barcode_reader_crosses_unmarked_bend(false);

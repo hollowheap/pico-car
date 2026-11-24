@@ -48,7 +48,7 @@
 #include <tm/tmonitor.h>
 
 #include "platform/log.h"
-#include "motion/motion.h"
+#include "motion_link.h"
 #include "obstacle_config.h"
 #include "flight_log.h"
 #include "follow.h"
@@ -160,8 +160,6 @@ static nav_state_t g_nav = {
     .wheel_um           = {0, 0},
     .bump_ms            = 0U,
 };
-/* Only the Buddy 5 task touches it. */
-static nav_travel_t g_travel = {0U, 0U, 0, false};
 
 static uint32_t now_ms (void);
 static int16_t  clamp_i16 (int32_t value);
@@ -190,36 +188,24 @@ static void     explain_scan (uint16_t const * p_profile);
 static void     handle_event (uint32_t evt, uint32_t now);
 static void     look_for_line (bool b_line_seen, uint32_t now);
 static void     update_motion (void);
-static int64_t true_wheel_um (motion_feedback_t const * p_feedback,
-                              uint32_t wheel);
 static void    report_fault (motion_status_t const * p_status,
                              motion_feedback_t const * p_feedback);
 static void    trace (uint32_t status, bool b_left, bool b_right, uint32_t now);
-#if !PICO_CAR_PILOT
 static ER      nav_stop (void);
-#endif
-static ER      nav_distance_mm (obstacle_travel_t * p_travel);
 
 /*!
  * @brief Initialize Buddy 5 with the motion links and leave it parked.
  *
  * Call once from the line task on processor 1, after gpio_irq_init(),
- * motion_service_init() and ir_capture_init(). If it fails, obstacle_nav_step()
+ * motion_service_init() and ir_capture_init(). If it fails, obstacle_line_step()
  * only services the flight recorder, so line following works without
  * Buddy 5 and the failure can still be read back.
  *
  * @return The result of obstacle_init().
  */
-ER obstacle_nav_init (void)
+ER obstacle_nav_init (obstacle_distance_fn_t p_get_distance)
 {
-#if PICO_CAR_PILOT
-    /* The pilot stops the car on a sonar fault and drives on after RESET.
-     * A motion hold set here would outlive the RESET, because only the old
-     * handover clears it. */
-    obstacle_links_t const links  = {0, NULL, nav_distance_mm};
-#else
-    obstacle_links_t const links  = {0, nav_stop, nav_distance_mm};
-#endif
+    obstacle_links_t const links = {0, nav_stop, p_get_distance};
     ER const               result = obstacle_init(&links);
 
     log_rec(OBSTACLE_LOG_BOOT, 0U, 0U, 0U, (int32_t)result, 0, 0);
@@ -241,7 +227,7 @@ ER obstacle_nav_init (void)
  * @return True if Buddy 5 is in charge of the motors this pass, so the
  *         line follower must not send a speed.
  */
-bool obstacle_nav_step (bool b_line_left, bool b_line_right)
+bool obstacle_line_step (bool b_line_left, bool b_line_right)
 {
     bool     b_in_charge = false;
     uint32_t evt         = 0U;
@@ -391,7 +377,7 @@ static void step_scan_body (uint32_t status, uint32_t now)
 static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
 {
     uint32_t const dt_ms = now - g_nav.bump_ms;
-    /* Measured speeds from this pass's travel; true_wheel_um already undid
+    /* Measured speeds from this pass's travel; obstacle_wheel_um already undid
      * any crossed encoder plugs. Casts are safe: one pass moves the car far
      * less than 2 km. */
     int32_t const meas_um_s[WHEELS] = {
@@ -1191,7 +1177,7 @@ static void update_motion (void)
 
         for (wheel = 0U; wheel < WHEELS; wheel++)
         {
-            g_nav.wheel_um[wheel] = true_wheel_um(&feedback, wheel);
+            g_nav.wheel_um[wheel] = obstacle_wheel_um(&feedback, wheel);
 
             /* Cast is safe: a run is far shorter than 2147 km. */
             g_nav.wheel_mm[wheel] =
@@ -1250,92 +1236,9 @@ static void trace (uint32_t status, bool b_left, bool b_right, uint32_t now)
  *
  * @return The result of motion_set_hold().
  */
-#if !PICO_CAR_PILOT
 static ER nav_stop (void)
 {
     return (motion_set_hold(MOTION_HOLD_OBSTACLE, true));
 }
-#endif
-
-/*!
- * @brief Travel link for Buddy 5: the mean wheel travel, forward and
- *        backward apart.
- *
- * @param[out] p_travel Travel since boot; unchanged without fresh feedback.
- *
- * @return E_OK with fresh feedback, else E_OBJ.
- */
-static ER nav_distance_mm (obstacle_travel_t * p_travel)
-{
-    motion_feedback_t feedback;
-    ER                result = E_OBJ;
-
-    if ((E_OK == motion_feedback_snapshot(&feedback)) && feedback.fresh)
-    {
-        nav_core_travel_update(&g_travel, (true_wheel_um(&feedback, WHEEL_LEFT) +
-                                           true_wheel_um(&feedback, WHEEL_RIGHT)) /
-                                              (int64_t)WHEELS);
-        p_travel->fwd_mm  = g_travel.fwd_mm;
-        p_travel->back_mm = g_travel.back_mm;
-        result            = E_OK;
-    }
-
-    return (result);
-}
-
-/*!
- * @brief Travel of one real wheel, undoing the crossed encoder plugs
- *        (OBSTACLE_ENCODERS_CROSSED).
- *
- * NOTE: With the plugs crossed, the motion service's wheel 0 reads the
- * right encoder and wheel 1 the left one, each with the other wheel's
- * forward sign, so forward travel counts negative (seen in the flight log:
- * both totals fell while the car drove forwards).
- *
- * @param[in] p_sample Motion service sample.
- * @param[in] wheel    WHEEL_LEFT or WHEEL_RIGHT (the real wheel).
- *
- * @return Signed travel since boot in um, positive = forwards.
- */
-static int64_t true_wheel_um (motion_feedback_t const * p_feedback,
-                              uint32_t wheel)
-{
-    int64_t travel_um = 0;
-
-#if (OBSTACLE_ENCODERS_CROSSED)
-    travel_um = (wheel == WHEEL_LEFT) ? p_feedback->right_displacement_um
-                                      : p_feedback->left_displacement_um;
-    travel_um = -travel_um;
-#else
-    travel_um = (wheel == WHEEL_LEFT) ? p_feedback->left_displacement_um
-                                      : p_feedback->right_displacement_um;
-#endif
-
-    return (travel_um);
-}
-
-/*!
- * @brief Public facade: initialize Buddy 5 with the motion links.
- *
- * @return The result of obstacle_nav_init().
- */
-ER obstacle_line_init (void)
-{
-    return (obstacle_nav_init());
-}
-
-/*!
- * @brief Public facade: one handshake pass for the line task.
- *
- * @param[in] b_line_left  Left IR sensor sees the line.
- * @param[in] b_line_right Right IR sensor sees the line.
- *
- * @return True when Buddy 5 owns the motors this pass.
- */
-bool obstacle_line_step (bool b_line_left, bool b_line_right)
-{
-    return (obstacle_nav_step(b_line_left, b_line_right));
-}
 
 /*** end of file ***/
-

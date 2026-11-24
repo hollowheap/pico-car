@@ -420,14 +420,17 @@ add_library(track STATIC
     src/track/line_task.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(track PUBLIC line_control platform barcode motion_service telemetry supervisor obstacle_nav mtk3smp)
+target_link_libraries(track PUBLIC line_control platform barcode motion_service telemetry supervisor obstacle_motion mtk3smp)
 target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
 
 # The default firmware runs this controller from the line task.
 add_library(pilot STATIC
     src/pilot/pilot.c
+    src/pilot/avoidance.c
+    src/pilot/contour.c
     src/pilot/drive.c
     src/pilot/hug.c
+    src/pilot/bypass.c
     src/pilot/look.c
     src/pilot/pilot_log.c
 )
@@ -483,8 +486,7 @@ endforeach()
 # ---------------------------------------------------------------------------
 # Buddy 5: obstacle detection and avoidance (src/navigation/obstacle)
 #   obstacle        library: sensor, servo, scan, planner, statechart
-#   obstacle_nav    Phase 2 glue used by the line task in main.c, plus
-#                   the Buddy 5 flight recorder (flight_log.c)
+#   obstacle_motion wheel travel adapter, plus navigation and flight recorder in legacy builds
 #   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
 #                   Buddy 5 + a pretend Navigation; the motors are never driven.
 # ---------------------------------------------------------------------------
@@ -522,30 +524,28 @@ target_link_options(obstacle_bench PRIVATE
 )
 pico_add_extra_outputs(obstacle_bench)
 
-# The line task uses the Buddy 5 navigator when PICO_CAR_PILOT is off.
-add_library(obstacle_nav STATIC
-    src/navigation/obstacle/obstacle_nav.c
-    src/navigation/obstacle/flight_log.c
-)
-target_include_directories(obstacle_nav PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3smp)
-target_compile_options(obstacle_nav PRIVATE
+# The sonar service uses wheel travel in both builds. Only the legacy build
+# links its navigation state and USB flight recorder.
+add_library(obstacle_motion STATIC src/navigation/obstacle/motion_link.c)
+target_include_directories(obstacle_motion PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle_motion PUBLIC obstacle motion_service platform mtk3smp)
+target_compile_options(obstacle_motion PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
-target_link_libraries(main PRIVATE obstacle_nav supervisor)
+target_link_libraries(main PRIVATE obstacle_motion supervisor)
 
-# With the pilot on, the line task drives through the pilot and the sonar task
-# feeds only the echo health checks. Off keeps the old obstacle navigation.
 option(PICO_CAR_PILOT "Drive with the pilot instead of the old obstacle navigation" ON)
 if(PICO_CAR_PILOT)
     set(PICO_CAR_PILOT_VALUE 1)
     target_link_libraries(track PUBLIC pilot)
 else()
     set(PICO_CAR_PILOT_VALUE 0)
+    target_sources(obstacle_motion PRIVATE
+        src/navigation/obstacle/obstacle_nav.c
+        src/navigation/obstacle/flight_log.c)
 endif()
 target_compile_definitions(track PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 target_compile_definitions(obstacle PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
-target_compile_definitions(obstacle_nav PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(obstacle_motion PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 target_compile_definitions(main PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 target_compile_definitions(supervisor PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 
