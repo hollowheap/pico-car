@@ -17,6 +17,10 @@
  * Returns false when no block has room; nothing stays claimed then. */
 bool encoder_pio_start (const unsigned int pins_a[ENCODER_WHEELS]);
 
+/* Stop both state machines, unclaim them and remove the program. Safe to call
+ * when nothing is claimed. */
+void encoder_pio_stop (void);
+
 /* Polls of the RX FIFO before a wait gives up. The state machine pushes a
  * word about every 1.3 us (16 cycles per sample, 125 MHz). One poll is a
  * register read, a compare and a branch: at least 6 cycles, 48 ns, so 128
@@ -41,7 +45,7 @@ static inline bool encoder_pio_wait (bool (*is_empty)(void * p_ctx),
 
 /* Drain each wheel's FIFO and wait for one fresh word, about 1.5 us. A state
  * machine that pushes nothing within ENCODER_PIO_WAIT_SPINS makes this return
- * false and words is incomplete. The caller serialises the calls. */
+ * false and leaves words unchanged. The caller serialises the calls. */
 bool encoder_pio_read (uint32_t words[ENCODER_WHEELS]);
 
 #endif /* ENCODER_PIO_H */
