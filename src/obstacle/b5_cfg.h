@@ -344,8 +344,13 @@
 
 /* [Chat] Every side scan sweeps -B5_SIDE_PAN_DECI..+B5_SIDE_PAN_DECI in 5
  * degree steps, the same -60..+60 degree range and B5_SLOT_* angles as the
- * first scan, B5_SWEEP_PINGS pings at each angle (the nearer VALID reading
- * counts). The car's lane to the line is its half width plus
+ * first scan, B5_SWEEP_PINGS ping at each angle (the nearest VALID reading
+ * counts; the beam is about 19 degrees wide, so every spot is seen at
+ * about four neighbouring angles). Only pings the Buddy 5 task took at the
+ * current angle count (ping tag, b5_comms_set_ping_tag()), so none is
+ * thrown away while the servo moves on, and the task skips its
+ * B5_SERVO_PREDELAY_MS for every move after the first of a sweep (the car
+ * already stands still). The car's lane to the line is its half width plus
  * B5_LANE_BUFFER_MM on each side (C = 138 mm on its left, with the IR
  * protrusion, and 93 mm on its right) and runs B5_LANE_EXTRA_MM past the
  * line (room for the last turn). A reading inside the lane means the way
@@ -353,7 +358,7 @@
  * collision guard is off: a close reading is "in the way", not a
  * collision. */
 #define B5_SIDE_PAN_DECI  (600)
-#define B5_SWEEP_PINGS    (2U)
+#define B5_SWEEP_PINGS    (1U)
 #define B5_LANE_BUFFER_MM (30U)
 #define B5_LANE_LEFT_MM   (B5_HALF_W_LEFT_MM + B5_LANE_BUFFER_MM)
 #define B5_LANE_RIGHT_MM  (B5_HALF_W_RIGHT_MM + B5_LANE_BUFFER_MM)
@@ -382,7 +387,8 @@
 
 /* [Chat] Chicken-head rotation scan (TRACK_OUT, TRACK_BACK; b5_nav.c),
  * between a clear SWEEP and TO_LINE. The car rotates B5_TRACK_PAN_DECI
- * towards the obstacle's side at a constant B5_TRACK_SPIN_UM_S and back,
+ * towards the obstacle's side at a constant B5_TRACK_SPIN_UM_S (about 75
+ * degrees/s, so about 4.5 degrees between pings) and back,
  * while the servo turns the opposite way (re-aimed every
  * B5_TRACK_PERIOD_MS when it has changed by at least
  * B5_TRACK_MIN_STEP_DECI), so the beam keeps one direction on the floor
@@ -402,7 +408,7 @@
 #define B5_TRACK_PAN_DECI      (600)
 #define B5_TRACK_TILT_DECI     (100)
 #define B5_TRACK_MIN_STEP_DECI (10)
-#define B5_TRACK_SPIN_UM_S     (B5_NAV_SPIN_SLOW_UM_S)
+#define B5_TRACK_SPIN_UM_S     (B5_NAV_SPIN_UM_S)
 #define B5_TRACK_MAX_UNKNOWN   (3U)
 #define B5_TRACK_RETRIES       (1U)
 #define B5_TRACK_MIN_MOVE_MM   (30U)
@@ -418,7 +424,10 @@
 #define B5_BUMP_SETTLE_MS (300U)
 
 /* [Measured] Black tape width 17.5 mm, rounded up. [Chat] The drive to the
- * line is slow (B5_NAV_LINE_UM_S). An IR sensor must see black for
+ * line runs at B5_NAV_SPEED_UM_S while the IR sensors are more than
+ * B5_LINE_SLOW_MM short of the original line by odometry, then slowly
+ * (B5_NAV_LINE_UM_S); B5_LINE_SLOW_MM leaves 40 mm to slow down before the
+ * window in which a line can count. An IR sensor must see black for
  * B5_LINE_MIN_MM of travel (gaps between floor mats are thinner), and the
  * sensor must be no more than B5_LINE_WINDOW_MM short of the original line
  * by odometry, for the line to count. Once the sensor is B5_LINE_GIVE_UP_MM
@@ -428,9 +437,11 @@
 #define B5_LINE_WINDOW_MM  (80U)
 #define B5_LINE_GIVE_UP_MM (300U)
 #define B5_NAV_LINE_UM_S   (B5_NAV_SPEED_UM_S / 2U)
+#define B5_LINE_SLOW_MM    (B5_LINE_WINDOW_MM + 40U)
 
-/* [Chat] Once the line counts, the car drives on B5_NAV_CENTRE_MM (the
- * user's value; the IR sensors are B5_AXLE_TO_IR_MM ahead of the axle), so
+/* [Chat] Once the line counts, the car drives on B5_NAV_CENTRE_MM at
+ * B5_NAV_SPEED_UM_S (the user's value; the IR sensors are B5_AXLE_TO_IR_MM
+ * ahead of the axle), so
  * the middle of the axle sits on the line. It then rotates in the
  * remembered direction (the same way as its first rotation), servo
  * straight ahead, until an IR sensor finds the line, at most
@@ -438,15 +449,20 @@
 #define B5_NAV_CENTRE_MM (127U)
 #define B5_MAP_TURN_DECI (3600)
 
-/* [Chat] The servo has settled once this many pings have arrived since it
- * was told to move (the first may have been taken before it moved). */
+/* [Chat] The servo has settled once a ping tagged with the new angle has
+ * arrived (b5_comms_set_ping_tag()), or, where the statechart picks the
+ * angle itself, once this many pings have arrived since it was told to
+ * move (the first may have been taken before it moved). */
 #define B5_NAV_SERVO_PINGS (2U)
 
 /* [Chat] Before any wheel changes direction (end of the escape spin), both
  * wheels stop for this long. While both are at 0 the motion service is
  * idle and does not check the encoders, which rattle while a geared motor
- * brakes (seen on the car as invalid steps and a FEEDBACK fault). */
-#define B5_NAV_REVERSE_PAUSE_MS (300U)
+ * brakes (seen on the car as invalid steps and a FEEDBACK fault).
+ * [Chat] Shortened from 300 ms to speed up the bypass. NOTE: Watch the
+ * log for MOTION fault=FEEDBACK after a rotation; if it returns, go back
+ * to 300. */
+#define B5_NAV_REVERSE_PAUSE_MS (150U)
 
 /* [Chat] Longest wait for the servo to settle after it is moved while the
  * car could drive (entering REACQUIRE or MONITOR). The car stands still

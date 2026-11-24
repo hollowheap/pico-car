@@ -123,6 +123,14 @@
 #define B5_ST_SEQ_SH   (26U)
 #define B5_ST_SEQ_MK   (0x3FU)
 
+/* Ping tag (u32, one store): seq 6 | servo angle + B5_TAG_LOOK_BIAS 11.
+ * seq matches the status word of the same ping. */
+#define B5_TAG_SEQ_SH    (0U)
+#define B5_TAG_SEQ_MK    (0x3FU)
+#define B5_TAG_LOOK_SH   (6U)
+#define B5_TAG_LOOK_MK   (0x7FFU)
+#define B5_TAG_LOOK_BIAS (1024)
+
 /* Command (u8): type 3 | id 5. */
 #define B5_CMD_TYPE_SH (0U)
 #define B5_CMD_TYPE_MK (0x7U)

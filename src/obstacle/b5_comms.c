@@ -77,12 +77,13 @@ typedef struct
 
 static comms_links_t g_links = {0, 0, NULL, NULL};
 
-static uint32_t volatile g_status = 0U;
-static uint32_t volatile g_steer  = 0U;
-static int16_t volatile g_look    = 0;
-static comms_flags_t g_flags      = {false, false};
-static uint8_t volatile g_faults  = 0U;
-static uint8_t volatile g_drops   = 0U;
+static uint32_t volatile g_status   = 0U;
+static uint32_t volatile g_ping_tag = 0U;
+static uint32_t volatile g_steer    = 0U;
+static int16_t volatile g_look      = 0;
+static comms_flags_t g_flags        = {false, false};
+static uint8_t volatile g_faults    = 0U;
+static uint8_t volatile g_drops     = 0U;
 
 /* The sequence number is odd while the profile is being written. */
 static uint16_t volatile g_profile[B5_SLOT_COUNT];
@@ -430,6 +431,35 @@ void b5_comms_set_sweep (bool b_on)
 bool b5_comms_sweep (void)
 {
     return (g_flags.b_sweep);
+}
+
+/*!
+ * @brief Record which servo angle the newest ping was taken at. Called by
+ *        the Buddy 5 task after each ping, before the status word with the
+ *        same seq is published.
+ *
+ * @param[in] seq  Ping sequence number (6 bits, as in the status word).
+ * @param[in] deci Servo angle of the ping (deci-degrees, within +-600).
+ */
+void b5_comms_set_ping_tag (uint8_t seq, int16_t deci)
+{
+    uint32_t word = 0U;
+
+    /* Cast is safe: deci + B5_TAG_LOOK_BIAS is 424..1624, within 11 bits. */
+    word       = b5_pack_put(word, B5_TAG_SEQ_SH, B5_TAG_SEQ_MK, seq);
+    word       = b5_pack_put(word, B5_TAG_LOOK_SH, B5_TAG_LOOK_MK,
+                             (uint32_t)((int32_t)deci + B5_TAG_LOOK_BIAS));
+    g_ping_tag = word;
+}
+
+/*!
+ * @brief Latest ping tag (seq and servo angle of the newest ping).
+ *
+ * @return The packed ping tag.
+ */
+uint32_t b5_comms_ping_tag (void)
+{
+    return (g_ping_tag);
 }
 
 /*!

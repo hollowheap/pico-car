@@ -51,11 +51,14 @@
  *                   width on the obstacle side (IR protrusion on the left),
  *                   D from the forward cleared angle (or
  *                   B5_SIDE_ASSUMED_DECI when there is none).
- *       TO_LINE     slowly straight at the line until an IR sensor has seen
+ *       TO_LINE     straight at the line, full speed until the IR sensors
+ *                   are B5_LINE_SLOW_MM short of it by odometry, then
+ *                   slowly, until an IR sensor has seen
  *                   black for B5_LINE_MIN_MM, no more than
  *                   B5_LINE_WINDOW_MM short of the line; stop
  *                   B5_LINE_GIVE_UP_MM past it.
- *       CENTRE      on B5_NAV_CENTRE_MM, so the axle sits on the line.
+ *       CENTRE      on B5_NAV_CENTRE_MM at full speed, so the axle sits on
+ *                   the line.
  *       MAP         rotate in the remembered direction (the same way as
  *                   SPIN_AWAY), servo straight ahead, until an IR sensor
  *                   finds the line (at most a full turn), then send
@@ -394,6 +397,7 @@ static void     start_track_pass (uint8_t phase);
 static void     run_to_line (bool b_line_seen);
 static void     note_line (uint8_t event, int32_t ir_side_mm, int32_t black_mm);
 static bool     take_ping (uint32_t status, uint32_t * p_dist_mm);
+static bool     is_ping_at_look (uint32_t status);
 static void     set_look (int16_t deci);
 static void     start_servo_wait (void);
 static bool     check_bump (uint32_t now);
@@ -719,7 +723,7 @@ static void run_leg (void)
             }
             else
             {
-                drive_hold(-DECI_RIGHT_ANGLE, (int32_t)B5_NAV_LINE_UM_S);
+                drive_hold(-DECI_RIGHT_ANGLE, (int32_t)B5_NAV_SPEED_UM_S);
             }
         break;
     }
@@ -728,7 +732,8 @@ static void run_leg (void)
 /*!
  * @brief SWEEP: the car stands still while the servo steps through the
  *        slot angles from -B5_SIDE_PAN_DECI to +B5_SIDE_PAN_DECI; at each,
- *        B5_SWEEP_PINGS pings are taken and the nearest VALID one is kept.
+ *        B5_SWEEP_PINGS pings taken at that angle (is_ping_at_look()) are
+ *        used and the nearest VALID one is kept.
  *
  * @param[in] status Packed Buddy 5 status word.
  */
@@ -738,7 +743,8 @@ static void run_sweep (uint32_t status)
 
     drive_stop();
 
-    if (take_ping(status, &dist_mm))
+    /* A ping taken before the servo reached this slot does not count. */
+    if ((take_ping(status, &dist_mm)) && (is_ping_at_look(status)))
     {
         uint16_t * const p_slot = &g_nav.sweep_mm[g_nav.sweep_slot];
 
@@ -1258,7 +1264,8 @@ static void sync_ping (void)
 }
 
 /*!
- * @brief TO_LINE: drive slowly straight at the line. Once both IR sensors
+ * @brief TO_LINE: drive straight at the line (fast until B5_LINE_SLOW_MM
+ *        short of it, then slowly). Once both IR sensors
  *        have been off the line (IR gate), black counts as the line only
  *        after B5_LINE_MIN_MM of travel (floor-mat gaps are thinner) and
  *        with the sensor no more than B5_LINE_WINDOW_MM short of the
@@ -1317,6 +1324,11 @@ static void run_to_line (bool b_line_seen)
         if (ir_side_mm < -(int32_t)B5_LINE_GIVE_UP_MM)
         {
             halt_bypass(HALT_MISSED);
+        }
+        else if (ir_side_mm > (int32_t)B5_LINE_SLOW_MM)
+        {
+            /* Still well short of the line: full speed. */
+            drive_hold(-DECI_RIGHT_ANGLE, (int32_t)B5_NAV_SPEED_UM_S);
         }
         else
         {
@@ -1812,6 +1824,29 @@ static bool take_ping (uint32_t status, uint32_t * p_dist_mm)
 }
 
 /*!
+ * @brief Tell whether the ping in this status word was taken at the
+ *        current look angle (ping tag, obstacle_get_ping_tag()). A tag
+ *        that belongs to a newer ping does not count.
+ *
+ * @param[in] status Packed Buddy 5 status word.
+ *
+ * @return True if the ping was taken at g_nav.look_deci.
+ */
+static bool is_ping_at_look (uint32_t status)
+{
+    uint32_t const tag = obstacle_get_ping_tag();
+    uint32_t const seq = b5_pack_get(status, B5_ST_SEQ_SH, B5_ST_SEQ_MK);
+
+    /* Cast is safe: the angle field is 11 bits. */
+    int32_t const look =
+        (int32_t)b5_pack_get(tag, B5_TAG_LOOK_SH, B5_TAG_LOOK_MK) -
+        B5_TAG_LOOK_BIAS;
+
+    return ((b5_pack_get(tag, B5_TAG_SEQ_SH, B5_TAG_SEQ_MK) == seq) &&
+            (look == (int32_t)g_nav.look_deci));
+}
+
+/*!
  * @brief Ask Buddy 5 to point the servo somewhere else (REACQUIRE); the
  *        car then stands still until it has settled.
  *
@@ -2159,9 +2194,11 @@ static void step_stopped (uint32_t status, uint32_t now)
  * (seen on the car: false backward pulses and an invalid step on a wheel
  * told to stand still, which latches the motion service's FEEDBACK fault).
  * With both wheels at 0 the motion service is idle and does not check the
- * encoders. The wait ends once B5_NAV_SERVO_PINGS new pings have arrived
- * (the scan task pings only after the servo has settled; the first may
- * have been taken just before it moved) or after B5_NAV_SERVO_WAIT_MS.
+ * encoders. The wait ends at the first new ping taken at the new angle
+ * (is_ping_at_look(); the scan task pings only after the servo has
+ * settled), once B5_NAV_SERVO_PINGS new pings have arrived (the first may
+ * have been taken just before it moved; covers states where the
+ * statechart picks the angle), or after B5_NAV_SERVO_WAIT_MS.
  *
  * @param[in] status Packed Buddy 5 status word.
  * @param[in] now    Current time, ms.
@@ -2174,7 +2211,9 @@ static bool is_servo_moving (uint32_t status, uint32_t now)
     uint32_t const pings =
         (seq - (uint32_t)g_nav.wait_seq) & (uint32_t)B5_ST_SEQ_MK;
 
-    if (g_nav.b_servo_wait && ((pings >= B5_NAV_SERVO_PINGS) ||
+    bool const b_at_look = (pings > 0U) && (is_ping_at_look(status));
+
+    if (g_nav.b_servo_wait && (b_at_look || (pings >= B5_NAV_SERVO_PINGS) ||
                                ((now - g_nav.wait_ms) >= B5_NAV_SERVO_WAIT_MS)))
     {
         g_nav.b_servo_wait = false;

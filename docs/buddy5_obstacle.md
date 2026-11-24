@@ -226,13 +226,13 @@ the middle of its axle (no shift). Headings are absolute (90° away, 0°,
 | SPIN_PARALLEL | rotate back | heading 0° |
 | LEVEL | straight, heading held | moved B + 10 mm, plus what AHEAD fell short of B / 2 (level with the near face) |
 | SPIN_FACE | rotate to face the line (and the obstacle) | heading −90° |
-| SWEEP | stand still (collision guard off); servo −60°..+60° in 5° steps (the first scan's range), 2 pings each | judged (below) |
-| TRACK_OUT | rotation scan pass 1: rotate 60° towards the obstacle's side at a constant ~50°/s, servo turning the other way so the beam points straight at the line | turned 60° → TRACK_BACK, or an echo in the lane / swing circle → blocked |
+| SWEEP | stand still (collision guard off); servo −60°..+60° in 5° steps (the first scan's range), 1 ping each, taken at that angle (ping tag); no servo pre-delay after the first step | judged (below) |
+| TRACK_OUT | rotation scan pass 1: rotate 60° towards the obstacle's side at a constant ~75°/s, servo turning the other way so the beam points straight at the line | turned 60° → TRACK_BACK, or an echo in the lane / swing circle → blocked |
 | TRACK_BACK | pass 2: rotate back with the beam tilted 10° towards the obstacle's side | back at the start heading → TO_LINE if clear |
 | SPIN_BACK | rotate back | heading 0° |
 | MOVE_ON | straight, heading held | moved (D + H + 20) / 2 (H = half width on the side passing the obstacle: 108 left, 63 right), then SPIN_FACE and SWEEP again |
-| TO_LINE | slowly (70 mm/s) at the line, heading held | IR black for ≥ 8 mm of travel, no more than 80 mm short of the line; stop 300 mm past it |
-| CENTRE | straight | 127 mm more (axle on the line) |
+| TO_LINE | at the line, heading held: 140 mm/s until the IR sensors are 120 mm short of it (odometry), then 70 mm/s | IR black for ≥ 8 mm of travel, no more than 80 mm short of the line; stop 300 mm past it |
+| CENTRE | straight, 140 mm/s | 127 mm more (axle on the line) |
 | MAP | rotate in the remembered direction (same way as SPIN_AWAY), slowly, servo at 0° | an IR sensor finds the line → LINE_FOUND, line following resumes; none in a full turn → stop |
 
 The numbers (measured: half width 63 mm, plus a 45 mm IR protrusion on the
@@ -309,7 +309,17 @@ Safety kept: the **virtual bumper** stops the car if a wheel asked for
 (REACQUIRE) stops it for 2 readings under 80 mm; a collision, a bump or a
 missed line stops the car until it is reset. Before any wheel reverses
 (every rotation from a straight leg, and every correction) both wheels stop
-for 300 ms.
+for 150 ms (was 300 ms; go back to 300 if MOTION fault=FEEDBACK returns).
+
+**Speed-ups (2026-11-24).** Sweep: 1 ping per angle (`B5_SWEEP_PINGS`),
+only pings tagged with the current servo angle count (`obstacle_get_ping_tag()`,
+which also ends the servo wait at the first ping at the new angle instead
+of the second), and no 60 ms servo pre-delay after the first step of a sweep;
+the Buddy 5 task also wakes every 20 ms while sweeping. Rotation scan at the
+normal spin speed. TO_LINE fast until 120 mm short of the line, CENTRE at
+full speed, reverse pause 150 ms. Host simulation: one sweep about 1.7 s
+(estimated about 6 s before), a whole bypass with three sweeps about 34 s
+instead of about 54 s, no contact in 48 runs.
 
 **Known risks (host simulation of the real `b5_nav.c`):**
 
@@ -531,12 +541,12 @@ while a motor drives can disturb the wheel encoders.
 | Phase | Left / right wheel (passing right) |
 |---|---|
 | BACKUP | −70 / −70 mm/s |
-| Rotations | +70 / −70 or −70 / +70; both slow to 46 for the last 10° (MAP runs at 46 throughout) |
-| Straight legs | 140 / 140 (TO_LINE and CENTRE 70 / 70); a heading correction runs one wheel 14 mm/s slower |
+| Rotations | +70 / −70 or −70 / +70; both slow to 46 for the last 10° (MAP runs at 46 throughout; the rotation scan runs at 70 throughout) |
+| Straight legs | 140 / 140 (TO_LINE 70 / 70 for its last 120 mm); a heading correction runs one wheel 14 mm/s slower |
 
 NOTE: A wheel changing direction (at the start of a rotation from a
 straight leg, or a rotation correcting an overshoot) first stops both wheels
-for 300 ms.
+for 150 ms.
 
 **Dead reckoning.** Heading = `(right − left wheel distance) /
 B5_WHEEL_TRACK_MM` (from the totals, so it does not drift); position is

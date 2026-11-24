@@ -196,6 +196,18 @@ uint32_t obstacle_get_status (void)
 }
 
 /*!
+ * @brief Which servo angle the newest ping was taken at, read in one
+ *        32-bit load: seq 6 | angle + B5_TAG_LOOK_BIAS 11 (b5_pack.h). The
+ *        ping belongs to the status word with the same seq.
+ *
+ * @return The packed ping tag.
+ */
+uint32_t obstacle_get_ping_tag (void)
+{
+    return (b5_comms_ping_tag());
+}
+
+/*!
  * @brief Fault byte.
  *
  * @return The B5_FAULT_* bits.

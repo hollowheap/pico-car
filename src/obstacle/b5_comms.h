@@ -34,6 +34,8 @@ bool     b5_comms_track (void);
 void     b5_comms_set_sweep (bool b_on);
 bool     b5_comms_sweep (void);
 uint32_t b5_comms_status (void);
+void     b5_comms_set_ping_tag (uint8_t seq, int16_t deci);
+uint32_t b5_comms_ping_tag (void);
 uint8_t  b5_comms_faults (void);
 uint8_t  b5_comms_drops (void);
 ER       b5_comms_copy_profile (uint16_t * p_profile);

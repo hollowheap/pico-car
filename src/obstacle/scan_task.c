@@ -7,6 +7,11 @@
  *        While Navigation's rotation scan has tracking on, the servo is
  *        re-aimed without settling and the wait is cut to
  *        B5_TRACK_PERIOD_MS, so it follows the car smoothly between pings.
+ *        While Navigation's side scan (sweep) runs, the wait is cut the
+ *        same way, so a new angle is picked up at once, and every move
+ *        after the first skips B5_SERVO_PREDELAY_MS (the car stands
+ *        still). Every ping is tagged with its servo angle
+ *        (b5_comms_set_ping_tag()).
  *
  * NOTE: The kernel API types INT, UINT, ER, TMO and SYSTIM are used where
  * the kernel functions require them (deviation from BARR-C 5.2.a, see
@@ -43,17 +48,19 @@
 /* Flag bits that mean "a command is waiting". */
 #define CMD_BITS (B5_FLG_CMD | B5_FLG_STOP)
 
-/* Last servo command. NOTE: The Boolean is a b_ member of a g_ struct,
- * which satisfies both BARR-C 7.1.m/7.1.o and the team .clang-tidy. */
+/* Last servo command, and whether it already moved during the current
+ * sweep. NOTE: The Booleans are b_ members of a g_ struct, which satisfies
+ * both BARR-C 7.1.m/7.1.o and the team .clang-tidy. */
 typedef struct
 {
     int16_t deci;
     bool    b_known;
+    bool    b_swept;
 } servo_state_t;
 
 /* Task-private state. Only this task touches it, so it is not volatile. */
 static b5_fsm_t      g_fsm;
-static servo_state_t g_servo        = {0, false};
+static servo_state_t g_servo        = {0, false, false};
 static uint32_t      g_last_trig_us = 0U;
 
 static uint32_t now_ms (void);
@@ -64,6 +71,7 @@ static void     tick (void);
 static uint32_t settle_ms (int16_t target);
 static bool     is_car_driving (void);
 static bool     is_tracking (void);
+static bool     is_sweeping (void);
 static bool     move_servo (void);
 static void     ping (uint8_t * p_cls, uint16_t * p_dist_mm);
 static void     ping_and_step (void);
@@ -112,7 +120,8 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
 
             /* While tracking, come back at least every B5_TRACK_PERIOD_MS
              * to re-aim the servo between pings. */
-            if ((is_tracking()) && (wait_for_ms > B5_TRACK_PERIOD_MS))
+            if (((is_tracking()) || (is_sweeping())) &&
+                (wait_for_ms > B5_TRACK_PERIOD_MS))
             {
                 wait_for_ms = B5_TRACK_PERIOD_MS;
             }
@@ -283,6 +292,17 @@ static bool is_tracking (void)
 }
 
 /*!
+ * @brief Tell whether Navigation's side scan (sweep) is running. Only
+ *        honoured in REACQUIRE, like is_tracking().
+ *
+ * @return True while sweeping.
+ */
+static bool is_sweeping (void)
+{
+    return ((b5_comms_sweep()) && (B5_STATE_REACQUIRE == g_fsm.state));
+}
+
+/*!
  * @brief Move the servo if the statechart wants a new angle.
  *
  * NOTE: While tracking (is_tracking()) the servo is set at once, with no
@@ -291,6 +311,8 @@ static bool is_tracking (void)
  * wheels before the servo swings" rule below, because the car is rotating
  * while the servo turns the other way; the encoder-disturbance test in
  * docs/buddy5_obstacle.md (rotation scan checks) checks that this is safe.
+ * While sweeping (is_sweeping()) only the first move keeps
+ * B5_SERVO_PREDELAY_MS; the car stands still for the rest of the sweep.
  *
  * @return True if the servo moved (and has now settled).
  */
@@ -308,7 +330,8 @@ static bool move_servo (void)
             g_servo.b_known = true;
         }
     }
-    else if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
+    else if (g_servo.b_known && (target != g_servo.deci) &&
+             (is_car_driving()) && (!g_servo.b_swept))
     {
         /* Let Navigation stop the wheels before the servo swings: a servo
          * swing while a motor drives disturbs the wheel encoders. The
@@ -329,6 +352,10 @@ static bool move_servo (void)
         wait_ms(delay_ms);
         b_moved = true;
     }
+
+    /* The first move of a sweep keeps the pre-delay (the car may still be
+     * braking from its last rotation); later ones skip it. */
+    g_servo.b_swept = is_sweeping() && (g_servo.b_swept || b_moved);
 
     return (b_moved);
 }
@@ -388,6 +415,7 @@ static void ping_and_step (void)
     b5_fsm_out_clear(&out);
     b5_fsm_set_guard_off(&g_fsm, b5_comms_sweep());
     b5_fsm_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
+    b5_comms_set_ping_tag(g_fsm.seq, g_servo.deci);
     b5_comms_publish(&out, &g_fsm);
 }
 
