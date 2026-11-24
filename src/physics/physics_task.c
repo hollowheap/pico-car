@@ -277,19 +277,24 @@ static void read_sensors (physics_task_stats_t * p_local,
     bool const b_mag_due = (0U == (p_local->cycles % g_cfg.mag_every))
                            && g_cfg.motion.mag_enabled;
 
-    pipeline_read (&g_pipe, &g_imu, g_cfg.i2c_attempts, b_mag_due, p_acc, p_mag,
-                   p_acc_ok, p_mag_ok);
+    *p_acc_ok = pipeline_read_accel (&g_pipe, &g_imu, g_cfg.i2c_attempts,
+                                     p_acc);
+    *p_mag_ok = false;
     if (*p_acc_ok)
     {
-        /* This witness is independent of the wheel-derived acceleration. */
+        /* Stamp before magnetometer I2C so slow mag reads do not age this
+         * witness, which is independent of wheel-derived acceleration. */
         p_local->forward_sample_us = physics_time_us ();
         p_local->forward_specific_mg = clamp_i16 (scaled (
             (float)g_cfg.hump.fwd_sign * p_acc->value[g_cfg.hump.fwd_axis], SCALE_MILLI));
-    }
-    /* A skipped sample cannot prove that the magnetometer is back. */
-    if (b_mag_due && *p_acc_ok)
-    {
-        *p_mag_fault = !*p_mag_ok;
+        /* A bus that failed the accelerometer is not asked again, and a
+         * skipped sample cannot prove that the magnetometer is back. */
+        if (b_mag_due)
+        {
+            *p_mag_ok = pipeline_read_mag (&g_pipe, &g_imu, g_cfg.i2c_attempts,
+                                           p_mag);
+            *p_mag_fault = !*p_mag_ok;
+        }
     }
 }
 

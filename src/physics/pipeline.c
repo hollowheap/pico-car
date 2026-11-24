@@ -82,28 +82,54 @@ void pipeline_new_run (pipeline_t * p_pipe)
     }
 }
 
+static uint8_t read_attempts (const pipeline_t * p_pipe, uint8_t attempts)
+{
+    uint8_t tries = attempts;
+
+    if ((0U != p_pipe->failed_cycles) && (tries > RETRY_ATTEMPTS))
+    {
+        tries = RETRY_ATTEMPTS;
+    }
+    return tries;
+}
+
+bool pipeline_read_accel (const pipeline_t * p_pipe, lsm303_t * p_imu,
+                          uint8_t attempts, lsm303_vec_t * p_acc)
+{
+    bool ok = false;
+
+    if ((NULL != p_pipe) && (NULL != p_imu) && p_imu->ready)
+    {
+        p_imu->max_attempts = read_attempts (p_pipe, attempts);
+        ok = (LSM303_OK == lsm303_read_accel (p_imu, p_acc));
+    }
+    return ok;
+}
+
+bool pipeline_read_mag (const pipeline_t * p_pipe, lsm303_t * p_imu,
+                        uint8_t attempts, lsm303_vec_t * p_mag)
+{
+    bool ok = false;
+
+    if ((NULL != p_pipe) && (NULL != p_imu) && p_imu->ready)
+    {
+        p_imu->max_attempts = read_attempts (p_pipe, attempts);
+        ok = (LSM303_OK == lsm303_read_mag (p_imu, p_mag));
+    }
+    return ok;
+}
+
 void pipeline_read (const pipeline_t * p_pipe, lsm303_t * p_imu,
                     uint8_t attempts, bool b_mag_due,
                     lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
                     bool * p_acc_ok, bool * p_mag_ok)
 {
-    *p_acc_ok = false;
+    *p_acc_ok = pipeline_read_accel (p_pipe, p_imu, attempts, p_acc);
     *p_mag_ok = false;
-    if (p_imu->ready)
+    /* A bus that failed the accelerometer is not asked again. */
+    if (b_mag_due && *p_acc_ok)
     {
-        uint8_t tries = attempts;
-
-        if ((0U != p_pipe->failed_cycles) && (tries > RETRY_ATTEMPTS))
-        {
-            tries = RETRY_ATTEMPTS;
-        }
-        p_imu->max_attempts = tries;
-        *p_acc_ok = (LSM303_OK == lsm303_read_accel (p_imu, p_acc));
-        /* A bus that failed the accelerometer is not asked again. */
-        if (b_mag_due && *p_acc_ok)
-        {
-            *p_mag_ok = (LSM303_OK == lsm303_read_mag (p_imu, p_mag));
-        }
+        *p_mag_ok = pipeline_read_mag (p_pipe, p_imu, attempts, p_mag);
     }
 }
 

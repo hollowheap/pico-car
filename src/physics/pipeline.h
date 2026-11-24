@@ -145,6 +145,16 @@ bool pipeline_step (pipeline_t * p_pipe,
 /* Start a new run at rest: recalibrate and reset the run peak. */
 void pipeline_new_run (pipeline_t * p_pipe);
 
+/* Read the accelerometer for this cycle, capping retries at RETRY_ATTEMPTS
+ * after a failed cycle. Returns false when the sensor is not ready. */
+bool pipeline_read_accel (const pipeline_t * p_pipe, lsm303_t * p_imu,
+                          uint8_t attempts, lsm303_vec_t * p_acc);
+
+/* Read the magnetometer for this cycle, capping retries at RETRY_ATTEMPTS
+ * after a failed cycle. Returns false when the sensor is not ready. */
+bool pipeline_read_mag (const pipeline_t * p_pipe, lsm303_t * p_imu,
+                        uint8_t attempts, lsm303_vec_t * p_mag);
+
 /* One cycle's reads: the accelerometer, then the magnetometer when b_mag_due.
  * attempts is the configured attempts per transaction, capped at
  * RETRY_ATTEMPTS after a failed cycle. Sets *p_acc_ok and *p_mag_ok; leaves
