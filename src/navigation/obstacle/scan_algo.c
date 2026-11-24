@@ -54,21 +54,29 @@ static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                           uint8_t * p_miss);
 static void    run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first);
 
-void obstacle_profile_record_ray (uint16_t * p_slots, int32_t angle_deci,
-                                  uint16_t range_mm, uint8_t echo)
+uint8_t obstacle_profile_record_ray (uint16_t * p_slots, int32_t angle_deci,
+                                     uint16_t range_mm, uint8_t echo)
 {
     int32_t const minimum = OBSTACLE_SLOT_FIRST_DECI;
     int32_t const maximum = minimum + (((int32_t)OBSTACLE_SLOT_COUNT - 1) * OBSTACLE_SLOT_STEP_DECI);
+    int32_t const half = OBSTACLE_SLOT_STEP_DECI / 2;
+    uint8_t fan_slot = 0U;
 
     if ((angle_deci >= minimum) && (angle_deci <= maximum))
     {
         int32_t const offset = angle_deci - minimum;
 
-        if ((offset % OBSTACLE_SLOT_STEP_DECI) == 0)
+        if ((offset % OBSTACLE_SLOT_STEP_DECI) != half)
         {
-            p_slots[offset / OBSTACLE_SLOT_STEP_DECI] = obstacle_pack_slot(range_mm, echo);
+            uint8_t const slot = (uint8_t)((offset + half) / OBSTACLE_SLOT_STEP_DECI);
+            p_slots[slot] = obstacle_pack_slot(range_mm, echo);
+            if ((slot >= CENTRE_FIRST_SLOT) && (slot <= CENTRE_LAST_SLOT))
+            {
+                fan_slot = (uint8_t)(1U + slot - CENTRE_FIRST_SLOT);
+            }
         }
     }
+    return fan_slot;
 }
 
 /*!
@@ -103,7 +111,7 @@ uint16_t scan_algo_dist_mm (uint32_t width_us)
  * or an empty wait gives NO_ECHO. Inconsistent edges give GLITCH.
  *
  * @param[in] echo_result Echo result word written by the echo ISR.
- * @param[in] b_timed_out True if the 40 ms wait ended without DONE.
+ * @param[in] b_timed_out True if the echo wait expired.
  * @param[in] b_echo_high ECHO level read after the wait.
  * @param[in] b_stuck     True if ECHO was already high before the trigger.
  *

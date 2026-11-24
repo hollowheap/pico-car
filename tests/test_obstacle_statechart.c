@@ -941,11 +941,7 @@ static void test_plan_timeout_boundary(void)
 /* Compile this case with the same mode definitions as the sonar task. */
 static void test_recorded_ping_budget(void)
 {
-#if defined(PICO_CAR_PILOT) && (PICO_CAR_PILOT != 0)
-    CHECK(50U == OBSTACLE_PING_PERIOD_MS);
-#else
     CHECK(60U == OBSTACLE_PING_PERIOD_MS);
-#endif
     CHECK(40U == OBSTACLE_ECHO_WAIT_MS);
     CHECK(OBSTACLE_ECHO_WAIT_MS < OBSTACLE_PING_PERIOD_MS);
 }
@@ -1350,6 +1346,33 @@ static void test_health_fault_ends_when_cause_clears(void)
     }
 }
 
+static void test_mixed_echo_failures_hold_until_usable(void)
+{
+    obstacle_statechart_t fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t cfg;
+    uint32_t now = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+    for (unsigned i = 0U; i < OBSTACLE_FAIL_COUNT; i++)
+    {
+        uint8_t cls = (i % 2U == 0U) ? OBSTACLE_CLASS_NO_ECHO : OBSTACLE_CLASS_STUCK;
+        (void)health_pings(&fsm, cls, 1U, &now);
+    }
+    CHECK(fsm.cause == OBSTACLE_CAUSE_ECHO_NOISE);
+    (void)health_pings(&fsm, OBSTACLE_CLASS_NO_ECHO, OBSTACLE_NO_ECHO_COUNT, &now);
+    CHECK((fsm.faults & OBSTACLE_FAULT_NO_ECHO) != 0U);
+    CHECK((fsm.faults & OBSTACLE_FAULT_ECHO_NOISE) != 0U);
+    (void)health_pings(&fsm, OBSTACLE_CLASS_STUCK, OBSTACLE_STUCK_COUNT, &now);
+    CHECK((fsm.faults & OBSTACLE_FAULT_NO_ECHO) != 0U);
+    CHECK((fsm.faults & OBSTACLE_FAULT_ECHO_STUCK) != 0U);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    (void)health_pings(&fsm, OBSTACLE_CLASS_OPEN, 1U, &now);
+    CHECK(fsm.faults == 0U && fsm.state == OBSTACLE_STATE_MONITOR);
+}
+
 /* Only the operator stop latches: echo faults coming and going do not undo it. */
 static void test_estop_survives_health_recovery(void)
 {
@@ -1470,6 +1493,7 @@ int main(int argc, char * argv[])
     test_wall_reacquire();
     test_reacquire_no_steer();
     test_health_fault_ends_when_cause_clears();
+    test_mixed_echo_failures_hold_until_usable();
     test_estop_survives_health_recovery();
 
     if (g_failures == 0)

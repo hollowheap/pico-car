@@ -23,6 +23,7 @@ typedef enum
     STOP_SETTLE,
     STOP_SPACING,
     STOP_ECHO,
+    STOP_LATE_ECHO,
     STOP_PENDING
 } stop_case_t;
 
@@ -46,6 +47,22 @@ static bool g_stop_delivered;
 static unsigned g_cancel_pass;
 static unsigned g_cancel_triggers;
 static uint8_t g_last_reply;
+
+/* Milliseconds after each trigger. The final rising edge never falls. */
+static const struct {
+    uint32_t rise_ms;
+    uint32_t fall_ms;
+    uint8_t cls;
+} g_echoes[] = {
+    {1U, 47U, OBSTACLE_CLASS_OPEN},
+    {38U, 42U, OBSTACLE_CLASS_VALID},
+    {UINT32_MAX, UINT32_MAX, OBSTACLE_CLASS_NO_ECHO},
+    {1U, UINT32_MAX, OBSTACLE_CLASS_NO_ECHO},
+};
+static bool g_echo_timing;
+static uint32_t g_trigger_ms;
+static unsigned g_class_count;
+static bool g_late_request;
 
 #define CHECK(cond) do { if (!(cond)) { \
     (void)printf("FAIL line %d: %s\n", __LINE__, #cond); g_fail++; \
@@ -71,6 +88,11 @@ void liveness_kick (uint8_t task_bit)
     (void)task_bit;
     g_pass++;
 
+    if (g_echo_timing)
+    {
+        if (g_class_count == 5U) longjmp(g_finish, 1);
+        return;
+    }
     if (g_stop_case != STOP_NONE)
     {
         if (g_pass == 2U || (g_stop_case == STOP_SPACING && g_pass == 3U))
@@ -127,15 +149,41 @@ ER tk_clr_flg (ID flag, UINT pattern)
 ER tk_wai_flg (ID flag, UINT bits, UINT mode, UINT * p_flags, TMO timeout)
 {
     (void)flag;
-    (void)mode;
     *p_flags = 0U;
-    if (bits == OBSTACLE_FLG_ECHO)
+    if ((bits & OBSTACLE_FLG_ECHO) != 0U)
     {
+        if (g_echo_timing)
+        {
+            uint32_t elapsed = g_ms - g_trigger_ms;
+            uint32_t fall = g_echoes[g_pings - 1U].fall_ms;
+            if (fall > elapsed + (uint32_t)timeout)
+            {
+                g_ms += (uint32_t)timeout;
+                return E_TMOUT;
+            }
+            if (fall > elapsed) g_ms += fall - elapsed;
+            *p_flags = OBSTACLE_FLG_ECHO;
+            return E_OK;
+        }
+        if (g_late_request)
+        {
+            uint32_t elapsed = g_ms - g_trigger_ms;
+            if (elapsed < 40U)
+            {
+                g_ms += (uint32_t)timeout;
+                return E_TMOUT;
+            }
+            CHECK((bits & OBSTACLE_FLG_STOP) != 0U);
+            g_ms += 3U;
+            g_stop_pending = (mode & TWF_BITCLR) == 0U;
+            *p_flags = OBSTACLE_FLG_STOP;
+            return E_OK;
+        }
         if (g_stop_case == STOP_ECHO && g_pass == g_cancel_pass)
         {
             g_stop_pending = true;
         }
-        *p_flags = bits;
+        *p_flags = OBSTACLE_FLG_ECHO;
         g_ms++;
         return E_OK;
     }
@@ -207,6 +255,21 @@ void obstacle_comms_publish_ping_reply (uint32_t reply)
 
 void obstacle_comms_count_class (uint8_t cls)
 {
+    if (g_echo_timing)
+    {
+        if (g_class_count < 4U)
+        {
+            CHECK(cls == g_echoes[g_class_count].cls);
+            CHECK(g_ms - g_trigger_ms <= 60U);
+            if (g_class_count == 2U) CHECK(g_ms - g_trigger_ms == 40U);
+        }
+        else
+        {
+            CHECK(cls == OBSTACLE_CLASS_STUCK);
+        }
+        g_class_count++;
+        return;
+    }
     CHECK(cls == OBSTACLE_CLASS_VALID);
 }
 
@@ -218,13 +281,28 @@ void scan_hw_servo_set (int16_t deci)
 }
 
 uint32_t scan_hw_now_us (void) { return g_ms * 1000U; }
-bool scan_hw_rearm (void) { return false; }
-bool scan_hw_is_echo_high (void) { return false; }
+bool scan_hw_is_echo_high (void)
+{
+    if (g_late_request) return (g_ms - g_trigger_ms < 48U);
+    if (!g_echo_timing || g_pings == 0U) return false;
+    uint32_t elapsed = g_ms - g_trigger_ms;
+    return elapsed >= g_echoes[g_pings - 1U].rise_ms &&
+           elapsed < g_echoes[g_pings - 1U].fall_ms;
+}
+bool scan_hw_rearm (void) { return scan_hw_is_echo_high(); }
 
 bool scan_hw_trigger (void)
 {
     bool const b_track_forward = g_stop_case == STOP_NONE ? g_pass >= 6U : g_stop_delivered;
 
+    if (g_echo_timing)
+    {
+        CHECK(g_pings < 4U);
+        if (g_pings >= 4U) longjmp(g_finish, 1);
+        if (g_pings > 0U) CHECK(g_ms - g_trigger_ms >= 60U);
+    }
+    g_trigger_ms = g_ms;
+    g_late_request = g_stop_case == STOP_LATE_ECHO && g_pass == g_cancel_pass;
     if (g_stop_case != STOP_NONE && g_pass == g_cancel_pass && g_servo != 0)
     {
         g_cancel_triggers++;
@@ -237,8 +315,19 @@ bool scan_hw_trigger (void)
     return true;
 }
 
-uint32_t scan_hw_echo_result (void)
+uint32_t scan_hw_echo_result (uint32_t trigger_us)
 {
+    if (g_late_request) return OBSTACLE_ECHO_RISE;
+    if (g_echo_timing)
+    {
+        CHECK(trigger_us == g_trigger_ms * 1000U);
+        uint32_t elapsed = g_ms - g_trigger_ms;
+        uint32_t rise = g_echoes[g_pings - 1U].rise_ms;
+        uint32_t fall = g_echoes[g_pings - 1U].fall_ms;
+        if (elapsed < rise) return 0U;
+        if (elapsed < fall) return OBSTACLE_ECHO_RISE;
+        return OBSTACLE_ECHO_RISE | OBSTACLE_ECHO_DONE | ((fall - rise) * 1000U);
+    }
     return OBSTACLE_ECHO_RISE | OBSTACLE_ECHO_DONE | 2000U;
 }
 
@@ -246,9 +335,11 @@ int main (int argc, char ** argv)
 {
     if (argc > 1)
     {
-        if (strcmp(argv[1], "stop-settle") == 0) g_stop_case = STOP_SETTLE;
+        if (strcmp(argv[1], "echo-timing") == 0) g_echo_timing = true;
+        else if (strcmp(argv[1], "stop-settle") == 0) g_stop_case = STOP_SETTLE;
         else if (strcmp(argv[1], "stop-spacing") == 0) g_stop_case = STOP_SPACING;
         else if (strcmp(argv[1], "stop-echo") == 0) g_stop_case = STOP_ECHO;
+        else if (strcmp(argv[1], "stop-late-echo") == 0) g_stop_case = STOP_LATE_ECHO;
         else if (strcmp(argv[1], "stop-pending") == 0) g_stop_case = STOP_PENDING;
         else g_direction = -1;
     }
@@ -258,10 +349,15 @@ int main (int argc, char ** argv)
     {
         scan_task_obstacle_task(0, NULL);
     }
+    if (g_echo_timing)
+    {
+        CHECK(g_pings == 4U && g_class_count == 5U);
+        return g_fail == 0U ? 0 : 1;
+    }
     if (g_stop_case != STOP_NONE)
     {
         CHECK(g_stop_delivered);
-        CHECK(g_cancel_triggers == (g_stop_case == STOP_ECHO ? 1U : 0U));
+        CHECK(g_cancel_triggers == ((g_stop_case == STOP_ECHO || g_stop_case == STOP_LATE_ECHO) ? 1U : 0U));
         CHECK(g_replies == (g_stop_case == STOP_SPACING ? 2U : 1U));
         CHECK(g_last_reply == 9U);
         if (g_stop_case == STOP_PENDING)

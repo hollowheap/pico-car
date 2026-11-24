@@ -35,9 +35,6 @@
 /* Allow 60 degrees of travel at boot, when the initial angle is unknown. */
 #define BOOT_SETTLE_ANGLE_DECI (600U)
 
-/* The ping spacing in microseconds. */
-#define PING_PERIOD_US (OBSTACLE_PING_PERIOD_MS * USEC_PER_MSEC)
-
 /* Flag bits that wake the task: a command, STOP, or a ping request. */
 #define CMD_BITS (OBSTACLE_FLG_CMD | OBSTACLE_FLG_STOP | OBSTACLE_FLG_PING)
 
@@ -53,7 +50,7 @@ typedef struct
 static obstacle_statechart_t      g_fsm;
 static servo_state_t g_servo        = {0, false};
 static uint32_t      g_last_trig_us = 0U;
-static obstacle_sonar_aim_fn_t g_observe_aim;
+static obstacle_sonar_aim_fn_t gp_observe_aim;
 
 static uint32_t now_ms (void);
 static void     handle_commands (UINT ptn);
@@ -73,14 +70,14 @@ static bool     serve_ping_request (void);
 
 void obstacle_bind_sonar_aim (obstacle_sonar_aim_fn_t p_observe)
 {
-    g_observe_aim = p_observe;
+    gp_observe_aim = p_observe;
 }
 
 static void observe_aim (int16_t commanded_deci)
 {
-    if (g_observe_aim != 0)
+    if (gp_observe_aim != 0)
     {
-        g_observe_aim(commanded_deci);
+        gp_observe_aim(commanded_deci);
     }
 }
 
@@ -121,7 +118,7 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
     observe_aim(g_servo.deci);
 
     /* Allow the first ping straight away. */
-    g_last_trig_us = scan_hw_now_us() - PING_PERIOD_US;
+    g_last_trig_us = scan_hw_now_us() - OBSTACLE_PING_PERIOD_US;
 
     for (;;)
     {
@@ -130,8 +127,7 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
         liveness_kick(LIVE_OBSTACLE);
         poll_commands();
 #if !PICO_CAR_PILOT
-        /* With the pilot the statechart has no time or distance limits to
-         * check: the pilot owns the wheels. */
+        /* The legacy navigator uses the statechart timers for its maneuver. */
         tick();
 #endif
         since_us = scan_hw_now_us() - g_last_trig_us;
@@ -144,11 +140,11 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
         {
             /* The servo moved and settled; loop to re-check commands. */
         }
-        else if (since_us < PING_PERIOD_US)
+        else if (since_us < OBSTACLE_PING_PERIOD_US)
         {
             /* Round up so the next pass is never early. A ping request ends
              * the wait, so its servo settles while the spacing runs out. */
-            (void)wait_ms(((PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) /
+            (void)wait_ms(((OBSTACLE_PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) /
                               USEC_PER_MSEC,
                           OBSTACLE_FLG_PING);
         }
@@ -393,7 +389,7 @@ static bool move_servo (void)
     int16_t const target = 0;
 
     if ((!g_servo.b_known) ||
-        ((target != g_servo.deci) && ((scan_hw_now_us() - g_last_trig_us) >= PING_PERIOD_US)))
+        ((target != g_servo.deci) && ((scan_hw_now_us() - g_last_trig_us) >= OBSTACLE_PING_PERIOD_US)))
     {
         (void)aim_and_settle(target);
         b_moved = true;
@@ -432,8 +428,8 @@ static bool read_requested_ping (int16_t target, uint8_t * p_cls, uint16_t * p_d
 
     uint32_t const since_us = scan_hw_now_us() - g_last_trig_us;
 
-    if ((since_us < PING_PERIOD_US) &&
-        wait_ms(((PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) / USEC_PER_MSEC, 0U))
+    if ((since_us < OBSTACLE_PING_PERIOD_US) &&
+        wait_ms(((OBSTACLE_PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) / USEC_PER_MSEC, 0U))
     {
         return false;
     }
@@ -446,8 +442,46 @@ static bool read_requested_ping (int16_t target, uint8_t * p_cls, uint16_t * p_d
     return !poll_stop();
 }
 
+/* STOP stays pending for the caller to cancel this shot. The next rearm
+ * clears ECHO before triggering, including a fall concurrent with STOP. */
+static uint8_t read_echo (uint16_t * p_dist_mm)
+{
+    UINT const wake = OBSTACLE_FLG_ECHO | OBSTACLE_FLG_STOP;
+    UINT       ptn = 0U;
+    ER result = tk_wai_flg(obstacle_comms_flag(), wake, TWF_ORW, &ptn, (TMO)OBSTACLE_ECHO_WAIT_MS);
+    bool b_high = scan_hw_is_echo_high();
+    uint32_t echo = scan_hw_echo_result(g_last_trig_us);
+    uint32_t const elapsed_us = scan_hw_now_us() - g_last_trig_us;
+
+    if ((E_TMOUT == result) && (OBSTACLE_ECHO_RISE == echo) && b_high &&
+        (elapsed_us < OBSTACLE_PING_PERIOD_US))
+    {
+        /* A rise alone gives no range. Keep this trigger and bearing until
+         * its fall or the next trigger slot, whichever comes first. */
+        uint32_t const remaining_ms = (OBSTACLE_PING_PERIOD_US - elapsed_us) / USEC_PER_MSEC;
+        result = tk_wai_flg(obstacle_comms_flag(), wake, TWF_ORW, &ptn, (TMO)remaining_ms);
+        b_high = scan_hw_is_echo_high();
+        echo   = scan_hw_echo_result(g_last_trig_us);
+    }
+
+    if ((E_OK == result) && ((0U != (ptn & OBSTACLE_FLG_STOP)) || (0U == (echo & OBSTACLE_ECHO_DONE))))
+    {
+        return OBSTACLE_CLASS_NO_ECHO;
+    }
+    if ((E_OK != result) && (E_TMOUT != result))
+    {
+        return OBSTACLE_CLASS_NO_ECHO;
+    }
+    uint8_t const cls = scan_algo_classify(echo, E_TMOUT == result, b_high, false);
+    if (OBSTACLE_CLASS_VALID == cls)
+    {
+        *p_dist_mm = scan_algo_dist_mm(echo & OBSTACLE_ECHO_WIDTH_MASK);
+    }
+    return cls;
+}
+
 /*!
- * @brief One ping: re-arm, trigger, wait up to 40 ms, classify.
+ * @brief Re-arm, trigger and classify one ping before reusing its slot.
  *
  * @param[out] p_cls     Echo class (OBSTACLE_CLASS_*).
  * @param[out] p_dist_mm Distance; 0 unless the class is VALID.
@@ -467,42 +501,14 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
     {
         *p_cls = OBSTACLE_CLASS_STUCK;
     }
+    else if (scan_hw_trigger())
+    {
+        *p_cls = read_echo(p_dist_mm);
+    }
     else
     {
-        UINT     ptn    = 0U;
-        ER       result = E_OK;
-        uint32_t echo_result    = 0U;
-
-        bool const b_pulse = scan_hw_trigger();
-
-        if (!b_pulse)
-        {
-            /* P4: the TRIG pad did not read high during the pulse, so the sensor
-             * got no trigger. Skip the wait; this ping proves nothing. */
-            *p_cls = OBSTACLE_CLASS_NO_ECHO;
-        }
-        else
-        {
-            /* Cast is safe: OBSTACLE_ECHO_WAIT_MS is 40. */
-            result = tk_wai_flg(obstacle_comms_flag(), OBSTACLE_FLG_ECHO, TWF_ORW | TWF_BITCLR,
-                                &ptn, (TMO)OBSTACLE_ECHO_WAIT_MS);
-            echo_result    = scan_hw_echo_result();
-            if ((E_OK == result) && (0U == (echo_result & OBSTACLE_ECHO_DONE)))
-            {
-                /* Woken without a finished echo: this ping proves nothing. */
-                *p_cls = OBSTACLE_CLASS_NO_ECHO;
-            }
-            else
-            {
-                *p_cls = scan_algo_classify(echo_result, (E_OK != result),
-                                            scan_hw_is_echo_high(), false);
-            }
-
-            if (OBSTACLE_CLASS_VALID == *p_cls)
-            {
-                *p_dist_mm = scan_algo_dist_mm(echo_result & OBSTACLE_ECHO_WIDTH_MASK);
-            }
-        }
+        /* Without TRIG readback the sensor may never have received a pulse. */
+        *p_cls = OBSTACLE_CLASS_NO_ECHO;
     }
 }
 
@@ -563,7 +569,7 @@ static void ping_and_step (void)
     uint16_t                  dist_mm = 0U;
 #if !PICO_CAR_PILOT
     obstacle_travel_t         travel;
-    /* The body may start or stop turning during the 40 ms echo wait. */
+    /* The body may start or stop turning during the echo wait. */
     bool const                b_turned = obstacle_comms_is_pivoting();
     bool const                b_fresh  = obstacle_comms_travel(&travel);
 
@@ -572,6 +578,10 @@ static void ping_and_step (void)
 #endif
     obstacle_statechart_set_look(&g_fsm, g_servo.deci);
     ping(&cls, &dist_mm);
+    if (poll_stop())
+    {
+        return;
+    }
     obstacle_comms_count_class(cls);
     obstacle_statechart_out_clear(&out);
 #if PICO_CAR_PILOT

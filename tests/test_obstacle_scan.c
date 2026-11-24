@@ -373,6 +373,22 @@ static void test_wide_scan_stays_within_servo_window(void)
     }
 }
 
+static void test_profile_records_measured_bearings(void)
+{
+    uint16_t slots[OBSTACLE_SLOT_COUNT] = {0};
+
+    CHECK(obstacle_profile_record_ray(slots, -197, 130U, OBSTACLE_CLASS_VALID) == 1U);
+    CHECK(obstacle_profile_record_ray(slots, 6, 110U, OBSTACLE_CLASS_VALID) == 5U);
+    CHECK(obstacle_profile_record_ray(slots, 201, 0U, OBSTACLE_CLASS_OPEN) == 9U);
+    CHECK(slots[14] == obstacle_pack_slot(130U, OBSTACLE_CLASS_VALID));
+    CHECK(slots[18] == obstacle_pack_slot(110U, OBSTACLE_CLASS_VALID));
+    CHECK(slots[22] == obstacle_pack_slot(0U, OBSTACLE_CLASS_OPEN));
+    /* Equidistant between slots, or outside the profile field of view. */
+    CHECK(obstacle_profile_record_ray(slots, 75, 100U, OBSTACLE_CLASS_VALID) == 0U);
+    CHECK(obstacle_profile_record_ray(slots, 950, 100U, OBSTACLE_CLASS_VALID) == 0U);
+    CHECK(slots[19] == 0U && slots[20] == 0U && slots[36] == 0U);
+}
+
 int main(int argc, char * argv[])
 {
     if (2 == argc)
@@ -399,6 +415,7 @@ int main(int argc, char * argv[])
         return 2;
     }
 
+    test_profile_records_measured_bearings();
     test_distance_and_angle();
     test_classify();
     test_classify_each_class();

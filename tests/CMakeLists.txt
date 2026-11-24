@@ -102,12 +102,14 @@ foreach(pilot RANGE 0 1)
         "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/sonar_task_kernel.h"
         -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
     add_test(NAME obstacle_aim_${pilot} COMMAND test_obstacle_aim_${pilot})
+    add_test(NAME obstacle_echo_timing_${pilot} COMMAND test_obstacle_aim_${pilot} echo-timing)
 endforeach()
 
 add_test(NAME obstacle_aim_pilot_mirrored COMMAND test_obstacle_aim_1 mirror)
 add_test(NAME obstacle_aim_stop_settle COMMAND test_obstacle_aim_1 stop-settle)
 add_test(NAME obstacle_aim_stop_spacing COMMAND test_obstacle_aim_1 stop-spacing)
 add_test(NAME obstacle_aim_stop_echo COMMAND test_obstacle_aim_1 stop-echo)
+add_test(NAME obstacle_aim_stop_late_echo COMMAND test_obstacle_aim_1 stop-late-echo)
 add_test(NAME obstacle_aim_stop_pending COMMAND test_obstacle_aim_1 stop-pending)
 add_test(NAME obstacle_aim_legacy_stop_settle COMMAND test_obstacle_aim_0 stop-settle)
 
