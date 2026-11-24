@@ -31,9 +31,11 @@ function readUrl(
 }
 
 export function getServiceUrl(): string | null {
-  return readUrl(process.env.EXPO_PUBLIC_SERVICE_URL, 'https:', 'http:');
+  const origin = typeof document === 'undefined' ? undefined : document.location?.origin;
+  return readUrl(process.env.EXPO_PUBLIC_SERVICE_URL ?? origin, 'https:', 'http:');
 }
 
 export function getLinkUrl(): string | null {
-  return readUrl(process.env.EXPO_PUBLIC_LINK_URL, 'wss:', 'ws:');
+  const origin = typeof document === 'undefined' ? undefined : document.location?.origin;
+  return readUrl(process.env.EXPO_PUBLIC_LINK_URL ?? origin?.replace(/^http/, 'ws'), 'wss:', 'ws:');
 }

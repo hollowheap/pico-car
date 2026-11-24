@@ -23,6 +23,7 @@
 - Configure: `nix develop -c ./configure.sh`
 - Build: `nix develop -c ./build.sh`
 - Host tests on `feature/restructure`: `cmake -S tests -B build && cmake --build build && ctest --test-dir build`
+- Ground station: `npm run setup` once, then `npm start` from the repository root.
 
 ## Build & Environment
 - Nix devshell: `nix develop -c ./configure.sh` and `nix develop -c ./build.sh`.

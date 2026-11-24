@@ -1,0 +1,10 @@
+{
+  "name": "pico-car",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix host/bridge ci && npm --prefix host/dashboard ci",
+    "build": "npm --prefix host/dashboard run build:web",
+    "start": "npm run build && npm run serve",
+    "serve": "npm --prefix host/bridge start -- --station"
+  }
+}

@@ -72,16 +72,40 @@ The opt-in bring-up targets build with `make physics_check` or
 
 ## Ground station
 
-`podman-compose -f deploy/compose.yaml up -d --build` builds and starts the MQTT
-broker, the bridge and the dashboard as containers. The dashboard is at
-`http://127.0.0.1:5281` and the bridge at `http://127.0.0.1:5280`.
-`podman-compose -f deploy/compose.yaml down` stops them. The broker config is
-`host/broker/mosquitto.conf`.
+From the repository root, use Node.js 24, npm and Mosquitto. The Nix
+development shell provides all three.
 
-The broker publishes TCP `1883` on every interface so the car reaches it on the
-Wi-Fi; allow it in the host firewall. The bridge and the dashboard listen on the
-loopback only. The dashboard build holds the bridge address, so rebuild it with
-`--build` after you change `BRIDGE_LOCAL_PORT`.
+```sh
+npm run setup   # install the locked dependencies once
+npm start
+```
+
+Open **http://127.0.0.1:5281**. One server hosts the dashboard, WebSocket,
+history and command API. Logs continue while the browser is closed.
+`npm start` exports the current dashboard before launching. For subsequent
+starts with the same export, use `npm run serve`. Ctrl+C stops the station.
+
+The browser uses the page's hostname and port for history, commands and live
+telemetry. HTTPS selects WSS automatically. If a private station proxy serves
+HTTP on a non-loopback hostname, build with `EXPO_PUBLIC_ALLOW_INSECURE=1 npm start`.
+For Compose, put `EXPO_PUBLIC_ALLOW_INSECURE=1` in `deploy/.env` and rebuild
+the `bridge` service. Expo embeds this setting when it exports the dashboard.
+
+The station uses the local broker on TCP 1883, starting Mosquitto with
+`host/broker/mosquitto.conf` when the port is free. The car reaches that
+listener over Wi-Fi. Set `MQTT_URL` to use another broker. Only a broker
+started by the station is stopped on exit.
+
+Native history is stored in `host/bridge/history.jsonl`. To carry over a
+container recording, stop the old recorder and copy its `/data/history.jsonl`
+to that path before the first native start, or set `BRIDGE_HISTORY_PATH` to
+the existing file. Keep a single writer for each history file.
+
+An optional Compose deployment runs the station and broker with the existing
+`bridge-data` volume. When upgrading the former three-container setup,
+use `podman-compose -f deploy/compose.yaml down --remove-orphans` before
+`podman-compose -f deploy/compose.yaml up -d --build`. The named volume
+survives this shutdown.
 
 ## Telemetry
 

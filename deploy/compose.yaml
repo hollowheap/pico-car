@@ -1,9 +1,9 @@
-# Ground station: MQTT broker, bridge and dashboard.
+# Optional container deployment of Mosquitto and the ground station.
 #
 #   podman-compose -f deploy/compose.yaml up -d --build
 #
 # The broker publishes 1883 on every interface so the car reaches it on the
-# Wi-Fi; the bridge and the dashboard listen on the loopback only.
+# Wi-Fi. The ground station is published on loopback.
 name: pico-car
 
 services:
@@ -18,28 +18,17 @@ services:
   bridge:
     build:
       context: ..
-      dockerfile: deploy/bridge.Dockerfile
+      dockerfile: deploy/station.Dockerfile
+      args:
+        EXPO_PUBLIC_ALLOW_INSECURE: "${EXPO_PUBLIC_ALLOW_INSECURE:-0}"
     environment:
       MQTT_URL: mqtt://broker:1883
     ports:
-      - "127.0.0.1:${BRIDGE_LOCAL_PORT:-5280}:8080"
+      - "127.0.0.1:${DASHBOARD_LOCAL_PORT:-5281}:8080"
     volumes:
       - bridge-data:/data
     depends_on:
       - broker
-    restart: unless-stopped
-
-  dashboard:
-    build:
-      context: ..
-      dockerfile: deploy/dashboard.Dockerfile
-      args:
-        EXPO_PUBLIC_LINK_URL: ws://127.0.0.1:${BRIDGE_LOCAL_PORT:-5280}
-        EXPO_PUBLIC_SERVICE_URL: http://127.0.0.1:${BRIDGE_LOCAL_PORT:-5280}
-    ports:
-      - "127.0.0.1:${DASHBOARD_LOCAL_PORT:-5281}:80"
-    depends_on:
-      - bridge
     restart: unless-stopped
 
 volumes:

@@ -24,6 +24,7 @@
             gcc-arm-embedded
             gnutar
             mosquitto
+            nodejs_24
             picotool
             python3
           ];

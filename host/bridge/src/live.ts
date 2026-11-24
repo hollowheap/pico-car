@@ -85,6 +85,7 @@ export function createLiveServer(
     close(): void {
       clearInterval(statusTimer);
       clearInterval(pingTimer);
+      for (const client of wss.clients) client.terminate();
       wss.close();
     },
   };

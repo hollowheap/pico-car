@@ -1,20 +1,24 @@
-# LAN Bridge
+# Ground-station server
 
-Node/TypeScript backend for MQTT ingestion and dashboard state.
+The same Node server serves the exported dashboard, ingests MQTT, records
+telemetry, streams WebSocket updates and accepts dashboard commands.
 
 ## Run
 
-From the repo root, `podman-compose -f deploy/compose.yaml up -d --build` starts
-the broker, this bridge and the dashboard in containers. To run the bridge alone, start a broker on `localhost:1883` and
-run `npm start` in this directory.
+Run `npm run setup` once, then `npm start` from the repository root.
+`npm run serve` reuses the current web export. The station starts a local
+Mosquitto process when needed. Providing `MQTT_URL` selects an external
+broker. For backend development, `npm start` in this directory connects
+to an existing broker and can run before the first dashboard export.
 
 Environment:
 
 - `MQTT_URL` — default `mqtt://localhost:1883`.
 - `MQTT_USERNAME`, `MQTT_PASSWORD` — optional broker credentials.
 - `MQTT_TOPIC_PREFIX` — default `car/PICO-CAR`.
-- `BRIDGE_HTTP_PORT` — default `8080`.
-- `PROTOCOL_SCHEMA` — default `../../protocol/telemetry.yaml`.
+- `BRIDGE_HTTP_HOST`, `BRIDGE_HTTP_PORT` — default `127.0.0.1:5281`.
+- `PROTOCOL_SCHEMA` — defaults to the repository's `protocol/telemetry.yaml`.
+- `BRIDGE_HISTORY_PATH` — defaults to `host/bridge/history.jsonl`.
 
 `GET /health` returns MQTT connection state and the last decoded packet.
 
@@ -33,4 +37,6 @@ disconnected, no heartbeat is fresh or no diag frame arrived, and 400 for an inv
 means the bridge sent the frame; it does not confirm that the car applied
 the command.
 
-History storage and HTTPS/WSS transport are follow-up tasks.
+`GET /history?limit=100` returns recorded telemetry. A browser uses the
+station's origin for HTTP and WebSocket requests. An HTTPS reverse proxy
+must forward WebSocket upgrades for WSS clients.

@@ -1,15 +1,26 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import sirv from "sirv";
 import { loadConfig } from "./config.js";
 import { randomInt } from "node:crypto";
 import { createCommandSession, parseCommandRequest, type CommandRequest } from "./command.js";
 import { createHistoryStore } from "./history.js";
 import { createLiveServer } from "./live.js";
+import { startLocalBroker } from "./local-broker.js";
 import { createMqttIngest } from "./mqtt.js";
 import { loadProtocolSchema } from "./schema.js";
 
 const config = loadConfig();
+const station = process.argv.includes("--station");
+const dashboard = existsSync(join(config.dashboardPath, "index.html"))
+  ? sirv(config.dashboardPath, { single: true, etag: true, ignores: [/^\/(?:assets|_expo)(?:\/|$)/] })
+  : undefined;
+if (station && !dashboard) throw new Error("Dashboard export missing. Run npm run build from the repository root.");
 const schema = loadProtocolSchema(config.schemaPath);
 const history = createHistoryStore(config.historyPath, config.historyMaxRecords, config.historyMaxEvents);
+const broker = station && !process.env.MQTT_URL ? await startLocalBroker() : undefined;
+process.once("exit", () => broker?.kill());
 let live: ReturnType<typeof createLiveServer> | null = null;
 const commands = createCommandSession(randomInt(0x10000));
 const ingest = createMqttIngest(config, schema, (packet, topic) => {
@@ -140,6 +151,15 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (url.pathname === "/command") {
+    response.setHeader("allow", "POST, OPTIONS");
+    sendJson(response, 405, { error: "use POST for commands" });
+    return;
+  }
+  if (dashboard && (request.method === "GET" || request.method === "HEAD")) {
+    dashboard(request, response, () => sendJson(response, 404, {}));
+    return;
+  }
   sendJson(response, 404, {});
 });
 
@@ -149,15 +169,28 @@ live = createLiveServer(server, () => ({
   lastPacketAt: ingest.stats.lastPacketAt,
 }));
 
-server.listen(config.httpPort, () => {
-  console.log(`bridge on http://127.0.0.1:${config.httpPort}`);
+server.listen(config.httpPort, config.httpHost, () => {
+  const address = server.address();
+  const host = config.httpHost.includes(":") ? `[${config.httpHost}]` : config.httpHost;
+  console.log(`Ground station on http://${host}:${typeof address === "object" && address ? address.port : config.httpPort}`);
 });
 
+let closing = false;
 function shutdown(): void {
+  if (closing) return;
+  closing = true;
   live?.close();
   server.close();
-  ingest.client.end();
+  ingest.client.end(true);
+  broker?.kill();
 }
 
+broker?.once("exit", (code, signal) => {
+  if (!closing) {
+    console.error(`Mosquitto exited (${signal ?? code}).`);
+    process.exitCode = 1;
+    shutdown();
+  }
+});
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
