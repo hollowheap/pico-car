@@ -17,8 +17,8 @@ volatile uint32_t cyw43_utk_poll_requested;
 struct netif *netif_default = &cyw43_state.netif[CYW43_ITF_STA];
 static ip_addr_t dns;
 static uint64_t now_us, attempt_us, failure_us, lost_us;
-static unsigned attempts, adoptions, attempts_before_loss;
-static bool supplied, recovered, dropped, saw_timeout;
+static unsigned attempts, adoptions, attempts_before_loss, app_polls, timeout_checks;
+static bool supplied, recovered, dropped, saw_timeout, in_driver;
 static int link;
 static jmp_buf done;
 static const char *scenario;
@@ -30,10 +30,10 @@ static bool is_case(const char *name) { return strcmp(scenario, name) == 0; }
 uint64_t time_us_64(void) { return now_us; }
 void mp_memory_barrir(void) {}
 int32_t tk_get_prc(void) { return 1; }
-void cyw43_thread_enter(void) {}
-void cyw43_thread_exit(void) {}
+void cyw43_thread_enter(void) { assert(!in_driver); in_driver = true; }
+void cyw43_thread_exit(void) { assert(in_driver); in_driver = false; }
 void lwip_init(void) {}
-void sys_check_timeouts(void) {}
+void sys_check_timeouts(void) { assert(in_driver); timeout_checks++; }
 void cyw43_init(cyw43_t *self) { (void)self; }
 int cyw43_wifi_get_mac(cyw43_t *s, int i, uint8_t mac[6]) { (void)s; (void)i; (void)mac; return 0; }
 int cyw43_wifi_get_bssid(cyw43_t *s, uint8_t b[6]) { (void)s; (void)b; return 0; }
@@ -80,6 +80,8 @@ int cyw43_wifi_join(cyw43_t *s, size_t len, const uint8_t *ssid, size_t key_len,
 
 static void poll_driver(void)
 {
+    assert(in_driver);
+    cyw43_utk_poll_requested = 1U;
     if (now_us >= 100000U) cyw43_state.wifi_scan_state = 0;
     if (!attempts) return;
 
@@ -101,10 +103,35 @@ static void poll_driver(void)
 }
 void (*cyw43_poll)(void) = poll_driver;
 
+void cyw43_utk_app_poll(void)
+{
+    T_CYW43_UTK_STATUS st;
+
+    assert(in_driver);
+    app_polls++;
+    assert(timeout_checks == app_polls);
+    cyw43_utk_get_status(&st);
+    assert(st.status_retries == 0U);
+    assert(st.poll_count == app_polls);
+    if (!cyw43_wifi_scan_active(&cyw43_state)) {
+        assert(st.scan_complete == 1U);
+    }
+    if (st.link_up) {
+        assert(st.join_complete == 1U && st.join_result == 0);
+    }
+    assert(cyw43_utk_poll_requested == 0U);
+    cyw43_utk_poll_requested = 1U;
+}
+
 int32_t tk_dly_tsk(uint32_t delay)
 {
     T_CYW43_UTK_STATUS st;
+    assert(!in_driver);
+    assert(app_polls > 0U);
+    assert(cyw43_utk_poll_requested == 1U);
     cyw43_utk_get_status(&st);
+    assert(st.status_retries == 0U);
+    assert(st.poll_count == app_polls);
     if (st.join_complete && st.join_result != 0 && !st.link_up && !dropped) {
         if (failure_us < attempt_us) {
             failure_us = now_us;
