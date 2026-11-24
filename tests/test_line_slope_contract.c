@@ -70,21 +70,40 @@
 
 #define JUNCTION_TURN_SHIFT 8U
 
-#define ROUTE_SUBSTEP_S         (0.005)
-#define ROUTE_MOTOR_TAU_S       (0.060)
-#define ROUTE_TRACK_HALF_MM     (150.0)
-#define ROUTE_TAPE_HALF_MM      ((double)LINE_WIDTH_MM * 0.5)
-#define ROUTE_CORNER_X_MM       (400.0)
-#define ROUTE_EXIT_LEN_MM       (650.0)
-#define ROUTE_FINAL_WINDOW_MM   (250.0)
-#define ROUTE_BARCODE_LEFT_MM   (45.0)
-#define ROUTE_MAX_TICKS         (3000U)
-#define ROUTE_MAX_OVERSHOOT_MM  (20.0)
-#define ROUTE_MAX_EXIT_DEV_MM   (15.0)
+#define ROUTE_SUBSTEP_S             (0.005)
+#define ROUTE_MOTOR_TAU_S           (0.060)
+#define ROUTE_MOTOR_FALL_TAU_S      (0.020)
+#define ROUTE_TRACK_HALF_MM         (150.0)
+#define ROUTE_TAPE_HALF_MM          ((double)LINE_WIDTH_MM * 0.5)
+#define ROUTE_CORNER_X_MM           (400.0)
+#define ROUTE_EXIT_LEN_MM           (650.0)
+#define ROUTE_FINAL_WINDOW_MM       (250.0)
+#define ROUTE_BARCODE_LEFT_MM       (45.0)
+#define ROUTE_ROUND_BEND_X_MM       (350.0)
+#define ROUTE_ROUND_RADIUS_MM       (150.0)
+#define ROUTE_ROUND_EXIT_LEN_MM     (ROUTE_ROUND_RADIUS_MM + 350.0)
+#define ROUTE_ROUND_BARCODE_LEFT_MM (40.0)
+#define ROUTE_MAX_TICKS             (3000U)
+#define ROUTE_MAX_OVERSHOOT_MM      (20.0)
+#define ROUTE_MAX_EXIT_DEV_MM       (15.0)
+#define ROUTE_ROUND_MAX_SENSOR_MM   ((double)LINE_SENSOR_SPACING_MM)
+#define ROUTE_ROUND_MAX_EXIT_DEV_MM ((double)LINE_SENSOR_SPACING_MM)
+#define ROUTE_ROUND_MIN_EXIT_SIN    (0.96)
+
+typedef enum
+{
+    ROUTE_LAYOUT_SQUARE_LEFT,
+    ROUTE_LAYOUT_ROUND_LEFT
+} route_layout_t;
 
 typedef struct
 {
     bool active;
+    double bend_x_mm;
+    double radius_mm;
+    double exit_len_mm;
+    double barcode_left_mm;
+    bool fast_fall;
     double x_mm;
     double y_mm;
     double theta_rad;
@@ -106,7 +125,9 @@ typedef struct
     bool barcode_raw;
     bool barcode_seen;
     uint32_t barcode_edge_us;
+    unsigned barcode_edges;
     double max_overshoot_mm;
+    double max_sensor_dev_mm;
     double max_track_dist_mm;
     double max_exit_dev_mm;
     unsigned exit_samples;
@@ -243,18 +264,33 @@ static double route_seg_dist_mm(double px, double py, double ax, double ay, doub
 
 static double route_tape_dist_mm(double px, double py)
 {
-    double const d_approach = route_seg_dist_mm(px, py, -200.0, 0.0, ROUTE_CORNER_X_MM, 0.0);
-    double const d_exit = route_seg_dist_mm(px, py, ROUTE_CORNER_X_MM, 0.0,
-                                            ROUTE_CORNER_X_MM, ROUTE_EXIT_LEN_MM + 250.0);
+    if (g_route_sim.radius_mm > 0.0)
+    {
+        double const r = g_route_sim.radius_mm;
+        double const dx = px - g_route_sim.bend_x_mm;
+        double dist = fmin(hypot(fmax(dx, 0.0), py), hypot(dx - r, fmin(py - r, 0.0)));
+        if ((dx >= 0.0) && (py <= r))
+        {
+            dist = fmin(dist, fabs(hypot(dx, py - r) - r));
+        }
+        return dist;
+    }
+    double const d_approach = route_seg_dist_mm(px, py, -200.0, 0.0, g_route_sim.bend_x_mm, 0.0);
+    double const d_exit = route_seg_dist_mm(px, py, g_route_sim.bend_x_mm, 0.0,
+                                            g_route_sim.bend_x_mm, g_route_sim.exit_len_mm + 250.0);
     return (d_approach < d_exit) ? d_approach : d_exit;
 }
 
 static bool route_on_tape(double px, double py)
 {
-    bool const on_approach = (px >= -200.0) && (px <= ROUTE_CORNER_X_MM + ROUTE_TAPE_HALF_MM) &&
+    if (g_route_sim.radius_mm > 0.0)
+    {
+        return route_tape_dist_mm(px, py) <= ROUTE_TAPE_HALF_MM;
+    }
+    bool const on_approach = (px >= -200.0) && (px <= g_route_sim.bend_x_mm + ROUTE_TAPE_HALF_MM) &&
                              (fabs(py) <= ROUTE_TAPE_HALF_MM);
-    bool const on_exit = (py >= -ROUTE_TAPE_HALF_MM) && (py <= ROUTE_EXIT_LEN_MM + 250.0) &&
-                         (fabs(px - ROUTE_CORNER_X_MM) <= ROUTE_TAPE_HALF_MM);
+    bool const on_exit = (py >= -ROUTE_TAPE_HALF_MM) && (py <= g_route_sim.exit_len_mm + 250.0) &&
+                         (fabs(px - g_route_sim.bend_x_mm) <= ROUTE_TAPE_HALF_MM);
     return on_approach || on_exit;
 }
 
@@ -263,15 +299,24 @@ static void route_record_geometry(void)
     double const pts[6][2] = {
         {(double)LINE_SENSOR_LEAD_MM, (double)LINE_SENSOR_SPACING_MM * 0.5},
         {(double)LINE_SENSOR_LEAD_MM, -(double)LINE_SENSOR_SPACING_MM * 0.5},
-        {(double)LINE_SENSOR_LEAD_MM + g_route_sim.reader_dx_mm, ROUTE_BARCODE_LEFT_MM},
+        {(double)LINE_SENSOR_LEAD_MM + g_route_sim.reader_dx_mm, g_route_sim.barcode_left_mm},
         {0.0, (double)CHASSIS_WHEEL_TRACK_MM * 0.5},
         {0.0, -(double)CHASSIS_WHEEL_TRACK_MM * 0.5},
         {-(double)CHASSIS_AXLE_TO_CASTER_MM, 0.0},
     };
-    double const overshoot = g_route_sim.x_mm - ROUTE_CORNER_X_MM;
+    double const exit_x = g_route_sim.bend_x_mm + g_route_sim.radius_mm;
+    double const overshoot = g_route_sim.x_mm - exit_x;
     if (overshoot > g_route_sim.max_overshoot_mm)
     {
         g_route_sim.max_overshoot_mm = overshoot;
+    }
+    double sx = 0.0;
+    double sy = 0.0;
+    route_point_world((double)LINE_SENSOR_LEAD_MM, 0.0, &sx, &sy);
+    double const sensor_dev = route_tape_dist_mm(sx, sy);
+    if (sensor_dev > g_route_sim.max_sensor_dev_mm)
+    {
+        g_route_sim.max_sensor_dev_mm = sensor_dev;
     }
     for (unsigned i = 0U; i < 6U; i++)
     {
@@ -284,9 +329,9 @@ static void route_record_geometry(void)
             g_route_sim.max_track_dist_mm = dist;
         }
     }
-    if (g_route_sim.y_mm >= ROUTE_EXIT_LEN_MM - ROUTE_FINAL_WINDOW_MM)
+    if (g_route_sim.y_mm >= g_route_sim.exit_len_mm - ROUTE_FINAL_WINDOW_MM)
     {
-        double const dev = fabs(g_route_sim.x_mm - ROUTE_CORNER_X_MM);
+        double const dev = fabs(g_route_sim.x_mm - exit_x);
         if (dev > g_route_sim.max_exit_dev_mm)
         {
             g_route_sim.max_exit_dev_mm = dev;
@@ -297,7 +342,7 @@ static void route_record_geometry(void)
         }
         g_route_sim.exit_samples++;
     }
-    if (g_route_sim.y_mm >= ROUTE_EXIT_LEN_MM)
+    if (g_route_sim.y_mm >= g_route_sim.exit_len_mm)
     {
         g_route_sim.reached_exit = true;
     }
@@ -308,7 +353,7 @@ static void route_sample_sensors(uint32_t now_us, bool b_init)
     double lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0, bx = 0.0, by = 0.0;
     route_point_world((double)LINE_SENSOR_LEAD_MM, (double)LINE_SENSOR_SPACING_MM * 0.5, &lx, &ly);
     route_point_world((double)LINE_SENSOR_LEAD_MM, -(double)LINE_SENSOR_SPACING_MM * 0.5, &rx, &ry);
-    route_point_world((double)LINE_SENSOR_LEAD_MM + g_route_sim.reader_dx_mm, ROUTE_BARCODE_LEFT_MM, &bx, &by);
+    route_point_world((double)LINE_SENSOR_LEAD_MM + g_route_sim.reader_dx_mm, g_route_sim.barcode_left_mm, &bx, &by);
     bool const raw_l = route_on_tape(lx, ly);
     bool const raw_r = route_on_tape(rx, ry);
     bool const raw_b = route_on_tape(bx, by);
@@ -329,18 +374,32 @@ static void route_sample_sensors(uint32_t now_us, bool b_init)
             g_route_sim.barcode_raw = raw_b;
             g_route_sim.barcode_seen = true;
             g_route_sim.barcode_edge_us = now_us;
+            g_route_sim.barcode_edges++;
         }
     }
 }
 
+static double route_wheel_step_um(double * p_speed_um_s, double requested_um_s)
+{
+    double const before = *p_speed_um_s;
+    if (g_route_sim.fast_fall)
+    {
+        double const tau = (fabs(requested_um_s) > fabs(before)) ? ROUTE_MOTOR_TAU_S : ROUTE_MOTOR_FALL_TAU_S;
+        double const change = (requested_um_s - before) * -expm1(-ROUTE_SUBSTEP_S / tau);
+        *p_speed_um_s = before + change;
+        return requested_um_s * ROUTE_SUBSTEP_S - change * tau;
+    }
+    double const alpha = 1.0 - exp(-ROUTE_SUBSTEP_S / ROUTE_MOTOR_TAU_S);
+    *p_speed_um_s = before + alpha * (requested_um_s - before);
+    return *p_speed_um_s * ROUTE_SUBSTEP_S;
+}
+
 static void route_step_5ms(uint32_t now_us)
 {
-    double const alpha = 1.0 - exp(-ROUTE_SUBSTEP_S / ROUTE_MOTOR_TAU_S);
-    g_route_sim.v_left_um_s += alpha * (g_route_sim.left_gain * (double)g_left_target - g_route_sim.v_left_um_s);
-    g_route_sim.v_right_um_s += alpha * (g_route_sim.right_gain * (double)g_right_target - g_route_sim.v_right_um_s);
-
-    double const dl_um = g_route_sim.v_left_um_s * ROUTE_SUBSTEP_S;
-    double const dr_um = g_route_sim.v_right_um_s * ROUTE_SUBSTEP_S;
+    double const dl_um = route_wheel_step_um(&g_route_sim.v_left_um_s,
+                                             g_route_sim.left_gain * (double)g_left_target);
+    double const dr_um = route_wheel_step_um(&g_route_sim.v_right_um_s,
+                                             g_route_sim.right_gain * (double)g_right_target);
     g_route_sim.true_left_um += dl_um;
     g_route_sim.true_right_um += dr_um;
 
@@ -1272,11 +1331,17 @@ static bool parse_wheel_profile(char const * p_profile, double * p_left, double 
     return false;
 }
 
-static int run_route_plain_square_left(double offset_mm, double reader_dx_mm,
-                                       double left_gain, double right_gain)
+static int run_route_plain_corner(route_layout_t layout, double offset_mm, double reader_dx_mm,
+                                  double left_gain, double right_gain)
 {
+    bool const b_round = (ROUTE_LAYOUT_ROUND_LEFT == layout);
     g_route_sim = (route_sim_t){
         .active = true,
+        .bend_x_mm = b_round ? ROUTE_ROUND_BEND_X_MM : ROUTE_CORNER_X_MM,
+        .radius_mm = b_round ? ROUTE_ROUND_RADIUS_MM : 0.0,
+        .exit_len_mm = b_round ? ROUTE_ROUND_EXIT_LEN_MM : ROUTE_EXIT_LEN_MM,
+        .barcode_left_mm = b_round ? ROUTE_ROUND_BARCODE_LEFT_MM : ROUTE_BARCODE_LEFT_MM,
+        .fast_fall = b_round,
         .x_mm = 0.0,
         .y_mm = offset_mm,
         .theta_rad = 0.0,
@@ -1289,6 +1354,28 @@ static int run_route_plain_square_left(double offset_mm, double reader_dx_mm,
     if (0 == setjmp(g_finished))
     {
         line_task_run();
+    }
+    if (b_round)
+    {
+        (void)printf("route-plain-round-left: reached=%d sensor=%.1f mm overshoot=%.1f mm "
+                     "track=%.1f mm exit_dev=%.1f mm sin=%.3f edges=%u turns=%u wheels=%ld/%ld\n",
+                     g_route_sim.reached_exit ? 1 : 0, g_route_sim.max_sensor_dev_mm,
+                     g_route_sim.max_overshoot_mm, g_route_sim.max_track_dist_mm,
+                     g_route_sim.max_exit_dev_mm, sin(g_route_sim.theta_rad),
+                     g_route_sim.barcode_edges, g_route_sim.turn_events,
+                     (long)g_left_target, (long)g_right_target);
+        assert(g_route_sim.reached_exit);
+        assert(g_route_sim.exit_samples > 0U);
+        assert(g_route_sim.barcode_edges > 0U);
+        assert(g_route_sim.max_sensor_dev_mm <= ROUTE_ROUND_MAX_SENSOR_MM);
+        assert(g_route_sim.max_track_dist_mm <= ROUTE_TRACK_HALF_MM);
+        assert(g_route_sim.max_exit_dev_mm <= ROUTE_ROUND_MAX_EXIT_DEV_MM);
+        assert(sin(g_route_sim.theta_rad) > ROUTE_ROUND_MIN_EXIT_SIN);
+        assert(!g_route_sim.exit_wheel_stopped);
+        assert(g_route_sim.enc_left_speed > 0 && g_route_sim.enc_right_speed > 0);
+        assert(g_left_target > 0 && g_right_target > 0);
+        assert(!g_turning && g_route_sim.turn_events == 0U);
+        return EXIT_SUCCESS;
     }
     (void)printf("route-plain-square-left: reached=%d overshoot=%.1f mm track=%.1f mm "
                  "exit_dev=%.1f mm turns=%u wheels=%ld/%ld\n",
@@ -1308,7 +1395,9 @@ static int run_route_plain_square_left(double offset_mm, double reader_dx_mm,
 
 int main(int argc, char * argv[])
 {
-    if (argc == 5 && strcmp(argv[1], "route-plain-square-left") == 0)
+    if (argc == 5 &&
+        (strcmp(argv[1], "route-plain-square-left") == 0 ||
+         strcmp(argv[1], "route-plain-round-left") == 0))
     {
         double offset_mm = 0.0;
         double reader_dx_mm = 0.0;
@@ -1321,7 +1410,10 @@ int main(int argc, char * argv[])
             (void)fprintf(stderr, "Invalid arguments for %s\n", argv[1]);
             return EXIT_FAILURE;
         }
-        return run_route_plain_square_left(offset_mm, reader_dx_mm, left_gain, right_gain);
+        route_layout_t const layout = (strcmp(argv[1], "route-plain-round-left") == 0)
+                                          ? ROUTE_LAYOUT_ROUND_LEFT
+                                          : ROUTE_LAYOUT_SQUARE_LEFT;
+        return run_route_plain_corner(layout, offset_mm, reader_dx_mm, left_gain, right_gain);
     }
     if (argc == 2 && strncmp(argv[1], "startup-check-", 14U) == 0)
     {
