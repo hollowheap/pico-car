@@ -44,6 +44,7 @@
 #define FOLLOW_STRIPE_READY  (16U)
 #define FOLLOW_MARKER_RECENT (32U)
 #define FRONT_DETECTOR_MASK  (3U)
+#define FOLLOW_SUSTAINED_EDGE (16U) /* retained in stripe.detector_bits during a gap */
 #define CORROBORATED_SHIFT   (2U)
 #define FOLLOW_ROUTE_CANDIDATE (64U)
 #define FOLLOW_LOCAL_SEARCH    (128U)
@@ -819,11 +820,11 @@ static void search_turn(line_follow_t * p_follow, int32_t heading_deci,
 /* Neither sensor sees the line. On a settled flat approach, turn the front
  * sensors toward the last sighting while advancing. Hold the reference so
  * the probe has a bounded angle even if neither sensor then sees tape.
- * Search at the axle projection of a transverse stripe, or at the normal
- * gap distance without one. Ignore backwards travel when the millimeter
+ * Search at the axle projection of a transverse stripe. A bounded course
+ * also searches at the normal gap distance. Ignore backwards travel when the millimeter
  * counter wraps. */
 static int32_t follow_blind(line_follow_t * p_follow, int32_t heading_deci,
-                            int64_t travel_um, uint32_t dt_ms)
+                            int64_t travel_um, uint32_t dt_ms, bool b_continuous_floor)
 {
     int64_t const blind_um = abs_i64(travel_um - p_follow->anchor_um);
     int64_t const gap_um   = (0U != (p_follow->flags & LINE_FOLLOW_HUMP)) ? HUMP_GAP_UM : GAP_UM;
@@ -840,7 +841,12 @@ static int32_t follow_blind(line_follow_t * p_follow, int32_t heading_deci,
     {
         p_follow->status = (uint8_t)LINE_FOLLOW_BRIDGING;
     }
-    if (((uint8_t)LINE_FOLLOW_BRIDGING == p_follow->status) && ((blind_um >= gap_um) || b_at_corner))
+    bool const b_bend = b_continuous_floor &&
+        ((p_follow->flags & (LINE_FOLLOW_HUMP | FOLLOW_ROUTE_CANDIDATE | FOLLOW_STRIPE_READY)) == 0U) &&
+        ((p_follow->progress.stripe.detector_bits & FOLLOW_SUSTAINED_EDGE) != 0U);
+    if (((uint8_t)LINE_FOLLOW_BRIDGING == p_follow->status) &&
+        (b_at_corner || (b_bend && blind_um >= LINE_SENSOR_LEAD_MM * UM_PER_MM) ||
+         (!b_continuous_floor && blind_um >= gap_um)))
     {
         if (b_at_corner)
         {
@@ -851,6 +857,19 @@ static int32_t follow_blind(line_follow_t * p_follow, int32_t heading_deci,
     }
     if ((uint8_t)LINE_FOLLOW_BRIDGING == p_follow->status)
     {
+        if (b_bend && (blind_um <= LINE_SENSOR_SPACING_MM * UM_PER_MM))
+        {
+            /* The tape can pass between the detectors mid-bend. Carry the
+             * last steering direction for at most one detector spacing. */
+            int32_t const side = (p_follow->side == (uint8_t)LINE_SIDE_LEFT) ? 1 : -1;
+            int32_t const error = clamp_i32(side * (p_follow->ref_deci - heading_deci), LINE_SLOW_DECI, LINE_CAP_DECI);
+            p_follow->ref_deci = heading_deci + side * error;
+            return 0;
+        }
+        if (b_continuous_floor && ((p_follow->side == (uint8_t)LINE_SIDE_NONE) || blind_um >= gap_um))
+        {
+            return 0;
+        }
         /* Settle the previous correction first. Keep that heading through
          * the early gap so steady wheel mismatch cannot pull the target away. */
         if ((blind_um >= LINE_PROBE_FROM_MM * UM_PER_MM) &&
@@ -872,6 +891,15 @@ static int32_t follow_blind(line_follow_t * p_follow, int32_t heading_deci,
     {
         uint8_t const previous = p_follow->sweep;
         search_turn(p_follow, heading_deci, travel_um, dt_ms);
+        if (b_continuous_floor && !line_follow_local_search(p_follow) && (p_follow->sweep == SWEEP_REVERSE))
+        {
+            /* The optical sweep has returned to the approach heading. */
+            p_follow->sweep = SWEEP_NONE;
+            p_follow->retry = 0U;
+            p_follow->progress = (line_follow_progress_t){0};
+            p_follow->side = (uint8_t)LINE_SIDE_NONE;
+            p_follow->status = (uint8_t)LINE_FOLLOW_BRIDGING;
+        }
         if (line_follow_local_search(p_follow) && (previous != p_follow->sweep))
         {
             /* Reversing the sweep starts a fresh progress window. */
@@ -927,7 +955,8 @@ static void follow_stripe(line_follow_t * p_follow, bool b_left, bool b_right, i
     }
     uint8_t const on = (uint8_t)((b_left ? 1U : 0U) | (b_right ? 2U : 0U));
     uint8_t const changed = on ^ (p_follow->progress.stripe.detector_bits & FRONT_DETECTOR_MASK);
-    uint8_t corroborated = p_follow->progress.stripe.detector_bits >> CORROBORATED_SHIFT;
+    uint8_t corroborated = ((uint32_t)p_follow->progress.stripe.detector_bits >> CORROBORATED_SHIFT) & FRONT_DETECTOR_MASK;
+    uint8_t sustained = p_follow->progress.stripe.detector_bits & FOLLOW_SUSTAINED_EDGE;
     if ((p_follow->flags & LINE_FOLLOW_HUMP) != 0U)
     {
         p_follow->progress.stripe.detector_bits = 0U;
@@ -936,6 +965,12 @@ static void follow_stripe(line_follow_t * p_follow, bool b_left, bool b_right, i
     }
     if (on != 0U)
     {
+        uint8_t const side = (uint8_t)(b_left ? LINE_SIDE_LEFT : LINE_SIDE_RIGHT);
+        if ((b_left == b_right) || (p_follow->side != side) ||
+            (abs_i64(travel_um - p_follow->anchor_um) > LINE_SENSOR_SPACING_MM * UM_PER_MM))
+        {
+            sustained = 0U;
+        }
         p_follow->flags &= (uint8_t)~FOLLOW_STRIPE_READY;
     }
     uint16_t const mm = (uint16_t)(travel_um / UM_PER_MM);
@@ -981,7 +1016,12 @@ static void follow_stripe(line_follow_t * p_follow, bool b_left, bool b_right, i
          * that optical interval even if the right detector stays clear. */
         corroborated |= 1U;
     }
-    p_follow->progress.stripe.detector_bits = (uint8_t)(on | ((uint32_t)corroborated << CORROBORATED_SHIFT));
+    uint16_t const contact_mm = (uint16_t)(mm - p_follow->progress.stripe.begin_mm[b_left ? 0U : 1U]);
+    if ((b_left != b_right) && (contact_mm >= LINE_SENSOR_SPACING_MM) && (contact_mm <= INT16_MAX))
+    {
+        sustained = FOLLOW_SUSTAINED_EDGE;
+    }
+    p_follow->progress.stripe.detector_bits = (uint8_t)((uint32_t)on | sustained | ((uint32_t)corroborated << CORROBORATED_SHIFT));
 }
 
 bool line_follow_marker_sample(line_follow_t * p_follow, bool b_left, bool b_right, bool b_progress,
@@ -993,7 +1033,8 @@ bool line_follow_marker_sample(line_follow_t * p_follow, bool b_left, bool b_rig
         return false;
     }
     if (!b_left && !b_progress && (0U != (p_follow->flags & LINE_FOLLOW_STARTED)) &&
-        (abs_i64(travel_um - p_follow->anchor_um) >= (LINE_PROBE_FROM_MM + prefix_mm) * UM_PER_MM))
+        (((p_follow->progress.stripe.detector_bits & FOLLOW_SUSTAINED_EDGE) != 0U) ||
+         (abs_i64(travel_um - p_follow->anchor_um) >= (LINE_PROBE_FROM_MM + prefix_mm) * UM_PER_MM)))
     {
         return false;
     }
@@ -1091,10 +1132,9 @@ static void follow_detector(line_follow_t * p_follow, bool b_left, int32_t headi
     }
 }
 
-line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
-                                        bool b_right, int32_t heading_deci,
-                                        int64_t travel_um, uint32_t now_ms,
-                                        line_targets_t * p_targets)
+line_follow_status_t line_follow_update_floor(line_follow_t * p_follow, bool b_left, bool b_right,
+                                              int32_t heading_deci, int64_t travel_um, uint32_t now_ms,
+                                              bool b_continuous_floor, line_targets_t * p_targets)
 {
     if (local_search_stopped(p_follow, heading_deci, now_ms))
     {
@@ -1138,7 +1178,7 @@ line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
     }
     else
     {
-        probe_deci = follow_blind(p_follow, heading_deci, travel_um, dt_ms);
+        probe_deci = follow_blind(p_follow, heading_deci, travel_um, dt_ms, b_continuous_floor);
     }
 
     if ((uint8_t)LINE_FOLLOW_SEARCHING == p_follow->status)
@@ -1181,6 +1221,13 @@ line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
     }
 
     return (line_follow_status_t)p_follow->status;
+}
+
+line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left, bool b_right,
+                                        int32_t heading_deci, int64_t travel_um, uint32_t now_ms,
+                                        line_targets_t * p_targets)
+{
+    return line_follow_update_floor(p_follow, b_left, b_right, heading_deci, travel_um, now_ms, false, p_targets);
 }
 
 uint8_t line_watch_step(line_watch_t * p_watch, bool b_follow, bool b_hug,
