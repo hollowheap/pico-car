@@ -1359,7 +1359,9 @@ line_turn_status_t line_turn_update(line_turn_state_t * p_turn, int64_t left_um,
             {
                 p_turn->phase = TURN_PHASE_SLOW;
             }
-            if ((TURN_PHASE_SLOW == p_turn->phase) && (b_left || b_right))
+            bool const complete = ((uint8_t)LINE_TURN_KIND_UTURN == p_turn->kind) ?
+                (progress >= p_turn->target_deci) : (b_left || b_right);
+            if ((TURN_PHASE_SLOW == p_turn->phase) && complete)
             {
                 status = turn_stop(p_turn, TURN_PHASE_DONE, p_targets);
             }

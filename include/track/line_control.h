@@ -155,8 +155,8 @@ STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
 /** Pivot speed inside the capture window. Tune on the car. */
 #define LINE_TURN_SLOW_UM_S (80000)
 /**
- * Capture window in deci-degrees before the target. Line sensors count only
- * once the turn is this close to the target. Tune on the car.
+ * Slow the pivot near its target. Quarter turns can capture tape in this
+ * window. A U-turn completes at 180 degrees of measured rotation.
  */
 #define LINE_TURN_CAPTURE_DECI (300)
 /**

@@ -1456,12 +1456,15 @@ static void test_uturn(void)
                     &r);
     assert(LINE_TURN_TURNING == turn_step(&tn, l, r, true, false, false, &t));
     expect_targets(&t, LINE_TURN_SLOW_UM_S, -LINE_TURN_SLOW_UM_S);
-    assert(LINE_TURN_DONE == turn_step(&tn, l, r, true, false, true, &t));
+    assert(LINE_TURN_TURNING == turn_step(&tn, l, r, true, false, true, &t));
+    right_turn_disp(LINE_TURN_HALF_DECI, &l, &r);
+    assert(LINE_TURN_DONE == turn_step(&tn, l, r, true, false, false, &t));
+    expect_targets(&t, 0, 0);
     assert(LINE_SIDE_RIGHT == line_turn_side(&tn));
 
     /* A U-turn aborts at 180 + margin, not at 90 + margin. */
     line_turn_start(&tn, LINE_TURN_KIND_UTURN, 1000, 2000);
-    right_turn_disp(LINE_TURN_HALF_DECI + LINE_TURN_ABORT_DECI - 20, &l, &r);
+    right_turn_disp(LINE_TURN_HALF_DECI - 20, &l, &r);
     assert(LINE_TURN_TURNING == turn_step(&tn, l, r, true, false, false, &t));
     right_turn_disp(LINE_TURN_HALF_DECI + LINE_TURN_ABORT_DECI + 20, &l, &r);
     assert(LINE_TURN_ABORTED == turn_step(&tn, l, r, true, false, false, &t));
