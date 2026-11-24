@@ -5,8 +5,9 @@ Usage:
     python3 tools/bench_summary.py LOGFILE
 
 LOGFILE is the raw console capture. The lines that count start with a tag in
-capitals (after the "[SEV](task:module) " prefix): ENC, STEP, STEP_RESULT, SENS,
-SENS_RESULT, LINE_RESULT, DRV, DRV_RESULT and W1_PINS. Other text is ignored.
+capitals, optionally prefixed by a timestamp and "[SEV](task:module) ":
+ENC, STEP, STEP_RESULT, SENS, SENS_RESULT, LINE_RESULT, DRV, DRV_RESULT,
+ODO, PIV_RESULT and W1_PINS. Other text is ignored.
 Standard library only.
 """
 
@@ -24,6 +25,7 @@ def tagged(path):
     out = []
     with open(path, "r", errors="replace") as handle:
         for line in handle:
+            line = re.sub(r"^\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+", "", line.strip())
             line = re.sub(r"^\[[A-Z]+\]\([^)]*\)\s*", "", line.strip())
             match = re.match(r"^([A-Z][A-Z0-9_]+),(.*)$", line)
             if match:
@@ -115,6 +117,37 @@ def drv(rows):
     print("  The cue must be set in the air and clear on the floor. If the duty does not fall in the air, the cue cannot work.")
 
 
+def odo(rows):
+    endpoints = []
+    previous_ms = None
+    for tag, text in rows:
+        if tag != "ODO":
+            continue
+        elapsed, payload = text.split(",", 1)
+        elapsed_ms = int(elapsed)
+        endpoint = (elapsed_ms, fields(payload))
+        if previous_ms is None or elapsed_ms < previous_ms:
+            endpoints.append(endpoint)
+        else:
+            endpoints[-1] = endpoint
+        previous_ms = elapsed_ms
+    for trial, (elapsed_ms, endpoint) in enumerate(endpoints, 1):
+        print(f"ODO {trial}: last sample at {elapsed_ms} ms, left {endpoint['left_mm']} mm, "
+              f"right {endpoint['right_mm']} mm")
+    if endpoints:
+        print("  Compare each signed wheel distance with independently measured straight travel.")
+
+
+def pivot(rows):
+    for tag, text in rows:
+        if tag == "PIV_RESULT":
+            result = fields(text)
+            crossings = int(result["crossings"])
+            yaw = int(result["total_yaw_deci"]) / 10.0
+            print(f"PIVOT: {crossings}/4 crossings, {yaw:.1f}° encoder yaw "
+                  f"for {crossings * 90}° nominal tape rotation, body share {result['share_pct']}%")
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
@@ -138,6 +171,8 @@ def main():
     sens(rows)
     line(rows)
     drv(rows)
+    odo(rows)
+    pivot(rows)
     return 0
 
 

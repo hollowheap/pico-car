@@ -29,7 +29,7 @@ static void test_first_call_notes(void)
     pilot_cmd_t c = make_cmd(120, -300, PILOT_BEHAVIOUR_NONE, PILOT_REASON_NONE);
 
     pilot_log_init(&log);
-    assert(sizeof(log) == 2U);
+    assert(sizeof(log) == 3U);
     /* Even the all-zero pair is new before the first note. */
     assert(pilot_log_note(&log, &c));
     assert(!pilot_log_note(&log, &c));
@@ -90,12 +90,30 @@ static void test_is_following(void)
     assert(pilot_log_is_following(&log));
 }
 
+/* Each new automatic recovery attempt is reported once; a count that falls
+ * back (clean travel, START or RESET) reports nothing. */
+static void test_recovery_attempts(void)
+{
+    pilot_log_t log;
+
+    pilot_log_init(&log);
+    assert(0U == pilot_log_recovery(&log, 0U));
+    assert(1U == pilot_log_recovery(&log, 1U));
+    assert(0U == pilot_log_recovery(&log, 1U));
+    assert(2U == pilot_log_recovery(&log, 2U));
+    assert(0U == pilot_log_recovery(&log, 0U));
+    assert(1U == pilot_log_recovery(&log, 1U));
+    pilot_log_init(&log);
+    assert(1U == pilot_log_recovery(&log, 1U));
+}
+
 int main(void)
 {
     test_first_call_notes();
     test_same_pair_does_not_note();
     test_new_behaviour_or_reason_notes();
     test_is_following();
-    puts("test_pilot_log: 4 tests passed");
+    test_recovery_attempts();
+    puts("test_pilot_log: 5 tests passed");
     return 0;
 }

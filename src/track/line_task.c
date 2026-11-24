@@ -16,20 +16,17 @@
 #include "platform/log.h"
 #include "platform/units.h"
 #include "physics/physics.h"
-#if PICO_CAR_PILOT
 #include "pilot/drive.h"
 #include "pilot/pilot.h"
 #include "pilot/pilot_log.h"
 #include "navigation/obstacle_ping.h"
-#endif
+#include "track/start_check.h"
 #include "supervisor/command.h"
 #include "supervisor/supervisor.h"
 #include "telemetry/assemble.h"
 #include "telemetry/emit.h"
 #include "telemetry/hug_word.h"
-#if PICO_CAR_PILOT
 #include "telemetry/queue.h"
-#endif
 #include "telemetry/wire_schema.h"
 #include "track/barcode.h"
 #include "track/line_control.h"
@@ -60,6 +57,8 @@ static line_route_t g_route;
 
 /* line_lost p2 flag of a retry; the low bits are the retry number. */
 #define LINE_RETRY_EVENT (0x8000U)
+/* An event p2 that packs two bytes: high byte * LINE_EVENT_HIGH_BYTE + low byte. */
+#define LINE_EVENT_HIGH_BYTE (256U)
 
 /* Map a vehicle command opcode to a turn. */
 static line_turn_kind_t line_turn_of (uint8_t opcode)
@@ -94,19 +93,12 @@ static line_turn_kind_t line_turn_of (uint8_t opcode)
  * physics (5), so a 3-pass lease can be stale by the time the controller
  * validates it and latches MOTION_FAULT_COMMAND. Keep the lease below
  * max_command_ttl_us (200 ms). */
-#define LINE_LEASE_PASSES        (10U)
 #define LINE_US_PER_MS           (1000U)
-#define LINE_LEASE_US \
-    (LINE_LEASE_PASSES * LINE_POLL_MS * LINE_US_PER_MS)
+#define LINE_LEASE_US            (PILOT_COMMAND_LEASE_MS * LINE_US_PER_MS)
 
 static bool          g_line_lost;
 static int64_t       g_line_travel_um;
-#if !PICO_CAR_PILOT
-static line_follow_t g_line_follow;
-static int32_t       g_line_heading_deci;
-#endif
 
-#if PICO_CAR_PILOT
 /* Pilot, drive layer and the last decision. Only the line task touches them. */
 static pilot_state_t g_pilot;
 static drive_state_t g_drive;
@@ -122,7 +114,6 @@ static bool          g_hug_leg_reported;
 static uint8_t       g_pilot_start_seen;  /* start count last acted on */
 static uint8_t       g_recovery_seen;
 static uint32_t      g_hug_seq; /* line task only; the field keeps the low 2 bits */
-#endif
 
 /* The hug snapshot for the obstacle frame. The line task writes both words
  * together; the telemetry task reads both, so one frame never mixes two
@@ -198,11 +189,7 @@ static bool line_sample_fresh (uint32_t timestamp_us)
 /* The follower a turn hands its side to: the pilot's own with the pilot on. */
 static line_follow_t * line_follower (void)
 {
-#if PICO_CAR_PILOT
     return &g_pilot.follow;
-#else
-    return &g_line_follow;
-#endif
 }
 
 /* Mean wheel travel at the start of the present line loss. */
@@ -242,8 +229,9 @@ static void line_update_fault (bool b_lost)
 }
 
 /* At a crest the follower bridges a longer gap. The pilot also reads the
- * roll from the same snapshot when the attitude is known. */
-static bool line_on_hump (int16_t * p_roll_cdeg)
+ * roll from the same snapshot when the attitude is known, the pivot witness,
+ * and the gated magnetometer heading. */
+static bool line_on_hump (int16_t * p_roll_cdeg, pilot_meas_t * p_meas)
 {
     physics_status_t physics;
     bool             b_hump = false;
@@ -255,6 +243,12 @@ static bool line_on_hump (int16_t * p_roll_cdeg)
             (TELEMETRY_ATTITUDE_STATE_OK == physics.attitude_state))
         {
             *p_roll_cdeg = physics.roll_cdeg;
+        }
+        if (NULL != p_meas)
+        {
+            p_meas->pivot_scale_pct = physics.pivot_scale_pct;
+            p_meas->b_mag_heading = physics.heading_gated;
+            p_meas->mag_heading_ddeg = physics.heading_gated ? physics.heading_ddeg : 0U;
         }
     }
 
@@ -280,25 +274,13 @@ static void line_note_retry (void)
     s_retry_seen = retry;
 }
 
-#if !PICO_CAR_PILOT
-/* Forget the search state, e.g. when the obstacle step took the motors. */
-static void line_follow_reset (void)
-{
-    line_follow_init(&g_line_follow);
-    line_update_fault(false);
-}
-#endif
-
 /* The wheels stand after a turn: the drive layer ramps up from rest. */
 static void line_turn_ended (void)
 {
-#if PICO_CAR_PILOT
     drive_init(&g_drive);
     g_pilot_last_ms = line_now_ms();
-#endif
 }
 
-#if PICO_CAR_PILOT
 static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uint32_t now_ms,
                                 motion_feedback_t * p_feedback, pilot_meas_t * p_meas);
 static void line_pilot_note (pilot_cmd_t const * p_cmd);
@@ -308,7 +290,6 @@ static bool line_sonar_fault (void)
 {
     return 0U != (system_fault_get() & (FAULT_SONAR_NO_ECHO_BIT | FAULT_ECHO_LINE_BIT));
 }
-#endif
 
 static void line_finish_turn (line_turn_kind_t turn, line_turn_state_t const * p_state,
                                line_turn_status_t status, uint32_t elapsed_ms, bool b_interrupted)
@@ -320,14 +301,6 @@ static void line_finish_turn (line_turn_kind_t turn, line_turn_state_t const * p
                                                                     : TELEMETRY_EVT_TURN_ABORT),
                                (int16_t)turn, (uint16_t)elapsed_ms, odometer_mm());
 
-#if !PICO_CAR_PILOT
-    if (b_interrupted)
-    {
-        /* The obstacle task has the motors; forget the search state. */
-        line_follow_reset();
-    }
-    else
-#endif
     if (LINE_TURN_DONE == status)
     {
         line_follow_set_side(line_follower(), (LINE_TURN_KIND_UTURN == turn) ? LINE_SIDE_NONE : line_turn_side(p_state));
@@ -360,6 +333,42 @@ static bool line_route_at_junction (line_turn_kind_t turn, ir_sensors_state_t se
     bool const b_side_tape = ((uint8_t)sensors.barcode != BARCODE_LEVEL_SPACE);
     return line_route_observe(&g_route, turn, sensors.left, sensors.right, b_side_tape,
                               feedback.left_displacement_um, feedback.right_displacement_um);
+}
+
+STATIC_ASSERT(LINE_STRIPE_LEFT == (1U << TELEMETRY_JUNCTION_STRIPE_BIT_LEFT), "junction stripe left bit");
+STATIC_ASSERT(LINE_STRIPE_RIGHT == (1U << TELEMETRY_JUNCTION_STRIPE_BIT_RIGHT), "junction stripe right bit");
+STATIC_ASSERT(LINE_STRIPE_CORROBORATED == (1U << TELEMETRY_JUNCTION_STRIPE_BIT_CORROBORATED),
+              "junction stripe corroborated bit");
+
+static void line_report_stripe (void)
+{
+    uint8_t const stripe = line_follow_take_stripe(line_follower());
+    if (0U != stripe)
+    {
+        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE, (uint8_t)TELEMETRY_EVT_JUNCTION,
+                                   (int16_t)TELEMETRY_JUNCTION_KIND_STRIPE, (uint16_t)stripe, odometer_mm());
+    }
+}
+
+/* A probe that selects the branch reports TURN_START instead. */
+static void line_report_probe (line_turn_kind_t turn, line_turn_status_t status)
+{
+    uint32_t outcome = TELEMETRY_JUNCTION_PROBE_ABORTED;
+    if (LINE_TURN_NO_BRANCH == status)
+    {
+        outcome = TELEMETRY_JUNCTION_PROBE_NO_BRANCH;
+    }
+    else if (LINE_TURN_FALLBACK_DONE == status)
+    {
+        outcome = TELEMETRY_JUNCTION_PROBE_FALLBACK_EXIT;
+    }
+    else
+    {
+        /* Aborted. */
+    }
+    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE, (uint8_t)TELEMETRY_EVT_JUNCTION,
+                               (int16_t)TELEMETRY_JUNCTION_KIND_PROBE,
+                               (uint16_t)(((uint32_t)turn * LINE_EVENT_HIGH_BYTE) + outcome), odometer_mm());
 }
 
 /* The follower can take an available exit with the requested direction pending. */
@@ -462,6 +471,18 @@ static void line_begin_turn (line_turn_event_t * p_event, line_turn_kind_t turn)
     }
 }
 
+/* Send the turn's wheel targets. The drive layer holds the last pilot
+ * targets, so a pivot rises from the speed the car had. */
+static int line_turn_drive (line_targets_t * p_targets, uint32_t * p_rise_ms)
+{
+    uint32_t const now_ms = line_now_ms();
+
+    drive_rise(&g_drive, p_targets->left_um_s, p_targets->right_um_s, now_ms - *p_rise_ms,
+               &p_targets->left_um_s, &p_targets->right_um_s);
+    *p_rise_ms = now_ms;
+    return motion_set_speed(p_targets->left_um_s, p_targets->right_um_s, LINE_LEASE_US);
+}
+
 /* One-shot pivot by encoder heading. Every pass reads the feedback
  * snapshot and the line sensors, then line_turn_update() decides the wheel
  * targets. A pilot safety or obstacle decision ends the turn before it can
@@ -474,12 +495,10 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
     line_turn_event_t  event = {.route_opcode = route_opcode};
     uint32_t const     start_ms   = line_now_ms();
     bool               b_snapshot = false;
-    bool               b_obstacle = false;
     bool               b_recovered = false;
-#if PICO_CAR_PILOT
+    uint32_t           rise_ms    = start_ms;
     pilot_cmd_t        cmd = {0};
     uint8_t const      recovery_at_entry = g_recovery_seen;
-#endif
 
     line_begin_turn(&event, turn);
     bool const b_origin_valid = line_turn_origin(p_state, &feedback, turn, b_keep_approach);
@@ -495,7 +514,6 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
             break;
         }
 
-#if PICO_CAR_PILOT
         pilot_meas_t meas;
 
         b_snapshot = line_pilot_measure(sensors, true, line_now_ms(), &feedback, &meas);
@@ -513,23 +531,11 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
             status = LINE_TURN_ABORTED;
             break;
         }
-#else
-        /* The obstacle step runs on every pass of a turn: when it takes the
-         * motors, the turn ends and the obstacle task drives. */
-        if (obstacle_line_step(sensors.left, sensors.right))
-        {
-            b_obstacle = true;
-            status     = LINE_TURN_ABORTED;
-            break;
-        }
-        b_snapshot = (E_OK == motion_feedback_snapshot(&feedback));
-#endif
         feedback.fresh = b_snapshot && feedback.fresh;
         status = line_turn_targets(p_state, &feedback, sensors, &targets, &event);
         if (LINE_TURN_TURNING == status)
         {
-            if (E_OK != motion_set_speed(targets.left_um_s, targets.right_um_s,
-                                         LINE_LEASE_US))
+            if (E_OK != line_turn_drive(&targets, &rise_ms))
             {
                 status = LINE_TURN_ABORTED;
             }
@@ -546,110 +552,26 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
     {
         status = LINE_TURN_ABORTED;
     }
-    if (!b_obstacle)
-    {
-        (void)motion_set_speed(0, 0, LINE_LEASE_US);
-    }
-#if PICO_CAR_PILOT
+    (void)motion_set_speed(0, 0, LINE_LEASE_US);
     if ((uint8_t)PILOT_BEHAVIOUR_NONE != cmd.behaviour)
     {
         line_pilot_note(&cmd);
     }
-#endif
     if (SUPERVISOR_NO_TURN != route_opcode)
     {
         g_route = (line_route_t){.was_crossing = true};
         if (!event.started)
         {
+            line_report_probe(turn, status);
             line_route_unselected(status);
             return b_origin_valid && !b_recovered && (LINE_TURN_ABORTED == status);
         }
     }
-    line_finish_turn(turn, p_state, status, line_now_ms() - event.start_ms, b_obstacle || b_recovered);
+    line_finish_turn(turn, p_state, status, line_now_ms() - event.start_ms,
+                     b_recovered || ((uint8_t)PILOT_BEHAVIOUR_NONE != cmd.behaviour));
     return false;
 }
 
-#if !PICO_CAR_PILOT
-/*!
- * @brief Speed cap of the sonar bumper: the car slows as an obstacle ahead
- *        comes closer, so it reaches the obstacle stop distance slow.
- */
-static int32_t line_bumper_cap (void)
-{
-    obstacle_status_t obstacle;
-    int32_t           cap = LINE_CRUISE_UM_S;
-
-    if (E_OK == obstacle_snapshot(&obstacle))
-    {
-        bool const b_ranged =
-            ((uint8_t)TELEMETRY_ECHO_CLASS_VALID == obstacle.echo_class) ||
-            ((uint8_t)TELEMETRY_ECHO_CLASS_TOO_CLOSE == obstacle.echo_class);
-
-        cap = line_bumper_cap_um_s(b_ranged, obstacle.distance_mm);
-    }
-
-    return cap;
-}
-
-/*!
- * @brief One pass of the line follower. A sensor hit slews a heading
- *        target toward the line and the encoder heading follows it. With
- *        neither sensor the car holds its heading for LINE_GAP_MM (on a
- *        hump LINE_HUMP_GAP_MM), then turns on the spot to find the line. A
- *        failed search is retried from a reverse; when the last retry finds
- *        nothing it stops and waits for a sensor hit.
- */
-static void line_follow_step (ir_sensors_state_t state)
-{
-    line_targets_t       targets = {0, 0};
-    motion_feedback_t    feedback;
-    line_follow_status_t status = LINE_FOLLOW_FOLLOWING;
-    bool const           b_was_stopped =
-        ((uint8_t)LINE_FOLLOW_STOPPED == g_line_follow.status);
-    if (E_OK == motion_feedback_snapshot(&feedback))
-    {
-        g_line_travel_um = (feedback.left_displacement_um +
-                            feedback.right_displacement_um) /
-                           LINE_WHEEL_COUNT;
-        g_line_heading_deci = line_heading_deci(feedback.left_displacement_um,
-                                                feedback.right_displacement_um);
-    }
-    uint8_t prefix_mm;
-    bool const b_progress = line_barcode_advanced(&prefix_mm);
-    if (ir_barcode_recent() && line_follow_marker_sample(&g_line_follow, state.left, state.right, b_progress, prefix_mm,
-                                                         g_line_heading_deci, g_line_travel_um, line_now_ms(), &targets))
-    {
-        line_targets_cap(&targets, line_bumper_cap());
-        (void)motion_set_speed(targets.left_um_s, targets.right_um_s, LINE_LEASE_US);
-        return;
-    }
-
-    line_follow_set_hump(&g_line_follow, line_on_hump(NULL));
-    status = line_follow_update(&g_line_follow, state.left, state.right,
-                                g_line_heading_deci, g_line_travel_um,
-                                line_now_ms(), &targets);
-    /* Line lost means the gap is over; the car turns on the spot, then stops
-     * when both turns find nothing. A sensor hit ends it. */
-    line_update_fault((LINE_FOLLOW_SEARCHING == status) ||
-                      (LINE_FOLLOW_STOPPED == status));
-    line_note_retry();
-    if ((LINE_FOLLOW_STOPPED == status) && !b_was_stopped)
-    {
-        /* A second line_lost event, with the search turn in p2, marks the stop. */
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_LOST,
-                                   (int16_t)g_line_follow.side,
-                                   (uint16_t)(LINE_SEARCH_SWEEP_DECI / DECI_PER_DEG), odometer_mm());
-    }
-    line_targets_cap(&targets, line_bumper_cap());
-    (void)motion_set_speed(targets.left_um_s, targets.right_um_s,
-                           LINE_LEASE_US);
-}
-#endif
-
-#if PICO_CAR_PILOT
-/* The decision event packs behaviour << 8 | reason. */
-#define PILOT_EVENT_BEHAVIOUR_MUL (256U)
 #define PILOT_SCAN_CLEARANCE_UNVERIFIED (4)
 
 static void line_pilot_profile (look_t const * p_look, uint8_t sequence, int8_t probe_side,
@@ -733,6 +655,17 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
         line_pilot_profile(&g_pilot.avoidance.look, g_pilot.avoidance.course_scan_seq,
                            g_pilot.avoidance.course_side, 0U, 0, INT16_MAX);
     }
+    /* The log still holds the reason of the stop this attempt clears. */
+    uint8_t const attempt = pilot_log_recovery(&g_pilot_log, g_pilot.recoveries);
+    if (0U != attempt)
+    {
+        LOG_INFO(LOG_TASK_LINE, LOG_MOD_NONE, "pilot: recovery %u of %u from reason %u", (unsigned)attempt,
+                 (unsigned)PILOT_RECOVERIES_MAX, (unsigned)g_pilot_log.reason);
+        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE, (uint8_t)TELEMETRY_EVT_RECOVERY,
+                                   (int16_t)g_pilot_log.reason,
+                                   (uint16_t)((PILOT_RECOVERIES_MAX * LINE_EVENT_HIGH_BYTE) + attempt),
+                                   odometer_mm());
+    }
     if (pilot_log_note(&g_pilot_log, p_cmd))
     {
         if ((uint8_t)PILOT_REASON_COURSE_RECOVERY == p_cmd->reason)
@@ -748,7 +681,7 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
         (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
                                    (uint8_t)TELEMETRY_EVT_PILOT_DECISION,
                                    p_cmd->speed_mm_s,
-                                   (uint16_t)((p_cmd->behaviour * PILOT_EVENT_BEHAVIOUR_MUL) +
+                                   (uint16_t)((p_cmd->behaviour * LINE_EVENT_HIGH_BYTE) +
                                               p_cmd->reason),
                                    odometer_mm());
     }
@@ -773,6 +706,12 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
         (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
                                    (uint8_t)TELEMETRY_EVT_BYPASS_END, (int16_t)g_pilot.avoidance.exit_width_mm,
                                    g_pilot.avoidance.exit_breadth_mm, odometer_mm());
+    }
+    if (p_cmd->b_rejoin_check)
+    {
+        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                   (uint8_t)TELEMETRY_EVT_REJOIN, p_cmd->rejoin_head_deci,
+                                   (uint16_t)p_cmd->rejoin_y_mm, odometer_mm());
     }
 }
 
@@ -901,7 +840,9 @@ static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uin
     static bool       s_contiguous;
     motion_status_t   motion;
     bool const        b_motion   = (E_OK == motion_snapshot(&motion, p_feedback, NULL));
-    bool const        b_held     = !b_motion || (0U != motion.hold_mask);
+    /* A motion fault that clears in place refuses commands like a hold. */
+    bool const        b_held     = !b_motion || (0U != motion.hold_mask) ||
+                                   ((uint8_t)MOTION_STATE_FAULT == motion.state);
     bool const        b_feedback_fresh = b_motion && line_turn_odometry_valid(p_feedback);
 
     if (b_motion && motion.stop_requested)
@@ -966,11 +907,12 @@ static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uin
     p_meas->right_um      = s_right_um;
     p_meas->now_ms        = now_ms;
     p_meas->stamp_ms      = g_pilot_stamp_ms;
+    p_meas->b_wheel_invalid = !b_feedback_fresh;
     p_meas->b_line_left   = state.left;
     p_meas->b_line_right  = state.right;
     p_meas->b_held        = b_held || !b_line_fresh;
     p_meas->b_barcode     = ir_barcode_recent();
-    p_meas->b_marker_progress = line_barcode_advanced(&p_meas->marker_prefix_mm);
+    p_meas->b_marker_progress = !g_turning && line_barcode_advanced(&p_meas->marker_prefix_mm);
     p_meas->b_bounded_course = !b_continuous_floor;
     if (b_feedback_fresh && p_feedback->speed_valid[0] && p_feedback->speed_valid[1])
     {
@@ -996,7 +938,11 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
     int16_t           roll_cdeg = 0;
     bool const        b_feedback_fresh = line_pilot_measure(state, b_line_fresh, now_ms, &feedback, &meas);
 
-    line_follow_set_hump(&g_pilot.follow, line_on_hump(&roll_cdeg));
+    bool const        b_hump = line_on_hump(&roll_cdeg, &meas);
+
+    line_follow_set_hump(&g_pilot.follow, b_hump);
+    /* A climb also loads the wheels: only level ground tells a push. */
+    meas.b_loaded = !b_hump && supervisor_wheels_loaded();
     line_step_with_profile(&meas, &cmd);
     if (((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE != cmd.behaviour) && (SUPERVISOR_NO_TURN != route_opcode))
     {
@@ -1032,7 +978,86 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
     }
     line_pilot_note(&cmd);
 }
-#endif
+
+/* Keep the line task as the owner of wheel commands while verifying START. */
+static bool line_start_clearance (uint8_t * p_seq, uint32_t * p_since_us,
+                                  bool * p_clear, uint32_t now_us)
+{
+    uint32_t const ping = obstacle_ping_read();
+    if (line_sonar_fault() || obstacle_pack_ping_is_reply(ping) || obstacle_pack_ping_servo(ping) != 0)
+    {
+        *p_clear = false;
+        return false;
+    }
+    uint8_t const seq = obstacle_pack_ping_seq(ping);
+    if (seq != *p_seq)
+    {
+        uint8_t const echo = obstacle_pack_ping_echo(ping);
+        *p_seq = seq;
+        *p_since_us = now_us;
+        *p_clear = echo == LOOK_ECHO_OPEN ||
+                   (echo == LOOK_ECHO_VALID && obstacle_pack_ping_mm(ping) >= HUG_STANDOFF_MM);
+    }
+    return *p_clear && now_us - *p_since_us <= PILOT_FORWARD_PING_STALE_MS * LINE_US_PER_MS;
+}
+
+static bool line_start_check (bool b_line_fresh)
+{
+    static start_check_t s_check;
+    static uint32_t s_ping_us;
+    static uint8_t s_ping_seq;
+    static uint8_t s_generation;
+    static bool s_armed;
+    static bool s_clear;
+    bool armed = false;
+    uint8_t const generation = supervisor_armed_start(&armed);
+    if (!armed)
+    {
+        s_armed = false;
+        return false;
+    }
+    if (!s_armed || s_generation != generation)
+    {
+        start_check_begin(&s_check, in_w(TIMER_TIMERAWL));
+        s_ping_seq = obstacle_pack_ping_seq(obstacle_ping_read());
+        s_clear = false;
+        s_generation = generation;
+        s_armed = true;
+    }
+    if (s_check.phase == START_CHECK_PASSED)
+    {
+        return false;
+    }
+    if (s_check.phase == START_CHECK_FAILED)
+    {
+        (void)motion_set_speed(0, 0, LINE_LEASE_US);
+        return true;
+    }
+
+    motion_status_t motion;
+    motion_feedback_t wheels = {0};
+    physics_status_t physics = {0};
+    bool const motion_valid = (E_OK == motion_snapshot(&motion, &wheels, NULL)) &&
+        motion.ready && !motion.stop_requested && motion.hold_mask == 0U && motion.fault == 0U &&
+        line_turn_odometry_valid(&wheels) && wheels.speed_valid[0] && wheels.speed_valid[1];
+    bool const imu_valid = (E_OK == physics_snapshot(&physics)) && physics.ready &&
+        physics.calibrated && physics.attitude_sample_valid && !physics.attitude_unknown &&
+        physics.attitude_state == TELEMETRY_ATTITUDE_STATE_OK;
+    uint32_t const now_us = in_w(TIMER_TIMERAWL);
+    bool const clear = line_start_clearance(&s_ping_seq, &s_ping_us, &s_clear, now_us);
+    bool const ready = b_line_fresh && clear && motion_valid && imu_valid &&
+        now_us - physics.forward_sample_us <= START_CHECK_IMU_AGE_US;
+    start_check_phase_t const phase = start_check_step(&s_check, now_us, ready, &wheels,
+                                                      physics.forward_sample_us, physics.forward_specific_mg);
+    int32_t const speed = phase == START_CHECK_PROBING ? START_CHECK_SPEED_UM_S : 0;
+    g_pilot_last_ms = line_now_ms();
+    (void)motion_set_speed(speed, speed, LINE_LEASE_US);
+    if (phase == START_CHECK_FAILED)
+    {
+        supervisor_start_check_failed(generation);
+    }
+    return true;
+}
 
 void line_task_stats (line_task_stats_t * p_stats)
 {
@@ -1057,7 +1082,6 @@ void line_task_run (void)
 {
     line_turn_state_t turn_state = {0};
     bool b_interrupted_probe = false;
-#if PICO_CAR_PILOT
     /* Set up before the loop: a turn that ends first sets the side on the
      * follower, and a later init would wipe it. */
     pilot_init(&g_pilot);
@@ -1066,11 +1090,16 @@ void line_task_run (void)
     g_pilot_stamp_ms = line_now_ms();
     g_pilot_reset_seen = supervisor_reset_count();
     g_pilot_start_seen = supervisor_start_snapshot(&g_continuous_floor);
-#endif
     for (;;)
     {
         line_sample_t const sample       = ir_get_line_sample();
         bool const          b_line_fresh = line_sample_fresh(sample.timestamp_us);
+        liveness_kick(LIVE_LINE);
+        if (line_start_check(b_line_fresh))
+        {
+            ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
+            continue;
+        }
         uint8_t             source       = 0U;
         uint8_t const       taken        = supervisor_poll_turn(&source);
         uint8_t const       route_opcode = ((VEHICLE_SRC_BARCODE == source) && vehicle_is_junction_choice(taken)) ?
@@ -1081,16 +1110,9 @@ void line_task_run (void)
 
         line_follow_set_route_candidate(line_follower(),
                                         (SUPERVISOR_NO_TURN != route_opcode) && line_route_has_candidate(&g_route));
-        liveness_kick(LIVE_LINE);
         if (SUPERVISOR_NO_TURN != taken)
         {
-#if PICO_CAR_PILOT
             bool const b_available = pilot_log_is_following(&g_pilot_log);
-#else
-            obstacle_status_t obstacle;
-            bool const b_available = (E_OK == obstacle_snapshot(&obstacle)) ?
-                (TELEMETRY_OBSTACLE_STATE_MONITOR == obstacle.state) : (SUPERVISOR_NO_TURN == route_opcode);
-#endif
             if (!b_line_fresh || !b_available)
             {
                 g_route = (line_route_t){0};
@@ -1110,24 +1132,8 @@ void line_task_run (void)
             g_route = (line_route_t){0};
         }
 
-#if PICO_CAR_PILOT
         line_pilot_step(sample.state, b_line_fresh, route_opcode);
-#else
-        if (!b_line_fresh)
-        {
-            (void)motion_set_speed(0, 0, LINE_LEASE_US);
-        }
-        else if (obstacle_line_step(sample.state.left, sample.state.right))
-        {
-            /* obstacle is holding the car or driving round an obstacle. A
-             * search that was running would otherwise time out on return. */
-            line_follow_reset();
-        }
-        else
-        {
-            line_follow_step(sample.state);
-        }
-#endif
+        line_report_stripe();
         ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
     }
 }

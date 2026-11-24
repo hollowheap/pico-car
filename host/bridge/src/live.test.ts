@@ -2,19 +2,27 @@ import { describe, expect, it } from "vitest";
 import { encodeLivePacket, encodeLiveStatus } from "./live.js";
 
 describe("live packets", () => {
-  it("wraps decoded packets in the dashboard message envelope", () => {
+  it("keeps the history receipt ID in the dashboard message envelope", () => {
     expect(
       JSON.parse(
         encodeLivePacket({
           timestamp: 10,
+          topic: "car/s",
           packet: "status",
+          receiptId: "first-receipt",
+          receiptOrder: 20,
+          timelineMs: 12,
           values: { speed_mms: 150 },
         }),
       ),
     ).toEqual({
       type: "packet",
       timestamp: 10,
+      topic: "car/s",
       packet: "status",
+      receiptId: "first-receipt",
+      receiptOrder: 20,
+      timelineMs: 12,
       values: { speed_mms: 150 },
     });
   });
@@ -26,6 +34,7 @@ describe("live packets", () => {
           mqtt: "connected",
           packets: 3,
           lastPacketAt: 10,
+          historyStorage: "degraded",
         }),
       ),
     ).toEqual({
@@ -33,6 +42,7 @@ describe("live packets", () => {
       mqtt: "connected",
       packets: 3,
       lastPacketAt: 10,
+      historyStorage: "degraded",
     });
   });
 });

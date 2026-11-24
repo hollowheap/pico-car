@@ -817,15 +817,20 @@ test_publish_remaining_length_encoding (void)
     CHECK (r.fake.sent[mark + 4u] == 0x01u);
     CHECK (r.fake.sent[mark + 5u] == (uint8_t) 's');
 
-    /* n = 250 -> 253 (0xFD 0x01), the largest packet that fits the 256-byte
-       TX buffer (1 + 2 + 253). */
-    mark = fake_mark (&r.fake);
-    publish_n (&r, 250u, &res);
-    CHECK (res == MQTT_OK);
-    CHECK ((r.fake.sent_len - mark) == 256u);
-    CHECK (r.fake.sent[mark + 1u] == 0xFDu);
-    CHECK (r.fake.sent[mark + 2u] == 0x01u);
-    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    /* Largest payload that fits MQTT_TX_BUFFER_SIZE (1 fixed + 2 rem_len +
+       3 topic_hdr + n = MQTT_TX_BUFFER_SIZE). */
+    {
+        uint16_t const max_n = (uint16_t)(MQTT_TX_BUFFER_SIZE - 6u);
+        uint16_t const rem = (uint16_t)(max_n + 3u);
+
+        mark = fake_mark (&r.fake);
+        publish_n (&r, max_n, &res);
+        CHECK (res == MQTT_OK);
+        CHECK ((r.fake.sent_len - mark) == MQTT_TX_BUFFER_SIZE);
+        CHECK (r.fake.sent[mark + 1u] == (uint8_t)((rem & 0x7Fu) | 0x80u));
+        CHECK (r.fake.sent[mark + 2u] == (uint8_t)(rem >> 7u));
+        CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    }
 }
 
 static void
@@ -834,11 +839,12 @@ test_publish_oversize (void)
     rig_t r;
     mqtt_result_t res;
     uint32_t mark;
+    uint16_t const max_n = (uint16_t)(MQTT_TX_BUFFER_SIZE - 6u);
     uint16_t n;
 
-    /* 251..253 bytes fit the body but not the fixed header: the same
+    /* max_n + 1 .. max_n + 4 fit the body but not the fixed header: the same
        up-front rejection, nothing sent, session kept. */
-    for (n = 251u; n <= 254u; n++)
+    for (n = (uint16_t)(max_n + 1u); n <= (uint16_t)(max_n + 4u); n++)
     {
         rig_init (&r);
         rig_handshake (&r, 0u);
@@ -849,9 +855,9 @@ test_publish_oversize (void)
         CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
     }
 
-    /* 250 bytes is the largest that fits, and it still goes out. */
+    /* max_n bytes is the largest that fits, and it still goes out. */
     mark = fake_mark (&r.fake);
-    publish_n (&r, 250u, &res);
+    publish_n (&r, max_n, &res);
     CHECK (res == MQTT_OK);
     CHECK ((r.fake.sent_len - mark) == MQTT_TX_BUFFER_SIZE);
 }
@@ -1866,16 +1872,26 @@ static void
 test_reconnect_after_bad_connack (void)
 {
     rig_t r;
-    static const uint8_t bad[5] = { 0x20, 0x03, 0x00, 0x00, 0x00 };
+    static const struct
+    {
+        uint8_t  packet[5];
+        uint16_t len;
+    } rejected[] = {
+        { { 0x20, 0x03, 0x00, 0x00, 0x00 }, 5u },
+        { { 0x20, 0x02, 0x00, 0x05 }, 4u },
+    };
 
-    rig_init (&r);
-    CHECK (mqtt_client_poll (&r.client, 0u) == MQTT_OK);
-    fake_feed (&r.fake, bad, sizeof (bad));
-    CHECK (mqtt_client_poll (&r.client, 100u) == MQTT_ERR_PROTOCOL);
-    CHECK (mqtt_client_poll (&r.client, 100u + RECONNECT_MS - 1u) == MQTT_OK);
-    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
-    CHECK (mqtt_client_poll (&r.client, 100u + RECONNECT_MS) == MQTT_OK);
-    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_CONNACK);
+    for (size_t idx = 0u; idx < sizeof (rejected) / sizeof (rejected[0]); ++idx)
+    {
+        rig_init (&r);
+        CHECK (mqtt_client_poll (&r.client, 0u) == MQTT_OK);
+        fake_feed (&r.fake, rejected[idx].packet, rejected[idx].len);
+        CHECK (mqtt_client_poll (&r.client, 100u) == MQTT_ERR_PROTOCOL);
+        CHECK (mqtt_client_poll (&r.client, 100u + RECONNECT_MS - 1u) == MQTT_OK);
+        CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+        CHECK (mqtt_client_poll (&r.client, 100u + RECONNECT_MS) == MQTT_OK);
+        CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_CONNACK);
+    }
 }
 
 static void

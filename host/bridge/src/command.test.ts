@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createCommandSession, encodeCommand, parseCommandRequest } from "./command.js";
-import type { ProtocolSchema } from "./schema.js";
+import { createCommandSession, encodeCommand, parseCommandRequest, publishWithTimeout } from "./command.js";
+import { loadProtocolSchema, type ProtocolSchema } from "./schema.js";
 
 const schema: ProtocolSchema = {
   topics: { command: "c" },
@@ -33,6 +33,29 @@ describe("commands", () => {
     expect(() => parseCommandRequest({ action: "turn" }, schema)).toThrow("unknown command");
     expect(() => parseCommandRequest(null, schema)).toThrow("object");
   });
+
+  it("refuses the withdrawn stationary command in the shipped schema", () => {
+    const shipped = loadProtocolSchema(new URL("../../../protocol/telemetry.yaml", import.meta.url).pathname);
+    expect(parseCommandRequest({ action: "start" }, shipped)).toEqual({ action: "start" });
+    expect(() => parseCommandRequest({ action: "start_stationary" }, shipped)).toThrow("unknown command");
+  });
+
+  it("rejects inherited Object.prototype property names instead of encoding STOP", () => {
+    for (const action of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
+      expect(() => parseCommandRequest({ action }, schema)).toThrow("unknown command");
+      expect(() => encodeCommand(schema, action, 1, 1, 1)).toThrow("unknown command");
+    }
+  });
+
+  it("bounds MQTT PUBACK waiting with a timeout", async () => {
+    const hanging = { publish: () => {} };
+    await expect(publishWithTimeout(hanging, "car/c", Buffer.alloc(9), 20)).rejects.toThrow(/timed out/i);
+
+    const immediate = {
+      publish: (_topic: string, _payload: Buffer, _opts: { qos: 1 }, cb: (err?: Error) => void) => cb(),
+    };
+    await expect(publishWithTimeout(immediate, "car/c", Buffer.alloc(9), 50)).resolves.toBeUndefined();
+  });
 });
 
 describe("command session", () => {
@@ -52,11 +75,43 @@ describe("command session", () => {
     expect([...session.frame(schema, "start", 0)!]).toEqual([
       0xff, 0xff, 0x12, 0x34, 0x01, 0x00, 0x00, 0x00, 0x2a,
     ]);
-    // The counter wraps; a car reboot gives a new run ID in the next heartbeat.
-    session.noteHeartbeat({ run_id: 0x0042, uptime_s: 0x01020304 }, 10);
+    session.noteHeartbeat({ run_id: 0x1234, uptime_s: 0x01020304 }, 10);
     expect([...session.frame(schema, "stop", 10)!]).toEqual([
-      0x00, 0x00, 0x00, 0x42, 0x00, 0x01, 0x02, 0x03, 0x04,
+      0x00, 0x00, 0x12, 0x34, 0x00, 0x01, 0x02, 0x03, 0x04,
     ]);
+  });
+
+  it("waits for current diagnostics before sending commands to a new run", () => {
+    const session = readySession(100, 99);
+    session.noteHeartbeat({ run_id: 0x0042, uptime_s: 1 }, 10);
+    expect(session.frame(schema, "stop", 10)).toBeNull();
+    session.noteDiag({});
+    expect(session.frame(schema, "stop", 10)).toBeNull();
+
+    // A direct sender already reached id 101 on this run.
+    session.noteDiag({ cmd_last_id: 101 });
+    expect([...session.frame(schema, "stop", 10)!]).toEqual([
+      0x00, 0x66, 0x00, 0x42, 0x00, 0x00, 0x00, 0x00, 0x01,
+    ]);
+  });
+
+  it("can receive diagnostics before the first heartbeat", () => {
+    const session = createCommandSession(100);
+    session.noteDiag({ cmd_last_id: 101 });
+    session.noteHeartbeat({ run_id: 0x0042, uptime_s: 5 }, 10);
+    expect(cmdIdOf(session.frame(schema, "start", 10))).toBe(102);
+  });
+
+  it("keeps STOP newer after a repeated pre-START diagnostic", () => {
+    const session = readySession(0x7fff + 500, 500);
+    const started = cmdIdOf(session.frame(schema, "start", 0));
+
+    session.noteDiag({ cmd_last_id: 500 });
+
+    const stopped = cmdIdOf(session.frame(schema, "stop", 0));
+    const ahead = (stopped - started) & 0xffff;
+    expect(ahead).toBeGreaterThan(0);
+    expect(ahead).toBeLessThan(0x8000);
   });
 
   it("ignores a heartbeat without a run ID or an uptime", () => {

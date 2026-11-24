@@ -19,7 +19,6 @@
 #define CONTOUR_LINE_WAIT_MS  (1000U)
 #define CONTOUR_HALF_TURN     (1800)
 #define CONTOUR_QUARTER_TURN  (CONTOUR_HALF_TURN / HALF_DIVISOR)
-#define CONTOUR_PERCENT_FULL  (100)
 
 static bool contour_offer_valid(pilot_contour_plan_t const * p_offer, pilot_meas_t const * p_meas)
 {
@@ -71,7 +70,7 @@ static bool contour_feedback(pilot_contour_t * p_run, pilot_meas_t const * p_mea
     dd = dr - dl;
     if (((dl < 0) && (dr > 0)) || ((dl > 0) && (dr < 0)))
     {
-        dd = (dd * HUG_PIVOT_PCT) / CONTOUR_PERCENT_FULL;
+        dd = hug_pivot_turn_um(dd, p_meas->pivot_scale_pct);
     }
     mid = (int32_t)wheel_yaw_deci((int64_t)p_run->diff_um + (dd / HALF_DIVISOR));
     p_run->x_um += geom_mul_q14(ds, geom_cos_q14(mid));

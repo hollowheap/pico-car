@@ -1,6 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
 
 import { getLinkUrl, getServiceUrl } from './config';
+import { createFrameLog } from './frame-log';
 import { emptyStore } from './telemetry-store';
 import { useLink, type LinkState } from './useLink';
 
@@ -11,8 +12,8 @@ const initial: LinkState = {
     lastPacket: null,
     bridge: { mqtt: 'unknown', packets: 0, lastPacketAt: null },
   },
-  packets: [],
   store: emptyStore(),
+  frameLog: createFrameLog(),
 };
 
 const TelemetryContext = createContext<LinkState>(initial);

@@ -1,36 +1,18 @@
-# Repo Conventions
+# pico-car
 
-## Style & Standards
-- Enforce BARR-C:2018 in `src/` with `-Werror`.
-- Application C, the PIO adapter and the compiled Pico SDK dependencies use `-std=c99`. Application code in `src/` follows BARR-C:2018 with `-Werror`. The μT-Kernel port uses `-std=gnu11`.
-- Format: `.clang-format` and `.clang-tidy`.
-- Keep μT-Kernel task attributes literal in `src/main.c`; do not add `PRIO_*` constants.
-- Log with `LOG_*` from `platform/log.h`: `[<SEV>](<task>:<module>) message`. Never call `tm_printf` in `src/`.
+Pico W line-following firmware and LAN ground station.
 
-## Architecture & Layout
-- Dual Hierarchy: public interfaces in `include/<subsystem>/`, implementations in `src/<subsystem>/`.
-- Ports & Adapters: domain logic is pure C (driver-free); `src/main.c` is sole composition root.
-- Ground station CLI planned under `host/cli/`; host unit tests live under `tests/` on feature branches.
+## Scope
 
-## Branching & Commits
-- Isolated feature branches: `feature/<topic>` (never commit on `main`).
-- Conventional Commits with linear history (rebase, `--ff-only`).
-- Signed commits required (`-S`); never bypass signing or hooks.
-- Never push unless explicitly asked.
-- Treat `package-lock.json` separately in PR sizing; review lockfiles apart from code.
+- Firmware in `src` and `include`, host tests in `tests`, dashboard, bridge and CLI in `host`.
+- See [README.md](README.md) for build and ground-station setup. Configure `cmake -S tests -B build-tests`, build with CMake, then run `ctest --test-dir build-tests --no-tests=error`.
+- See the [build](skills/pico-firmware-build/SKILL.md) and [lint](skills/barr-c-lint/SKILL.md) runbooks. Run dashboard typecheck and dashboard and bridge tests with npm in the Nix shell.
 
-## Essential Commands
-- Configure: `nix develop -c ./configure.sh`
-- Build: `nix develop -c ./build.sh`
-- Host tests on `feature/restructure`: `cmake -S tests -B build && cmake --build build && ctest --test-dir build`
-- Ground station: `npm run setup` once, then `npm start` from the repository root.
+## Conventions
 
-## Build & Environment
-- Nix devshell: `nix develop -c ./configure.sh` and `nix develop -c ./build.sh`.
-- Board target: Raspberry Pi Pico W (`pico_w`).
-- Submodules: Pinned lean forks (`lib/pico-sdk`, `lib/mtk3smp-rp2040`).
-
-## Concurrency & Safety
-- RTOS: μT-Kernel 3.0 SMP (`CNF_SMP=1`) on dual Cortex-M0+.
-- Multi-core exclusion: hardware SIO spinlocks; never use `hw_set_bits` on SRAM.
-- Core pinning: Core 0 for real-time control (Pri 1–5), Core 1 for network (Pri 6–7).
+- Build `pico_w` with pinned SDK and kernel forks. Application, PIO and SDK use C99. Kernel uses GNU11. Follow BARR-C:2018, clang-format and clang-tidy. Keep `-Werror`, lint and tests enabled.
+- Match public `include/<subsystem>` to `src/<subsystem>`. Keep domain C driver-free. Create tasks only in `src/main.c` with literal attributes and no `PRIO_*` constants. With `CNF_SMP=1`, core 0 runs control at priorities 1–5 and CYW43/lwIP at 4. Core 1 runs MQTT at 6.
+- Use SIO spinlocks, never `hw_set_bits` on SRAM. Use fixed buffers, packed fields and `STATIC_ASSERT`. Log with `LOG_*` as `[<SEV>](<task>:<module>)`, never `tm_printf`.
+- Read source before editing. Fix causes with minimal changes. Reproduce bugs with failing tests and preserve assertions. Explain non-obvious reasons in comments, document behavior changes and measure tuning on the car. Keep artifact IDs out of code, comments and commits.
+- Commit or push only when asked. Use isolated `feature/<topic>` branches, single-purpose signed Conventional Commits, hooks and `--ff-only` merges. Stage explicit paths. Back up before rewrites and force-push only with `--force-with-lease`.
+- Keep secrets in the environment or local CMake cache. Review `package-lock.json` separately.

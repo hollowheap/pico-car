@@ -1,4 +1,7 @@
-import { BIT_FIELDS, ENUMS, PACKETS } from './schema.generated';
+import { BIT_FIELDS, ENUMS, FAULT_BITS, PACKETS } from './schema.generated';
+
+const SPEED_FAULTS = (1 << FAULT_BITS.encoderDead) | (1 << FAULT_BITS.staleSpeed);
+export const hasSpeedFault = (faults = 0) => (faults & SPEED_FAULTS) !== 0;
 
 export type PacketName = keyof typeof PACKETS;
 export type EnumName = keyof typeof ENUMS;
@@ -38,8 +41,12 @@ function readField(view: DataView, type: FieldType, offset: number): number {
  * `slots` with count N becomes slots_0 .. slots_<N-1>.
  */
 export function decodePacket(name: PacketName, payload: Uint8Array): Record<string, number> {
-  const layout = name === 'diag' && payload.byteLength === PACKETS.diag_counts.wireSize ? 'diag_counts' : name;
-  const packet: AnyPacket = PACKETS[layout];
+  let packet: AnyPacket = PACKETS[name];
+  if (name === 'status' && payload.byteLength === PACKETS.status_pivot.wireSize) {
+    packet = PACKETS.status_pivot;
+  } else if (name === 'diag' && payload.byteLength === PACKETS.diag_counts.wireSize) {
+    packet = PACKETS.diag_counts;
+  }
   if (payload.byteLength !== packet.wireSize) {
     throw new RangeError(`${name} packet is ${payload.byteLength} bytes, expected ${packet.wireSize}`);
   }
@@ -67,6 +74,11 @@ const HEADING_INVALID = 0xffff;
 /** Convert heading_ddeg (0.1 degree) to degrees, or null when invalid. */
 export function headingDegrees(ddeg: number | undefined): number | null {
   return ddeg === undefined || ddeg === HEADING_INVALID ? null : ddeg / 10;
+}
+
+/** The vehicle reports a 50–100% pivot witness, or zero when unavailable. */
+export function pivotScalePercent(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isInteger(value) && value >= 50 && value <= 100 ? value : undefined;
 }
 
 function labelName(name: string): string {

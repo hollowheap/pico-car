@@ -27,6 +27,7 @@
 #define PERCENT_FULL        (100U)
 #define NARROW_MIN_PCT      (60U)
 #define NARROW_MAX_PCT      (150U)
+#define GLITCH_MAX_PCT      (30U)
 #define FIRST_WIDE_MIN_PCT  (180U)
 #define FIRST_WIDE_MAX_PCT  (360U)
 #define LEARNED_WIDE_MIN_PCT (80U)
@@ -347,6 +348,11 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
                               uint16_t elem_width_um)
 {
     return barcode_parser_input_info(state, is_elem_space, elem_width_um, NULL);
+}
+
+bool barcode_parser_is_glitch (barcode_parser_t const * state, uint16_t elem_width_um)
+{
+    return in_width_band(elem_width_um, state->narrow_width_um, 0U, GLITCH_MAX_PCT);
 }
 
 /*** end of file ***/

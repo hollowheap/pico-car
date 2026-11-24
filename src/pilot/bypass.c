@@ -4,7 +4,10 @@
  */
 #include "hug_internal.h"
 
+#include <stddef.h>
+
 #include "geometry.h"
+#include "pilot/pilot.h"
 #include "platform/units.h"
 #include "track/line_control.h"
 
@@ -33,9 +36,12 @@
 #define SPIN_DECI_S     ((2 * PIVOT_WHEEL_MM_S * DECI_PER_RAD) / CHASSIS_WHEEL_TRACK_MM)
 #define SPIN_SLOW_DECI_S ((2 * (SPEED_MM_S / 3) * DECI_PER_RAD) / CHASSIS_WHEEL_TRACK_MM)
 #define AIM_TOL         (15)
+#define AIM_HOLD_TOL    (30)
 #define CONTACT_JUMP_MM (250)
 #define UNSEEN_EDGE     (INT16_MAX)
 #define MIN_MOVE_MM     (30)
+#define SIDE_STEP_MM    (60)
+#define SIDE_CLEAR_CONFIRM (2U)
 #define TRACK_STEP      (100)
 #define TRAVEL_LIMIT_MM (1500)
 #define FORWARD_AGE_MS  (400U)
@@ -83,7 +89,6 @@ static void enter(hug_t * p_hug, bypass_phase_t phase, int32_t aim, int32_t dist
     bypass_t * const p_run = &p_hug->bypass;
     p_run->phase = (uint8_t)phase;
     p_run->b_motor = false;
-    p_run->b_stalled = false;
     p_hug->goal_head = (int16_t)aim;
     p_run->axis_start_mm = (int16_t)axis_mm(p_hug, aim);
     p_run->target_mm = (int16_t)distance;
@@ -124,16 +129,21 @@ void bypass_begin(hug_t * p_hug, hug_in_t const * p_in, uint16_t range_mm)
     enter(p_hug, BYPASS_CONTACT, 0, 0);
 }
 
-static bool turn(hug_t const * p_hug, int32_t aim, hug_out_t * p_out)
+static bool turn_within(hug_t const * p_hug, int32_t aim, int32_t tol, hug_out_t * p_out)
 {
     int32_t const err = geom_wrap_deci(aim - hug_pose_heading_deci(p_hug));
     int32_t const rate = (geom_abs(err) <= TRACK_STEP) ? SPIN_SLOW_DECI_S : SPIN_DECI_S;
-    if (geom_abs(err) <= AIM_TOL)
+    if (geom_abs(err) <= tol)
     {
         return true;
     }
     p_out->turn_deci_s = (int16_t)((err > 0) ? rate : -rate);
     return false;
+}
+
+static bool turn(hug_t const * p_hug, int32_t aim, hug_out_t * p_out)
+{
+    return turn_within(p_hug, aim, AIM_TOL, p_out);
 }
 
 static bool is_point(hug_in_t const * p_in)
@@ -148,7 +158,8 @@ static bool ray(hug_t * p_hug, hug_in_t const * p_in, int32_t aim, int32_t gaze,
 {
     bypass_t * const p_run = &p_hug->bypass;
     int32_t const servo = geom_wrap_deci(gaze - aim);
-    if ((geom_abs(servo) > OBSTACLE_SERVO_LIMIT_DECI) || !turn(p_hug, aim, p_out) ||
+    int32_t const tol = (p_run->b_pending || p_run->b_look_ready) ? AIM_HOLD_TOL : AIM_TOL;
+    if ((geom_abs(servo) > OBSTACLE_SERVO_LIMIT_DECI) || !turn_within(p_hug, aim, tol, p_out) ||
         !p_in->b_stationary)
     {
         p_run->b_pending = false;
@@ -158,7 +169,7 @@ static bool ray(hug_t * p_hug, hug_in_t const * p_in, int32_t aim, int32_t gaze,
     bool const b_matched = p_run->b_pending && obstacle_ping_reply_matches(
         p_in->b_ping_reply, p_in->ping_seq, p_in->ping_servo_deci,
         p_run->seq, servo, OBSTACLE_PING_MAX_QUANTIZATION_DECI) &&
-        (geom_abs(geom_wrap_deci(hug_pose_heading_deci(p_hug) - p_run->requested_head)) <= AIM_TOL);
+        (geom_abs(geom_wrap_deci(hug_pose_heading_deci(p_hug) - p_run->requested_head)) <= AIM_HOLD_TOL);
     bool const b_expired = p_run->b_pending && (p_in->now_ms - p_run->request_ms >= HUG_REPLY_TIMEOUT_MS);
     if (b_matched && !b_expired)
     {
@@ -303,6 +314,50 @@ static bool spans_front(hug_t const * p_hug, look_t const * p_look)
     return supported && (hits >= SLOT_COUNT / HALF_DIVISOR + 1U) && (left >= wing) && (right <= -wing);
 }
 
+/* A post wholly across the entry axis can have a clear side that starts
+ * before the centre ray. Preserve that signed bound inside the tape corridor. */
+static int32_t front_room(hug_t const * p_hug, look_t const * p_look, int32_t angle)
+{
+    bypass_t const * const run = &p_hug->bypass;
+    int32_t const range = run->contact_mm;
+    if (p_hug->b_approach_tape && run->b_anchor && run->b_center_clear)
+    {
+        int32_t outer_hit = INT32_MIN;
+        int32_t front = run->contact_x_mm;
+        look_ray_t const * p_clear = NULL;
+        for (uint8_t i = 0U; i < p_look->count; i++)
+        {
+            look_ray_t const * const p_ray = &p_look->rays[i];
+            int32_t const bearing = p_hug->side * look_ray_angle_deci(p_ray);
+            if (look_echo_is_point(look_ray_echo(p_ray)) && (p_ray->range_mm <= range + CONTACT_JUMP_MM))
+            {
+                int32_t const x = p_ray->x_mm + geom_mul_q14(p_ray->range_mm, geom_cos_q14(bearing));
+                outer_hit = (bearing > outer_hit) ? bearing : outer_hit;
+                front = (x < front) ? x : front;
+            }
+        }
+        for (uint8_t i = 0U; i < p_look->count; i++)
+        {
+            look_ray_t const * const p_ray = &p_look->rays[i];
+            int32_t const bearing = p_hug->side * look_ray_angle_deci(p_ray);
+            if ((outer_hit >= -OBSTACLE_SERVO_LIMIT_DECI - AIM_TOL) && (bearing <= 0) &&
+                (geom_abs(bearing - outer_hit - RAY_STEP) <= AIM_TOL) &&
+                ((p_clear == NULL) || (bearing > p_hug->side * look_ray_angle_deci(p_clear))))
+            {
+                p_clear = p_ray;
+            }
+        }
+        if (p_clear != NULL)
+        {
+            int32_t const bearing = look_ray_angle_deci(p_clear);
+            int32_t const depth = clamp_i32(front - p_clear->x_mm - LOOK_FACE_MATCH_MM, 0, TRAVEL_LIMIT_MM);
+            int32_t const edge = p_hug->side * (p_clear->y_mm + geom_mul_q14(depth, geom_tan_q14(bearing)));
+            return clamp_i32(edge + 1, -ROOM_MAX_MM, ROOM_MAX_MM);
+        }
+    }
+    return clamp_i32(geom_mul_q14(range, geom_tan_q14(angle)), 0, ROOM_MAX_MM);
+}
+
 static bool choose_side(hug_t * p_hug, look_t const * p_look)
 {
     bypass_t * const p_run = &p_hug->bypass;
@@ -335,7 +390,7 @@ static bool choose_side(hug_t * p_hug, look_t const * p_look)
     int32_t const angle = wall ? 0 : ((left <= right) ? left : right);
     int32_t const range = p_run->contact_mm;
     int32_t const ahead = clamp_i32(range + SHAFT_MM - (SWING_MM + SPIN_GAP_MM), -SWING_MM, range / HALF_DIVISOR);
-    int32_t const room = clamp_i32(geom_mul_q14(range, geom_tan_q14(angle)), 0, ROOM_MAX_MM);
+    int32_t const room = front_room(p_hug, p_look, angle);
     p_run->ahead_mm = (int16_t)ahead;
     p_run->out_mm = wall ? TRACK_STEP : (int16_t)(room + SWING_MM + SPIN_GAP_MM);
     p_run->level_mm = (int16_t)(range + LEVEL_BUFFER_MM + (range / HALF_DIVISOR) - ahead);
@@ -439,8 +494,10 @@ static void sweep(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out
     int32_t const base = b_contact ? 0 : -p_hug->side * RIGHT_ANGLE;
     int32_t const sector = (0 == p_run->sector) ? 0 :
         ((1 == p_run->sector) ? 1 : -1) * (FULL_PAN - OBSTACLE_SERVO_LIMIT_DECI);
-    int32_t const mag = ((p_run->ray + 1) / 2) * RAY_STEP;
-    int32_t const offset = (0U == p_run->sector) ? (((p_run->ray % 2U) != 0U) ? mag : -mag) :
+    int32_t const half = OBSTACLE_SERVO_LIMIT_DECI / RAY_STEP;
+    int32_t const offset = (0U == p_run->sector) ?
+        (((int32_t)p_run->ray <= half) ? ((int32_t)p_run->ray * RAY_STEP) :
+         -((int32_t)p_run->ray - half) * RAY_STEP) :
         ((sector > 0) ? 1 : -1) * (OBSTACLE_SERVO_LIMIT_DECI + (p_run->ray + 1) * RAY_STEP);
     int32_t const aim = base + sector;
     if (!ray(p_hug, p_in, aim, base + offset, p_out))
@@ -464,7 +521,7 @@ static void sweep(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out
     p_run->ray++;
     unsigned const n = (0U == p_run->sector) ? SLOT_COUNT :
                        (FULL_PAN - OBSTACLE_SERVO_LIMIT_DECI) / RAY_STEP;
-    bool const b_slow = (p_in->now_ms - p_run->survey_ms >= HUG_SCAN_BATCH_MS) &&
+    bool const b_slow = (p_in->now_ms - p_run->survey_ms >= HUG_MOVE_FLOOR_MS) &&
         (p_run->ray >= 3U) && (p_run->sector == 0U);
     if ((p_run->ray < n) && !b_slow)
     {
@@ -670,6 +727,7 @@ static bool moved(hug_t * p_hug, hug_in_t const * p_in, hug_out_t * p_out, int32
     }
     if ((direction < 0) || observe_clearance(p_hug, p_in, remaining))
     {
+        p_run->b_survey_timed = false;
         p_out->speed_mm_s = (int16_t)(direction * speed);
         p_out->turn_deci_s = (geom_abs(err) <= HUG_HEAD_TOL_DECI) ? 0 :
             (int16_t)clamp_i32(err * HUG_HOLD_GAIN, -HUG_HOLD_MAX_DECI_S, HUG_HOLD_MAX_DECI_S);
@@ -680,6 +738,15 @@ static bool moved(hug_t * p_hug, hug_in_t const * p_in, hug_out_t * p_out, int32
         if (p_run->blocked_pings >= HUG_TRIGGER_HITS)
         {
             blocked_leg(p_hug, p_in);
+        }
+        else if (!p_run->b_survey_timed)
+        {
+            p_run->survey_ms = p_in->now_ms;
+            p_run->b_survey_timed = true;
+        }
+        else if (p_in->now_ms - p_run->survey_ms >= HUG_STATIONARY_LIMIT_MS)
+        {
+            end_route(p_hug, p_out, false);
         }
     }
     return false;
@@ -820,7 +887,7 @@ static bool refine_outward(hug_t * p_hug, look_t const * p_look)
     {
         return false;
     }
-    run->out_mm = (int16_t)(clamp_i32(edge - run->out_origin_mm, 0, TRAVEL_LIMIT_MM - SWING_MM - SPIN_GAP_MM)
+    run->out_mm = (int16_t)(clamp_i32(edge - run->out_origin_mm, -ROOM_MAX_MM, TRAVEL_LIMIT_MM - SWING_MM - SPIN_GAP_MM)
                             + SWING_MM + SPIN_GAP_MM);
     return true;
 }
@@ -835,9 +902,15 @@ static void look_back(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug
         {
             /* Check the spin envelope ahead at the stopped side-step pose.
              * The approach leg already established clearance to the near face. */
-            if (!p_in->b_stationary || p_in->b_ping_reply || p_in->ping_servo_deci != 0 ||
-                p_in->ping_seq == run->last_forward ||
-                geom_abs(geom_wrap_deci(pose.head_deci - p_hug->side * RIGHT_ANGLE)) > AIM_TOL)
+            bool const b_aimed = turn_within(p_hug, p_hug->side * RIGHT_ANGLE, AIM_HOLD_TOL, p_out);
+            if (!b_aimed || !p_in->b_stationary)
+            {
+                run->last_forward = p_in->ping_seq;
+                p_out->b_scan_pivot = !b_aimed;
+                return;
+            }
+            if (p_in->b_ping_reply || p_in->ping_servo_deci != 0 ||
+                p_in->ping_seq == run->last_forward)
             {
                 return;
             }
@@ -1016,8 +1089,15 @@ static void wall_step(hug_t * p_hug, hug_out_t * p_out, int32_t step)
 static int32_t side_reach(hug_t const * p_hug, int32_t aim)
 {
     int32_t const nose = p_hug->side > 0 ? CHASSIS_NOSE_WIDTH_MM / 2 : CHASSIS_NOSE_LEFT_MM;
+    int32_t const ir_half = (CHASSIS_IR_WIDTH_MM + 1) / 2;
     int32_t reach = geom_dot_mm(aim, nose, CHASSIS_NOSE_FORWARD_MM);
-    int32_t const tip = geom_dot_mm(aim, (CHASSIS_IR_WIDTH_MM + 1) / 2, CHASSIS_FRONT_TIP_MM);
+    int32_t tip = geom_dot_mm(aim, ir_half, CHASSIS_FRONT_TIP_MM);
+    if (aim == RIGHT_ANGLE)
+    {
+        /* The widest point can pass the obstacle before the pivot ends. */
+        reach = (int32_t)geom_isqrt((uint32_t)(nose * nose + CHASSIS_NOSE_FORWARD_MM * CHASSIS_NOSE_FORWARD_MM)) + 1;
+        tip = (int32_t)geom_isqrt((uint32_t)(ir_half * ir_half + CHASSIS_FRONT_TIP_MM * CHASSIS_FRONT_TIP_MM)) + 1;
+    }
     if (tip > reach)
     {
         reach = tip;
@@ -1028,6 +1108,14 @@ static int32_t side_reach(hug_t const * p_hug, int32_t aim)
     return ((board > reach) ? board : reach) + SPIN_GAP_MM;
 }
 
+static int32_t side_gap(hug_t const * p_hug)
+{
+    bypass_t const * const run = &p_hug->bypass;
+    /* The stored outward target includes a full pivot allowance. */
+    int32_t const edge = run->out_origin_mm + run->out_mm - SWING_MM - SPIN_GAP_MM;
+    return axis_mm(p_hug, p_hug->side * RIGHT_ANGLE) - edge;
+}
+
 static int32_t side_aim(hug_t const * p_hug)
 {
     bypass_t const * const run = &p_hug->bypass;
@@ -1035,10 +1123,7 @@ static int32_t side_aim(hug_t const * p_hug)
     {
         return SIDE_AIM_DECI;
     }
-    /* Both the contact fan and the displaced refinement express the outer
-     * edge bound as an outward target plus a full pivot allowance. */
-    int32_t const edge = run->out_origin_mm + run->out_mm - SWING_MM - SPIN_GAP_MM;
-    int32_t const gap = axis_mm(p_hug, p_hug->side * RIGHT_ANGLE) - edge;
+    int32_t const gap = side_gap(p_hug);
     if (gap >= side_reach(p_hug, SIDE_AIM_DECI))
     {
         return SIDE_AIM_DECI;
@@ -1046,7 +1131,7 @@ static int32_t side_aim(hug_t const * p_hug)
     return (gap >= side_reach(p_hug, OBSTACLE_SERVO_LIMIT_DECI)) ? OBSTACLE_SERVO_LIMIT_DECI : 0;
 }
 
-static void start_side_stations(hug_t * p_hug)
+static void start_side_stations(hug_t * p_hug, hug_out_t * p_out)
 {
     bypass_t * const run = &p_hug->bypass;
     int32_t const lateral = axis_mm(p_hug, p_hug->side * RIGHT_ANGLE);
@@ -1054,17 +1139,18 @@ static void start_side_stations(hug_t * p_hug)
     int32_t const aim = side_aim(p_hug);
     if (aim == 0)
     {
-        retreat_side(p_hug);
+        end_route(p_hug, p_out, false);
         return;
     }
     int32_t const first = front - geom_mul_q14(lateral, geom_tan_q14(RIGHT_ANGLE - aim)) - axis_mm(p_hug, 0);
     enter(p_hug, BYPASS_SIDE_STEP, 0, clamp_i32(first, MIN_MOVE_MM, TRAVEL_LIMIT_MM));
 }
 
-static bool far_end(hug_t * p_hug, look_t const * p_look)
+static bool far_end(hug_t * p_hug, look_t const * p_look, unsigned min_clear)
 {
     bypass_t * const run = &p_hug->bypass;
     unsigned hits = 0U;
+    unsigned clear_after = 0U;
     int32_t first_x = 0;
     int32_t previous_x = 0;
     int32_t previous_y = 0;
@@ -1090,17 +1176,29 @@ static bool far_end(hug_t * p_hug, look_t const * p_look)
             candidate.y_mm = previous_y;
             candidate_angle = (int16_t)previous_angle;
             bracket = true;
+            clear_after = 1U;
         }
-        /* Keep background returns and the original front plane out of the side fit. */
+        else if (bracket && adjacent && ((look_ray_echo(r) == LOOK_ECHO_OPEN) ||
+                 (look_ray_echo(r) == LOOK_ECHO_VALID && (p_hug->side * (candidate.y_mm - y) > LOOK_FACE_MATCH_MM))))
+        {
+            clear_after++;
+        }
+        else if (bracket)
+        {
+            bracket = false;
+            clear_after = 0U;
+        }
+        /* Keep background returns and the original front plane out of the side fit,
+         * while allowing curved boundaries on round obstacles. */
         bool const on_side = look_ray_echo(r) == LOOK_ECHO_VALID && x >= front - LOOK_FACE_MATCH_MM &&
-            p_hug->side * (y - run->contact_y_mm) >= -LOOK_FACE_MATCH_MM &&
             p_hug->side * (r->y_mm - y) > 0 && r->range_mm <= HUG_STANDOFF_MM &&
             (!bracket || p_hug->side * (candidate.y_mm - y) <= LOOK_FACE_MATCH_MM);
         if (on_side)
         {
             bracket = false;
+            clear_after = 0U;
             hits = adjacent && x >= previous_x && x - previous_x <= LOOK_EDGE_STEP_MM &&
-                geom_abs(y - previous_y) <= LOOK_FACE_MATCH_MM ? hits + 1U : 1U;
+                geom_abs(y - previous_y) <= LOOK_EDGE_STEP_MM ? hits + 1U : 1U;
             if (hits == 1U)
             {
                 first_x = x;
@@ -1116,30 +1214,51 @@ static bool far_end(hug_t * p_hug, look_t const * p_look)
         previous_x = x;
         previous_y = y;
     }
-    if (bracket)
+    if (bracket && (clear_after >= min_clear))
     {
         p_hug->side_end_x_mm = (int16_t)candidate.x_mm;
         p_hug->side_end_y_mm = (int16_t)candidate.y_mm;
         run->last_hit_deci = candidate_angle;
+        return true;
     }
-    return bracket;
+    return false;
+}
+
+static bool side_fan_clear(look_t const * p_look)
+{
+    if (p_look->count != SLOT_COUNT)
+    {
+        return false;
+    }
+    for (uint8_t i = 0U; i < p_look->count; i++)
+    {
+        look_ray_t const * const p_ray = &p_look->rays[i];
+        if ((look_ray_echo(p_ray) != LOOK_ECHO_OPEN) &&
+            ((look_ray_echo(p_ray) != LOOK_ECHO_VALID) || (p_ray->range_mm <= HUG_STANDOFF_MM)))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void side_fan(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
 {
     bypass_t * const run = &p_hug->bypass;
     int32_t const aim = p_hug->goal_head;
+    int32_t const tol = run->b_look_ready ? AIM_HOLD_TOL : AIM_TOL;
     if (run->b_look_ready && p_in->now_ms - run->look_start_ms >= HUG_STATIONARY_LIMIT_MS)
     {
-        retreat_side(p_hug);
+        end_route(p_hug, p_out, false);
         return;
     }
-    if (!turn(p_hug, aim, p_out) || !p_in->b_stationary)
+    if (!turn_within(p_hug, aim, tol, p_out) || !p_in->b_stationary)
     {
         run->b_pending = false;
         run->b_survey_timed = false;
         run->ray = 0U;
         look_clear(p_look);
+        p_out->b_scan_pivot = (p_out->turn_deci_s != 0);
         return;
     }
     int32_t const gaze = aim + p_hug->side * ((int32_t)run->ray * RAY_STEP - OBSTACLE_SERVO_LIMIT_DECI);
@@ -1154,32 +1273,67 @@ static void side_fan(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_
     }
     look_pose_t const pose = hug_axle_pose(p_hug);
     (void)look_add(p_look, &pose, p_in->ping_servo_deci, p_in->ping_echo, p_in->ping_mm);
-    if (++run->ray < SLOT_COUNT)
-    {
-        return;
-    }
+    bool const b_done = (++run->ray >= SLOT_COUNT);
+    bool const b_clear = b_done && side_fan_clear(p_look);
     int32_t const x = axis_mm(p_hug, 0);
+    int32_t const front = run->b_anchor ? run->contact_x_mm : p_hug->seen_mm;
     bool const had_side = run->b_saw_side;
     run->b_saw_side = false;
-    if (far_end(p_hug, p_look))
+    if (far_end(p_hug, p_look, b_done ? 1U : SIDE_CLEAR_CONFIRM))
     {
         int32_t const far_x = p_hug->side_end_x_mm;
-        int32_t const front = run->b_anchor ? run->contact_x_mm : p_hug->seen_mm;
         p_hug->breadth_mm = (uint16_t)(far_x - front);
         int32_t const ahead = far_x + HALF_LEFT_MM + SPIN_GAP_MM - x;
         enter(p_hug, BYPASS_LEVEL, 0, clamp_i32(ahead, MIN_MOVE_MM, TRAVEL_LIMIT_MM));
     }
+    else if (!b_done)
+    {
+        run->b_saw_side = had_side;
+    }
+    else if (p_look->count != SLOT_COUNT)
+    {
+        if (run->b_retried)
+        {
+            end_route(p_hug, p_out, false);
+        }
+        else
+        {
+            run->b_retried = true;
+            run->b_saw_side = had_side || run->b_saw_side;
+            run->b_look_ready = false;
+            look_clear(p_look);
+            enter(p_hug, BYPASS_SIDE_FAN, aim, 0);
+        }
+    }
+    else if (b_clear && (aim != (-p_hug->side * RIGHT_ANGLE)) &&
+             (run->b_wall || !p_hug->b_approach_tape || (side_gap(p_hug) >= side_reach(p_hug, RIGHT_ANGLE))))
+    {
+        /* A round side can slip behind the oblique fan between stations.
+         * Check broadside before deciding the obstacle has ended. */
+        look_clear(p_look);
+        run->b_look_ready = false;
+        run->b_saw_side = had_side;
+        enter(p_hug, BYPASS_SIDE_FAN, -p_hug->side * RIGHT_ANGLE, 0);
+    }
+    else if (b_clear && had_side && (aim == -p_hug->side * RIGHT_ANGLE))
+    {
+        /* The clear station bounds the geometry for the next leg. Only a
+         * bracketed return supplies a measured breadth. */
+        p_hug->side_end_x_mm = (int16_t)x;
+        enter(p_hug, BYPASS_LEVEL, 0, clamp_i32(HALF_LEFT_MM + SPIN_GAP_MM, MIN_MOVE_MM, TRAVEL_LIMIT_MM));
+    }
     else if (x + MIN_MOVE_MM > TRAVEL_LIMIT_MM ||
              (!run->b_saw_side && (run->b_retried ||
-               (!had_side && x > (run->b_anchor ? run->contact_x_mm : p_hug->seen_mm) + TRACK_STEP))))
+               (!had_side && x > front + TRACK_STEP))))
     {
-        retreat_side(p_hug);
+        end_route(p_hug, p_out, false);
     }
     else
     {
+        int32_t const step = run->b_saw_side ? SIDE_STEP_MM : MIN_MOVE_MM;
         run->b_retried = had_side && !run->b_saw_side;
         run->b_saw_side = had_side || run->b_saw_side;
-        enter(p_hug, BYPASS_SIDE_STEP, 0, MIN_MOVE_MM);
+        enter(p_hug, BYPASS_SIDE_STEP, 0, clamp_i32(step, MIN_MOVE_MM, TRAVEL_LIMIT_MM - x));
     }
 }
 
@@ -1202,7 +1356,7 @@ static void wall_check(hug_t * p_hug, hug_in_t const * p_in, hug_out_t * p_out)
         (is_point(p_in) && ((int32_t)p_in->ping_mm > FRONT_RESERVE_MM + run->level_mm));
     if (clear && run->b_wall_margin)
     {
-        start_side_stations(p_hug);
+        start_side_stations(p_hug, p_out);
         run->last_forward = p_in->ping_seq;
     }
     else if (clear || is_point(p_in) || (p_in->ping_echo == LOOK_ECHO_TOO_CLOSE))
@@ -1241,7 +1395,7 @@ static void turn_parallel(hug_t * p_hug, hug_in_t const * p_in, hug_out_t * p_ou
         }
         else
         {
-            start_side_stations(p_hug);
+            start_side_stations(p_hug, p_out);
         }
         run->last_forward = p_in->ping_seq;
     }
@@ -1249,14 +1403,15 @@ static void turn_parallel(hug_t * p_hug, hug_in_t const * p_in, hug_out_t * p_ou
 
 static void approach_side_station(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
 {
+    bypass_t * const run = &p_hug->bypass;
     if (moved(p_hug, p_in, p_out, SLOW_MM_S))
     {
         int32_t const aim = side_aim(p_hug);
         look_clear(p_look);
-        p_hug->bypass.b_look_ready = false;
+        run->b_look_ready = false;
         if (aim == 0)
         {
-            retreat_side(p_hug);
+            end_route(p_hug, p_out, false);
         }
         else
         {
@@ -1364,43 +1519,136 @@ static void run_phase(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug
     }
 }
 
+static void set_progress_reference(hug_t * p_hug, hug_in_t const * p_in)
+{
+    p_hug->origin.survey.left_um = (uint32_t)p_in->left_um;
+    p_hug->origin.survey.right_um = (uint32_t)p_in->right_um;
+}
+
+static void anchor_progress(hug_t * p_hug, hug_in_t const * p_in)
+{
+    set_progress_reference(p_hug, p_in);
+    p_hug->last_motion_ms = p_in->now_ms;
+}
+
+static void observe_wheel_progress(hug_t * p_hug, hug_in_t const * p_in,
+                                   bool b_left_reverse, bool b_right_reverse)
+{
+    int32_t const dl = (int32_t)((uint32_t)p_in->left_um - p_hug->origin.survey.left_um);
+    int32_t const dr = (int32_t)((uint32_t)p_in->right_um - p_hug->origin.survey.right_um);
+    bool const b_left = b_left_reverse ? dl <= -PILOT_MOVE_MIN_UM : dl >= PILOT_MOVE_MIN_UM;
+    bool const b_right = b_right_reverse ? dr <= -PILOT_MOVE_MIN_UM : dr >= PILOT_MOVE_MIN_UM;
+    if (b_left && b_right)
+    {
+        anchor_progress(p_hug, p_in);
+        p_hug->bypass.b_stalled = false;
+    }
+}
+
+static void observe_progress(hug_t * p_hug, hug_in_t const * p_in)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+    if (p_run->b_scan_pause)
+    {
+        p_hug->last_motion_ms += p_in->now_ms - p_hug->t_ms;
+    }
+    if (p_run->b_motor)
+    {
+        observe_wheel_progress(p_hug, p_in, p_run->b_left_reverse, p_run->b_right_reverse);
+    }
+}
+
+static bool settled_fan_running(bypass_t const * p_run, hug_in_t const * p_in)
+{
+    return p_in->b_stationary && p_run->b_survey_timed &&
+        ((BYPASS_CONTACT == p_run->phase) || (BYPASS_SWEEP == p_run->phase) ||
+         (BYPASS_TRACK_OUT == p_run->phase) || (BYPASS_TRACK_BACK == p_run->phase) ||
+         (BYPASS_LOOK_BACK == p_run->phase) || (BYPASS_SIDE_FAN == p_run->phase));
+}
+
+static void resume_bypass(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+    if (p_run->b_contact_moving)
+    {
+        observe_wheel_progress(p_hug, p_in, true, true);
+        p_run->b_contact_moving = false;
+    }
+    set_progress_reference(p_hug, p_in);
+    p_run->b_interrupted = false;
+    p_run->last_forward = p_in->ping_seq;
+    p_run->b_drive_aligned = false;
+    p_run->b_survey_timed = false;
+    if (p_run->phase == BYPASS_SIDE_FAN)
+    {
+        enter(p_hug, BYPASS_SIDE_FAN, p_hug->goal_head, 0);
+        p_run->b_look_ready = false;
+        look_clear(p_look);
+    }
+    else if (p_run->phase == BYPASS_LOOK_BACK)
+    {
+        enter(p_hug, BYPASS_AWAY, p_hug->side * RIGHT_ANGLE, 0);
+        look_clear(p_look);
+    }
+    else if ((p_run->phase == BYPASS_CONTACT) || (p_run->phase == BYPASS_SWEEP) ||
+        (p_run->phase == BYPASS_TRACK_OUT) || (p_run->phase == BYPASS_TRACK_BACK))
+    {
+        bool const b_contact = p_run->phase == BYPASS_CONTACT;
+        enter(p_hug, b_contact ? BYPASS_CONTACT : BYPASS_FACE, b_contact ? 0 : -p_hug->side * RIGHT_ANGLE, 0);
+        look_clear(p_look);
+    }
+}
+
+static void suspend_bypass(hug_t * p_hug, hug_in_t const * p_in)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+    if (p_run->b_scan_pause)
+    {
+        p_hug->last_motion_ms += p_in->now_ms - p_hug->t_ms;
+    }
+    bool const b_contact_moving = p_run->b_progress_timed && p_in->b_contact_backoff &&
+        !p_in->b_independent_hold;
+    if (p_run->b_contact_moving && !p_in->b_independent_hold)
+    {
+        observe_wheel_progress(p_hug, p_in, true, true);
+    }
+    else if (b_contact_moving)
+    {
+        set_progress_reference(p_hug, p_in);
+    }
+    p_run->b_contact_moving = b_contact_moving;
+    p_run->b_scan_pause = p_run->b_progress_timed && !p_run->b_probe && p_in->b_independent_hold;
+    if (p_run->b_scan_pause)
+    {
+        p_hug->t_ms = p_in->now_ms;
+    }
+    p_run->b_interrupted = true;
+    p_run->b_motor = false;
+    p_run->b_pending = false;
+    p_run->b_clear = false;
+}
+
 void bypass_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
 {
     bypass_t * const p_run = &p_hug->bypass;
     if (p_in->b_other)
     {
-        p_run->b_interrupted = true;
-        p_run->b_motor = false;
-        p_run->b_pending = false;
-        p_run->b_clear = false;
+        suspend_bypass(p_hug, p_in);
         return;
     }
     if (p_run->b_interrupted)
     {
-        p_run->b_interrupted = false;
-        p_run->last_forward = p_in->ping_seq;
-        p_run->b_drive_aligned = false;
-        if (p_run->phase == BYPASS_SIDE_FAN)
-        {
-            enter(p_hug, BYPASS_SIDE_FAN, p_hug->goal_head, 0);
-            p_run->b_look_ready = false;
-            look_clear(p_look);
-        }
-        else if (p_run->phase == BYPASS_LOOK_BACK)
-        {
-            enter(p_hug, BYPASS_AWAY, p_hug->side * RIGHT_ANGLE, 0);
-            look_clear(p_look);
-        }
-        else if ((p_run->phase == BYPASS_CONTACT) || (p_run->phase == BYPASS_SWEEP) ||
-            (p_run->phase == BYPASS_TRACK_OUT) || (p_run->phase == BYPASS_TRACK_BACK))
-        {
-            bool const b_contact = p_run->phase == BYPASS_CONTACT;
-            enter(p_hug, b_contact ? BYPASS_CONTACT : BYPASS_FACE, b_contact ? 0 : -p_hug->side * RIGHT_ANGLE, 0);
-            look_clear(p_look);
-        }
+        resume_bypass(p_hug, p_look, p_in);
     }
     if (p_run->b_probe)
     {
+        if ((int32_t)(p_in->now_ms - p_hug->t_ms) >= 0)
+        {
+            p_hug->state = 0U;
+            p_run->phase = BYPASS_IDLE;
+            p_out->b_timeout = 1U;
+            return;
+        }
         int32_t const aim = p_run->requested_head;
         if (ray(p_hug, p_in, aim, aim, p_out))
         {
@@ -1415,18 +1663,29 @@ void bypass_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_
         }
         return;
     }
+    observe_progress(p_hug, p_in);
     run_phase(p_hug, p_look, p_in, p_out);
     bool const b_motor = (p_out->speed_mm_s != 0) || (p_out->turn_deci_s != 0);
+    p_run->b_scan_pause = p_run->b_progress_timed && !b_motor && settled_fan_running(p_run, p_in);
+    if (p_run->b_scan_pause)
+    {
+        p_hug->t_ms = p_in->now_ms;
+    }
     if (b_motor && !p_run->b_motor)
     {
-        p_hug->last_motion_ms = p_in->now_ms;
+        if (!p_run->b_progress_timed)
+        {
+            p_run->b_progress_timed = true;
+            anchor_progress(p_hug, p_in);
+        }
         uint32_t const distance = (uint32_t)geom_abs(p_run->target_mm);
         uint32_t const motion_ms = (0 != p_out->turn_deci_s && 0 == p_out->speed_mm_s) ?
             ((uint32_t)MAP_LIMIT_DECI * MS_PER_SECOND) / (uint32_t)SPIN_SLOW_DECI_S :
             (distance * MS_PER_SECOND) / (uint32_t)SLOW_MM_S;
-        p_hug->t_ms = p_in->now_ms + HUG_MOVE_FLOOR_MS + HUG_MOVE_TIMES * motion_ms;
+        uint32_t const plan_ms = (motion_ms < HUG_MOVE_FLOOR_MS) ? HUG_MOVE_FLOOR_MS : motion_ms;
+        p_hug->t_ms = p_in->now_ms + HUG_MOVE_TIMES * plan_ms;
     }
-    if (b_motor && ((p_in->now_ms - p_hug->last_motion_ms >= HUG_STATIONARY_LIMIT_MS) ||
+    if (b_motor && ((p_in->now_ms - p_hug->last_motion_ms >= PILOT_STUCK_MS) ||
                     ((int32_t)(p_in->now_ms - p_hug->t_ms) >= 0)))
     {
         p_out->speed_mm_s = 0;
@@ -1443,7 +1702,15 @@ void bypass_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_
             p_run->b_probe = true;
             p_run->requested_head = (int16_t)hug_pose_heading_deci(p_hug);
             p_run->b_pending = false;
+            p_hug->t_ms = p_in->now_ms + PILOT_STUCK_MS;
         }
+    }
+    if (b_motor)
+    {
+        /* Measured bypass legs either translate both wheels or spin in place. */
+        bool const b_pivot = (0 == p_out->speed_mm_s);
+        p_run->b_left_reverse = b_pivot ? (p_out->turn_deci_s > 0) : (p_out->speed_mm_s < 0);
+        p_run->b_right_reverse = b_pivot ? (p_out->turn_deci_s < 0) : (p_out->speed_mm_s < 0);
     }
     p_run->b_motor = b_motor && !p_run->b_probe;
 }

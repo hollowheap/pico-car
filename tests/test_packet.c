@@ -99,19 +99,20 @@ static void
 test_status (void)
 {
     telemetry_status_t src = {
-        .odometer_mm  = TELEMETRY_VEC_STATUS_ODOMETER_MM,
-        .speed_mms    = TELEMETRY_VEC_STATUS_SPEED_MMS,
-        .heading_ddeg = TELEMETRY_VEC_STATUS_HEADING_DDEG,
-        .faults       = TELEMETRY_VEC_STATUS_FAULTS,
-        .seq          = TELEMETRY_VEC_STATUS_SEQ,
-        .state        = TELEMETRY_VEC_STATUS_STATE,
-        .mode         = TELEMETRY_VEC_STATUS_MODE,
-        .line_bits    = TELEMETRY_VEC_STATUS_LINE_BITS,
-        .hold_mask    = TELEMETRY_VEC_STATUS_HOLD_MASK,
+        .odometer_mm  = TELEMETRY_VEC_STATUS_PIVOT_ODOMETER_MM,
+        .speed_mms    = TELEMETRY_VEC_STATUS_PIVOT_SPEED_MMS,
+        .heading_ddeg = TELEMETRY_VEC_STATUS_PIVOT_HEADING_DDEG,
+        .faults       = TELEMETRY_VEC_STATUS_PIVOT_FAULTS,
+        .seq          = TELEMETRY_VEC_STATUS_PIVOT_SEQ,
+        .state        = TELEMETRY_VEC_STATUS_PIVOT_STATE,
+        .mode         = TELEMETRY_VEC_STATUS_PIVOT_MODE,
+        .line_bits    = TELEMETRY_VEC_STATUS_PIVOT_LINE_BITS,
+        .hold_mask    = TELEMETRY_VEC_STATUS_PIVOT_HOLD_MASK,
+        .pivot_scale_pct = TELEMETRY_VEC_STATUS_PIVOT_PIVOT_SCALE_PCT,
     };
 
-    CHECK_PACK (STATUS, status, src, 0u);
-    CHECK_PACK (STATUS, status, src, ODD_OFFSET);
+    CHECK_PACK (STATUS_PIVOT, status, src, 0u);
+    CHECK_PACK (STATUS_PIVOT, status, src, ODD_OFFSET);
     CHECK_NULLS (status, src);
 }
 
@@ -292,6 +293,7 @@ test_sizes_and_topics (void)
 {
     CHECK (TELEMETRY_SCHEMA_VERSION == 3u);
     CHECK (TELEMETRY_STATUS_WIRE_SIZE == 16u);
+    CHECK (TELEMETRY_STATUS_PIVOT_WIRE_SIZE == 17u);
     CHECK (TELEMETRY_EVENT_WIRE_SIZE == 12u);
     CHECK (TELEMETRY_DIAG_WIRE_SIZE == 45u);
     CHECK (TELEMETRY_DIAG_COUNTS_WIRE_SIZE == 73u);

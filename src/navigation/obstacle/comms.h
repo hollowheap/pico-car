@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <tk/tkernel.h>
 
-#include "statechart.h"
+#include "sonar_health.h"
 #include "obstacle_internal.h"
 
 /* The sonar task waits on this bit for a ping request (see
@@ -36,7 +36,7 @@ ID   obstacle_comms_flag (void);
 ER   obstacle_comms_post_cmd (uint8_t cmd);
 bool obstacle_comms_pop_cmd (uint8_t * p_cmd);
 
-void     obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_statechart_t const * p_fsm);
+void     obstacle_comms_publish (sonar_health_t const * p_health);
 bool     obstacle_comms_travel (obstacle_travel_t * p_travel);
 
 ER       obstacle_comms_get_event (uint32_t * p_evt, TMO tmout);

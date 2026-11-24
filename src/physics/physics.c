@@ -47,6 +47,8 @@ ER physics_snapshot (physics_status_t * p_status)
         p_status->cycles   = stats.cycles;
         p_status->reference_request = stats.reference_request;
         p_status->overruns = stats.overruns;
+        p_status->forward_sample_us = stats.forward_sample_us;
+        p_status->forward_specific_mg = stats.forward_specific_mg;
         p_status->ready    = (stats.cycles > 0U) && (E_OK == tk_get_otm(&now)) &&
                              physics_task_sample_recent(&stats.sample_time, &now) && hump_unpack(stats.last_word, &fields);
         p_status->calibrated = stats.calibrated;
@@ -71,6 +73,7 @@ ER physics_snapshot (physics_status_t * p_status)
             p_status->amag_mg       = stats.amag_mg;
             p_status->attitude_state = stats.attitude_state;
             p_status->heading_valid = stats.heading_valid;
+            p_status->heading_gated = stats.heading_gated;
             p_status->hump_peak_mm =
                 (uint16_t)((fields.hump_peak_m * MM_PER_M) + ROUND_HALF);
             p_status->run_peak_mm =
@@ -79,6 +82,7 @@ ER physics_snapshot (physics_status_t * p_status)
             p_status->finished     = fields.finished;
             p_status->height_valid = fields.height_valid;
             p_status->attitude_unknown = stats.attitude_unknown;
+            p_status->pivot_scale_pct = stats.pivot_scale_pct;
         }
         else
         {
@@ -96,8 +100,10 @@ ER physics_snapshot (physics_status_t * p_status)
             p_status->amag_mg       = 0U;
             p_status->attitude_state = 0U;
             p_status->heading_valid = false;
+            p_status->heading_gated = false;
             p_status->hump_peak_mm = 0U;
             p_status->run_peak_mm  = 0U;
+            p_status->pivot_scale_pct = 0U;
             p_status->hump_active  = false;
             p_status->finished     = false;
             p_status->height_valid = false;

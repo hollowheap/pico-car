@@ -1,16 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-export type HistoryRecord = {
+export type TelemetryReceipt = {
   timestamp: number;
   topic: string;
   packet: string;
   values: Record<string, number>;
 };
 
+export type HistoryRecord = TelemetryReceipt & {
+  receiptId: string;
+  receiptOrder: number;
+  timelineMs: number;
+};
+
 export type HistoryStore = {
-  append: (record: HistoryRecord) => void;
+  append: (record: TelemetryReceipt) => HistoryRecord;
   /** The newest `limit` frames and every kept event, newest first. */
   list: (limit?: number) => HistoryRecord[];
+  storageStatus: () => "ready" | "degraded";
 };
 
 /** Events are rare but needed for the whole run; frames come at about 19 per second. */
@@ -18,21 +26,44 @@ const EVENT_PACKET = "event";
 
 /** Events kept when no limit is given: far more than one run sends. */
 export const DEFAULT_MAX_EVENTS = 2000;
+const STORAGE_RETRY_MS = 1000;
+// Leave room for receipts in the same millisecond without allowing the cursor
+// to restart from zero if a bridge's history file is replaced.
+const ORDERS_PER_MS = 1000;
 
-function load(path: string): HistoryRecord[] {
+function load(path: string): { records: HistoryRecord[]; needsRewrite: boolean } {
   if (!existsSync(path)) {
-    return [];
+    return { records: [], needsRewrite: false };
   }
+  const contents = readFileSync(path, "utf8");
+  let needsRewrite = contents.length > 0 && !contents.endsWith("\n");
   // A power loss can tear the last line; skip it so the bridge still starts.
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .flatMap((line) => {
-      try {
-        return line.length > 0 ? [JSON.parse(line) as HistoryRecord] : [];
-      } catch {
-        return [];
+  const records: HistoryRecord[] = [];
+  for (const line of contents.split("\n")) {
+    if (line.length === 0) continue;
+    try {
+      const input = JSON.parse(line) as Partial<HistoryRecord> & TelemetryReceipt;
+      if (!Number.isFinite(input?.timestamp) || typeof input.packet !== "string" ||
+          typeof input.topic !== "string" || !input.values || typeof input.values !== "object") {
+        needsRewrite = true;
+        continue;
       }
-    });
+      const previous = records.at(-1);
+      const order = previous?.receiptOrder ?? 0;
+      const time = Math.max(previous?.timelineMs ?? -Infinity, input.timestamp);
+      const receiptId = typeof input.receiptId === "string" && input.receiptId ? input.receiptId : randomUUID();
+      const receiptOrder = input.receiptOrder !== undefined && Number.isSafeInteger(input.receiptOrder) &&
+        input.receiptOrder > order ? input.receiptOrder : Math.max(order + 1, input.timestamp * ORDERS_PER_MS);
+      const timelineMs = input.timelineMs !== undefined && Number.isFinite(input.timelineMs)
+        ? Math.max(time, input.timelineMs) : time;
+      needsRewrite ||= receiptId !== input.receiptId || receiptOrder !== input.receiptOrder ||
+        timelineMs !== input.timelineMs;
+      records.push({ ...input, receiptId, receiptOrder, timelineMs });
+    } catch {
+      needsRewrite = true;
+    }
+  }
+  return { records, needsRewrite };
 }
 
 function save(path: string, records: HistoryRecord[]): void {
@@ -47,13 +78,13 @@ function save(path: string, records: HistoryRecord[]): void {
 }
 
 function byTime(a: HistoryRecord, b: HistoryRecord): number {
-  return a.timestamp - b.timestamp;
+  return a.timelineMs - b.timelineMs || a.receiptOrder - b.receiptOrder;
 }
 
 /**
  * Frames and events are kept in two rings: a flood of frames never pushes
- * the events of a run out. Each record is appended to the file; the file is
- * rewritten only when it holds twice the kept records.
+ * the events of a run out. Each record is appended to the file, which is
+ * rewritten for compaction or to repair an unterminated line at startup.
  */
 export function createHistoryStore(
   path: string,
@@ -64,23 +95,47 @@ export function createHistoryStore(
     throw new RangeError("maxRecords and maxEvents must be positive");
   }
 
-  const loaded = load(path);
-  let frames = loaded.filter((record) => record.packet !== EVENT_PACKET).slice(-maxRecords);
-  let events = loaded.filter((record) => record.packet === EVENT_PACKET).slice(-maxEvents);
-  let lines = loaded.length;
+  const { records, needsRewrite } = load(path);
+  let lastOrder = records.at(-1)?.receiptOrder ?? 0;
+  let lastTimeline = records.at(-1)?.timelineMs ?? -Infinity;
+  let lastMonotonic = performance.now();
+  let rollback: { timeline: number; monotonic: number } | undefined;
+  let frames = records.filter(record => record.packet !== EVENT_PACKET).slice(-maxRecords);
+  let events = records.filter(record => record.packet === EVENT_PACKET).slice(-maxEvents);
+  let lines = records.length;
+  let retryAt: number | undefined;
 
   const compact = (): void => {
-    const kept = [...frames, ...events].sort(byTime);
+    const kept = [...frames, ...events].sort((a, b) => a.receiptOrder - b.receiptOrder);
     save(path, kept);
     lines = kept.length;
   };
 
-  if (lines > frames.length + events.length) {
-    compact();
-  }
+  const persist = (write: () => void): void => {
+    try {
+      write();
+      retryAt = undefined;
+    } catch (error) {
+      if (retryAt === undefined) console.error("History recording failed:", error);
+      retryAt = performance.now() + STORAGE_RETRY_MS;
+    }
+  };
+
+  if (needsRewrite || lines > frames.length + events.length) persist(compact);
 
   return {
-    append(record: HistoryRecord): void {
+    append(receipt): HistoryRecord {
+      const now = performance.now();
+      if (receipt.timestamp < lastTimeline && rollback === undefined) {
+        rollback = { timeline: lastTimeline, monotonic: lastMonotonic };
+      }
+      const elapsedTime = rollback === undefined ? receipt.timestamp :
+        rollback.timeline + Math.floor(now - rollback.monotonic);
+      if (receipt.timestamp >= elapsedTime) rollback = undefined;
+      lastTimeline = Math.max(lastTimeline, receipt.timestamp, elapsedTime);
+      lastMonotonic = now;
+      lastOrder = Math.max(lastOrder + 1, receipt.timestamp * ORDERS_PER_MS);
+      const record = { ...receipt, receiptId: randomUUID(), receiptOrder: lastOrder, timelineMs: lastTimeline };
       if (record.packet === EVENT_PACKET) {
         events.push(record);
         if (events.length > maxEvents) {
@@ -92,17 +147,25 @@ export function createHistoryStore(
           frames = frames.slice(-maxRecords);
         }
       }
-      appendFileSync(path, JSON.stringify(record) + "\n", "utf8");
-      lines += 1;
-      if (lines > 2 * (maxRecords + maxEvents)) {
-        compact();
+      if (retryAt !== undefined) {
+        if (now >= retryAt) persist(compact);
+      } else if (lines >= 2 * (maxRecords + maxEvents)) {
+        persist(compact);
+      } else {
+        persist(() => {
+          appendFileSync(path, JSON.stringify(record) + "\n", "utf8");
+          lines += 1;
+        });
       }
+      return record;
     },
     list(limit = 100): HistoryRecord[] {
-      if (limit <= 0) {
+      const count = Number.isFinite(limit) ? limit : 100;
+      if (count <= 0) {
         return [];
       }
-      return [...frames.slice(-limit), ...events].sort(byTime).reverse();
+      return [...frames.slice(-count), ...events].sort((a, b) => byTime(b, a));
     },
+    storageStatus: () => retryAt === undefined ? "ready" : "degraded",
   };
 }

@@ -37,6 +37,10 @@
    cyclic handler of this period. */
 #define SUPERVISOR_PASS_MS (20U)
 
+/** Watchdog reboots of one armed run that start it again by themselves; the
+ *  next one waits for START. A guess until measured on the car. */
+#define SUPERVISOR_WATCHDOG_RESUMES (2U)
+
 typedef struct
 {
     /* Called about once a second from the supervisor task, for work that needs
@@ -86,8 +90,8 @@ bool supervisor_route_pending (uint8_t expected_opcode, bool b_consume);
 /* Accepted RESET commands since boot, wrapping at 8 bits. The line task
    compares it with the last value it saw and clears the pilot's latches when it
    differs. A RESET of a running car also sets the operator hold (as a STOP
-   does) before the count moves, and a RESET of a lifted car keeps the lift
-   hold, so the car stays still until START. */
+   does) before the count moves. A RESET after a pickup keeps the fault and
+   the stop active until START. */
 uint8_t supervisor_reset_count (void);
 
 /* Accepted START commands since boot, wrapping at 8 bits. The line task
@@ -95,9 +99,17 @@ uint8_t supervisor_reset_count (void);
 uint8_t supervisor_start_count (void);
 /* Copy the start generation and its active floor selection under one lock. */
 uint8_t supervisor_start_snapshot (bool * p_continuous_floor);
+/* Observe the accepted START generation and whether the run is armed. */
+uint8_t supervisor_armed_start (bool * p_armed);
+/* Stop the still-armed generation if the startup motion check fails. */
+void supervisor_start_check_failed (uint8_t generation);
 /* Completed in-run attitude recoveries. The accompanying flag says the fresh
  * forward observation cleared the path. A near return needs a new survey. */
 uint8_t supervisor_recovery_snapshot (bool * p_clear);
+
+/* A wheel told to go forward runs well under its target with much more duty
+   than its grounded baseline needs: the car pushes against something. */
+bool supervisor_wheels_loaded (void);
 
 /* The line task tells the supervisor while a one-shot turn runs. */
 void supervisor_set_turning (bool b_turning);

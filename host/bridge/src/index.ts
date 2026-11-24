@@ -4,7 +4,7 @@ import { join } from "node:path";
 import sirv from "sirv";
 import { loadConfig } from "./config.js";
 import { randomInt } from "node:crypto";
-import { createCommandSession, parseCommandRequest, type CommandRequest } from "./command.js";
+import { CommandTimeoutError, createCommandSession, parseCommandRequest, PUBACK_TIMEOUT_MS, publishWithTimeout, type CommandRequest } from "./command.js";
 import { createHistoryStore } from "./history.js";
 import { createLiveServer } from "./live.js";
 import { startLocalBroker } from "./local-broker.js";
@@ -30,13 +30,13 @@ const ingest = createMqttIngest(config, schema, (packet, topic) => {
   } else if (packet.name === "diag") {
     commands.noteDiag(packet.values);
   }
-  history.append({
+  const receipt = history.append({
     timestamp,
     topic,
     packet: packet.name,
     values: packet.values,
   });
-  live?.broadcast({ timestamp, packet: packet.name, values: packet.values });
+  live?.broadcast(receipt);
   console.log(`${packet.name}: ${JSON.stringify(packet.values)}`);
 });
 
@@ -102,23 +102,20 @@ async function handleCommand(
     return;
   }
   const topic = `${config.topicPrefix}/${schema.topics.command}`;
+  const cmdId = frame.readUInt16BE(0);
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      ingest.client.publish(topic, frame, { qos: 1 }, (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
+    await publishWithTimeout(ingest.client, topic, frame, PUBACK_TIMEOUT_MS);
   } catch (error) {
     console.error(`command publish failed: ${(error as Error).message}`);
-    sendJson(response, 502, { error: "mqtt publish failed" });
+    if (error instanceof CommandTimeoutError) {
+      sendJson(response, 504, { error: "mqtt publish timed out" });
+    } else {
+      sendJson(response, 502, { error: "mqtt publish failed" });
+    }
     return;
   }
-  sendJson(response, 202, { ok: true });
+  sendJson(response, 202, { ok: true, cmdId });
 }
 
 const server = createServer((request, response) => {
@@ -141,12 +138,15 @@ const server = createServer((request, response) => {
       packets: ingest.stats.packets,
       lastPacketAt: ingest.stats.lastPacketAt,
       lastPacket: ingest.stats.lastPacket,
+      historyStorage: history.storageStatus(),
     });
     return;
   }
 
   if (url.pathname === "/history") {
-    const limit = Number(url.searchParams.get("limit") ?? "100");
+    const rawLimit = url.searchParams.get("limit");
+    const parsed = rawLimit === null ? 100 : Number(rawLimit);
+    const limit = Number.isFinite(parsed) ? parsed : 100;
     sendJson(response, 200, history.list(limit));
     return;
   }
@@ -167,6 +167,7 @@ live = createLiveServer(server, () => ({
   mqtt: ingest.client.connected ? "connected" : "disconnected",
   packets: ingest.stats.packets,
   lastPacketAt: ingest.stats.lastPacketAt,
+  historyStorage: history.storageStatus(),
 }));
 
 server.listen(config.httpPort, config.httpHost, () => {

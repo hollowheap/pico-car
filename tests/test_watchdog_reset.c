@@ -1,5 +1,6 @@
 /* Exercise the real reset classifier with the RP2040 reset registers faked. */
 #include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,21 +13,75 @@
 #define CHIP_RESET_POR       (0x00000100U)
 #define CHIP_RESET_RUN       (0x00010000U)
 #define CHIP_RESET_DEBUG     (0x00100000U)
+/* SCRATCH0-3 hold the run token; SCRATCH4-7 belong to the boot ROM. */
+#define WATCHDOG_SCRATCH_ADDR (0x4005800CU)
+#define TOKEN_WORDS          (4U)
+#define TOKEN_RESUMES        (2U)
 
 static uint32_t g_watchdog_reason;
 static uint32_t g_chip_reset;
+static uint32_t g_scratch[TOKEN_WORDS];
+
+static bool is_scratch (uint32_t addr)
+{
+    return (addr >= WATCHDOG_SCRATCH_ADDR) && (addr < (WATCHDOG_SCRATCH_ADDR + (TOKEN_WORDS * 4U))) &&
+           (0U == ((addr - WATCHDOG_SCRATCH_ADDR) % 4U));
+}
 
 uint32_t shim_reg_read (uint32_t addr)
 {
+    if (is_scratch (addr))
+    {
+        return g_scratch[(addr - WATCHDOG_SCRATCH_ADDR) / 4U];
+    }
     assert ((WATCHDOG_REASON_ADDR == addr) || (CHIP_RESET_ADDR == addr));
     return (WATCHDOG_REASON_ADDR == addr) ? g_watchdog_reason : g_chip_reset;
 }
 
 void shim_reg_write (uint32_t addr, uint32_t value)
 {
-    (void)addr;
-    (void)value;
-    abort ();
+    if (!is_scratch (addr))
+    {
+        abort ();
+    }
+    g_scratch[(addr - WATCHDOG_SCRATCH_ADDR) / 4U] = value;
+}
+
+/* The token survives in the scratch words; any changed word voids it. */
+static int check_token (const char * p_name)
+{
+    uint8_t flags = 0U;
+    uint8_t resumes = 0U;
+
+    if (platform_run_token_read (&flags, &resumes))
+    {
+        (void)fprintf (stderr, "%s: cleared scratch reads as a token\n", p_name);
+        return EXIT_FAILURE;
+    }
+    platform_run_token_write ((uint8_t)(PLATFORM_RUN_ARMED | PLATFORM_RUN_CONTINUOUS), TOKEN_RESUMES);
+    if (0 == strcmp (p_name, "token-corrupt"))
+    {
+        g_scratch[1] ^= 0x100U;
+    }
+    else if (0 == strcmp (p_name, "token-magic"))
+    {
+        g_scratch[0] ^= 1U;
+    }
+    else
+    {
+        /* The token as written. */
+    }
+    bool const b_read = platform_run_token_read (&flags, &resumes);
+    bool const b_expect = (0 == strcmp (p_name, "token"));
+
+    if ((b_read != b_expect) ||
+        (b_expect && (((PLATFORM_RUN_ARMED | PLATFORM_RUN_CONTINUOUS) != flags) || (TOKEN_RESUMES != resumes))))
+    {
+        (void)fprintf (stderr, "%s: read=%u flags=%u resumes=%u\n", p_name, (unsigned)b_read,
+                       (unsigned)flags, (unsigned)resumes);
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
 }
 
 int main (int argc, char ** argv)
@@ -52,6 +107,10 @@ int main (int argc, char ** argv)
     if (2 != argc)
     {
         return EXIT_FAILURE;
+    }
+    if (0 == strncmp (argv[1], "token", 5U))
+    {
+        return check_token (argv[1]);
     }
 
     for (size_t idx = 0U; idx < sizeof(cases) / sizeof(cases[0]); idx++)

@@ -18,6 +18,8 @@ typedef enum
     BYPASS_SIDE_STEP, BYPASS_SIDE_FAN, BYPASS_RETREAT_ALIGN
 } bypass_phase_t;
 
+STATIC_ASSERT(sizeof(bypass_phase_t) <= 4U, "bypass_phase_t size");
+
 typedef struct
 {
     uint32_t request_ms;
@@ -77,6 +79,11 @@ typedef struct
     bool b_wall : 1;
     bool b_wall_margin : 1;
     bool b_saw_side : 1;
+    bool b_progress_timed : 1;
+    bool b_scan_pause : 1;
+    bool b_left_reverse : 1;
+    bool b_right_reverse : 1;
+    bool b_contact_moving : 1;
 } bypass_t;
 
 STATIC_ASSERT(sizeof(bypass_t) == 72U, "bypass state size");

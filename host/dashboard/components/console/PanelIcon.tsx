@@ -2,7 +2,7 @@ import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
 
 import { useTheme } from '../../lib/theme-provider';
 
-export type IconName = 'motion' | 'attitude' | 'line' | 'sonar' | 'faults' | 'events' | 'link' | 'tasks' | 'run' | 'trace';
+export type IconName = 'motion' | 'attitude' | 'dynamics' | 'line' | 'faults' | 'events' | 'link' | 'tasks' | 'run' | 'trace' | 'obstacle' | 'controls';
 
 /** A 20 px line icon in the muted colour, beside a panel title. */
 export function PanelIcon({ name }: { name: IconName }) {
@@ -25,17 +25,19 @@ export function PanelIcon({ name }: { name: IconName }) {
           <Path d="M10 4l2 6-2 6-2-6z" {...common} />
         </>
       ) : null}
+      {name === 'dynamics' ? (
+        <>
+          <Circle cx="10" cy="10" r="7" {...common} />
+          <Line x1="10" x2="10" y1="3" y2="17" {...common} />
+          <Line x1="3" x2="17" y1="10" y2="10" {...common} />
+          <Circle cx="13" cy="7" r="1.6" fill={c} />
+        </>
+      ) : null}
       {name === 'line' ? (
         <>
           <Path d="M3 17c4-2 4-12 14-14" {...common} />
           <Circle cx="7" cy="6" r="1.5" {...common} />
           <Circle cx="13" cy="12" r="1.5" {...common} />
-        </>
-      ) : null}
-      {name === 'sonar' ? (
-        <>
-          <Path d="M10 17L4 7a8 8 0 0112 0z" {...common} />
-          <Path d="M7 10a4 4 0 016 0" {...common} />
         </>
       ) : null}
       {name === 'faults' ? (
@@ -74,6 +76,22 @@ export function PanelIcon({ name }: { name: IconName }) {
       ) : null}
       {name === 'trace' ? (
         <Path d="M3 16c3 0 3-6 7-6s4-6 7-6" {...common} />
+      ) : null}
+      {name === 'obstacle' ? (
+        <>
+          <Path d="M10 16L4 7.5a9.5 9.5 0 0112 0L10 16z" {...common} />
+          <Path d="M7.2 11.5a4.5 4.5 0 015.6 0" {...common} />
+        </>
+      ) : null}
+      {name === 'controls' ? (
+        <>
+          <Line x1="3" x2="5.5" y1="6" y2="6" {...common} />
+          <Line x1="9.5" x2="17" y1="6" y2="6" {...common} />
+          <Circle cx="7.5" cy="6" r="1.8" {...common} />
+          <Line x1="3" x2="11" y1="14" y2="14" {...common} />
+          <Line x1="15" x2="17" y1="14" y2="14" {...common} />
+          <Circle cx="13" cy="14" r="1.8" {...common} />
+        </>
       ) : null}
     </Svg>
   );

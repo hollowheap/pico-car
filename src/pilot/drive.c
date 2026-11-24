@@ -89,6 +89,32 @@ static int32_t wheel_next(int32_t prev_um_s, int32_t want_um_s,
     return next;
 }
 
+/* Speed up by at most step_um_s from a value of the same sign, else from
+ * rest with the start speed; slow at once. */
+static int32_t wheel_rise(int32_t prev_um_s, int32_t want_um_s, int32_t step_um_s)
+{
+    bool const b_same = ((prev_um_s > 0) && (want_um_s > 0)) || ((prev_um_s < 0) && (want_um_s < 0));
+    int32_t const base = b_same ? prev_um_s : 0;
+    int32_t next = want_um_s;
+
+    if (want_um_s > 0)
+    {
+        int32_t const up = (base + step_um_s < START_UM_S) ? START_UM_S : (base + step_um_s);
+        next = (want_um_s > up) ? up : want_um_s;
+    }
+    else if (want_um_s < 0)
+    {
+        int32_t const down = (base - step_um_s > -START_UM_S) ? -START_UM_S : (base - step_um_s);
+        next = (want_um_s < down) ? down : want_um_s;
+    }
+    else
+    {
+        /* At rest. */
+    }
+
+    return next;
+}
+
 void drive_init(drive_state_t * p_drive)
 {
     p_drive->left_um_s  = 0;
@@ -138,6 +164,11 @@ void drive_follow(drive_state_t * p_drive, int16_t speed_mm_s,
     int32_t half = 0;
 
     drive_components(speed_mm_s, turn_deci_s, &forward, &half);
+    if (0 == speed_mm_s)
+    {
+        drive_rise(p_drive, -half, half, dt_ms, p_left_um_s, p_right_um_s);
+        return;
+    }
     /* The follower asks for cruise at once as it starts; from rest or a
      * back-off that would spin the wheels. */
     last = ((last < 0) ? 0 : last) + acceleration_step_um_s(dt_ms);
@@ -148,6 +179,23 @@ void drive_follow(drive_state_t * p_drive, int16_t speed_mm_s,
          * Slow the inner wheel to zero without driving it backward. */
         half = clamp_i32(half, -forward, forward);
     }
+
+    p_drive->left_um_s  = forward - half;
+    p_drive->right_um_s = forward + half;
+    *p_left_um_s        = p_drive->left_um_s;
+    *p_right_um_s       = p_drive->right_um_s;
+}
+
+void drive_rise(drive_state_t * p_drive, int32_t left_um_s, int32_t right_um_s,
+                uint32_t dt_ms, int32_t * p_left_um_s, int32_t * p_right_um_s)
+{
+    int32_t const step = acceleration_step_um_s(dt_ms);
+    /* Rise the forward and turn components, so the wheels of a pivot stay
+     * mirrored and the axle does not drift as one wheel slows at once. */
+    int32_t const forward = wheel_rise((p_drive->left_um_s + p_drive->right_um_s) / HALF_DIVISOR,
+                                       (left_um_s + right_um_s) / HALF_DIVISOR, step);
+    int32_t const half = wheel_rise((p_drive->right_um_s - p_drive->left_um_s) / HALF_DIVISOR,
+                                    (right_um_s - left_um_s) / HALF_DIVISOR, step);
 
     p_drive->left_um_s  = forward - half;
     p_drive->right_um_s = forward + half;

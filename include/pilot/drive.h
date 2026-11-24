@@ -69,7 +69,8 @@ void drive_step(drive_state_t * p_drive, int16_t speed_mm_s,
 /**
  * One pass of the line follower: the turn and a slower speed reach the wheel
  * targets at once, with the turn first as in drive_step(). A slewed steering
- * correction comes too late for a 150 mm corner. A faster forward speed rises
+ * correction comes too late for a 150 mm corner. A spot turn (no forward
+ * speed) rises as in drive_rise(). A faster forward speed rises
  * at DRIVE_ACCEL_MM_S2 from the mean of the last targets (0 if reversing).
  * Forward tracking limits the turn to keep both wheel targets nonnegative.
  * The next drive_step() slews from these targets.
@@ -84,6 +85,23 @@ void drive_step(drive_state_t * p_drive, int16_t speed_mm_s,
 void drive_follow(drive_state_t * p_drive, int16_t speed_mm_s,
                   int16_t turn_deci_s, uint32_t dt_ms, int32_t * p_left_um_s,
                   int32_t * p_right_um_s);
+
+/**
+ * Wheel targets whose forward and turn components speed up at most
+ * DRIVE_ACCEL_MM_S2 and slow at once. A step to full pivot speed spins the
+ * wheels on the floor and on barcode paper; a slowed stop would overrun the
+ * tape a pivot stops on. A component that starts from rest or reverses gets
+ * the start speed first.
+ *
+ * @param[in,out] p_drive      Drive state: the last targets.
+ * @param[in]     left_um_s    Wanted left wheel target in um/s.
+ * @param[in]     right_um_s   Wanted right wheel target in um/s.
+ * @param[in]     dt_ms        Time since the last pass, clamped to DRIVE_DT_MAX_MS.
+ * @param[out]    p_left_um_s  Left wheel target in um/s.
+ * @param[out]    p_right_um_s Right wheel target in um/s.
+ */
+void drive_rise(drive_state_t * p_drive, int32_t left_um_s, int32_t right_um_s,
+                uint32_t dt_ms, int32_t * p_left_um_s, int32_t * p_right_um_s);
 
 /** Bias equal forward targets toward the slower uphill wheel while keeping
  *  their mean speed. The caller supplies a known roll (left-down positive,

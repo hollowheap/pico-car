@@ -61,6 +61,12 @@ static void brake (controller_t * p_control, uint32_t now_us, bool latch)
     }
 }
 
+bool controller_fault_clears_in_place (motion_fault_t reason)
+{
+    return (MOTION_FAULT_FEEDBACK == reason) || (MOTION_FAULT_EXPIRED == reason) ||
+           (MOTION_FAULT_GAP == reason);
+}
+
 static void fault (controller_t * p_control, uint32_t now_us,
                    motion_fault_t reason)
 {
@@ -69,7 +75,7 @@ static void fault (controller_t * p_control, uint32_t now_us,
     p_control->fault_us     = now_us;
     p_control->recovery_baseline = false;
     reset_pid(p_control);
-    brake(p_control, now_us, MOTION_FAULT_FEEDBACK != reason);
+    brake(p_control, now_us, !controller_fault_clears_in_place(reason));
     LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE, "fault=%s, stopped",
               fault_name(reason));
 }
@@ -85,13 +91,13 @@ static bool recovery_interval_valid (const controller_t * p_control, const motio
            sample.wheel[ENCODER_LEFT].speed_valid && sample.wheel[ENCODER_RIGHT].speed_valid;
 }
 
-static void clear_encoder_fault (controller_t * p_control, const motion_input_t * p_input,
-                                 uint32_t now_us)
+static void clear_fault (controller_t * p_control, const motion_input_t * p_input,
+                         uint32_t now_us)
 {
     unsigned int wheel = 0U;
     bool clean = false;
 
-    if ((MOTION_FAULT_FEEDBACK != p_control->status.fault) || p_control->status.brake_failed)
+    if (!controller_fault_clears_in_place(p_control->status.fault) || p_control->status.brake_failed)
     {
         return;
     }
@@ -116,10 +122,11 @@ static void clear_encoder_fault (controller_t * p_control, const motion_input_t 
             p_control->command.target_um_s[wheel] = 0;
             p_control->status.target_um_s[wheel]  = 0;
         }
+        LOG_INFO(LOG_TASK_MOTION, LOG_MOD_NONE, "fault=%s cleared, ready",
+                 fault_name(p_control->status.fault));
         p_control->previous_tick_us = now_us;
         p_control->status.state     = MOTION_IDLE;
         p_control->status.fault     = MOTION_FAULT_NONE;
-        LOG_INFO(LOG_TASK_MOTION, LOG_MOD_NONE, "encoder fault cleared, ready");
     }
 }
 
@@ -222,12 +229,7 @@ static bool tick_admit (controller_t * p_control, uint32_t now_us,
 {
     bool active = false;
 
-    p_control->status.timestamp_us     = now_us;
     p_control->status.sample_available = false;
-    if (p_control->status.state == MOTION_STOPPED)
-    {
-        return false;
-    }
     if (stop_requested)
     {
         p_control->status.state = MOTION_STOPPED;
@@ -264,6 +266,13 @@ static bool accept_command (controller_t * p_control,
 {
     unsigned int wheel = 0U;
 
+    if ((p_command->ttl_us > 0U) &&
+        (p_command->ttl_us <= p_control->config.max_command_ttl_us) &&
+        ((uint32_t)(now_us - p_command->issued_us) >= p_command->ttl_us))
+    {
+        fault(p_control, now_us, MOTION_FAULT_EXPIRED);
+        return false;
+    }
     if (!valid_command(p_control, p_command, now_us))
     {
         fault(p_control, now_us, MOTION_FAULT_COMMAND);
@@ -448,12 +457,19 @@ void controller_tick (controller_t *     p_control,
     {
         return;
     }
+    p_control->status.timestamp_us = now_us;
+    if (MOTION_STOPPED == p_control->status.state)
+    {
+        p_control->status.sample_available = odometry_update(
+            &p_control->sampler, p_input, &p_control->status.sample);
+        return;
+    }
     if (!tick_admit(p_control, now_us, stop_requested))
     {
         if (!stop_requested && (MOTION_FAULT == p_control->status.state))
         {
             /* Commands already in flight during the fault do not rearm motion. */
-            clear_encoder_fault(p_control, p_input, now_us);
+            clear_fault(p_control, p_input, now_us);
         }
         return;
     }

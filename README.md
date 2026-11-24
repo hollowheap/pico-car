@@ -18,7 +18,6 @@ Pass an optional image for the bring-up builds:
 
 ```sh
 ./flash.sh build/physics_check.uf2
-./flash.sh build/obstacle_bench.uf2
 ./flash.sh build/car_bench.uf2
 ./flash.sh build/wdt_check.uf2
 ```
@@ -67,8 +66,8 @@ and starts one startup task that initialises the shared hardware.
 | `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and JSON bridge                               |
 | `protocol/telemetry.yaml`                   | Wire schema shared by firmware and host                              |
 
-The opt-in bring-up targets build with `make physics_check` or
-`make obstacle_bench` inside `build/`.
+Build the optional IMU bring-up image with `make physics_check` inside
+`build/`.
 
 ## Ground station
 
@@ -82,6 +81,24 @@ npm start
 
 Open **http://127.0.0.1:5281**. One server hosts the dashboard, WebSocket,
 history and command API. Logs continue while the browser is closed.
+When the dashboard reconnects, it uses retained bridge history to fill gaps
+in the course trace, charts and frame log. If that request fails, the dashboard
+keeps showing live data and retries while connected. It then rebuilds those
+views with the recovered samples. History and the live stream share a stable
+ID and arrival order for each receipt. This keeps receipts distinct within one
+millisecond, preserves the exact Reset boundary on reload, and lets reconnect
+replay follow arrival order after a backward clock adjustment. The frame log
+and event labels show the bridge’s wall-clock receipt times.
+If the history file becomes unwritable during a run, live telemetry continues
+and recent packets stay available in memory. The dashboard shows the recording
+failure and the bridge saves the retained packets when writes resume. A gap
+remains if a frame never reached the bridge or aged out of its history.
+The Course trace draws measured odometer distance in millimetres and fits the
+map to the available space. Use the scale bar when comparing runs. When the
+firmware measures pivot slip, the trace applies that correction to wheel yaw.
+Straight-line distance still comes from the encoders.
+The bridge accepts both the original status frame and the frame with pivot
+evidence. Update the ground station before flashing firmware that sends it.
 `npm start` exports the current dashboard before launching. For subsequent
 starts with the same export, use `npm run serve`. Ctrl+C stops the station.
 
@@ -138,16 +155,35 @@ release the button and press it again once the fault clears.
 
 The supervisor applies a STOP hold before acknowledging it. When START requires
 calibration, the calibration hold is in place before the existing holds are
-released. A motion timing fault stops permit renewal and watchdog feeding until
-reboot.
+released. A motion timing fault (an expired drive lease or a late control
+period) brakes the wheels and clears in place after 500 ms, and the next drive
+command moves the car again. A timing fault that lasts over 1 s, or a fourth one
+since boot, stops permit renewal and watchdog feeding until reboot.
+
+Each accepted STOP or E-stop sends a `stop_timing` event. p1 is the time in ms
+from acceptance until both motor duties read zero. p2 is the time until both
+wheel speeds also read zero, and the event carries the odometer at rest. The
+supervisor samples both at its control pass. A stop that never reaches rest
+reports p2 as 65535.
 
 On a power-up with no MQTT session, the car waits at least 10 seconds and
 starts once its calibration, motion feedback, and forward sonar are ready.
 A broker session during the wait leaves START with GP20, the dashboard or CLI.
 The offline start happens only once per boot and requires power-up evidence
-from the RP2040, which includes brownouts. A watchdog, RUN-pin, debugger,
-or unknown reset requires operator START. A lift, overturn, deliberate stop,
-or lapsed motion permit also requires operator recovery.
+from the RP2040, which includes brownouts. A RUN-pin, debugger or unknown
+reset requires operator START. A lift, overturn, deliberate stop, or lapsed
+motion permit also requires operator recovery.
+
+The watchdog scratch registers keep a run record across a watchdog reset.
+The record holds whether a run was armed, its floor mode and its resume count.
+After a watchdog reset during an armed run, the car resumes without operator
+START. It first waits until it is parked with a fresh clear forward ping.
+The resume keeps the floor mode of the run: continuous floor or **Stop at
+obstacles**. Each resume sends a supervisor `recovery` event with the
+watchdog reset reason and the resume count. After two resumes without an
+operator START, a further watchdog reset requires operator START. An E-stop,
+pickup, lift, overturn or lapsed permit cancels a pending resume. A watchdog
+reset with no armed run requires operator START.
 
 On continuous floor, START permits forward travel with both front readers on
 bare floor. The pilot holds its encoder heading until tape guides a correction
@@ -190,6 +226,11 @@ return sweep. When the car has verified the only available exit, it can finish
 turning back to that tape with the instruction still pending.
 The car reports `turn_start` at selection and `turn_done` after alignment.
 An interrupted alignment reports `turn_abort` with elapsed time.
+A probe that ends without a turn reports `junction` with the outcome: no
+branch, a fallback exit, or aborted. The follower also reports `junction`
+for every transverse tape stripe it measures, with or without an
+instruction. The event names the line detectors that measured the stripe
+and whether another reader saw the same tape.
 
 A fully decoded U cancels a waiting barcode direction and turns back at
 the marker. If U arrives during a junction scan, the car uses the heading
@@ -206,17 +247,35 @@ previous IMU reference. A latched E-stop requires a reboot.
 
 Normal START selects continuous floor and moving obstacle navigation. This also
 applies to the GP20 button and offline startup. On a course with possible
-drop-offs, send the stationary-course START command (opcode 10). The
+drop-offs, select **Stop at obstacles** in the dashboard Start popup. The
 three-second limit on a planned obstacle pause uses wheel feedback. The pilot
 takes another observation from a new pose or sets up its next leg. The next
 physical run must establish the timing and rejoin. [Obstacle behavior](docs/obstacle.md#hug-pilot-path)
 
+After an obstacle bypass rejoins the line, the follower drives 100 mm on the
+line. The pilot then sends a `rejoin` event with the heading against the entry
+heading and the lateral offset from the entry line. A heading more than a
+quarter turn from the entry heading means the car follows the line the wrong
+way, so the pilot starts the local line search. The 100 mm hold is a guess
+until it is measured on the car.
+
 START checks the motion permit, attitude and IMU and sonar connections.
 The wheels stay held if these checks fail. A timed-out calibration can be
 retried with START. Once it completes, press START again to authorize motion.
-A stationary car held level in the air can resemble a car on the ground to
-the IMU, so set it down before pressing START. The CLI also accepts RESET
-to acknowledge faults and keep the wheels held.
+On the pilot build, START also checks that the chassis moves when the wheels
+accelerate. Set the car down with clear space ahead before pressing START.
+The check waits up to five seconds for fresh centered sonar clearance and
+usable wheel and IMU data. It then commands both wheels forward at 80 mm/s
+for at most 500 ms and ends at 35 mm of indicated wheel travel. It compares
+the wheel speed rise with the IMU's forward response relative to its stable
+reading at rest. If the check fails, the car stays stopped until a fresh START and the dashboard
+reports **Startup motion unverified**. The probe thresholds need grounded
+and suspended runs on the car.
+
+Stop holds the wheels and cancels the current maneuver. Reset in the dashboard
+or CLI also clears the route and acknowledges eligible faults. The dashboard clears its trace,
+graphs and activity when the supervisor accepts Reset. The car keeps its boot
+identity and uptime. Start is required to move again.
 During a run, an isolated missed accelerometer read preserves the attitude
 reference. After 25 consecutive failed cycles (about 500 ms), or when the last
 physics publication expires at 500 ms, the supervisor holds the wheels and
@@ -235,8 +294,10 @@ must exceed 0.12 g and the rest must stay above 0.05 g. A supported tilt above 2
 pickup. A moving hump masks the upward cue. After a downward unload, ten
 samples back within 0.05 g of the rest magnitude rearm the pickup check.
 Missing samples interrupt confirmation. A confirmed pickup cancels the active
-maneuver and requires operator START after set-down. The thresholds still
-need a labelled hand-pickup and landing run on this car.
+maneuver and puts the car in Stopped. Setting the car down or using Clear
+Faults leaves the pickup fault active and the wheels held. An accepted
+operator START after a level, still set-down clears the pickup stop and starts
+calibration. The thresholds need a labelled hand-pickup and landing run.
 
 Physics telemetry sends the filtered pitch in centidegrees and smooths roll
 over about 150 ms. A failed accelerometer read clears the frame’s calibrated
@@ -271,7 +332,11 @@ interval, sequence, and the estimated width when wheel feedback permits.
 An unmeasured interval starts a new span. Capture loss and unavailable
 speed are explicit. A complete framed Z is reported as a letter with no
 driving action. The decoder learns each marker's narrow width and wide-to-narrow
-ratio, updating them as unambiguous elements arrive.
+ratio, updating them as unambiguous elements arrive. After the start pattern,
+an element narrower than 30 % of the learnt narrow width counts as a glitch.
+The decoder joins the glitch and the element after it to the element before
+it, so a bar, a glitch and a bar read as one bar. The 30 % share is a guess
+until it is measured on barcode paper.
 
 The vehicle IMU uses board −Y for forward and +Z for up. Raising the nose
 produces positive pitch. Raising the left side produces negative roll under
@@ -292,6 +357,10 @@ An ambiguous IR pulse or a full capture buffer interrupts the current read.
 The next edge starts a fresh width measurement. A measured dark block also
 ends a partial read. Only a fully framed A–Z payload counts as a decoded
 letter and starts the 100 mm duplicate-suppression distance.
+After the boot event, the supervisor sends one `build` event. It carries the
+28-bit git short hash and flags for a dirty tree, the pilot build, the watchdog
+and an unknown hash. CMake records the hash at configure time, so rerun
+`configure.sh` after a commit to refresh it.
 The scan and connection tasks count each telemetry drop when the queue is
 busy or full. Packet layouts,
 fault bits and event types are in `protocol/telemetry.yaml` (schema 3).
@@ -353,11 +422,33 @@ Resumed task heartbeats before the watchdog expires allow local recovery. The
 magnetometer configuration is checked only at init, so a magnetometer reset is
 not caught by the readback and affects the heading only.
 
+The magnetometer heading starts without a hard-iron offset, so it is only a
+rough monitor. When the car pivots on the spot on level ground through at least
+240 degrees of encoder yaw, as a line search does, the physics task fits a
+circle to the horizontal field. It then uses the circle centre as the offset of
+the two horizontal axes. The offset includes the motor field at pivot duty, so
+the heading is approximate while the car drives at other duty.
+
+With the offset learnt, the magnetometer also witnesses each pivot on the
+spot. After 300 ms of steady turning in one direction, the physics task reports
+the share of the encoder yaw that the field shows, from 50 to 100 %. A share
+under 90 % counts as wheel slip. The pilot then advances the follower's heading
+by that share of the encoder yaw, so a search sweep keeps turning until the
+body has covered it. The obstacle hug and the contour route turn their pose by
+the reported share during a pivot. Without a report they assume 80 %. The
+300 ms, 50 % and 90 % limits are guesses until they are measured on the car.
+
+Pivots on the spot rise to their speed instead of stepping to it, so the wheels
+do not spin on the floor or on the barcode paper. One-shot turns, junction
+probes and search sweeps raise their turn speed at 500 mm/s² from the speed
+the car had, after a 45 mm/s start. They slow at once, so a pivot still stops
+on the tape. The rate is a guess until it is measured on the car.
+
 ## Tests
 
-The measurement benches (`car_bench`, `wdt_check`, `physics_check`,
-`obstacle_bench`) build to `build/*.uf2`; `tools/bench_summary.py` reads their
-logs.
+The measurement benches (`car_bench`, `wdt_check`, `physics_check`) build to
+`build/*.uf2`. The [course calibration guide](docs/course-calibration.md)
+covers ODO and PIVOT logs, measured fixtures and dashboard trace replay.
 
 Host tests build out of tree:
 

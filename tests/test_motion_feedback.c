@@ -23,6 +23,7 @@ static bool g_b_brake_fails;
 static unsigned g_latch_attempts;
 static unsigned g_capture_attempts;
 static bool g_b_capture_fails;
+static uint32_t g_forward_edges;
 static unsigned g_pair_writes;
 static unsigned g_nonzero_pair_writes;
 static INT g_queued_wakes;
@@ -217,6 +218,8 @@ ER encoder_read (encoder_sample_t * p_sample)
         return E_IO;
     }
     *p_sample = (encoder_sample_t){.timestamp_us = g_test_clock_us};
+    p_sample->wheel[ENCODER_LEFT].positive = g_forward_edges;
+    p_sample->wheel[ENCODER_RIGHT].positive = g_forward_edges;
     return E_OK;
 }
 
@@ -349,7 +352,7 @@ static controller_config_t test_control_config (void)
     {
         cfg.sampling.wheel[wheel] = (motion_scale_t){204204U, 2530U, 1};
         cfg.speed[wheel] =
-            (pid_config_t){256U, 256U, 2U, 300000U, 100000U, 600000U, 400U, 0U};
+            (pid_config_t){256U, 256U, 2U, 300000U, 100000U, 600000U, 400U, 0U, 0U, 0U};
     }
     cfg.sampling.max_interval_us = 100000U;
     cfg.max_command_ttl_us = 200000U;
@@ -405,7 +408,7 @@ static void test_estop_request_status (void)
     motion_status_t status;
     motion_feedback_t feedback;
     telemetry_status_t assembled;
-    uint8_t packet[TELEMETRY_STATUS_WIRE_SIZE];
+    uint8_t packet[TELEMETRY_STATUS_PIVOT_WIRE_SIZE];
 
     start_service(&input);
     publish_sample(1000U);
@@ -418,7 +421,7 @@ static void test_estop_request_status (void)
     assert(E_OK == motion_snapshot(&status, &feedback, NULL));
     assert(status.ready && feedback.fresh && !status.stop_requested);
     telemetry_assemble_status(&assembled, &status, &feedback, NULL, NULL, 0U, 0U, 0U, false, NULL);
-    assert(TELEMETRY_STATUS_WIRE_SIZE == telemetry_pack_status(packet, &assembled));
+    assert(TELEMETRY_STATUS_PIVOT_WIRE_SIZE == telemetry_pack_status(packet, &assembled));
     assert(0U == packet[TELEMETRY_STATUS_OFF_SPEED_MMS]);
     assert(162U == packet[TELEMETRY_STATUS_OFF_SPEED_MMS + 1U]);
     assert(TELEMETRY_RUN_STATE_RUNNING == packet[TELEMETRY_STATUS_OFF_STATE]);
@@ -429,7 +432,7 @@ static void test_estop_request_status (void)
     assert(MOTION_STATE_RUNNING == status.state && 0U == g_latch_attempts);
     assert(1U == feedback.age_us && 164000 == feedback.right_speed_um_s);
     telemetry_assemble_status(&assembled, &status, &feedback, NULL, NULL, 0U, 0U, 0U, false, NULL);
-    assert(TELEMETRY_STATUS_WIRE_SIZE == telemetry_pack_status(packet, &assembled));
+    assert(TELEMETRY_STATUS_PIVOT_WIRE_SIZE == telemetry_pack_status(packet, &assembled));
     /* The protocol sends zero for unavailable speed before the brake runs. */
     assert(0U == packet[TELEMETRY_STATUS_OFF_SPEED_MMS]);
     assert(0U == packet[TELEMETRY_STATUS_OFF_SPEED_MMS + 1U]);
@@ -524,6 +527,47 @@ static void test_estop_wake (bool b_physical, bool b_queued)
     assert(0U == g_pair_writes && 0U == g_motion_overruns);
 }
 
+static void test_estop_feedback_until_rest (void)
+{
+    motion_input_t input;
+    motion_status_t status;
+    motion_feedback_t feedback;
+    motion_diag_t diag;
+
+    start_service(&input);
+    g_test_clock_us = 1000U;
+    stop_button_pulse();
+    service_cycle(&input);
+    check_latched_stop(1000U, 1U);
+
+    g_test_clock_us = 10000U;
+    g_forward_edges = 12U;
+    service_cycle(&input);
+    assert(E_OK == motion_snapshot(&status, &feedback, &diag));
+    assert(status.stop_requested && !status.ready);
+    assert(status.stop_age_ms == 9U);
+    assert(feedback.fresh && feedback.timestamp_us == 10000U);
+    assert(feedback.speed_valid[0] && feedback.speed_valid[1]);
+    assert(feedback.left_speed_um_s > 0 && feedback.right_speed_um_s > 0);
+    assert(diag.left_duty_permille == 0 && diag.right_duty_permille == 0);
+
+    g_test_clock_us = 20000U;
+    g_b_capture_fails = true;
+    service_cycle(&input);
+    assert(E_OK == motion_feedback_snapshot(&feedback));
+    assert(!feedback.fresh);
+
+    g_test_clock_us = 30000U;
+    g_b_capture_fails = false;
+    service_cycle(&input);
+    assert(E_OK == motion_feedback_snapshot(&feedback));
+    assert(feedback.fresh && feedback.timestamp_us == 30000U);
+    assert(feedback.speed_valid[0] && feedback.speed_valid[1]);
+    assert(feedback.left_speed_um_s == 0 && feedback.right_speed_um_s == 0);
+    assert(feedback.left_displacement_um > 0 && feedback.right_displacement_um > 0);
+    assert(1U == g_latch_attempts && 0U == g_pair_writes);
+}
+
 static void test_estop_final_admission (bool b_request_stop)
 {
     motion_input_t input;
@@ -545,6 +589,58 @@ static void test_estop_final_admission (bool b_request_stop)
         assert(1U == g_pair_writes && 1U == g_nonzero_pair_writes);
         assert(0U == g_latch_attempts);
     }
+}
+
+static void test_feedback_after_hold_release (void)
+{
+    motion_input_t input;
+    motion_status_t status;
+    motion_feedback_t feedback;
+
+    g_test_clock_us = UINT32_MAX - 20000U;
+    start_service(&input);
+    assert(E_OK == motion_service_set_hold(MOTION_HOLD_OPERATOR, true));
+    g_test_clock_us += 10000U;
+    g_forward_edges = 12U;
+    service_cycle(&input);
+    assert(E_OK == motion_snapshot(&status, &feedback, NULL));
+    assert(feedback.fresh && status.movement_sequence == 0U);
+    assert(feedback.left_speed_um_s > 0 && feedback.right_speed_um_s > 0);
+    uint32_t const held_stamp_us = feedback.timestamp_us;
+
+    g_test_clock_us += 5000U;
+    assert(E_OK == motion_service_set_hold(MOTION_HOLD_OPERATOR, false));
+    assert(E_OK == motion_snapshot(&status, &feedback, NULL));
+    assert(status.ready && 0U == status.hold_mask);
+    assert(feedback.fresh && status.movement_sequence == 0U);
+    assert(feedback.timestamp_us == held_stamp_us);
+
+    g_test_clock_us += 10000U;
+    g_test_clock_high++;
+    g_forward_edges += 12U;
+    service_cycle(&input);
+    assert(E_OK == motion_snapshot(&status, &feedback, NULL));
+    assert(feedback.fresh && status.movement_sequence == 0U);
+    assert(feedback.timestamp_us == g_test_clock_us);
+
+    g_test_clock_us += 10000U;
+    g_forward_edges += 12U;
+    service_cycle(&input);
+    assert(E_OK == motion_snapshot(&status, &feedback, NULL));
+    assert(feedback.fresh && status.movement_sequence == 1U);
+    assert(feedback.timestamp_us == g_test_clock_us);
+
+    g_test_clock_us += 1000U;
+    stop_button_pulse();
+    service_cycle(&input);
+    assert(E_OK == motion_snapshot(&status, &feedback, NULL));
+    assert(status.stop_requested && !status.ready && status.movement_sequence == 1U);
+    g_test_clock_us += 10000U;
+    g_forward_edges += 12U;
+    service_cycle(&input);
+    assert(E_OK == motion_snapshot(&status, &feedback, NULL));
+    assert(feedback.fresh && status.movement_sequence == 1U);
+    assert(feedback.left_speed_um_s > 0 && feedback.right_speed_um_s > 0);
 }
 
 /* Only renewal may release the supervisor hold, including after TIMERAWL wraps. */
@@ -598,6 +694,49 @@ static void test_hold_through_feedback_recovery (void)
     assert(E_OK == motion_service_set_hold(MOTION_HOLD_LIFT, false));
 }
 
+/* A hold posted while a timing fault clears survives the clear, as for FEEDBACK. */
+/* A running service pass, its permit and command, and a pass gap over the
+ * 100 ms control gap that raises MOTION_FAULT_GAP. */
+#define RECOVERY_PASS_US   (10000U)
+#define RECOVERY_PERMIT_MS (200U)
+#define RECOVERY_SPEED_UM_S (100000)
+#define RECOVERY_TTL_US    (200000U)
+#define RECOVERY_GAP_US    (150000U)
+
+static void test_hold_through_timing_recovery (void)
+{
+    motion_input_t input;
+    motion_status_t status;
+
+    g_motion_event_count = 0U;
+    g_test_clock_us += RECOVERY_PASS_US;
+    assert(E_OK == motion_service_renew_permit(RECOVERY_PERMIT_MS));
+    assert(E_OK == motion_service_set_speed(RECOVERY_SPEED_UM_S, RECOVERY_SPEED_UM_S, RECOVERY_TTL_US, false));
+    service_cycle(&input);
+    g_test_clock_us += RECOVERY_PASS_US;
+    service_cycle(&input);
+    assert(E_OK == motion_status(&status) && MOTION_STATE_RUNNING == status.state);
+    g_test_clock_us += RECOVERY_GAP_US;
+    assert(E_OK == motion_service_renew_permit(RECOVERY_PERMIT_MS));
+    service_cycle(&input);
+    assert(E_OK == motion_status(&status) && MOTION_FAULT_GAP == status.fault);
+    assert(MOTION_STATE_FAULT == status.state);
+    unsigned const writes = g_nonzero_pair_writes;
+    ER const hold = motion_service_set_hold(MOTION_HOLD_LIFT, true);
+
+    for (uint32_t elapsed = 0U; elapsed <= MOTION_FAULT_CLEAR_US; elapsed += RECOVERY_PASS_US)
+    {
+        g_test_clock_us += RECOVERY_PASS_US;
+        assert(E_OK == motion_service_renew_permit(RECOVERY_PERMIT_MS));
+        service_cycle(&input);
+    }
+    assert(E_OK == motion_status(&status) && MOTION_IDLE == status.state);
+    assert(E_OK == hold);
+    assert(0U != (status.hold_mask & MOTION_HOLD_LIFT));
+    assert(writes == g_nonzero_pair_writes);
+    assert(E_OK == motion_service_set_hold(MOTION_HOLD_LIFT, false));
+}
+
 static void test_estop_unavailable_irq (void)
 {
     motion_service_config_t const config = {test_control_config(), 10U};
@@ -648,6 +787,14 @@ int main(int argc, char * argv[])
     {
         test_estop_wake(true, false);
     }
+    else if (argc == 2 && strcmp(argv[1], "estop-feedback-until-rest") == 0)
+    {
+        test_estop_feedback_until_rest();
+    }
+    else if (argc == 2 && strcmp(argv[1], "feedback-after-hold-release") == 0)
+    {
+        test_feedback_after_hold_release();
+    }
     else if (argc == 2 && strcmp(argv[1], "estop-gpio-queued") == 0)
     {
         test_estop_wake(true, true);
@@ -660,6 +807,7 @@ int main(int argc, char * argv[])
     {
         test_estop_final_admission(false);
         test_hold_through_feedback_recovery();
+        test_hold_through_timing_recovery();
         test_expired_permit();
     }
     else if (argc == 2 && strcmp(argv[1], "estop-unavailable-irq") == 0)

@@ -38,6 +38,7 @@ void run_state_init (run_ctx_t * p_ctx)
     p_ctx->b_operator = true;
     p_ctx->b_barcode  = false;
     p_ctx->b_lift     = false;
+    p_ctx->b_pickup   = false;
     p_ctx->b_overturn = false;
     p_ctx->b_righted_overturn = false;
     p_ctx->b_estop    = false;
@@ -57,6 +58,10 @@ run_state_t run_state_of (const run_ctx_t * p_ctx)
     else if (p_ctx->b_estop || p_ctx->b_overturn)
     {
         state = RUN_STATE_LATCHED;
+    }
+    else if (p_ctx->b_pickup)
+    {
+        state = RUN_STATE_STOPPED;
     }
     else if (p_ctx->b_barcode || p_ctx->b_lift)
     {
@@ -78,7 +83,7 @@ uint32_t run_state_hold_mask (const run_ctx_t * p_ctx)
 {
     uint32_t mask = 0U;
 
-    if (p_ctx->b_operator)
+    if (p_ctx->b_operator || p_ctx->b_pickup)
     {
         mask |= MOTION_HOLD_OPERATOR;
     }
@@ -144,7 +149,7 @@ static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
     {
         reject (p_out, RUN_REJECT_STALLED);
     }
-    else if (!p_in->b_upright && (p_ctx->b_lift || !p_in->b_on_hump))
+    else if (!p_in->b_upright)
     {
         reject (p_out, RUN_REJECT_LIFTED);
     }
@@ -155,6 +160,7 @@ static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
         p_ctx->b_operator = false;
         p_ctx->b_barcode  = false;
         p_ctx->b_lift     = false;
+        p_ctx->b_pickup   = false;
         p_ctx->start_count++;
         p_out->b_accepted       = true;
         p_out->b_start          = true;
@@ -278,8 +284,7 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
             case VEHICLE_CMD_START_STATIONARY:
             case VEHICLE_CMD_START_CONTINUOUS_FLOOR:
             case VEHICLE_CMD_START:
-                if ((RUN_STATE_RUNNING == run_state_of (p_ctx)) &&
-                    ((VEHICLE_CMD_START != cmd.opcode) || !p_ctx->b_continuous_floor))
+                if (RUN_STATE_RUNNING == run_state_of (p_ctx))
                 {
                     reject (p_out, RUN_REJECT_BUSY);
                 }
@@ -336,6 +341,10 @@ void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t 
         p_ctx->b_righted_overturn = false;
     }
     bool const b_overturn = p_in->b_overturned && !p_ctx->b_righted_overturn;
+    if (p_in->b_lifted && !p_in->b_overturned)
+    {
+        p_ctx->b_pickup = true;
+    }
     if (b_overturn)
     {
         p_ctx->b_overturn = true;
@@ -349,11 +358,8 @@ void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t 
     }
     if (p_in->b_permit_lapsed && !p_ctx->b_operator)
     {
-        /* The car stops like a STOP and waits for START, so it does not drive
-           on when the stalled task runs again. */
-        p_ctx->b_operator      = true;
-        p_out->b_cancel_turn   = true;
-        p_out->b_obstacle_stop = true;
+        /* Motion brakes while the permit is lapsed and resumes in place when renewed. */
+        p_out->b_cancel_turn = true;
     }
 
     if (p_ctx->b_overturn && !b_was_overturn)

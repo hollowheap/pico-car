@@ -1,16 +1,12 @@
 import type { Server } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-
-export type LivePacket = {
-  timestamp: number;
-  packet: string;
-  values: Record<string, number>;
-};
+import type { HistoryRecord } from "./history.js";
 
 export type LiveStatus = {
   mqtt: "connected" | "disconnected";
   packets: number;
   lastPacketAt: number | null;
+  historyStorage: "ready" | "degraded";
 };
 
 const PING_INTERVAL_MS = 30_000;
@@ -18,7 +14,7 @@ const STATUS_INTERVAL_MS = 2_000;
 
 type LiveClient = WebSocket & { isAlive: boolean };
 
-export function encodeLivePacket(packet: LivePacket): string {
+export function encodeLivePacket(packet: HistoryRecord): string {
   return JSON.stringify({ type: "packet", ...packet });
 }
 
@@ -30,7 +26,7 @@ export function createLiveServer(
   server: Server,
   getStatus: () => LiveStatus,
 ): {
-  broadcast: (packet: LivePacket) => void;
+  broadcast: (packet: HistoryRecord) => void;
   broadcastStatus: () => void;
   close: () => void;
 } {
@@ -76,7 +72,7 @@ export function createLiveServer(
   }, PING_INTERVAL_MS);
 
   return {
-    broadcast(packet: LivePacket): void {
+    broadcast(packet: HistoryRecord): void {
       broadcastFrame(encodeLivePacket(packet));
     },
     broadcastStatus(): void {

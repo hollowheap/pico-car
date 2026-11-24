@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react';
-import { fetchHistory, storeFromHistory } from './history';
+import { useEffect, useRef, useState } from 'react';
+import { courseSession } from './course-session';
+import { appendFrame, createFrameLog, type FrameLog } from './frame-log';
+import { fetchHistory, HISTORY_CATCHUP_LIMIT, syncHistory } from './history';
 import {
   LinkClient,
   type LinkPacket,
   type LinkSnapshot,
   type SocketLike,
 } from './link';
-import { emptyStore, reduceStore, type TelemetryStore } from './telemetry-store';
+import { emptyStore, precedesReset, reduceStore, type TelemetryStore } from './telemetry-store';
 
 const initial: LinkSnapshot = {
   status: 'disconnected',
@@ -15,31 +17,28 @@ const initial: LinkSnapshot = {
   bridge: { mqtt: 'unknown', packets: 0, lastPacketAt: null },
 };
 
-const MAX_PACKETS = 120;
-
 export type LinkState = {
   snapshot: LinkSnapshot;
-  /** The newest packets of every kind, newest first (the packet log). */
-  packets: LinkPacket[];
   /** The latest packet of each kind, the trail, the events and the loss count. */
   store: TelemetryStore;
+  frameLog: FrameLog;
 };
 
-/** Records fetched from the bridge to fill the store when the page opens. */
-const SEED_RECORDS = 10000;
+const emptyReadings = (revision = 0) => ({ store: emptyStore(), frameLog: createFrameLog([], revision) });
 
 /**
  * Connect to the bridge. When `serviceUrl` is set, the recorded frames fill the
- * trail and the events first, so a page opened mid-run is not empty.
+ * trail and the events on startup and after each reconnect.
  */
 export function useLink(url: string | undefined, serviceUrl?: string): LinkState {
   const [snapshot, setSnapshot] = useState<LinkSnapshot>(initial);
-  const [packets, setPackets] = useState<LinkPacket[]>([]);
-  const [store, setStore] = useState<TelemetryStore>(emptyStore);
+  const [readings, setReadings] = useState(emptyReadings);
+  const revision = useRef(0);
 
   useEffect(() => {
-    setPackets([]);
-    setStore(emptyStore());
+    let current = emptyReadings(++revision.current);
+    let preview: typeof current | null = null;
+    setReadings(current);
     if (!url) {
       setSnapshot(initial);
       return;
@@ -51,38 +50,42 @@ export function useLink(url: string | undefined, serviceUrl?: string): LinkState
       idleTimeoutMs: 8000,
     });
     const unsubscribeState = client.onState(setSnapshot);
-    // Packets that arrive while the history loads are replayed after it.
-    let buffer: LinkPacket[] | null = [];
-    let active = true;
-    const unsubscribePacket = client.onPacket((packet) => {
-      setPackets((current) => [packet, ...current].slice(0, MAX_PACKETS));
-      setStore((current) => reduceStore(current, packet));
-      buffer?.push(packet);
-    });
+    const session = courseSession(JSON.stringify([url, serviceUrl]));
+    const save = () => session.save(current.store);
+    if (typeof window !== 'undefined') window.addEventListener?.('pagehide', save);
+    const apply = (frames: LinkPacket[], provisional = false) => {
+      let { store, frameLog } = provisional && preview !== null ? preview : current;
+      if (!provisional && preview !== null) frameLog = { ...frameLog, revision: ++revision.current };
+      for (const packet of frames) {
+        const next = provisional ? reduceStore(store, packet) : session.reduce(store, packet);
+        if (next.resetAt !== store.resetAt || next.resetOrder !== store.resetOrder ||
+            next.resetReceiptId !== store.resetReceiptId) {
+          frameLog = createFrameLog([], ++revision.current);
+        }
+        if (!precedesReset(packet, next.resetAt, next.resetOrder)) frameLog = appendFrame(frameLog, packet);
+        store = next;
+      }
+      if (provisional) {
+        preview = { store, frameLog };
+        setReadings(preview);
+      } else {
+        preview = null;
+        current = { store: session.restore(store), frameLog };
+        setReadings(current);
+      }
+    };
+    const unsubscribePacket = serviceUrl
+      ? syncHistory(client, (signal) => fetchHistory(serviceUrl, HISTORY_CATCHUP_LIMIT, fetch, signal), apply)
+      : client.onPacket((packet) => apply([packet]));
     client.connect();
-    if (serviceUrl) {
-      fetchHistory(serviceUrl, SEED_RECORDS)
-        .then((records) => {
-          if (!active) return;
-          const seeded = (buffer ?? []).reduce(reduceStore, storeFromHistory(records));
-          buffer = null;
-          setStore(seeded);
-        })
-        .catch((reason: unknown) => {
-          buffer = null;
-          console.warn('The recorded frames could not fill the dashboard:', reason);
-        });
-    } else {
-      buffer = null;
-    }
 
     return () => {
-      active = false;
+      if (typeof window !== 'undefined') window.removeEventListener?.('pagehide', save);
       unsubscribeState();
       unsubscribePacket();
       client.close();
     };
   }, [url, serviceUrl]);
 
-  return { snapshot, packets, store };
+  return { snapshot, ...readings };
 }

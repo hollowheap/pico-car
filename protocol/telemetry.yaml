@@ -27,7 +27,7 @@ topics:
   command: "c"
 
 packets:
-  # 5 Hz. The vehicle in one frame.
+  # Original /s layout. The firmware sends status_pivot on the same topic.
   status:
     wire_size: 16
     fields:
@@ -244,6 +244,23 @@ packets:
       - { name: width_valid, offset: 16, type: uint8 }
       - { name: capture_loss, offset: 17, type: uint8 }
 
+  # Current /s layout. Pivot scale is the measured body yaw as a percentage
+  # of encoder yaw in a steady pivot. Zero means no usable measurement.
+  status_pivot:
+    variant_of: status
+    wire_size: 17
+    fields:
+      - { name: speed_mms, offset: 0, type: int16 }
+      - { name: odometer_mm, offset: 2, type: uint32 }
+      - { name: heading_ddeg, offset: 6, type: uint16 }
+      - { name: state, offset: 8, type: uint8, enum: run_state }
+      - { name: mode, offset: 9, type: uint8, enum: vehicle_mode }
+      - { name: faults, offset: 10, type: uint16 }
+      - { name: seq, offset: 12, type: uint16 }
+      - { name: line_bits, offset: 14, type: uint8 }
+      - { name: hold_mask, offset: 15, type: uint8 }
+      - { name: pivot_scale_pct, offset: 16, type: uint8 }
+
 # A command on the command topic is a 9-byte frame, big-endian:
 #   cmd_id u16, run_id u16, opcode u8, uptime_s u32
 # run_id and uptime_s are copied from the newest heartbeat. The car accepts a
@@ -302,11 +319,31 @@ commands:
 #                5 encoder, 6 sonar, 7 held, 8 hug move timeout,
 #                9 sonar latched, 10 stale wheel feedback latched,
 #                11 course clearance unverified (requires START),
-#                12 checking course clearance (automatic recovery)
+#                12 checking course clearance (automatic recovery),
+#                13 searching for the line after a detour, 14 no line after a detour,
+#                15 crawling without sonar
 #   boot         p1 = reset reason, p2 = failed self-test checks (1 imu, 2 sonar, 4 beam,
 #                8 imu not calibrated)
+#   recovery     the pilot began an automatic recovery: p1 = the pilot reason it
+#                recovers from (5 encoder, 8 hug move timeout, 9 sonar latched for a
+#                crawl without sonar, 11 course clearance), p2 = attempts allowed << 8 |
+#                this attempt (1 up). Clean travel, START or RESET restart the count.
+#                From the supervisor: a watchdog reboot resumed the run, p1 = reset reason
+#                (1 watchdog), p2 = resumes allowed << 8 | this resume.
+#   build        once after boot: p1 = build_flag bits << 12 | hash bits 27..16,
+#                p2 = hash bits 15..0 of the 28-bit git short hash (0 when unknown)
+#   stop_timing  an accepted STOP or ESTOP: p1 = acceptance to motor duty 0 in ms,
+#                p2 = acceptance to both wheels at rest in ms (65535 when they never
+#                rest); odometer at rest
+#   rejoin       the bypass rejoined the line and the follower holds it: p1 = body
+#                heading minus the entry heading in deci-degrees, p2 = lateral offset
+#                from the entry line in mm as a signed 16-bit value
+#   junction     p1 = junction_kind. stripe: the follower measured a transverse tape
+#                stripe, p2 = junction_stripe bits. probe: a barcode route probe ended
+#                without a turn, p2 = turn (as turn_*) << 8 | junction_probe outcome
 #   turn_*       p1 = turn (1 left, 2 right, 3 u-turn, 4 straight), p2 = elapsed ms on done/abort
-#   run_stop     p1 = run state entered (2 stopped, 3 held, 4 latched)
+#   run_stop     p1 = run state entered (2 stopped, 3 held, 4 latched),
+#                p2 = run_stop_reason
 #   motion_state p1 = previous state << 8 | new state, p2 = motion fault << 8 | applied hold mask
 #   obstacle_seen  p1 = distance mm
 #   scan_done    p1 = plan status (0 ok, 1 clear, 2 no safe path, 3 failed,
@@ -328,6 +365,8 @@ events:
   cmd_accept: 0x04
   cmd_reject: 0x05
   motion_state: 0x06
+  build: 0x07
+  stop_timing: 0x08
   barcode: 0x10
   barcode_bad: 0x11
   turn_start: 0x12
@@ -335,15 +374,18 @@ events:
   turn_abort: 0x14
   barcode_block: 0x15
   barcode_phase: 0x16
+  junction: 0x17
   line_lost: 0x18
   line_found: 0x19
   pilot_decision: 0x1A
+  recovery: 0x1B
   obstacle_seen: 0x20
   scan_done: 0x21
   bypass_start: 0x22
   bypass_end: 0x23
   obstacle_stop: 0x24
   sonar_aim: 0x25
+  rejoin: 0x26
   hump_start: 0x30
   hump_end: 0x31
   lift_start: 0x38
@@ -365,6 +407,10 @@ enums:
       ready: 1
       running: 2
       stopped: 3
+  run_stop_reason:
+    values:
+      unspecified: 0
+      startup_unverified: 1
   vehicle_mode:
     values:
       stopped: 0
@@ -544,6 +590,28 @@ enums:
       connection: 7
       startup: 8
       supervisor: 9
+  junction_kind:
+    values:
+      stripe: 1
+      probe: 2
+  # Line detectors that measured the stripe; corroborated when one of them had
+  # the other line detector or the barcode reader on the same tape.
+  junction_stripe:
+    bits:
+      left: 0
+      right: 1
+      corroborated: 2
+  build_flag:
+    values:
+      dirty: 1
+      pilot: 2
+      watchdog: 4
+      unknown: 8
+  junction_probe:
+    values:
+      no_branch: 1
+      fallback_exit: 2
+      aborted: 3
   line_bits:
     bits:
       left: 0

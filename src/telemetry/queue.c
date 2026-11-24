@@ -17,7 +17,7 @@
 /* D110: the first byte of a stored frame is its topic. Eviction recognises an
    event by its stored length (tk_ref_mbf reports only a size), so that length
    must be unique among the frame lengths. */
-#define FRAME_STATUS    (TELEMETRY_STATUS_WIRE_SIZE + 1u)
+#define FRAME_STATUS    (TELEMETRY_STATUS_PIVOT_WIRE_SIZE + 1u)
 #define FRAME_MOTION    (TELEMETRY_MOTION_WIRE_SIZE + 1u)
 #define FRAME_PHYSICS   (TELEMETRY_PHYSICS_WIRE_SIZE + 1u)
 #define FRAME_OBSTACLE  (TELEMETRY_OBSTACLE_WIRE_SIZE + 1u)

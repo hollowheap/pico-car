@@ -25,6 +25,7 @@
 #define I2C1_BASE         (0x40048000UL)
 #define I2C_REG_COUNT     (64U)
 #define REG_RAW_INTR      (I2C1_BASE + 0x34UL)
+#define REG_INTR_MASK     (I2C1_BASE + 0x30UL)
 #define REG_DATA_CMD      (I2C1_BASE + 0x10UL)
 #define REG_TX_ABRT_SRC   (I2C1_BASE + 0x80UL)
 #define REG_TXFLR         (I2C1_BASE + 0x74UL)
@@ -63,6 +64,7 @@ static uint32_t g_txflr;
 static uint32_t g_rx_byte;
 static uint32_t g_abrt_source;
 static uint32_t g_reads;
+static bool g_completion_interrupt_armed;
 static uint32_t g_regs[I2C_REG_COUNT];
 
 static void model_reset (void)
@@ -79,6 +81,7 @@ static void model_reset (void)
     g_rx_byte = 0U;
     g_abrt_source = 0U;
     g_reads = 0U;
+    g_completion_interrupt_armed = false;
     memset (g_regs, 0, sizeof (g_regs));
 }
 
@@ -160,6 +163,10 @@ uint32_t shim_reg_read (uint32_t addr)
 
 void shim_reg_write (uint32_t addr, uint32_t value)
 {
+    if (REG_INTR_MASK == addr && (value & RAW_STOP_DET) != 0U)
+    {
+        g_completion_interrupt_armed = true;
+    }
     if (in_i2c1 (addr))
     {
         g_regs[(addr - I2C1_BASE) / 4U] = value;
@@ -276,8 +283,30 @@ static void test_stuck_bus_times_out (void)
     CHECK (g_now_us < (2U * DEADLINE_US));
 }
 
-int main (void)
+static void test_completion_interrupt (void)
 {
+    i2c_bus_t bus;
+    uint8_t reg = (uint8_t)LSM303_CTRL_REG1_A;
+
+    model_reset ();
+    i2c_rp2040_init (&bus);
+    g_event_read = 2U;
+    g_event_raw = RAW_TX_EMPTY | RAW_STOP_DET;
+    CHECK (I2C_BUS_OK == bus.write_read (bus.p_ctx, LSM303_ACC_ADDR, &reg, 1U, NULL, 0U));
+    CHECK (g_completion_interrupt_armed);
+}
+
+int main (int argc, char **argv)
+{
+    if (argc == 2 && strcmp (argv[1], "completion-interrupt-armed") == 0)
+    {
+        test_completion_interrupt ();
+        return g_failures != 0;
+    }
+    if (argc != 1)
+    {
+        return 1;
+    }
     test_write_done_during_preemption ();
     test_read_done_during_preemption ();
     test_stop_after_deadline_is_not_a_timeout ();

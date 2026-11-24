@@ -94,6 +94,14 @@ STATIC_ASSERT (RUN_PASS_MS == SUPERVISOR_PASS_MS, "run_state counts supervisor p
 #define UM_PER_MM (1000)
 #define MS_PER_S  (1000U)
 
+#define RECOVERY_LIMIT_SHIFT (8U)
+#define STOP_TIMING_MAX_MS   (UINT16_MAX)
+
+#define BUILD_FLAGS_SHIFT     (12U)
+#define BUILD_HASH_HIGH_SHIFT (16U)
+#define BUILD_HASH_HIGH_MASK  (0xFFFU)
+#define BUILD_HASH_LOW_MASK   (0xFFFFU)
+
 static T_SPLOCK            g_lock;
 static command_ring_t      g_ring;
 /* Only VEHICLE_CMD_ESTOP marks this slot occupied. */
@@ -121,6 +129,10 @@ static volatile uint8_t  g_turn_source  = 0U;
 static volatile uint8_t  g_reset_count  = 0U; /* accepted RESETs; wraps */
 static bool              g_continuous_floor; /* published under g_lock with the start count */
 static volatile uint8_t  g_start_count  = 0U; /* accepted STARTs; wraps */
+static bool              g_b_armed;
+static bool              g_b_start_failed;
+static uint8_t           g_failed_start;
+static volatile bool     g_wheels_loaded = false;
 static volatile bool     g_turning      = false;
 static volatile uint16_t g_passes       = 0U;
 
@@ -130,8 +142,35 @@ static uint8_t  g_attitude        = TELEMETRY_ATTITUDE_STATE_OK;
 static bool     g_b_stalled_fault = false;
 static bool     g_b_selftest_done = false;
 static bool     g_b_renew_skipped = false;
+static bool     g_b_permit_renewed = false;
 static bool     g_b_motion_timing_fault;
+static timing_watch_t g_timing;
 static bool     g_b_offline_start_pending;
+static bool     g_b_watchdog_resume_pending;
+static bool     g_resume_continuous;
+static uint8_t  g_run_resumes;
+static uint8_t  g_token_flags;
+static uint8_t  g_token_resumes;
+typedef enum
+{
+    STOP_EPISODE_READY = 0,
+    STOP_EPISODE_TIMING,
+    STOP_EPISODE_REPORTED
+} stop_episode_t;
+
+typedef struct
+{
+    uint32_t accepted_ms;
+    uint32_t duty_ms;
+    uint32_t rest_stamp_us;
+    uint32_t movement_sequence;
+    uint8_t  state;
+    bool     b_duty_zero : 1;
+    bool     b_rest_sample : 1;
+    bool     b_estop_seen : 1;
+} stop_timing_t;
+STATIC_ASSERT (sizeof (stop_timing_t) == 20U, "stop timing state size");
+static stop_timing_t g_stop_timing;
 /* Offline launch and in-run pose recovery cannot both own the stopped car. */
 static bool     g_parked_echo_seen;
 static uint8_t  g_parked_echo_seq;
@@ -143,6 +182,27 @@ static uint32_t g_start_button_since_ms;
 static vehicle_cmd_t g_calibration_start;
 static uint16_t g_calibration_start_passes;
 static uint8_t g_start_rest_interruptions;
+
+static void restore_run_token (void)
+{
+    uint8_t flags   = 0U;
+    uint8_t resumes = 0U;
+
+    g_token_flags   = 0U;
+    g_token_resumes = 0U;
+    if (platform_run_token_read (&flags, &resumes))
+    {
+        g_token_flags   = flags;
+        g_token_resumes = resumes;
+        if ((PLATFORM_RESET_WATCHDOG == platform_reset_reason ()) &&
+            (0U != (flags & PLATFORM_RUN_ARMED)) && (resumes < SUPERVISOR_WATCHDOG_RESUMES))
+        {
+            g_b_watchdog_resume_pending = true;
+            g_resume_continuous         = (0U != (flags & PLATFORM_RUN_CONTINUOUS));
+            g_run_resumes               = resumes;
+        }
+    }
+}
 
 ER supervisor_init (const supervisor_config_t * p_config)
 {
@@ -157,11 +217,16 @@ ER supervisor_init (const supervisor_config_t * p_config)
         run_state_init (&g_ctx);
         g_continuous_floor = false;
         g_start_count = 0U;
+        g_b_armed = false;
+        g_b_start_failed = false;
+        g_b_permit_renewed = false;
+        g_stop_timing = (stop_timing_t) {0};
         g_reset_count = 0U;
         liveness_init (&g_live, p_config->required_mask);
         progress_init (&g_progress);
         stuck_init (&g_stuck);
         health_drive_init (&g_drive);
+        timing_watch_init (&g_timing);
         edge_init (&g_edge);
         /* No motion before the first rest calibration. */
         calhold_start (&g_cal, 0U);
@@ -169,15 +234,13 @@ ER supervisor_init (const supervisor_config_t * p_config)
         g_b_start_button_down = true;
         g_b_start_button_pending = false;
         g_b_offline_start_pending = (g_config.p_telemetry_seen != NULL) && platform_reset_was_power_up ();
+        restore_run_token ();
 
         if (PLATFORM_RESET_WATCHDOG == platform_reset_reason ())
         {
             system_fault_assign (FAULT_OWNER_SUPERVISOR, FAULT_ABNORMAL_RESET_BIT, FAULT_ABNORMAL_RESET_BIT);
             LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "the last reset came from the watchdog");
         }
-#ifdef PICO_CAR_WATCHDOG
-        platform_wdt_start (WATCHDOG_TIMEOUT_MS);
-#endif
         result = E_OK;
     }
 
@@ -267,6 +330,18 @@ bool supervisor_route_pending (uint8_t expected_opcode, bool b_consume)
     return b_pending;
 }
 
+bool supervisor_wheels_loaded (void)
+{
+    UINT saved    = 0U;
+    bool b_loaded = false;
+
+    (void) ISpinLock (&g_lock, &saved);
+    b_loaded = g_wheels_loaded;
+    (void) ISpinUnlock (&g_lock, saved);
+
+    return b_loaded;
+}
+
 uint8_t supervisor_reset_count (void)
 {
     UINT    saved = 0U;
@@ -298,6 +373,28 @@ uint8_t supervisor_start_snapshot (bool * p_continuous_floor)
 uint8_t supervisor_start_count (void)
 {
     return supervisor_start_snapshot (NULL);
+}
+
+uint8_t supervisor_armed_start (bool * p_armed)
+{
+    UINT saved = 0U;
+    (void) ISpinLock (&g_lock, &saved);
+    uint8_t const generation = g_start_count;
+    *p_armed = g_b_armed;
+    (void) ISpinUnlock (&g_lock, saved);
+    return generation;
+}
+
+void supervisor_start_check_failed (uint8_t generation)
+{
+    UINT saved = 0U;
+    (void) ISpinLock (&g_lock, &saved);
+    if (g_b_armed && generation == g_start_count)
+    {
+        g_failed_start = generation;
+        g_b_start_failed = true;
+    }
+    (void) ISpinUnlock (&g_lock, saved);
 }
 
 uint8_t supervisor_recovery_snapshot (bool * p_clear)
@@ -353,15 +450,34 @@ void supervisor_turn_refused (uint8_t opcode)
           (int16_t) (((uint32_t) RUN_REJECT_BUSY << CMD_EVENT_REASON_SHIFT) | (uint32_t) opcode), 0U);
 }
 
+/* A pending resume keeps the token the last reset left, until it runs or is cancelled. */
+static void sync_run_token (bool b_armed, bool b_continuous)
+{
+    uint8_t const flags = (uint8_t) ((b_armed ? PLATFORM_RUN_ARMED : 0U) |
+                                     (b_continuous ? PLATFORM_RUN_CONTINUOUS : 0U));
+
+    if (!g_b_watchdog_resume_pending &&
+        ((flags != g_token_flags) || (g_run_resumes != g_token_resumes)))
+    {
+        platform_run_token_write (flags, g_run_resumes);
+        g_token_flags   = flags;
+        g_token_resumes = g_run_resumes;
+    }
+}
+
 static void publish_counts (void)
 {
     UINT saved = 0U;
+    bool const b_running = (RUN_STATE_RUNNING == run_state_of (&g_ctx));
+    bool const b_floor   = g_ctx.b_continuous_floor;
 
     (void) ISpinLock (&g_lock, &saved);
-    g_continuous_floor = g_ctx.b_continuous_floor && (RUN_STATE_RUNNING == run_state_of (&g_ctx));
+    g_continuous_floor = b_floor && b_running;
+    g_b_armed = b_running;
     g_start_count = g_ctx.start_count;
     g_reset_count = g_ctx.reset_count;
     (void) ISpinUnlock (&g_lock, saved);
+    sync_run_token (b_running, b_floor);
 }
 
 static run_inputs_t read_inputs (bool b_lapsed)
@@ -391,12 +507,6 @@ static run_inputs_t read_inputs (bool b_lapsed)
     {
         in.b_estop = motion.stop_requested;
         in.b_follow = motion.ready && (0U == motion.hold_mask) && !in.b_estop;
-        if (!g_b_motion_timing_fault && health_motion_timing_fault (motion.state, motion.fault))
-        {
-            g_b_motion_timing_fault = true;
-            LOG_ERROR (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "motion timing fault %d: no watchdog feed",
-                       (int) motion.fault);
-        }
     }
     in.b_permit_lapsed = b_lapsed || g_b_motion_timing_fault;
     in.b_follow = in.b_follow && !in.b_lifted && !in.b_overturned && !in.b_permit_lapsed &&
@@ -445,6 +555,97 @@ static void set_calibration_hold (bool b_held)
     }
 }
 
+static void arm_stop_timing (void)
+{
+    SYSTIM time = {0, 0U};
+
+    if ((STOP_EPISODE_READY == g_stop_timing.state) && (E_OK == tk_get_otm (&time)))
+    {
+        g_stop_timing = (stop_timing_t) {
+            .accepted_ms = time.lo, .state = STOP_EPISODE_TIMING
+        };
+    }
+}
+
+static void watch_stop_timing (bool b_estop)
+{
+    stop_timing_t * const p_timing = &g_stop_timing;
+    motion_status_t   motion;
+    motion_feedback_t feedback;
+    motion_diag_t     diag;
+    SYSTIM            time = {0, 0U};
+
+    if ((STOP_EPISODE_READY == p_timing->state) && !b_estop)
+    {
+        return;
+    }
+    bool const observed = (0 == motion_snapshot (&motion, &feedback, &diag));
+    if (E_OK != tk_get_otm (&time))
+    {
+        return;
+    }
+    bool const valid = observed && feedback.fresh && feedback.speed_valid[0] && feedback.speed_valid[1];
+    bool const at_rest = valid && (0 == feedback.left_speed_um_s) && (0 == feedback.right_speed_um_s);
+    if (STOP_EPISODE_REPORTED == p_timing->state)
+    {
+        /* The motion owner retains measured travel even when GP21 latches
+           before the supervisor sees the moving wheel snapshot. */
+        if (!observed || (motion.movement_sequence == p_timing->movement_sequence))
+        {
+            return;
+        }
+        *p_timing = (stop_timing_t) {0};
+    }
+    if (observed && motion.stop_requested && !p_timing->b_estop_seen)
+    {
+        if ((STOP_EPISODE_READY == p_timing->state) ||
+            (motion.stop_age_ms > (time.lo - p_timing->accepted_ms)))
+        {
+            p_timing->accepted_ms = time.lo - motion.stop_age_ms;
+        }
+        p_timing->b_estop_seen = true;
+        p_timing->state = STOP_EPISODE_TIMING;
+    }
+    if (STOP_EPISODE_TIMING != p_timing->state)
+    {
+        return;
+    }
+    if (observed)
+    {
+        p_timing->movement_sequence = motion.movement_sequence;
+    }
+    uint32_t const elapsed_ms = time.lo - p_timing->accepted_ms;
+    bool const zero_duty = observed && (0 == diag.left_duty_permille) &&
+                           (0 == diag.right_duty_permille) &&
+                           (TELEMETRY_MOTION_FAULT_OUTPUT != motion.fault);
+    if (zero_duty && !p_timing->b_duty_zero)
+    {
+        p_timing->b_duty_zero = true;
+        p_timing->duty_ms = time.lo;
+    }
+    bool const rest_sample = zero_duty && at_rest;
+    bool const confirmed = rest_sample && p_timing->b_rest_sample &&
+                           (feedback.timestamp_us != p_timing->rest_stamp_us);
+    p_timing->b_rest_sample = rest_sample;
+    if (rest_sample)
+    {
+        p_timing->rest_stamp_us = feedback.timestamp_us;
+    }
+    if (confirmed || (elapsed_ms >= STOP_TIMING_MAX_MS))
+    {
+        uint32_t const duty = p_timing->b_duty_zero
+                                  ? (p_timing->duty_ms - p_timing->accepted_ms)
+                                  : STOP_TIMING_MAX_MS;
+        uint16_t const rest = (confirmed && (elapsed_ms < STOP_TIMING_MAX_MS))
+                                  ? (uint16_t) elapsed_ms : STOP_TIMING_MAX_MS;
+        p_timing->state = STOP_EPISODE_REPORTED;
+        (void) telemetry_emit_event ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR,
+                                     (uint8_t) TELEMETRY_EVT_STOP_TIMING,
+                                     (int16_t) ((duty > INT16_MAX) ? INT16_MAX : duty),
+                                     rest, observed ? telemetry_odometer_mm (&feedback) : 0U);
+    }
+}
+
 /* Carry out what a step decided. */
 static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command)
 {
@@ -452,6 +653,11 @@ static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command
     if (p_res->b_motion_estop)
     {
         (void) motion_request_stop ();
+    }
+    if (b_command && p_res->b_accepted &&
+        ((VEHICLE_CMD_STOP == cmd.opcode) || (VEHICLE_CMD_ESTOP == cmd.opcode)))
+    {
+        arm_stop_timing ();
     }
     if (p_res->b_cancel_turn)
     {
@@ -480,6 +686,10 @@ static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command
                   (int16_t) what, cmd.cmd_id);
             LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "command %d from %d accepted, id=%d run=%d",
                       (int) cmd.opcode, (int) cmd.source, (int) cmd.cmd_id, (int) cmd.run_id);
+            if (vehicle_is_start (cmd.opcode) && !g_b_watchdog_resume_pending)
+            {
+                g_run_resumes = 0U;
+            }
         }
         else if (p_res->b_rejected)
         {
@@ -499,6 +709,9 @@ static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command
     {
         (void) obstacle_post_cmd (OBSTACLE_CMD_STOP);
     }
+    /* The physical lift can end while the pickup stop still awaits START. */
+    system_fault_assign (FAULT_OWNER_SUPERVISOR, FAULT_LIFTED_BIT,
+                         g_ctx.b_pickup ? FAULT_LIFTED_BIT : 0U);
     if (p_res->b_sticky_clear)
     {
         system_fault_sticky_clear (FAULT_ALL_MASK);
@@ -528,6 +741,28 @@ static void apply_holds (uint32_t wanted)
     }
 }
 
+/* Give the failed generation an operator hold before draining other commands. */
+static bool stop_unverified_start (const run_inputs_t * p_in)
+{
+    UINT saved = 0U;
+    (void) ISpinLock (&g_lock, &saved);
+    bool const b_failed = g_b_start_failed && (g_failed_start == g_ctx.start_count);
+    g_b_start_failed = false;
+    (void) ISpinUnlock (&g_lock, saved);
+
+    if (b_failed && (RUN_STATE_RUNNING == run_state_of (&g_ctx)))
+    {
+        vehicle_cmd_t const stop = {0U, 0U, VEHICLE_CMD_STOP, 0U};
+        run_result_t result;
+        run_state_command (&g_ctx, stop, p_in, &result);
+        apply (&result, stop, false);
+        sync_run_token (false, g_ctx.b_continuous_floor);
+        LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "START motion check failed, car stopped");
+        return true;
+    }
+    return false;
+}
+
 /* Send the events a state change produced. */
 static void emit_edges (uint8_t source, const edge_event_t * p_events, uint8_t count)
 {
@@ -540,13 +775,17 @@ static void emit_edges (uint8_t source, const edge_event_t * p_events, uint8_t c
 }
 
 /* Run start and stop. The legacy scanner reports its own obstacle cycle. */
-static void watch_edges (void)
+static void watch_edges (bool b_unverified_start)
 {
     edge_event_t ev[EDGE_EVENTS_MAX];
+    run_state_t const state = run_state_of (&g_ctx);
+    uint8_t const count = edge_run (&g_edge, (uint8_t) state, ev);
 
-    emit_edges ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR,
-                ev, edge_run (&g_edge, (uint8_t) run_state_of (&g_ctx), ev));
-#if PICO_CAR_PILOT
+    if (b_unverified_start && (RUN_STATE_STOPPED == state) && (count != 0U))
+    {
+        ev[0].p2 = (uint16_t) TELEMETRY_RUN_STOP_REASON_STARTUP_UNVERIFIED;
+    }
+    emit_edges ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, ev, count);
     obstacle_status_t obstacle;
 
     if (E_OK == obstacle_snapshot (&obstacle))
@@ -569,7 +808,6 @@ static void watch_edges (void)
         in.plan_width_mm  = plan.width_mm;
         emit_edges ((uint8_t) TELEMETRY_EVENT_SOURCE_OBSTACLE, ev, edge_obstacle (&g_edge, &in, ev));
     }
-#endif
 }
 
 /* One owner releases the calibration hold once every reason for it clears. */
@@ -597,7 +835,7 @@ static void note_attitude (uint8_t state)
         }
         else if (TELEMETRY_ATTITUDE_STATE_LIFTED == state)
         {
-            LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "car lifted, holding the wheels");
+            LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "car stopped after pickup, set it level and press START");
         }
         else if ((TELEMETRY_ATTITUDE_STATE_OK == state) &&
                  (TELEMETRY_ATTITUDE_STATE_LIFTED == g_attitude))
@@ -635,6 +873,7 @@ static void check_drive (const motion_diag_t * p_diag, const motion_feedback_t *
                          bool b_free)
 {
     drive_in_t in;
+    UINT       saved = 0U;
 
     in.duty_pm[0]     = p_diag->left_duty_permille;
     in.duty_pm[1]     = p_diag->right_duty_permille;
@@ -655,6 +894,9 @@ static void check_drive (const motion_diag_t * p_diag, const motion_feedback_t *
     }
     motion_note_encoder_crossed (g_drive.b_crossed);
     physics_set_wheels_free (g_drive.b_free);
+    (void) ISpinLock (&g_lock, &saved);
+    g_wheels_loaded = g_drive.b_loaded;
+    (void) ISpinUnlock (&g_lock, saved);
 }
 
 /* The liveness, progress and stuck-sensor checks. They run every 100 ms.
@@ -710,10 +952,35 @@ static bool health_check (void)
         }
     }
 
-    g_b_stalled_fault = (0U != g_live.stalled) || b_progress_stall;
+    g_b_stalled_fault = (0U != g_live.stalled) || b_progress_stall || g_stuck.b_tripped;
     system_fault_assign (FAULT_OWNER_SUPERVISOR, FAULT_TASK_STALLED_BIT, g_b_stalled_fault ? FAULT_TASK_STALLED_BIT : 0U);
 
     return liveness_critical_stalled (&g_live);
+}
+
+static void report_build (void)
+{
+    uint32_t flags = 0U;
+    uint32_t hash  = 0U;
+
+#ifdef PICO_CAR_BUILD_HASH
+    hash = PICO_CAR_BUILD_HASH;
+#if PICO_CAR_BUILD_DIRTY
+    flags |= TELEMETRY_BUILD_FLAG_DIRTY;
+#endif
+#else
+    flags |= TELEMETRY_BUILD_FLAG_UNKNOWN;
+#endif
+    flags |= TELEMETRY_BUILD_FLAG_PILOT;
+#ifdef PICO_CAR_WATCHDOG
+    flags |= TELEMETRY_BUILD_FLAG_WATCHDOG;
+#endif
+
+    uint32_t const high = (hash >> BUILD_HASH_HIGH_SHIFT) & BUILD_HASH_HIGH_MASK;
+
+    emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_BUILD,
+          (int16_t) ((flags << BUILD_FLAGS_SHIFT) | high),
+          (uint16_t) (hash & BUILD_HASH_LOW_MASK));
 }
 
 /* The boot self-test: what can be checked without moving the car. */
@@ -750,6 +1017,7 @@ static void selftest (void)
 
     emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_BOOT,
           (int16_t) platform_reset_reason (), failed);
+    report_build ();
     if (0U != failed)
     {
         LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "self-test failed, mask=%d", (int) failed);
@@ -798,39 +1066,79 @@ static bool parked_observation (const run_inputs_t * p_in, uint32_t hold, uint16
            (*p_clear || b_range || (LOOK_ECHO_TOO_CLOSE == echo));
 }
 
+/* A START the operator did not send: parked, with a fresh clear ping. */
+static bool parked_start (const run_inputs_t * p_in, uint8_t opcode)
+{
+    vehicle_cmd_t const cmd = {0U, 0U, opcode, VEHICLE_SRC_TELEMETRY};
+    run_result_t        result;
+    bool                clear = false;
+
+    if (!parked_observation (p_in, MOTION_HOLD_OPERATOR, LINE_BUMPER_FAR_MM, &clear) || !clear)
+    {
+        return false;
+    }
+    run_state_command (&g_ctx, cmd, p_in, &result);
+    if (result.b_accepted)
+    {
+        /* A fresh stationary boot reference is already required above. */
+        result.b_physics_recal = false;
+        apply (&result, cmd, true);
+    }
+    return result.b_accepted;
+}
+
 static void consider_offline_start (const run_inputs_t * p_in, bool b_critical)
 {
     SYSTIM time = {0, 0U};
-    bool clear = false;
 
     if (!g_b_offline_start_pending)
     {
         return;
     }
-    if (g_config.p_telemetry_seen () || p_in->b_estop || p_in->b_lifted ||
-        p_in->b_overturned || p_in->b_permit_lapsed)
+    if (g_config.p_telemetry_seen () || p_in->b_estop || g_ctx.b_pickup || p_in->b_lifted ||
+        p_in->b_overturned || (g_b_permit_renewed && p_in->b_permit_lapsed))
     {
         g_b_offline_start_pending = false;
     }
     else if (!b_critical && (E_OK == tk_get_otm (&time)) && (time.lo >= OFFLINE_START_MS) &&
-             parked_observation (p_in, MOTION_HOLD_OPERATOR, LINE_BUMPER_FAR_MM, &clear) && clear)
+             parked_start (p_in, VEHICLE_CMD_START))
     {
-        vehicle_cmd_t const cmd = {0U, 0U, VEHICLE_CMD_START, 0U};
-        run_result_t result;
-
-        run_state_command (&g_ctx, cmd, p_in, &result);
-        if (result.b_accepted)
-        {
-            g_b_offline_start_pending = false;
-            /* A fresh stationary boot reference is already required above. */
-            result.b_physics_recal = false;
-            apply (&result, cmd, false);
-            LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "offline START after telemetry timeout");
-        }
+        g_b_offline_start_pending = false;
+        LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "offline START after telemetry timeout");
     }
     else
     {
         /* Pending until the boot deadline and the readiness checks pass. */
+    }
+}
+
+static void consider_watchdog_resume (const run_inputs_t * p_in, bool b_critical)
+{
+    uint8_t const opcode = g_resume_continuous ? VEHICLE_CMD_START : VEHICLE_CMD_START_STATIONARY;
+
+    if (!g_b_watchdog_resume_pending)
+    {
+        return;
+    }
+    /* Before the first renewal there is no permit to lapse. */
+    if (p_in->b_estop || g_ctx.b_pickup || p_in->b_lifted || p_in->b_overturned ||
+        (g_b_permit_renewed && p_in->b_permit_lapsed))
+    {
+        g_b_watchdog_resume_pending = false;
+    }
+    else if (!b_critical && parked_start (p_in, opcode))
+    {
+        g_b_watchdog_resume_pending = false;
+        g_run_resumes++;
+        emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_RECOVERY,
+              (int16_t) TELEMETRY_RESET_REASON_WATCHDOG,
+              (uint16_t) ((SUPERVISOR_WATCHDOG_RESUMES << RECOVERY_LIMIT_SHIFT) | g_run_resumes));
+        LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "watchdog reset: the armed run resumes, %d of %d",
+                  (int) g_run_resumes, (int) SUPERVISOR_WATCHDOG_RESUMES);
+    }
+    else
+    {
+        /* Pending until the car is parked with a clear ping. */
     }
 }
 
@@ -896,7 +1204,7 @@ static void finish_calibration_start (const run_inputs_t * p_in, bool b_critical
     {
         refuse_calibration_start (RUN_REJECT_HARDWARE_FAULT);
     }
-    else if ((RUN_STATE_STOPPED != run_state_of (&g_ctx)) || p_in->b_estop ||
+    else if ((RUN_STATE_STOPPED != run_state_of (&g_ctx)) || p_in->b_estop || g_ctx.b_pickup ||
              p_in->b_lifted || p_in->b_overturned)
     {
         refuse_calibration_start (RUN_REJECT_LATCHED);
@@ -934,14 +1242,6 @@ static void handle_command (vehicle_cmd_t cmd, const run_inputs_t * p_in, bool b
     run_result_t result;
     bool const b_pending = (0U != g_calibration_start_passes);
 
-#if !PICO_CAR_PILOT
-    if (vehicle_is_start (cmd.opcode) && (VEHICLE_CMD_START != cmd.opcode))
-    {
-        run_result_t const unavailable = { .b_rejected = true, .reason = RUN_REJECT_OPCODE };
-        apply (&unavailable, cmd, true);
-        return;
-    }
-#endif
     if (b_pending && vehicle_is_start (cmd.opcode) && (VEHICLE_SRC_BARCODE != cmd.source))
     {
         /* A repeat cannot extend or duplicate the first request. */
@@ -952,7 +1252,7 @@ static void handle_command (vehicle_cmd_t cmd, const run_inputs_t * p_in, bool b
     admit_command (cmd, *p_in, &result);
     bool const b_wait_for_pose = (RUN_REJECT_NO_ATTITUDE == result.reason) ||
         ((RUN_REJECT_LIFTED == result.reason) && !p_in->b_lifted && !p_in->b_overturned);
-    if (vehicle_is_start (cmd.opcode) && result.b_rejected && b_wait_for_pose &&
+    if (vehicle_is_start (cmd.opcode) && result.b_rejected && b_wait_for_pose && !g_ctx.b_pickup &&
         p_in->b_collecting_rest && !p_in->b_permit_lapsed && !b_critical &&
         (RUN_STATE_STOPPED == run_state_of (&g_ctx)) && wheels_parked_for_start ())
     {
@@ -960,11 +1260,13 @@ static void handle_command (vehicle_cmd_t cmd, const run_inputs_t * p_in, bool b
         g_calibration_start_passes = CALHOLD_MAX_PASSES;
         g_start_rest_interruptions = p_in->rest_interruptions;
         g_b_offline_start_pending = false;
+        g_b_watchdog_resume_pending = false;
         return;
     }
     if (result.b_accepted)
     {
         g_b_offline_start_pending = false;
+        g_b_watchdog_resume_pending = false;
     }
     apply (&result, cmd, true);
     if (b_pending && result.b_accepted &&
@@ -982,7 +1284,7 @@ static void recover_attitude (const run_inputs_t * p_in, bool b_critical, bool b
         return;
     }
     bool clear = false;
-    uint16_t const clear_mm = PICO_CAR_PILOT ? HUG_STANDOFF_MM + 1U : LINE_BUMPER_FAR_MM;
+    uint16_t const clear_mm = HUG_STANDOFF_MM + 1U;
     if (RUN_STATE_RUNNING != run_state_of (&g_ctx))
     {
         /* STOP, a pickup or a lapsed permit owns the wheels from here. */
@@ -992,7 +1294,7 @@ static void recover_attitude (const run_inputs_t * p_in, bool b_critical, bool b
     {
         g_parked_echo_seen = false;
     }
-    else if (parked_observation (p_in, MOTION_HOLD_CALIBRATE, clear_mm, &clear) && (PICO_CAR_PILOT || clear))
+    else if (parked_observation (p_in, MOTION_HOLD_CALIBRATE, clear_mm, &clear))
     {
         UINT saved = 0U;
         (void) ISpinLock (&g_lock, &saved);
@@ -1018,8 +1320,67 @@ static void update_attitude_hold (const run_inputs_t * p_in, bool b_critical)
     hold_for_calibration (physics.reference_request, calibrated);
 }
 
+/* Once per pass: a timing fault clears in place; a persistent or repeated
+   one stops the permit and the watchdog feed. */
+static void watch_motion_timing (void)
+{
+    motion_status_t motion;
+    bool            b_fault = false;
+
+    if (0 == motion_status (&motion))
+    {
+        b_fault = health_motion_timing_fault (motion.state, motion.fault);
+        if (b_fault && !g_timing.b_fault)
+        {
+            LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "motion timing fault %d, clearing in place",
+                      (int) motion.fault);
+        }
+    }
+    if (timing_watch_update (&g_timing, b_fault, SUPERVISOR_PASS_MS) && !g_b_motion_timing_fault)
+    {
+        g_b_motion_timing_fault = true;
+        LOG_ERROR (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "motion timing fault %u times or %u ms: no watchdog feed",
+                   (unsigned) g_timing.faults, (unsigned) g_timing.fault_ms);
+    }
+}
+
+static void note_imu_loss (bool b_unknown)
+{
+    static bool s_b_imu_loss_logged = false;
+
+    if (!s_b_imu_loss_logged && !g_cal.b_waiting &&
+        (RUN_STATE_RUNNING == run_state_of (&g_ctx)) && b_unknown)
+    {
+        s_b_imu_loss_logged = true;
+        LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "IMU reference lost, driving on");
+    }
+    else if (s_b_imu_loss_logged && !b_unknown)
+    {
+        s_b_imu_loss_logged = false;
+    }
+    else
+    {
+        /* No change. */
+    }
+}
+
+static void feed_watchdog (void)
+{
+#ifdef PICO_CAR_WATCHDOG
+    static bool s_b_wdt_armed = false;
+
+    if (!s_b_wdt_armed)
+    {
+        platform_wdt_start (WATCHDOG_TIMEOUT_MS);
+        s_b_wdt_armed = true;
+    }
+#endif
+    platform_wdt_feed ();
+}
+
 static void pass (void)
 {
+    watch_motion_timing ();
     bool const    b_lapsed   = run_permit_lapsed (g_b_renew_skipped,
                                                   motion_permit_age_ms (),
                                                   PERMIT_LEASE_MS);
@@ -1032,19 +1393,14 @@ static void pass (void)
     bool          b_critical = liveness_critical_stalled (&g_live);
     bool          b_renew_failed = false;
 
-    run_state_tick (&g_ctx, &in, &res);
-    if (!g_pose_recovery && !g_cal.b_waiting &&
-        (RUN_STATE_RUNNING == run_state_of (&g_ctx)) && in.b_attitude_unknown)
+    if (STOP_EPISODE_REPORTED == g_stop_timing.state)
     {
-        /* An isolated read failure retains the reference. Only published
-           reference loss or expiry of the physics snapshot enters recovery. */
-        g_pose_recovery = true;
-        g_parked_echo_seen = false;
-        res.b_cancel_turn = true;
-        set_calibration_hold (true);
-        LOG_WARN (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "IMU reference lost, recovering at rest");
+        watch_stop_timing (in.b_estop);
     }
+    run_state_tick (&g_ctx, &in, &res);
+    note_imu_loss (in.b_attitude_unknown);
     apply (&res, cmd, false);
+    bool const b_unverified_start = stop_unverified_start (&in);
     poll_start_button ();
 
     while (b_more)
@@ -1071,13 +1427,18 @@ static void pass (void)
     }
     finish_calibration_start (&in, b_critical);
     consider_offline_start (&in, b_critical);
+    consider_watchdog_resume (&in, b_critical);
     publish_counts ();
     if (g_b_cal_held || !g_cal.b_waiting)
     {
         /* Keep the prior holds if motion could not install the calibration hold. */
         apply_holds (run_state_hold_mask (&g_ctx));
     }
-    watch_edges ();
+    watch_edges (b_unverified_start);
+    if (STOP_EPISODE_REPORTED != g_stop_timing.state)
+    {
+        watch_stop_timing (in.b_estop);
+    }
 
     update_attitude_hold (&in, b_critical);
 
@@ -1089,11 +1450,12 @@ static void pass (void)
     if (!b_critical)
     {
         b_renew_failed = (0 != motion_renew_permit (PERMIT_LEASE_MS));
+        g_b_permit_renewed = g_b_permit_renewed || !b_renew_failed;
         /* A live physics task retries a missing IMU itself. A task that
            cannot run those retries needs the board watchdog. */
         if ((g_live.stalled & (1U << LIVE_PHYSICS)) == 0U)
         {
-            platform_wdt_feed ();
+            feed_watchdog ();
         }
     }
     g_b_renew_skipped = run_permit_skipped (b_critical, b_renew_failed);

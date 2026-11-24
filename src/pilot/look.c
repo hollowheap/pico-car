@@ -105,8 +105,15 @@ bool look_face(look_t const * p_look, look_pose_t const * p_from,
     return look_face_near(p_look, p_from, UINT16_MAX, p_face);
 }
 
-bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
-                    uint16_t max_range_mm, look_face_t * p_face)
+static bool fit_ray(look_t const * p_look, uint8_t i, uint16_t max_range_mm)
+{
+    return ((p_look->rays[i].range_mm <= max_range_mm)
+            && look_echo_is_point(look_ray_echo(&p_look->rays[i])));
+}
+
+/* Least-squares face through the points in range, leaving out ray skip. */
+static bool fit_near(look_t const * p_look, look_pose_t const * p_from,
+                     uint16_t max_range_mm, uint8_t skip, look_face_t * p_face)
 {
     int64_t sum_x  = 0;
     int64_t sum_y  = 0;
@@ -118,7 +125,7 @@ bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
 
     for (uint8_t i = 0U; i < p_look->count; i++)
     {
-        if ((p_look->rays[i].range_mm <= max_range_mm) && look_echo_is_point(look_ray_echo(&p_look->rays[i])))
+        if ((i != skip) && fit_ray(p_look, i, max_range_mm))
         {
             int32_t x = 0;
             int32_t y = 0;
@@ -173,6 +180,45 @@ bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
                 p_face->dist_mm     = dist_q;
                 found               = true;
             }
+        }
+    }
+    return (found);
+}
+
+bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
+                    uint16_t max_range_mm, look_face_t * p_face)
+{
+    bool const found = fit_near(p_look, p_from, max_range_mm, NO_RAY, p_face);
+
+    if (found)
+    {
+        uint8_t stray = NO_RAY;
+        int32_t worst = LOOK_FACE_MATCH_MM;
+
+        for (uint8_t i = 0U; i < p_look->count; i++)
+        {
+            look_face_t loo;
+
+            if (fit_ray(p_look, i, max_range_mm)
+                && fit_near(p_look, p_from, max_range_mm, i, &loo))
+            {
+                int32_t x        = 0;
+                int32_t y        = 0;
+                int32_t residual = 0;
+
+                ray_point(&p_look->rays[i], &x, &y);
+                residual = geom_abs(geom_dot_mm(loo.normal_deci, x - loo.x_mm,
+                                                y - loo.y_mm));
+                if (residual > worst)
+                {
+                    worst = residual;
+                    stray = i;
+                }
+            }
+        }
+        if (NO_RAY != stray)
+        {
+            (void)fit_near(p_look, p_from, max_range_mm, stray, p_face);
         }
     }
     return (found);

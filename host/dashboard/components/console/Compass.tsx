@@ -1,4 +1,4 @@
-import Svg, { Circle, G, Line, Path, Polygon } from 'react-native-svg';
+import Svg, { Circle, G, Line, Path, Polygon, Rect } from 'react-native-svg';
 
 import { SvgLabel } from './SvgLabel';
 
@@ -53,6 +53,7 @@ export function Compass({ headingDeg, available = true, yawRateDps = 0, size = 2
   const heading = ((headingDeg % 360) + 360) % 360;
   const arc = available ? turnArc(yawRateDps) : null;
   const ticks = Array.from({ length: 36 }, (_, index) => index * 10);
+  const compact = size < 200;
 
   return (
     <Svg
@@ -85,7 +86,7 @@ export function Compass({ headingDeg, available = true, yawRateDps = 0, size = 2
           );
         })}
         {ticks
-          .filter((deg) => deg % 30 === 0)
+          .filter((deg) => deg % (compact ? 90 : 30) === 0)
           .map((deg) => {
             const at = onRing(deg, LABEL_R);
             const cardinal = CARDINALS[deg];
@@ -93,7 +94,7 @@ export function Compass({ headingDeg, available = true, yawRateDps = 0, size = 2
               <G key={`l${deg}`} transform={`rotate(${deg} ${at.x} ${at.y})`}>
                 <SvgLabel
                   fill={cardinal ? theme.colors.text : theme.colors.muted}
-                  fontSize={cardinal ? 15 : 12}
+                  fontSize={compact ? Math.ceil((12 * 200) / size) : cardinal ? 15 : 12}
                   fontWeight={cardinal ? '600' : '400'}
                   textAnchor="middle"
                   x={at.x}
@@ -110,18 +111,22 @@ export function Compass({ headingDeg, available = true, yawRateDps = 0, size = 2
       {/* Fixed parts: the lubber mark at the top and the car. */}
       <Polygon fill={theme.colors.text} points={`${CENTRE},${CENTRE - LUBBER_TIP_R} ${CENTRE - 5},${CENTRE - LUBBER_BASE_R} ${CENTRE + 5},${CENTRE - LUBBER_BASE_R}`} />
       {arc !== null ? <Path d={arc} fill="none" stroke={theme.colors.accent} strokeLinecap="round" strokeWidth="4" /> : null}
-      <G>
+      <G transform={`translate(${CENTRE} ${CENTRE}) scale(1.32) translate(${-CENTRE} ${-CENTRE})`}>
+        <Rect x={CENTRE - 18.5} y={CENTRE - 1.5} width="11" height="1.6" rx="0.7" fill={theme.colors.warning} opacity={0.85} />
+        <Rect x={CENTRE - 19.5} y={CENTRE - 2.4} width="3.6" height="3.2" rx="0.8" fill={theme.colors.warning} />
+        <Rect x={CENTRE - 4} y={CENTRE - 18} width="8" height="3.4" rx="1" fill={theme.colors.warning} opacity={0.9} />
         <Path
-          d={`M ${CENTRE - 11} ${CENTRE + 18} L ${CENTRE - 11} ${CENTRE - 6} L ${CENTRE - 5} ${CENTRE - 18} L ${CENTRE + 5} ${CENTRE - 18} L ${CENTRE + 11} ${CENTRE - 6} L ${CENTRE + 11} ${CENTRE + 18} Z`}
-          fill={theme.colors.card}
-          stroke={theme.colors.text}
+          d={`M ${CENTRE - 8} ${CENTRE - 14.5} L ${CENTRE + 8} ${CENTRE - 14.5} L ${CENTRE + 9} ${CENTRE + 1} L ${CENTRE + 7} ${CENTRE + 2} L ${CENTRE + 7} ${CENTRE + 13} L ${CENTRE + 8.5} ${CENTRE + 14} L ${CENTRE + 7} ${CENTRE + 16.5} L ${CENTRE - 7} ${CENTRE + 16.5} L ${CENTRE - 8.5} ${CENTRE + 14} L ${CENTRE - 7} ${CENTRE + 13} L ${CENTRE - 7} ${CENTRE + 2} L ${CENTRE - 9} ${CENTRE + 1} Z`}
+          fill={theme.colors.elevated}
+          stroke={theme.colors.border}
           strokeLinejoin="round"
-          strokeWidth="1.5"
+          strokeWidth="0.8"
         />
-        <Line stroke={theme.colors.text} strokeWidth="1.5" x1={CENTRE - 15} x2={CENTRE - 15} y1={CENTRE - 10} y2={CENTRE - 2} />
-        <Line stroke={theme.colors.text} strokeWidth="1.5" x1={CENTRE + 15} x2={CENTRE + 15} y1={CENTRE - 10} y2={CENTRE - 2} />
-        <Line stroke={theme.colors.text} strokeWidth="1.5" x1={CENTRE - 15} x2={CENTRE - 15} y1={CENTRE + 6} y2={CENTRE + 14} />
-        <Line stroke={theme.colors.text} strokeWidth="1.5" x1={CENTRE + 15} x2={CENTRE + 15} y1={CENTRE + 6} y2={CENTRE + 14} />
+        <Rect x={CENTRE - 5.5} y={CENTRE - 8.5} width="11" height="3.2" rx="1" fill={theme.colors.info} opacity={0.9} />
+        <Rect x={CENTRE - 4.8} y={CENTRE + 1} width="9.6" height="12" rx="1.5" fill={theme.colors.success} opacity={0.78} />
+        {/* Rear 65x19 mm drive wheels */}
+        <Rect x={CENTRE - 12} y={CENTRE + 2} width="3.8" height="11.5" rx="1.2" fill={theme.colors.text} opacity={0.9} />
+        <Rect x={CENTRE + 8.2} y={CENTRE + 2} width="3.8" height="11.5" rx="1.2" fill={theme.colors.text} opacity={0.9} />
       </G>
     </Svg>
   );

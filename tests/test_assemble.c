@@ -85,6 +85,15 @@ static void test_status_basic (void)
     CHECK(out.seq == 7U);
     CHECK(out.line_bits == 0x03U);
     CHECK(out.hold_mask == MOTION_HOLD_OBSTACLE);
+
+    p.heading_valid = false;
+    p.pivot_scale_pct = 67U;
+    telemetry_assemble_status(&out, &m, &f, &p, &o, 0x0020U, 8U, 0x03U, false, NULL);
+    CHECK(out.heading_ddeg == TELEMETRY_HEADING_INVALID);
+    CHECK(out.pivot_scale_pct == 67U);
+    p.ready = false;
+    telemetry_assemble_status(&out, &m, &f, &p, &o, 0x0020U, 9U, 0x03U, false, NULL);
+    CHECK(out.pivot_scale_pct == 0U);
 }
 
 static void test_status_stale_feedback_keeps_odometer (void)

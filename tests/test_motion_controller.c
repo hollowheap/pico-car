@@ -66,7 +66,7 @@ static controller_config_t config (void)
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         cfg.sampling.wheel[wheel] = (motion_scale_t){204204U, 2530U, 1};
-        cfg.speed[wheel]          = (pid_config_t){256U, 256U, 2U, 300000U, 100000U, 600000U, 400U, 0U};
+        cfg.speed[wheel]          = (pid_config_t){256U, 256U, 2U, 300000U, 100000U, 600000U, 400U, 0U, 0U, 0U};
     }
     cfg.sampling.max_interval_us = 100000U;
     cfg.max_command_ttl_us       = TTL_US;
@@ -344,6 +344,65 @@ static void test_fault_recovery_needs_fresh_captures (void)
     assert(c.status.state == MOTION_IDLE && c.status.fault == MOTION_FAULT_NONE);
 }
 
+/* A lapsed lease or a late control period brakes without the output latch and
+ * clears in place like an encoder fault. Driving needs a new command. */
+/* Ticks to reach RUNNING, and the most ticks a lapsed command takes to fault. */
+#define RUN_UP_TICKS     (20)
+#define FAULT_WAIT_TICKS (30)
+
+static void test_timing_fault_clears_in_place (motion_fault_t reason)
+{
+    controller_t              c;
+    motion_input_t            in  = {0};
+    controller_config_t const cfg = config();
+    motion_output_t const     out = {NULL, fake_apply, fake_brake};
+    motion_command_t          cmd;
+    int                       tick;
+
+    assert(controller_init(&c, &cfg, &in, &out));
+    for (tick = 0; tick < RUN_UP_TICKS; tick++)
+    {
+        advance(&in, false);
+        cmd = drive(in.timestamp_us, SPEED_UM_S);
+        controller_tick(&c, &in, in.timestamp_us, &cmd, false);
+    }
+    assert(MOTION_RUNNING == c.status.state);
+    if (MOTION_FAULT_GAP == reason)
+    {
+        in.timestamp_us += cfg.max_control_gap_us;
+        advance(&in, false);
+        controller_tick(&c, &in, in.timestamp_us, NULL, false);
+    }
+    else
+    {
+        for (tick = 0; (tick < FAULT_WAIT_TICKS) && (MOTION_FAULT != c.status.state); tick++)
+        {
+            advance(&in, false);
+            controller_tick(&c, &in, in.timestamp_us, NULL, false);
+        }
+    }
+    assert(MOTION_FAULT == c.status.state);
+    assert(reason == c.status.fault);
+    assert(!g_last_latch);
+    assert((0 == c.status.duty[0]) && (0 == c.status.duty[1]));
+
+    for (uint32_t waited = 0U; waited <= MOTION_FAULT_CLEAR_US; waited += TICK_US)
+    {
+        advance(&in, false);
+        controller_tick(&c, &in, in.timestamp_us, NULL, false);
+    }
+    assert(MOTION_IDLE == c.status.state);
+    assert(MOTION_FAULT_NONE == c.status.fault);
+    assert((0 == c.status.target_um_s[0]) && (0 == c.status.target_um_s[1]));
+
+    int const before = g_applies;
+    advance(&in, false);
+    cmd = drive(in.timestamp_us, SPEED_UM_S);
+    controller_tick(&c, &in, in.timestamp_us, &cmd, false);
+    assert(MOTION_RUNNING == c.status.state);
+    assert(g_applies > before);
+}
+
 static void test_command_fault_stays_latched (void)
 {
     controller_t              c;
@@ -615,6 +674,8 @@ int main (int argc, char ** argv)
     test_persistent_encoder_fault(ENCODER_LEFT);
     test_persistent_encoder_fault(ENCODER_RIGHT);
     test_fault_recovery_needs_fresh_captures();
+    test_timing_fault_clears_in_place(MOTION_FAULT_EXPIRED);
+    test_timing_fault_clears_in_place(MOTION_FAULT_GAP);
     test_command_fault_stays_latched();
     test_missing_capture_raises_feedback();
     test_odometry_valid_recovers_per_sample();

@@ -29,6 +29,8 @@
 
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 /* Fault bits.  Each argument to the accessors below is one of these masks. */
 #define FAULT_WIFI_DISCONN_BIT    (1U << 0U)
 #define FAULT_MQTT_NACK_BIT       (1U << 1U)
@@ -56,11 +58,13 @@ typedef enum
     FAULT_OWNER_LINK = 0,   /* Wi-Fi down, MQTT publish refused        */
     FAULT_OWNER_MOTION,     /* stall, dead encoder, emergency latch    */
     FAULT_OWNER_LINE,       /* line lost                               */
-    FAULT_OWNER_PHYSICS,    /* IMU, stale speed, tilt, lift, overturn  */
+    FAULT_OWNER_PHYSICS,    /* IMU, stale speed, tilt, overturn        */
     FAULT_OWNER_OBSTACLE,   /* no echo, echo line, obstacle stop       */
-    FAULT_OWNER_SUPERVISOR, /* task stalled, abnormal reset            */
+    FAULT_OWNER_SUPERVISOR, /* pickup, task stalled, abnormal reset    */
     FAULT_OWNER_COUNT
 } fault_owner_t;
+
+STATIC_ASSERT(sizeof(fault_owner_t) <= 4U, "fault_owner_t size");
 
 /* Bind before producers start, or pass a null callback with producers stopped.
    The observer receives only changed level bits and the level word as of that

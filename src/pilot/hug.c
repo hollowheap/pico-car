@@ -18,7 +18,6 @@
 #include "platform/units.h"
 #include "track/line_control.h"
 
-#define PERCENT         (100)
 #define HALVES          (2)
 #define EXIT_CLEAR      (0U)
 #define EXIT_LEFT       (1U)
@@ -201,6 +200,14 @@ static void zero_out(hug_out_t * p_out)
     p_out->b_rejoined = false;
 }
 
+int32_t hug_pivot_turn_um(int32_t diff_um, uint8_t witness_pct)
+{
+    int32_t const pct = ((0U != witness_pct) && (witness_pct <= (uint8_t)PERCENT))
+                            ? (int32_t)witness_pct : HUG_PIVOT_PCT;
+
+    return (diff_um * pct) / PERCENT;
+}
+
 /* Wheel travel to pose. Wheels that run opposite turn the body less than
  * their travel says. */
 static void odo_update(hug_t * p_hug, hug_in_t const * p_in)
@@ -212,7 +219,7 @@ static void odo_update(hug_t * p_hug, hug_in_t const * p_in)
     int32_t const before = hug_pose_heading_deci(p_hug);
     int32_t mid = 0;
 
-    if ((0 != dl) || (0 != dr) || p_in->b_other)
+    if ((BYPASS_IDLE == p_hug->bypass.phase) && ((0 != dl) || (0 != dr) || p_in->b_other))
     {
         p_hug->last_motion_ms = p_in->now_ms;
     }
@@ -220,8 +227,9 @@ static void odo_update(hug_t * p_hug, hug_in_t const * p_in)
     p_hug->last_right_um = (uint32_t)p_in->right_um;
     if ((BYPASS_IDLE == p_hug->bypass.phase) && (((dl > 0) && (dr < 0)) || ((dl < 0) && (dr > 0))))
     {
-        dd = (dd * HUG_PIVOT_PCT) / PERCENT;
+        dd = hug_pivot_turn_um(dd, p_in->pivot_scale_pct);
     }
+    dd += (int32_t)p_in->drift_corr_um;
     p_hug->diff_um += dd;
     mid = before + (geom_wrap_deci(hug_pose_heading_deci(p_hug) - before) / HALVES);
     p_hug->x_um += (int32_t)(((int64_t)ds * geom_cos_q14(mid)) / GEOM_Q14_ONE);
@@ -819,9 +827,15 @@ static void scan_reply(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
     }
     if ((ST_SCAN == p_hug->state) && (SUB_ASK == p_hug->sub))
     {
+        if (p_hug->lost >= HUG_LOST_REPLIES)
+        {
+            p_hug->state = ST_IDLE;
+            p_out->b_timeout = 1U;
+            return;
+        }
         int32_t const next_offset = ray_offset(p_hug, p_hug->idx);
         emit_request(p_hug, p_out, next_offset - scan_body_aim(p_hug, next_offset));
-        p_out->b_stop = (p_hug->lost >= HUG_LOST_REPLIES) ? 1U : 0U;
+        p_out->b_stop = 0U;
     }
 }
 

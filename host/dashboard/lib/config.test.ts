@@ -59,5 +59,44 @@ describe('config', () => {
     expect(getLinkUrl()).toBe('ws://127.0.0.1:8124');
     process.env.EXPO_PUBLIC_LINK_URL = 'ws://192.168.1.10:8124';
     expect(getLinkUrl()).toBeNull();
+
+    process.env.EXPO_PUBLIC_ALLOW_INSECURE = '1';
+    expect(getLinkUrl()).toBe('ws://192.168.1.10:8124');
+  });
+
+  it.each([
+    ['missing authority', 'https://', 'wss://'],
+    ['missing slashes', 'https:car.lan', 'wss:car.lan'],
+    ['path in place of authority', 'https:///car.lan', 'wss:///car.lan'],
+    ['malformed host', 'https://car lan', 'wss://car lan'],
+    ['invalid port', 'https://car.lan:65536', 'wss://car.lan:65536'],
+    ['invalid IPv6 address', 'https://[::1', 'wss://[::1'],
+    ['credentials', 'https://user@car.lan', 'wss://user@car.lan'],
+    ['fragment', 'https://car.lan#', 'wss://car.lan#'],
+  ])('rejects %s for both endpoints', (_label, service, link) => {
+    process.env.EXPO_PUBLIC_SERVICE_URL = service;
+    process.env.EXPO_PUBLIC_LINK_URL = link;
+    expect(getServiceUrl()).toBeNull();
+    expect(getLinkUrl()).toBeNull();
+  });
+
+  it('keeps the local IPv6 exception and validates even with insecure opt-in', () => {
+    process.env.EXPO_PUBLIC_SERVICE_URL = 'http://[::1]:8080/';
+    process.env.EXPO_PUBLIC_LINK_URL = 'ws://[::1]:8124/';
+    expect(getServiceUrl()).toBe('http://[::1]:8080');
+    expect(getLinkUrl()).toBe('ws://[::1]:8124');
+
+    process.env.EXPO_PUBLIC_ALLOW_INSECURE = '1';
+    process.env.EXPO_PUBLIC_SERVICE_URL = 'http://';
+    process.env.EXPO_PUBLIC_LINK_URL = 'ws://car.lan:bad';
+    expect(getServiceUrl()).toBeNull();
+    expect(getLinkUrl()).toBeNull();
+  });
+
+  it('preserves a socket query and rejects queries on the service base', () => {
+    process.env.EXPO_PUBLIC_SERVICE_URL = 'https://car.lan/api?view=all';
+    process.env.EXPO_PUBLIC_LINK_URL = 'WSS://car.lan/ws?view=test/';
+    expect(getServiceUrl()).toBeNull();
+    expect(getLinkUrl()).toBe('WSS://car.lan/ws?view=test/');
   });
 });

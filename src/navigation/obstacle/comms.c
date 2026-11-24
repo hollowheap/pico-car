@@ -32,7 +32,7 @@
 #include "obstacle_config.h"
 #include "comms.h"
 #include "navigation/obstacle_flags.h"
-#include "statechart.h"
+#include "sonar_health.h"
 #include "obstacle_pack.h"
 #include "obstacle_internal.h"
 #include "platform/faults.h"
@@ -65,11 +65,6 @@ typedef struct
  * ------------------------------------------------------------------ */
 
 static comms_links_t g_links = {0, 0, NULL, NULL};
-#if !PICO_CAR_PILOT
-static obstacle_legacy_transition_fn_t gp_observe_legacy = NULL;
-#endif
-
-#define AIM_BODY_SHIFT (16U)
 
 static uint32_t volatile g_status = 0U;
 /* Last good wheel travel; the obstacle task only. */
@@ -125,11 +120,8 @@ static comms_lock_t g_pub_lock = 0U;
 static UINT lock_take (comms_lock_t * p_lock);
 static void lock_give (comms_lock_t * p_lock, UINT intsts);
 static void memory_barrier (void);
-static bool evt_push (uint32_t evt);
 static bool evt_pop (uint32_t * p_evt);
 static void count_drop (void);
-static void deliver (uint32_t evt, UINT flag_bit);
-static void publish_profile (obstacle_statechart_t const * p_fsm);
 
 /* ------------------------------------------------------------------ *
  * Public functions.
@@ -288,19 +280,19 @@ bool obstacle_comms_pop_cmd (uint8_t * p_cmd)
  *
  * @param[in] p_fsm Statechart after the step.
  */
-static void share_faults (obstacle_statechart_t const * p_fsm)
+static void share_faults (sonar_health_t const * p_health)
 {
     uint16_t active = 0U;
 
-    if (0U != (p_fsm->echo_faults & OBSTACLE_FAULT_NO_ECHO))
+    if (0U != (p_health->echo_faults & OBSTACLE_FAULT_NO_ECHO))
     {
         active |= FAULT_SONAR_NO_ECHO_BIT;
     }
-    if (0U != (p_fsm->echo_faults & (OBSTACLE_FAULT_ECHO_STUCK | OBSTACLE_FAULT_ECHO_NOISE)))
+    if (0U != (p_health->echo_faults & (OBSTACLE_FAULT_ECHO_STUCK | OBSTACLE_FAULT_ECHO_NOISE)))
     {
         active |= FAULT_ECHO_LINE_BIT;
     }
-    if (0U != (p_fsm->faults & OBSTACLE_FAULTS_STOPPING))
+    if (0U != (p_health->faults & OBSTACLE_FAULTS_STOPPING))
     {
         active |= FAULT_OBSTACLE_STOPPED_BIT;
     }
@@ -310,63 +302,18 @@ static void share_faults (obstacle_statechart_t const * p_fsm)
                         active);
 }
 
-#if !PICO_CAR_PILOT
-void obstacle_bind_legacy_transition (obstacle_legacy_transition_fn_t p_observe)
-{
-    gp_observe_legacy = p_observe;
-}
-
-static void observe_legacy_transition (const obstacle_statechart_t * p_fsm,
-                                       bool b_profile_changed)
-{
-    obstacle_legacy_transition_t transition = {
-        .p_completed_profile = (b_profile_changed && (OBSTACLE_STATE_PLAN == p_fsm->state))
-                                   ? p_fsm->scan.profile : NULL,
-        .distance_mm = p_fsm->last_dist,
-        .state       = p_fsm->state,
-        .cause       = p_fsm->cause,
-        .echo_class  = p_fsm->last_class,
-        .stop_reason = p_fsm->reason,
-    };
-
-    /* Only this task publishes the plan, and the copy below is after its
-     * update. Navigation cannot advance the scan before this observation. */
-    (void)obstacle_comms_copy_plan(&transition.plan);
-    gp_observe_legacy(&transition);
-}
-#endif
-
 /*!
- * @brief Publish one statechart step: emergency stop, status, faults,
- *        profile, events and steering, in that order of urgency.
+ * @brief Publish one sonar health step: status, faults, flags, aim and ping.
  *
- * @param[in] p_out Requests from the statechart.
- * @param[in] p_fsm Statechart after the step.
+ * @param[in] p_health Sonar health state after the step.
  */
-void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_statechart_t const * p_fsm)
+void obstacle_comms_publish (sonar_health_t const * p_health)
 {
-    uint8_t  idx    = 0U;
-    uint32_t status = 0U;
-    uint32_t aim    = 0U;
-    uint16_t faults = 0U;
-    uint8_t  flags  = 0U;
-    UINT     intsts = 0U;
-#if !PICO_CAR_PILOT
-    uint32_t const previous = obstacle_pack_get(g_status, OBSTACLE_ST_STATE_SH, OBSTACLE_ST_STATE_MK);
-#endif
-
-    if (p_out->b_call_stop && (NULL != g_links.p_stop))
-    {
-        (void)g_links.p_stop();
-    }
-
-    status = obstacle_statechart_status(p_fsm);
-    /* Bits 12 to 14 carry the give-up reason. */
-    faults = (uint16_t)((uint32_t)p_fsm->faults | (uint32_t)p_fsm->echo_faults |
-                        (((uint32_t)p_fsm->reason & OBSTACLE_STOP_REASON_MK) << OBSTACLE_STOP_REASON_SH));
-    flags  = obstacle_statechart_flags(p_fsm);
-    aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
-             (uint32_t)(uint16_t)obstacle_statechart_servo_deci(p_fsm);
+    uint32_t const status = sonar_health_status(p_health);
+    uint16_t const faults = (uint16_t)((uint32_t)p_health->faults | (uint32_t)p_health->echo_faults);
+    uint8_t const  flags  = sonar_health_flags(p_health);
+    uint32_t const aim    = (uint32_t)(uint16_t)p_health->look_deci;
+    UINT           intsts = 0U;
 
     intsts   = lock_take(&g_pub_lock);
     g_status = status;
@@ -376,34 +323,12 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
     lock_give(&g_pub_lock, intsts);
 
     /* A reply to a ping request stays until the next free-running ping. */
-    if (p_fsm->ping != g_fsm_ping_seen)
+    if (p_health->ping != g_fsm_ping_seen)
     {
-        g_fsm_ping_seen = p_fsm->ping;
-        g_ping          = p_fsm->ping;
+        g_fsm_ping_seen = p_health->ping;
+        g_ping          = p_health->ping;
     }
-    share_faults(p_fsm);
-
-    if (p_out->b_profile_changed)
-    {
-        publish_profile(p_fsm);
-    }
-
-#if !PICO_CAR_PILOT
-    if ((NULL != gp_observe_legacy) && (previous != p_fsm->state))
-    {
-        observe_legacy_transition(p_fsm, p_out->b_profile_changed);
-    }
-#endif
-
-    for (idx = 0U; idx < p_out->evt_count; idx++)
-    {
-        deliver(p_out->evt[idx], OBSTACLE_FLG_NAV_EVT);
-    }
-
-    if (p_out->b_steer_valid)
-    {
-        deliver(p_out->steer_word, OBSTACLE_FLG_NAV_STEER);
-    }
+    share_faults(p_health);
 }
 
 /*!
@@ -777,26 +702,6 @@ static void memory_barrier (void)
  *
  * @return False if the outbox was full.
  */
-static bool evt_push (uint32_t evt)
-{
-    bool       b_added = false;
-    UINT const intsts  = lock_take(&g_evt_lock);
-    uint32_t   head    = g_evt_head;
-    uint32_t   count   = g_evt_count;
-
-    if (count < OBSTACLE_EVT_RING_LEN)
-    {
-        g_evt_ring[(head + count) % OBSTACLE_EVT_RING_LEN] = evt;
-
-        /* Cast is safe: count is below OBSTACLE_EVT_RING_LEN (4). */
-        g_evt_count = (uint8_t)(count + 1U);
-        b_added     = true;
-    }
-    lock_give(&g_evt_lock, intsts);
-
-    return (b_added);
-}
-
 /*!
  * @brief Take one event from the outbox.
  *
@@ -840,73 +745,6 @@ static void count_drop (void)
         g_drops = (uint8_t)(drops + 1U);
     }
     lock_give(&g_pub_lock, intsts);
-}
-
-/*!
- * @brief Deliver one event to Navigation's inbox or to the outbox. A
- *        steering word replaces the previous one (latest wins).
- *
- * @param[in] evt      Packed event word.
- * @param[in] flag_bit OBSTACLE_FLG_NAV_EVT or OBSTACLE_FLG_NAV_STEER.
- */
-static void deliver (uint32_t evt, UINT flag_bit)
-{
-    ID const h_mbf = g_links.h_nav_mbf;
-
-    if (0 != h_mbf)
-    {
-        /* Cast is safe: sizeof(evt) is 4, which fits in an INT. */
-        if (E_OK != tk_snd_mbf(h_mbf, &evt, (INT)sizeof(evt), TMO_POL))
-        {
-            count_drop();
-        }
-    }
-    else if (OBSTACLE_FLG_NAV_STEER == flag_bit)
-    {
-        g_steer = evt;
-        (void)tk_set_flg(g_links.h_flag, flag_bit);
-    }
-    else if (evt_push(evt))
-    {
-        (void)tk_set_flg(g_links.h_flag, flag_bit);
-    }
-    else
-    {
-        count_drop();
-    }
-}
-
-/*!
- * @brief Copy the profile under the sequence lock.
- *
- * @param[in] p_fsm Statechart holding the new profile.
- */
-static void publish_profile (obstacle_statechart_t const * p_fsm)
-{
-    uint8_t idx = 0U;
-
-    /* Cast is safe: the counter is meant to wrap at 256. */
-    g_profile_seq = (uint8_t)(g_profile_seq + 1U);
-    memory_barrier();
-
-    for (idx = 0U; idx < OBSTACLE_SLOT_COUNT; idx++)
-    {
-        g_profile[idx] = p_fsm->scan.profile[idx];
-    }
-
-    g_plan_closest = p_fsm->plan.closest_mm;
-    g_plan_width   = p_fsm->plan.width_mm;
-    g_plan_need    = p_fsm->plan.need_mm[p_fsm->plan.side];
-    g_plan_status  = p_fsm->plan.status;
-    g_plan_side    = p_fsm->plan.side;
-    g_plan_start   = p_fsm->plan.start_deg;
-    g_plan_wall    = p_fsm->plan.b_wall;
-    g_plan_req_id  = p_fsm->req_id;
-
-    memory_barrier();
-
-    /* Cast is safe: the counter is meant to wrap at 256. */
-    g_profile_seq = (uint8_t)(g_profile_seq + 1U);
 }
 
 /*** end of file ***/

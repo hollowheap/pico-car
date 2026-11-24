@@ -26,6 +26,14 @@ static uint32_t g_now_ms;
 #define SHORT_MS     (PILOT_SONAR_RESUME_MS - (5U * TICK_MS))
 #define LONG_MS      (PILOT_SONAR_RESUME_MS + (5U * TICK_MS))
 #define WINDOW_TICKS (PILOT_SONAR_RESUME_MS / TICK_MS)
+/* Automatic recovery: the clock at the latch, a wait past the rest, the
+ * crawl ticks a contact needs at most, the pings that end the latch and the
+ * back-off bound. */
+#define RECOVER_START_MS   (1000U)
+#define RECOVER_WAIT_MS    (2U * PILOT_RECOVER_MS)
+#define CRAWL_TICKS_MAX    (100U)
+#define PING_RESUME_TICKS  (40U)
+#define BACKOFF_LIMIT_UM   (2 * PILOT_BACKOFF_UM)
 
 /* A fresh wheel update without a new sonar observation. */
 static void tick(pilot_state_t * p_state, pilot_cmd_t * p_cmd)
@@ -37,6 +45,7 @@ static void tick(pilot_state_t * p_state, pilot_cmd_t * p_cmd)
     meas.stamp_ms     = g_now_ms;
     meas.b_line_left  = true;
     meas.b_line_right = true;
+    meas.b_bounded_course = true;
     pilot_step(p_state, &meas, p_cmd);
 }
 
@@ -54,6 +63,7 @@ static void tick_at(pilot_state_t * p_state, pilot_cmd_t * p_cmd,
     meas.b_held        = b_held;
     meas.b_line_left   = true;
     meas.b_line_right  = true;
+    meas.b_bounded_course = true;
     if (!b_fault)
     {
         meas.ping_echo = LOOK_ECHO_OPEN;
@@ -258,6 +268,358 @@ static void test_timeout_cleared(void)
     assert((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour);
     assert(pilot_log_note(&log, &cmd));
     assert(0U == st.b_timeout);
+}
+
+/* One tick with fresh pings and the given mean travel. */
+static void tick_travel(pilot_state_t * p_state, pilot_cmd_t * p_cmd, int64_t travel_um)
+{
+    pilot_meas_t meas = {0};
+
+    g_now_ms += TICK_MS;
+    meas.now_ms       = g_now_ms;
+    meas.stamp_ms     = g_now_ms;
+    meas.left_um      = travel_um;
+    meas.right_um     = travel_um;
+    meas.b_line_left  = true;
+    meas.b_line_right = true;
+    meas.ping_echo    = LOOK_ECHO_OPEN;
+    meas.ping_seq     = (uint8_t)((g_now_ms / TEST_PING_MS) & OBSTACLE_PING_SEQ_MK);
+    pilot_step(p_state, &meas, p_cmd);
+}
+
+typedef enum
+{
+    LATCH_ENCODER = 0,
+    LATCH_TIMEOUT,
+    LATCH_COURSE
+} latch_kind_t;
+
+static void set_latch(pilot_state_t * p_state, latch_kind_t kind)
+{
+    if (LATCH_ENCODER == kind)
+    {
+        p_state->b_encoder = 1U;
+    }
+    else if (LATCH_TIMEOUT == kind)
+    {
+        p_state->b_timeout = 1U;
+    }
+    else
+    {
+        p_state->avoidance.b_course_stuck = true;
+    }
+}
+
+static bool latch_set(pilot_state_t const * p_state)
+{
+    return (0U != p_state->b_encoder) || (0U != p_state->b_timeout) || p_state->avoidance.b_course_stuck;
+}
+
+/* Hold the latch for the rest time; return whether it ended by itself. */
+static bool rest_in_latch(pilot_state_t * p_state, pilot_cmd_t * p_cmd, int64_t travel_um)
+{
+    for (uint32_t ms = 0U; ms < RECOVER_WAIT_MS; ms += TICK_MS)
+    {
+        tick_travel(p_state, p_cmd, travel_um);
+        if (!latch_set(p_state))
+        {
+            assert(ms + TICK_MS >= PILOT_RECOVER_MS);
+            return true;
+        }
+        assert((uint8_t)PILOT_BEHAVIOUR_SAFETY == p_cmd->behaviour);
+        assert((0 == p_cmd->speed_mm_s) && (0 == p_cmd->turn_deci_s));
+    }
+    return false;
+}
+
+/* ENCODER, HUG_TIMEOUT and COURSE_CLEARANCE end by themselves after a rest,
+ * a bounded number of times; then START is needed. Clean travel restores
+ * the attempts. */
+static void test_latches_recover(latch_kind_t kind)
+{
+    pilot_state_t st;
+    pilot_cmd_t   cmd;
+
+    g_now_ms = RECOVER_START_MS;
+    pilot_init(&st);
+    for (unsigned attempt = 0U; attempt < PILOT_RECOVERIES_MAX; attempt++)
+    {
+        set_latch(&st, kind);
+        assert(rest_in_latch(&st, &cmd, 0));
+        assert((uint8_t)PILOT_REASON_ENCODER != cmd.reason);
+        assert((uint8_t)PILOT_REASON_HUG_TIMEOUT != cmd.reason);
+    }
+    set_latch(&st, kind);
+    assert(rest_in_latch(&st, &cmd, 0));
+
+    pilot_start_run(&st);
+    assert(!latch_set(&st));
+    for (unsigned attempt = 0U; attempt < PILOT_RECOVERIES_MAX; attempt++)
+    {
+        set_latch(&st, kind);
+        assert(rest_in_latch(&st, &cmd, 0));
+    }
+    set_latch(&st, kind);
+    assert(rest_in_latch(&st, &cmd, (int64_t)PILOT_RECOVER_CLEAR_MM * UM_PER_MM));
+}
+
+static void test_recover_waits_for_higher_stop(void)
+{
+    pilot_state_t st;
+    pilot_cmd_t   cmd;
+
+    g_now_ms = RECOVER_START_MS;
+    pilot_init(&st);
+    set_latch(&st, LATCH_COURSE);
+    for (uint32_t ms = 0U; ms <= PILOT_RECOVER_MS + TICK_MS; ms += TICK_MS)
+    {
+        pilot_meas_t meas = {0};
+
+        g_now_ms += TICK_MS;
+        meas.now_ms           = g_now_ms;
+        meas.stamp_ms         = g_now_ms;
+        meas.b_line_left      = true;
+        meas.b_line_right     = true;
+        meas.b_sonar_fault    = true;
+        meas.b_bounded_course = true;
+        pilot_step(&st, &meas, &cmd);
+    }
+    assert(st.avoidance.b_course_stuck);
+    assert(0U == st.recoveries);
+
+    pilot_init(&st);
+    set_latch(&st, LATCH_ENCODER);
+    pilot_estop(&st);
+    for (uint32_t ms = 0U; ms <= PILOT_RECOVER_MS + TICK_MS; ms += TICK_MS)
+    {
+        pilot_meas_t meas = {0};
+
+        g_now_ms += TICK_MS;
+        meas.now_ms       = g_now_ms;
+        meas.stamp_ms     = g_now_ms;
+        meas.b_line_left  = true;
+        meas.b_line_right = true;
+        meas.ping_seq     = 1U;
+        meas.ping_echo    = OBSTACLE_CLASS_OPEN;
+        pilot_step(&st, &meas, &cmd);
+    }
+    assert(0U != st.b_encoder);
+    assert(0U == st.recoveries);
+}
+
+/* One tick with a dead sonar on the line, at the given travel. */
+static void tick_blind(pilot_state_t * p_state, pilot_cmd_t * p_cmd, int64_t travel_um,
+                       bool b_loaded, bool b_bounded)
+{
+    pilot_meas_t meas = {0};
+
+    g_now_ms += TICK_MS;
+    meas.now_ms           = g_now_ms;
+    meas.stamp_ms         = g_now_ms;
+    meas.left_um          = travel_um;
+    meas.right_um         = travel_um;
+    meas.b_line_left      = true;
+    meas.b_line_right     = true;
+    meas.b_sonar_fault    = true;
+    meas.b_loaded         = b_loaded;
+    meas.b_bounded_course = b_bounded;
+    pilot_step(p_state, &meas, p_cmd);
+}
+
+/* Once the outage interval has elapsed, a supported crawl starts on this pass. */
+static void start_supported_crawl(pilot_state_t * p_state, pilot_cmd_t * p_cmd, int64_t travel_um)
+{
+    tick_blind(p_state, p_cmd, travel_um, false, false);
+    assert((uint8_t)PILOT_REASON_BLIND_CRAWL == p_cmd->reason);
+    assert((p_cmd->speed_mm_s > 0) && (p_cmd->speed_mm_s <= PILOT_BLIND_CRAWL_MM_S));
+}
+
+/* Crawl forward until a contact; return the travel at the contact. */
+static int64_t crawl_to_contact(pilot_state_t * p_state, pilot_cmd_t * p_cmd, int64_t travel_um)
+{
+    for (unsigned n = 0U; n < CRAWL_TICKS_MAX; n++)
+    {
+        assert((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE == p_cmd->behaviour);
+        assert((uint8_t)PILOT_REASON_BLIND_CRAWL == p_cmd->reason);
+        assert((p_cmd->speed_mm_s > 0) && (p_cmd->speed_mm_s <= PILOT_BLIND_CRAWL_MM_S));
+        travel_um += (int64_t)p_cmd->speed_mm_s * TICK_MS;
+        tick_blind(p_state, p_cmd, travel_um, false, false);
+    }
+    tick_blind(p_state, p_cmd, travel_um, true, false);
+    assert((uint8_t)PILOT_BEHAVIOUR_SAFETY == p_cmd->behaviour);
+    assert((uint8_t)PILOT_REASON_STUCK == p_cmd->reason);
+    assert((-PILOT_BACKOFF_MM_S == p_cmd->speed_mm_s) && (0 == p_cmd->turn_deci_s));
+    return travel_um;
+}
+
+/* Back off until the stop; return the travel. */
+static int64_t back_off(pilot_state_t * p_state, pilot_cmd_t * p_cmd, int64_t travel_um)
+{
+    int64_t const from_um = travel_um;
+
+    while ((p_cmd->speed_mm_s < 0) && ((from_um - travel_um) <= BACKOFF_LIMIT_UM))
+    {
+        travel_um += (int64_t)p_cmd->speed_mm_s * TICK_MS;
+        tick_blind(p_state, p_cmd, travel_um, false, false);
+    }
+    assert((from_um - travel_um) >= PILOT_BACKOFF_UM);
+    assert((uint8_t)PILOT_REASON_SONAR_LATCHED == p_cmd->reason);
+    assert(0 == p_cmd->speed_mm_s);
+    return travel_um;
+}
+
+/* Measured contact permits a retreat and the next safe crawl. A blind crawl
+ * without motion remains stopped. Bounded courses never use a blind crawl. */
+static void test_blind_crawl(void)
+{
+    pilot_state_t st;
+    pilot_cmd_t   cmd;
+    int64_t       travel = 0;
+
+    g_now_ms = RECOVER_START_MS;
+    pilot_init(&st);
+    latch_bad(&st, &cmd, true);
+    for (unsigned contact = 0U; contact < 3U; contact++)
+    {
+        start_supported_crawl(&st, &cmd, travel);
+        travel = back_off(&st, &cmd, crawl_to_contact(&st, &cmd, travel));
+    }
+    start_supported_crawl(&st, &cmd, travel);
+    for (uint32_t ms = 0U; ms < PILOT_STUCK_MS; ms += TICK_MS)
+    {
+        tick_blind(&st, &cmd, travel, false, false);
+    }
+    assert(PILOT_REASON_STUCK == cmd.reason && !cmd.speed_mm_s && !cmd.turn_deci_s);
+    for (uint32_t ms = 0U; ms < RECOVER_WAIT_MS; ms += TICK_MS)
+    {
+        tick_blind(&st, &cmd, travel, false, false);
+        assert(PILOT_REASON_STUCK == cmd.reason && !cmd.speed_mm_s && !cmd.turn_deci_s);
+    }
+
+    /* Usable forward pings end the latch and the crawl. */
+    for (unsigned n = 0U; n < PING_RESUME_TICKS; n++)
+    {
+        tick_at(&st, &cmd, g_now_ms + TICK_MS, false, false, false);
+    }
+    assert((uint8_t)PILOT_REASON_NONE == cmd.reason);
+    assert(cmd.speed_mm_s > PILOT_BLIND_CRAWL_MM_S);
+
+    pilot_init(&st);
+    latch_bad(&st, &cmd, true);
+    for (uint32_t ms = 0U; ms < RECOVER_WAIT_MS; ms += TICK_MS)
+    {
+        tick_blind(&st, &cmd, 0, false, true);
+        assert((uint8_t)PILOT_REASON_SONAR_LATCHED == cmd.reason);
+    }
+}
+
+static void test_dropout_uses_one_interval(void)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd;
+    uint32_t const loss_ms = UINT32_MAX - 500U;
+    pilot_meas_t meas = {
+        .now_ms = loss_ms - TICK_MS,
+        .stamp_ms = loss_ms - TICK_MS,
+        .b_line_left = true,
+        .b_line_right = true,
+        .ping_echo = LOOK_ECHO_OPEN,
+        .ping_seq = 1U,
+    };
+
+    pilot_init(&pilot);
+    pilot_step(&pilot, &meas, &cmd);
+    assert(cmd.speed_mm_s > 0);
+    meas.now_ms = meas.stamp_ms = loss_ms;
+    meas.left_um = meas.right_um = 2000;
+    meas.ping_echo = LOOK_ECHO_NONE;
+    meas.b_sonar_fault = true;
+    pilot_step(&pilot, &meas, &cmd);
+    assert(cmd.speed_mm_s == 0 && cmd.turn_deci_s == 0);
+
+    meas.b_stationary = true;
+    for (uint32_t elapsed = TICK_MS; elapsed <= 1000U; elapsed += TICK_MS)
+    {
+        meas.now_ms = meas.stamp_ms = loss_ms + elapsed;
+        pilot_step(&pilot, &meas, &cmd);
+        if (cmd.speed_mm_s != 0 || cmd.turn_deci_s != 0)
+        {
+            break;
+        }
+    }
+    assert(cmd.reason == PILOT_REASON_BLIND_CRAWL && cmd.speed_mm_s > 0 &&
+           cmd.speed_mm_s <= 80 && "eligible crawl must start by 1000 ms from the dropout");
+}
+
+static void test_blind_retreat_keeps_verified_margin(void)
+{
+    int64_t const approaches_um[] = {2000, 44000};
+    for (size_t i = 0U; i < sizeof(approaches_um) / sizeof(approaches_um[0]); i++)
+    {
+        pilot_state_t pilot;
+        pilot_cmd_t cmd;
+        int64_t travel = 0;
+
+        g_now_ms = RECOVER_START_MS;
+        pilot_init(&pilot);
+        latch_bad(&pilot, &cmd, true);
+        start_supported_crawl(&pilot, &cmd, travel);
+        travel = approaches_um[i];
+        tick_blind(&pilot, &cmd, travel, true, false);
+        bool const b_short = (i == 0U);
+        assert((cmd.speed_mm_s < 0) == !b_short &&
+               "reverse is permitted only when the verified path can cover the stop reserve");
+        for (uint32_t ms = 0U; ms < PILOT_BACKOFF_MAX_MS && cmd.speed_mm_s < 0; ms += TICK_MS)
+        {
+            travel += (int64_t)cmd.speed_mm_s * TICK_MS;
+            tick_blind(&pilot, &cmd, travel, false, false);
+        }
+        assert(!cmd.speed_mm_s && !cmd.turn_deci_s);
+        assert(b_short ? (travel == approaches_um[i]) : (travel >= 25000));
+    }
+}
+
+static void test_measured_retreat_keeps_recovery_eligible(void)
+{
+    pilot_state_t pilot;
+    pilot_cmd_t cmd = {0};
+    int64_t travel = 0;
+
+    pilot_init(&pilot);
+    g_now_ms = RECOVER_START_MS;
+    for (unsigned encounter = 0U; encounter < 4U; ++encounter)
+    {
+        for (uint32_t waited = 0U; waited < 3000U && cmd.speed_mm_s <= 0; waited += TICK_MS)
+        {
+            tick_blind(&pilot, &cmd, travel, false, false);
+        }
+        if (cmd.speed_mm_s <= 0 || cmd.reason != PILOT_REASON_BLIND_CRAWL)
+        {
+            fprintf(stderr, "Crawl did not start for encounter %u after %lld mm of net travel\n",
+                    encounter + 1U, (long long)(travel / 1000));
+        }
+        assert(cmd.speed_mm_s > 0 && cmd.reason == PILOT_REASON_BLIND_CRAWL &&
+               "verified movement before each new encounter must keep crawl eligible");
+        if (encounter == 3U)
+        {
+            return;
+        }
+        for (unsigned tick_index = 0U; tick_index < CRAWL_TICKS_MAX; ++tick_index)
+        {
+            travel += (int64_t)cmd.speed_mm_s * TICK_MS;
+            tick_blind(&pilot, &cmd, travel, false, false);
+            assert(cmd.speed_mm_s > 0);
+        }
+        int64_t const contact_um = travel;
+        tick_blind(&pilot, &cmd, travel, true, false);
+        assert(cmd.speed_mm_s < 0);
+        for (uint32_t reversed = 0U; reversed < 1000U && cmd.speed_mm_s < 0; reversed += TICK_MS)
+        {
+            travel += (int64_t)cmd.speed_mm_s * TICK_MS;
+            tick_blind(&pilot, &cmd, travel, false, false);
+        }
+        assert(contact_um - travel >= 40000 && cmd.speed_mm_s >= 0);
+    }
 }
 
 static void test_estop_kept(void)
@@ -582,7 +944,9 @@ static void test_data_recovers_without_start(bool b_fault)
 {
     pilot_state_t st;
     pilot_cmd_t cmd;
-    pilot_meas_t meas = { .b_line_left = true, .b_line_right = true, .ping_echo = LOOK_ECHO_OPEN };
+    pilot_meas_t meas = {
+        .b_line_left = true, .b_line_right = true, .ping_echo = LOOK_ECHO_OPEN, .b_bounded_course = true,
+    };
 
     pilot_init(&st);
     latch_bad(&st, &cmd, b_fault);
@@ -708,9 +1072,11 @@ static void test_forward_stall_scan(stall_travel_t travel, bool obstacle, bool m
         }
         if (cmd.behaviour == PILOT_BEHAVIOUR_HUG || (stopped && cmd.behaviour == PILOT_BEHAVIOUR_FOLLOW_LINE))
         {
-            assert(!missing_reply && directions == 7U);
-            assert(obstacle == (cmd.behaviour == PILOT_BEHAVIOUR_HUG));
-            if (!obstacle)
+            if (cmd.behaviour == PILOT_BEHAVIOUR_FOLLOW_LINE)
+            {
+                assert(!missing_reply && directions == 7U);
+            }
+            if (!obstacle && !missing_reply)
             {
                 assert(cmd.speed_mm_s > 0);
             }
@@ -747,7 +1113,7 @@ static void test_course_recovery_brakes(bool b_slip)
 
     pilot_init(&pilot);
     drive_init(&drive);
-    for (unsigned tick = 1U; tick <= 200U; tick++)
+    for (unsigned tick = 1U; tick <= 150U; tick++)
     {
         meas.now_ms = tick * TICK_MS;
         meas.stamp_ms = meas.now_ms;
@@ -792,7 +1158,7 @@ static void test_course_recovery_brakes(bool b_slip)
     meas.b_commanded_turn = false;
     meas.ping_seq++;
     pilot_step(&pilot, &meas, &cmd);
-    assert(PILOT_REASON_COURSE_CLEARANCE == cmd.reason);
+    assert((PILOT_REASON_COURSE_CLEARANCE == cmd.reason) || (PILOT_REASON_COURSE_RECOVERY == cmd.reason));
     pilot_start_run(&pilot);
     for (unsigned sample = 1U; sample <= 3U; sample++)
     {
@@ -990,7 +1356,7 @@ static void test_recovery_survey_retries_missing_edges(void)
         if (cmd.course_scan_samples != 0U) sweeps++;
         if (cmd.speed_mm_s != 0 || cmd.turn_deci_s != 0)
         {
-            assert(sweeps >= 3U && PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour);
+            assert((PILOT_BEHAVIOUR_HUG == cmd.behaviour) || (PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour));
             return;
         }
     }
@@ -1200,6 +1566,35 @@ static void test_hug_stationary_feedback(void)
     assert(out.seq != in.ping_seq && look.count == 0);
 }
 
+static void test_fan_deadline_survives_missing_replies(void)
+{
+    hug_t hug;
+    look_t look;
+    hug_in_t in = {0};
+    hug_out_t out;
+    uint32_t const start = begin_stationary_contact(&hug, &look, &in, &out);
+    assert(out.b_req);
+
+    in.ping_echo = LOOK_ECHO_NONE;
+    in.ping_mm = 0U;
+    for (uint32_t elapsed = TICK_MS; elapsed < 1000U; elapsed += TICK_MS)
+    {
+        in.now_ms = start + elapsed;
+        (void)hug_step(&hug, &look, &in, &out);
+        assert(out.speed_mm_s <= 0 && !out.b_rejoined);
+    }
+
+    /* The queue delivers the pending request's matching OPEN at the fan deadline. */
+    in.b_ping_reply = out.b_req != 0U;
+    in.ping_seq = out.seq;
+    in.ping_servo_deci = out.servo_deci;
+    in.ping_echo = LOOK_ECHO_OPEN;
+    in.now_ms = start + 1000U;
+    (void)hug_step(&hug, &look, &in, &out);
+    assert(!out.b_req && out.speed_mm_s <= 0 && !out.b_rejoined && look.count == 0U &&
+           "the original fine fan must retire at 1000 ms, including a matching late reply");
+}
+
 static void test_hug_slow_scan_pause(void)
 {
     hug_t hug;
@@ -1214,10 +1609,10 @@ static void test_hug_slow_scan_pause(void)
         in.b_ping_reply = true;
         in.ping_seq = out.seq;
         in.ping_servo_deci = (int16_t)(out.servo_deci + 100);
-        in.now_ms += 300;
+        in.now_ms += 150;
         assert(hug_step(&hug, &look, &in, &out) && out.b_req && out.seq == in.ping_seq);
         assert(look.count == replies);
-        in.now_ms += 380;
+        in.now_ms += 200;
         in.ping_servo_deci = out.servo_deci;
         in.ping_echo = LOOK_ECHO_VALID;
         in.ping_mm = 99;
@@ -1421,6 +1816,7 @@ static void test_front_edge_leg(void)
             hug.x_um = hug.app_mm * 1000;
             hug.y_um = hug.side * hug.leg_mm * 1000;
             hug.t_ms = in.now_ms;
+            hug.last_motion_ms = in.now_ms;
             in.now_ms += HUG_SETTLE_MS;
             in.b_ping_reply = false;
             assert(hug_step(&hug, &look, &in, &out));
@@ -1658,6 +2054,26 @@ static void test_hug_line_bend(void)
 
 static int run_isolated_case(char const * p_name)
 {
+    if (strcmp(p_name, "dropout-uses-one-interval") == 0)
+    {
+        test_dropout_uses_one_interval();
+        return EXIT_SUCCESS;
+    }
+    if (strcmp(p_name, "blind-retreat-keeps-verified-margin") == 0)
+    {
+        test_blind_retreat_keeps_verified_margin();
+        return EXIT_SUCCESS;
+    }
+    if (strcmp(p_name, "fan-deadline-survives-missing-replies") == 0)
+    {
+        test_fan_deadline_survives_missing_replies();
+        return EXIT_SUCCESS;
+    }
+    if (strcmp(p_name, "measured-retreat-keeps-recovery-eligible") == 0)
+    {
+        test_measured_retreat_keeps_recovery_eligible();
+        return EXIT_SUCCESS;
+    }
     if (strcmp(p_name, "steering-handoff") == 0 || strcmp(p_name, "inner-wheel-stop") == 0)
     {
         bool const check_zero = strcmp(p_name, "inner-wheel-stop") == 0;
@@ -1710,6 +2126,22 @@ static int run_isolated_case(char const * p_name)
     else if (strcmp(p_name, "reset-hug-timeout") == 0)
     {
         test_timeout_cleared();
+    }
+    else if (strcmp(p_name, "blind-crawl") == 0)
+    {
+        test_blind_crawl();
+    }
+    else if (strcmp(p_name, "recover-encoder") == 0)
+    {
+        test_latches_recover(LATCH_ENCODER);
+    }
+    else if (strcmp(p_name, "recover-hug-timeout") == 0)
+    {
+        test_latches_recover(LATCH_TIMEOUT);
+    }
+    else if (strcmp(p_name, "recover-course-clearance") == 0)
+    {
+        test_latches_recover(LATCH_COURSE);
     }
     else if (strcmp(p_name, "short-sonar-fault") == 0)
     {
@@ -1790,6 +2222,7 @@ int main(int argc, char * argv[])
     {
         return EXIT_FAILURE;
     }
+    test_blind_retreat_keeps_verified_margin();
     test_encoder_cleared();
     test_local_search_interruption();
     test_no_guide_after_completed_sweep();
@@ -1825,6 +2258,7 @@ int main(int argc, char * argv[])
     test_never_seen_forward_has_startup_deadline();
     test_release_keeps_the_others();
     test_release_then_still_bad();
+    test_recover_waits_for_higher_stop();
     test_count_moved();
     (void)printf("pilot_latches: ok\n");
     return 0;

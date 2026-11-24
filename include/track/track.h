@@ -61,6 +61,8 @@ typedef enum
     IR_BARCODE_EDGE_AFTER_LOSS
 } ir_barcode_read_t;
 
+STATIC_ASSERT(sizeof(ir_barcode_read_t) <= 4U, "ir_barcode_read_t size");
+
 /** Pop a timestamped edge (2 us resolution). After a capture loss the next
  * edge establishes a new baseline for measuring stripe widths. */
 ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level);

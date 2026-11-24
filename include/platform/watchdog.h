@@ -33,4 +33,15 @@ void platform_wdt_feed (void);
 /* True once the watchdog runs. */
 bool platform_wdt_running (void);
 
+/* Run token flags. The token lives in watchdog SCRATCH0-3, which a watchdog
+   reset keeps and a power-up clears; SCRATCH4-7 belong to the boot ROM. */
+#define PLATFORM_RUN_ARMED      (1U)
+#define PLATFORM_RUN_CONTINUOUS (2U)
+
+/* Store the run flags and the watchdog resumes used. */
+void platform_run_token_write (uint8_t flags, uint8_t resumes);
+
+/* False when the scratch words hold no intact token. */
+bool platform_run_token_read (uint8_t * p_flags, uint8_t * p_resumes);
+
 #endif /* PLATFORM_WATCHDOG_H */

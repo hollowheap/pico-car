@@ -175,6 +175,9 @@ static void wait_cycle (physics_task_stats_t * p_local)
     else if (E_TMOUT == er)
     {
         p_local->overruns++;
+        system_fault_assign (FAULT_OWNER_PHYSICS,
+                             (uint16_t) ((uint16_t) PHYSICS_FAULT_STALE << PHYSICS_SHARED_FAULT_SHIFT),
+                             (uint16_t) ((uint16_t) PHYSICS_FAULT_STALE << PHYSICS_SHARED_FAULT_SHIFT));
     }
     else
     {
@@ -250,23 +253,6 @@ static void track_lost (const pipeline_step_t * p_step,
     }
 }
 
-/* Read the accelerometer every cycle and the magnetometer every mag_every. */
-static void read_sensors (const physics_task_stats_t * p_local,
-                          lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
-                          bool * p_acc_ok, bool * p_mag_ok, bool * p_mag_fault)
-{
-    bool const b_mag_due = (0U == (p_local->cycles % g_cfg.mag_every))
-                           && g_cfg.motion.mag_enabled;
-
-    pipeline_read (&g_pipe, &g_imu, g_cfg.i2c_attempts, b_mag_due, p_acc, p_mag,
-                   p_acc_ok, p_mag_ok);
-    /* A skipped sample cannot prove that the magnetometer is back. */
-    if (b_mag_due && *p_acc_ok)
-    {
-        *p_mag_fault = !*p_mag_ok;
-    }
-}
-
 /* Clamp a scaled value into int16_t for the snapshot. */
 static int16_t clamp_i16 (int32_t value)
 {
@@ -283,6 +269,30 @@ static int16_t clamp_i16 (int32_t value)
     return (int16_t)out;
 }
 
+/* Read the accelerometer every cycle and the magnetometer every mag_every. */
+static void read_sensors (physics_task_stats_t * p_local,
+                          lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
+                          bool * p_acc_ok, bool * p_mag_ok, bool * p_mag_fault)
+{
+    bool const b_mag_due = (0U == (p_local->cycles % g_cfg.mag_every))
+                           && g_cfg.motion.mag_enabled;
+
+    pipeline_read (&g_pipe, &g_imu, g_cfg.i2c_attempts, b_mag_due, p_acc, p_mag,
+                   p_acc_ok, p_mag_ok);
+    if (*p_acc_ok)
+    {
+        /* This witness is independent of the wheel-derived acceleration. */
+        p_local->forward_sample_us = physics_time_us ();
+        p_local->forward_specific_mg = clamp_i16 (scaled (
+            (float)g_cfg.hump.fwd_sign * p_acc->value[g_cfg.hump.fwd_axis], SCALE_MILLI));
+    }
+    /* A skipped sample cannot prove that the magnetometer is back. */
+    if (b_mag_due && *p_acc_ok)
+    {
+        *p_mag_fault = !*p_mag_ok;
+    }
+}
+
 /* Heading, yaw rate and forward residual for the stats. The heading is in
  * deci-degrees wrapped into 0..3599, so it fits a 16-bit field; the old
  * whole-degree byte wrapped at 256. */
@@ -290,6 +300,7 @@ static void update_heading (physics_task_stats_t * p_local,
                             const pipeline_step_t * p_step)
 {
     p_local->heading_valid = p_step->sensors_ok && p_step->motion.heading_valid;
+    p_local->heading_gated = p_step->sensors_ok && p_step->motion.heading_gated;
     p_local->calibrated = p_step->calibrated;
     p_local->yaw_rate_cdps = p_step->sensors_ok
         ? clamp_i16 (scaled (p_step->motion.yaw_rate_dps, SCALE_CENTI))
@@ -297,6 +308,9 @@ static void update_heading (physics_task_stats_t * p_local,
     p_local->a_fwd_mg = p_step->sensors_ok
         ? clamp_i16 (scaled (p_step->motion.fwd_residual_g, SCALE_MILLI))
         : 0;
+    p_local->pivot_scale_pct = p_step->sensors_ok
+        ? (uint8_t)scaled (p_step->motion.pivot_scale, SCALE_CENTI)
+        : 0U;
     if (p_local->heading_valid)
     {
         uint32_t heading =
@@ -369,28 +383,14 @@ static void update_attitude (physics_task_stats_t * p_local, const pipeline_step
     }
     if (p_local->attitude_sample_valid)
     {
-        uint16_t active = 0U;
-
         p_local->roll_cdeg = clamp_i16 (scaled (p_step->attitude.roll_deg, SCALE_CENTI));
         p_local->report_roll_cdeg = b_previous_valid ?
             smooth_roll (p_local->report_roll_cdeg, p_local->roll_cdeg) : p_local->roll_cdeg;
         p_local->pitch_cdeg = clamp_i16 (scaled (p_step->hump.pitch_deg, SCALE_CENTI));
         p_local->attitude_state = (uint8_t) p_step->attitude.state;
 
-        if (ATTITUDE_LIFTED == p_step->attitude.state)
-        {
-            active = FAULT_LIFTED_BIT;
-        }
-        else if (ATTITUDE_OVERTURNED == p_step->attitude.state)
-        {
-            active = (uint16_t) (FAULT_LIFTED_BIT | FAULT_OVERTURNED_BIT);
-        }
-        else
-        {
-            active = 0U;
-        }
-        system_fault_assign (FAULT_OWNER_PHYSICS,
-                             FAULT_LIFTED_BIT | FAULT_OVERTURNED_BIT, active);
+        system_fault_assign (FAULT_OWNER_PHYSICS, FAULT_OVERTURNED_BIT,
+                             (ATTITUDE_OVERTURNED == p_step->attitude.state) ? FAULT_OVERTURNED_BIT : 0U);
     }
 }
 
@@ -546,7 +546,7 @@ void physics_task_run (void)
         {
             have_motion = g_cfg.read_motion (&reading);
         }
-        (void)motion_adapter_convert (&g_motion, have_motion ? &reading : NULL, now_us,
+        (void)motion_adapter_convert (&g_motion, have_motion ? &reading : NULL, physics_time_us (),
                              &motion);
 
         g_pipe.wheels_free = g_wheels_free;

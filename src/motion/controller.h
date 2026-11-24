@@ -27,8 +27,8 @@ typedef enum
     MOTION_FAULT_OUTPUT
 } motion_fault_t;
 
-/* Earliest release of the brake after an encoder fault. Both encoders must
- * also supply a fresh valid interval. Driving needs a new command. [Default] */
+/* Earliest release of the brake after an encoder or timing fault. Both encoders
+ * must also supply a fresh valid interval. Driving needs a new command. [Default] */
 #define MOTION_FAULT_CLEAR_US (500000U)
 
 typedef struct
@@ -116,13 +116,17 @@ bool controller_init (controller_t *              p_control,
                           const motion_input_t *          p_baseline,
                           const motion_output_t *         p_output);
 
+/* FEEDBACK, EXPIRED and GAP brake without the output latch and clear after
+ * MOTION_FAULT_CLEAR_US; the other faults latch. */
+bool controller_fault_clears_in_place (motion_fault_t reason);
+
 /* Configuration-only check: no output callback or hardware access. */
 bool controller_config_valid (const controller_config_t * p_config);
 
 /* A new command replaces the previous command; NULL keeps its original TTL.
  * Stop has priority over feedback, expiry and new commands. Both targets zero
- * is an ordinary, non-latched brake. Fault/stop always brakes and latches the
- * hardware output. No blocking/printing/capture-lock work in this function.
+ * is an ordinary, non-latched brake. Fault/stop always brakes; it latches the
+ * hardware output unless the fault clears in place. No blocking/printing/capture-lock work in this function.
  * A long task gap is detected only on return, not by a hardware watchdog.
  * Output direction is limited to the target sign (overspeed requests brake,
  * not active reverse drive). Reversals preserve an explicit braked interval.

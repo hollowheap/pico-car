@@ -26,6 +26,9 @@ static uint32_t g_cycle;
 static unsigned g_failures;
 static uint64_t g_now_ms;
 static bool g_snapshot_case;
+static bool g_acquisition_age_case;
+static uint32_t g_acc_acquired_us;
+static unsigned g_delayed_mag_reads;
 static bool g_attitude_events;
 static bool g_hump_events;
 static bool g_stationary_start;
@@ -33,6 +36,8 @@ static uint32_t g_new_reference;
 static bool g_stationary_setdown;
 static bool g_calibration_gap;
 static bool g_repeated_loss;
+static bool g_start_witness;
+static bool g_witness_motion_read;
 static unsigned g_imu_inits;
 static unsigned g_event_count;
 
@@ -160,6 +165,23 @@ ER tk_slp_tsk (TMO timeout)
     hump_fields_t fields;
 
     (void)timeout;
+    if (g_start_witness)
+    {
+        if (65U == g_cycle)
+        {
+            physics_status_t status;
+            CHECK (E_OK == physics_snapshot (&status));
+            CHECK (status.ready && status.attitude_sample_valid);
+            CHECK (40 == status.forward_specific_mg);
+            CHECK (65U * 20000U == status.forward_sample_us);
+            CHECK (0U == (status.faults & PHYSICS_FAULT_STALE));
+            longjmp (g_done, 1);
+        }
+        g_witness_motion_read = false;
+        g_now_ms += SAMPLE_PERIOD_MS;
+        g_cycle++;
+        return E_OK;
+    }
     if (g_repeated_loss)
     {
         physics_status_t status;
@@ -239,15 +261,19 @@ ER tk_slp_tsk (TMO timeout)
     {
         if (g_attitude_events && g_cycle >= 95U && g_cycle <= 99U)
         {
-            CHECK (0U != (system_fault_get () & FAULT_LIFTED_BIT));
+            CHECK (0U == (system_fault_get () & FAULT_LIFTED_BIT));
             CHECK (1U == g_event_count);
             physics_status_t snapshot;
             CHECK (E_OK == physics_snapshot (&snapshot));
             CHECK (snapshot.calibrated && !snapshot.attitude_sample_valid);
+            CHECK (TELEMETRY_ATTITUDE_STATE_LIFTED == snapshot.attitude_state);
         }
         if (g_attitude_events && 180U == g_cycle)
         {
             CHECK (2U == g_event_count && !(system_fault_get () & FAULT_LIFTED_BIT));
+            physics_status_t snapshot;
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (TELEMETRY_ATTITUDE_STATE_OK == snapshot.attitude_state);
         }
         if (g_attitude_events && g_cycle >= 220U)
         {
@@ -302,6 +328,26 @@ ER tk_slp_tsk (TMO timeout)
         g_cycle++;
         return E_OK;
     }
+    if (g_acquisition_age_case)
+    {
+        if (g_delayed_mag_reads > 0U)
+        {
+            physics_status_t snapshot;
+
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (physics_time_us () > g_acc_acquired_us);
+            CHECK (snapshot.forward_sample_us == g_acc_acquired_us);
+            longjmp (g_done, 1);
+        }
+        CHECK (g_cycle < 5U);
+        if (g_cycle >= 5U)
+        {
+            longjmp (g_done, 1);
+        }
+        g_now_ms += SAMPLE_PERIOD_MS;
+        g_cycle++;
+        return E_OK;
+    }
     if (g_cycle > 0U)
     {
         CHECK (expected_fault[g_cycle - 1U] ==
@@ -327,11 +373,24 @@ void i2c_rp2040_init (i2c_bus_t * p_bus)
 
 uint32_t physics_time_us (void)
 {
-    return g_cycle * 20000U;
+    if (g_acquisition_age_case)
+    {
+        return (uint32_t)g_now_ms * 1000U;
+    }
+    return g_cycle * 20000U + (g_witness_motion_read ? 500U : 0U);
 }
 
 bool motion_glue_read (motion_reading_t * p_reading)
 {
+    if (g_start_witness)
+    {
+        /* A previous cycle clock is 500 us behind this otherwise fresh sample. */
+        g_witness_motion_read = true;
+        int32_t const speed = g_cycle > 60U ? (int32_t)(g_cycle - 60U) * 10000 : 0;
+        *p_reading = (motion_reading_t){.available = true, .timestamp_us = physics_time_us (),
+            .velocity_um_s = {speed, speed}, .speed_valid = {true, true}, .odometry_valid = {true, true}};
+        return true;
+    }
     if (g_attitude_events || g_hump_events)
     {
         int32_t const speed = (g_hump_events && g_cycle >= 60U) ? 150000 : 0;
@@ -372,6 +431,17 @@ static float hump_ground_height (float x_mm)
 
 lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
 {
+    if (g_acquisition_age_case)
+    {
+        g_acc_acquired_us = physics_time_us ();
+        *p_out = (lsm303_vec_t){.value = {0.0f, 0.0f, 1.0f}};
+        return LSM303_OK;
+    }
+    if (g_start_witness)
+    {
+        *p_out = (lsm303_vec_t){.value = {0.0f, g_cycle > 60U ? -0.04f : 0.0f, 1.0f}};
+        return LSM303_OK;
+    }
     if (g_repeated_loss)
     {
         /* Configuration succeeds during the outage, but the data register
@@ -467,7 +537,13 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
 
 lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out)
 {
-    (void)p_out;
+    if (g_acquisition_age_case)
+    {
+        g_delayed_mag_reads++;
+        g_now_ms += 7U;
+        *p_out = (lsm303_vec_t){.value = {0.3f, 0.1f, 0.0f}};
+        return LSM303_OK;
+    }
     if (!g_snapshot_case && !g_attitude_events && !g_hump_events && (3U == g_cycle))
     {
         p_dev->fault = true;
@@ -501,12 +577,14 @@ int main (int argc, char ** argv)
     physics_task_default_config (&cfg);
     cfg.mag_every = 2U;
     g_snapshot_case = (2 == argc) && (0 == strcmp (argv[1], "snapshot-expiry"));
+    g_acquisition_age_case = (2 == argc) && (0 == strcmp (argv[1], "acceleration-acquisition-time"));
     g_attitude_events = (2 == argc) && (0 == strcmp (argv[1], "attitude-events"));
     g_hump_events = (2 == argc) && (0 == strcmp (argv[1], "hump-events"));
     g_stationary_start = (2 == argc) && (0 == strcmp (argv[1], "stationary-start"));
     g_stationary_setdown = (2 == argc) && (0 == strcmp (argv[1], "stationary-setdown"));
     g_calibration_gap = (2 == argc) && (0 == strcmp (argv[1], "calibration-gap"));
     g_repeated_loss = (2 == argc) && (0 == strcmp (argv[1], "repeated-read-loss"));
+    g_start_witness = (2 == argc) && (0 == strcmp (argv[1], "start-witness"));
     if (g_snapshot_case)
     {
         cfg.hump.cal_samples = 1U;
@@ -514,7 +592,13 @@ int main (int argc, char ** argv)
         /* The sample is published just before a low-word clock wrap. */
         g_now_ms = (uint64_t)UINT32_MAX - 200U;
     }
-    if (E_OK != ((g_attitude_events || g_hump_events) ? physics_init (1) : physics_task_init (&cfg, 1)))
+    if (g_acquisition_age_case)
+    {
+        cfg.motion.mag_enabled = true;
+        g_now_ms = 200U;
+    }
+    if (E_OK != ((g_attitude_events || g_hump_events || g_start_witness)
+                 ? physics_init (1) : physics_task_init (&cfg, 1)))
     {
         return 1;
     }

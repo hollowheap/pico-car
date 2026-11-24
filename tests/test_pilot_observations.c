@@ -12,6 +12,7 @@
 #include "pilot/pilot.h"
 #include "platform/chassis.h"
 #include "pilot/drive.h"
+#include "platform/units.h"
 
 static void check(bool b_ok, char const * p_what)
 {
@@ -1275,8 +1276,11 @@ static void test_stale_forward_ping(bool b_check_latch)
         meas.stamp_ms = meas.now_ms;
         meas.ping_seq++;
         pilot_step(&state, &meas, &command);
-        check((PILOT_REASON_SONAR_LATCHED == command.reason) &&
-              (0 == command.speed_mm_s) && (0 == command.turn_deci_s),
+        /* Past the rest of the latch the continuous floor crawls blind. */
+        check(((PILOT_REASON_SONAR_LATCHED == command.reason) &&
+               (0 == command.speed_mm_s) && (0 == command.turn_deci_s)) ||
+              ((PILOT_REASON_BLIND_CRAWL == command.reason) &&
+               (command.speed_mm_s > 0) && (command.speed_mm_s <= PILOT_BLIND_CRAWL_MM_S)),
               "a new forward ping did not leave a long dropout latched");
         pilot_release_sonar(&state);
         pilot_step(&state, &meas, &command);
@@ -1296,6 +1300,7 @@ static void test_forward_ping_recovery_window(uint32_t recovery_ms, bool b_latch
     pilot_meas_t meas = fresh_meas(UINT32_MAX - 100U);
 
     pilot_init(&state);
+    meas.b_bounded_course = true;
     meas.b_line_right = true;
     meas.ping_echo = LOOK_ECHO_OPEN;
     meas.ping_seq = 63U;
@@ -1337,6 +1342,59 @@ static void test_forward_ping_recovery_window(uint32_t recovery_ms, bool b_latch
         check((PILOT_REASON_NONE == command.reason) && (command.speed_mm_s > 0),
               "forward data arriving on the recovery deadline did not release the stop");
     }
+}
+
+/* The pose of the hug and the contour turns a pivot by the measured witness
+ * share when physics reports one, else by HUG_PIVOT_PCT. */
+#define WITNESS_TICK_UM      (1000)
+#define WITNESS_SHARE_PCT    (60U)
+#define WITNESS_TRAVEL_UM    (2 * WITNESS_TICK_UM)
+
+static void test_pivot_witness_pose(void)
+{
+    static note_car_t car;
+    pilot_state_t pilot;
+    pilot_contour_t contour = {0};
+    pilot_meas_t meas = {0};
+    pilot_cmd_t cmd;
+    pilot_contour_plan_t offer = {
+        .id = 1U, .issued_ms = 1000U,
+        .steps = {{100U, 300}, {100U, -300}, {100U, -300}, {100U, 300}}, .count = 4U,
+    };
+
+    note_start(&car);
+    note_tick(&car, -WITNESS_TICK_UM, WITNESS_TICK_UM, NOTE_PIVOT_MS);
+    check((WITNESS_TRAVEL_UM * HUG_PIVOT_PCT / PERCENT) == car.hug.diff_um,
+          "a hug pivot without a witness turns the pose by the fixed share");
+    car.in.pivot_scale_pct = WITNESS_SHARE_PCT;
+    note_tick(&car, -WITNESS_TICK_UM, WITNESS_TICK_UM, NOTE_PIVOT_MS);
+    check((WITNESS_TRAVEL_UM * (HUG_PIVOT_PCT + (int32_t)WITNESS_SHARE_PCT) / PERCENT) == car.hug.diff_um,
+          "a hug pivot with a witness turns the pose by the measured share");
+
+    pilot_init(&pilot);
+    meas.now_ms = 1000U;
+    meas.stamp_ms = meas.now_ms;
+    meas.b_stationary = true;
+    meas.b_line_left = true;
+    meas.ping_echo = LOOK_ECHO_OPEN;
+    meas.ping_seq = 1U;
+    pilot_step_with_contour(&pilot, &meas, &contour, &offer, &cmd);
+    check(PILOT_CONTOUR_WAIT == contour.status, "the contour fixture waits");
+    meas.now_ms += 10U;
+    meas.stamp_ms = meas.now_ms;
+    meas.left_um = -WITNESS_TICK_UM;
+    meas.right_um = WITNESS_TICK_UM;
+    pilot_step_with_contour(&pilot, &meas, &contour, &offer, &cmd);
+    check((WITNESS_TRAVEL_UM * HUG_PIVOT_PCT / PERCENT) == contour.diff_um,
+          "a contour pivot without a witness turns by the fixed share");
+    meas.now_ms += 10U;
+    meas.stamp_ms = meas.now_ms;
+    meas.left_um -= WITNESS_TICK_UM;
+    meas.right_um += WITNESS_TICK_UM;
+    meas.pivot_scale_pct = WITNESS_SHARE_PCT;
+    pilot_step_with_contour(&pilot, &meas, &contour, &offer, &cmd);
+    check((WITNESS_TRAVEL_UM * (HUG_PIVOT_PCT + (int32_t)WITNESS_SHARE_PCT) / PERCENT) == contour.diff_um,
+          "a contour pivot with a witness turns by the measured share");
 }
 
 static void test_contour_executor(void)
@@ -1597,6 +1655,7 @@ int main(void)
     test_move_timeout();
     test_hug_timeout();
     test_slip_evidence();
+    test_pivot_witness_pose();
     test_contour_executor();
     test_contour_terminal_line();
     test_contour_wait_envelope();

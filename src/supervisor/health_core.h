@@ -57,11 +57,33 @@ void liveness_check (liveness_t * p_live, uint16_t taken, uint16_t * p_new,
 
 bool liveness_critical_stalled (const liveness_t * p_live);
 
-/* True when motion_status_t reports a terminal timing fault: the drive lease
-   lapsed (EXPIRED) or the control loop missed its period (GAP). The
-   controller never clears them, so the supervisor stops feeding the watchdog
-   and the car reboots. state is MOTION_STATE_*, fault the wire code. */
+/* True when motion_status_t reports a timing fault: the drive lease lapsed
+   (EXPIRED) or the control loop missed its period (GAP). The controller
+   clears them in place after its brake interval; a STOPPED car keeps them.
+   state is MOTION_STATE_*, fault the wire code. */
 bool health_motion_timing_fault (uint8_t state, uint8_t fault);
+
+/* A timing fault that outlasts this window did not clear in place. It must
+   outlast MOTION_FAULT_CLEAR_US (500 ms). [Default] */
+#define MOTION_TIMING_RECOVERY_MS (1000U)
+/* Timing faults that clear in place since boot before the next one is
+   terminal. [Default] */
+#define MOTION_TIMING_FAULTS_MAX (3U)
+
+typedef struct
+{
+    uint32_t fault_ms;
+    uint8_t  faults;
+    bool     b_fault;
+    bool     b_terminal;
+} timing_watch_t;
+
+void timing_watch_init (timing_watch_t * p_watch);
+
+/* One supervisor pass. Returns true, and keeps returning true, once a timing
+   fault is terminal: the supervisor then stops the permit and the watchdog
+   feed, and the car reboots. */
+bool timing_watch_update (timing_watch_t * p_watch, bool b_fault, uint32_t dt_ms);
 
 /* Progress: the car is told to move but the wheels do not turn. */
 #define PROGRESS_STALL_MS (3000U)
@@ -106,6 +128,9 @@ bool stuck_update (stuck_t * p_stuck, bool b_active, uint32_t edges, uint32_t tr
  *             plugs are swapped, or a wheel turns the wrong way.
  *   free      Both wheels turn on target with much less duty than they needed
  *             on the ground. The wheels run free: the car is in the air.
+ *   loaded    A wheel told to go forward runs well under its target with much
+ *             more duty than the grounded baseline needs for that target. The
+ *             car pushes against something it cannot see.
  */
 
 /* Only wheels told to go at least this fast count (um/s). */
@@ -130,6 +155,13 @@ bool stuck_update (stuck_t * p_stuck, bool b_active, uint32_t edges, uint32_t tr
 /* Checks in a row before the cue sets (300 ms at 100 ms) and before it clears. */
 #define DRIVE_FREE_CHECKS (3U)
 #define DRIVE_CLEAR_CHECKS (2U)
+/* Loaded: forward target at least this (um/s), speed under this percent of it,
+   duty at least this many times the baseline duty for the target, for this many
+   checks in a row (guesses until measured on the car). */
+#define DRIVE_LOAD_TARGET_MIN_UM_S (50000)
+#define DRIVE_LOAD_SPEED_PERCENT (50)
+#define DRIVE_LOAD_DUTY_TIMES (2U)
+#define DRIVE_LOAD_CHECKS (2U)
 
 /* Both wheels, left then right. */
 #define DRIVE_WHEELS (2U)
@@ -151,8 +183,10 @@ typedef struct
     uint32_t base_ms;
     uint8_t  free_run;
     uint8_t  busy_run;
+    uint8_t  load_run;
     bool     b_crossed;
     bool     b_free;
+    bool     b_loaded;
 } drive_t;
 
 void health_drive_init (drive_t * p_drive);

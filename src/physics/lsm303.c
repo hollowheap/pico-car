@@ -287,6 +287,7 @@ lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out)
 lsm303_result_t lsm303_check_config (lsm303_t * p_dev)
 {
     uint8_t back[ACC_CTRL_LEN];
+    uint8_t mag_back[MAG_REG_COUNT];
 
     if ((NULL == p_dev) || !p_dev->ready)
     {
@@ -303,6 +304,24 @@ lsm303_result_t lsm303_check_config (lsm303_t * p_dev)
     {
         p_dev->ready = false;
         return LSM303_CONFIG_MISMATCH;
+    }
+    static const uint8_t mag_vals[MAG_REG_COUNT] = { LSM303_CRA_REG_M_VAL,
+                                                     LSM303_CRB_REG_M_VAL,
+                                                     LSM303_MR_REG_M_VAL };
+    uint8_t i = 0U;
+
+    if (!read_regs (p_dev, LSM303_MAG_ADDR, LSM303_CRA_REG_M, mag_back,
+                    MAG_REG_COUNT))
+    {
+        return LSM303_BUS_FAULT;
+    }
+    for (i = 0U; i < MAG_REG_COUNT; i++)
+    {
+        if (mag_back[i] != mag_vals[i])
+        {
+            p_dev->ready = false;
+            return LSM303_CONFIG_MISMATCH;
+        }
     }
     return LSM303_OK;
 }

@@ -58,6 +58,15 @@ describe("protocol schema", () => {
     }
   });
 
+  it("accepts the extended vehicle status on the same topic as legacy status", () => {
+    const legacy = new Uint8Array(16);
+    const extended = Uint8Array.of(...legacy, 67);
+    expect(decodePacket(schema, "status", legacy).values).not.toHaveProperty("pivot_scale_pct");
+    expect(decodePacket(schema, "status", extended)).toEqual({
+      name: "status", values: { ...decodePacket(schema, "status", legacy).values, pivot_scale_pct: 67 },
+    });
+  });
+
   it("preserves a sonar command's signed angle in the existing event frame", () => {
     const type = packetNameForTopic(schema, "car/PICO-CAR/e");
     expect(type).toBe("event");

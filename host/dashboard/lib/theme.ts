@@ -8,9 +8,17 @@ export type ThemeColors = {
   muted: string;
   border: string;
   accent: string;
+  courseFast: string;
   onAccent: string;
+  success: string;
+  successSurface: string;
+  warning: string;
+  warningSurface: string;
+  info: string;
+  infoSurface: string;
   danger: string;
   dangerSurface: string;
+  scrim: string;
 };
 
 /* Dark is the documented REKKI source. The light set derives a near-white
@@ -23,9 +31,17 @@ const darkColors: ThemeColors = {
   muted: '#8a8a8a',
   border: 'rgba(255, 255, 255, 0.12)',
   accent: '#0063e1',
+  courseFast: '#49c88e',
   onAccent: '#ffffff',
+  success: '#4ade80',
+  successSurface: '#0f2419',
+  warning: '#fbbf24',
+  warningSurface: '#261e0c',
+  info: '#60a5fa',
+  infoSurface: '#0f1d33',
   danger: '#ffb4ab',
   dangerSurface: '#2b2c2e',
+  scrim: 'rgba(5, 5, 5, 0.72)',
 };
 
 const lightColors: ThemeColors = {
@@ -36,9 +52,17 @@ const lightColors: ThemeColors = {
   muted: '#52525b',
   border: 'rgba(0, 0, 0, 0.12)',
   accent: '#0063e1',
+  courseFast: '#13794b',
   onAccent: '#ffffff',
+  success: '#15803d',
+  successSurface: '#f0fdf4',
+  warning: '#b45309',
+  warningSurface: '#fffbeb',
+  info: '#1d4ed8',
+  infoSurface: '#eff6ff',
   danger: '#b91c1c',
   dangerSurface: '#fef2f2',
+  scrim: 'rgba(13, 13, 13, 0.48)',
 };
 
 export const spacing = {
@@ -53,10 +77,9 @@ export const spacing = {
 
 export const radii = {
   nav: 2,
-  input: 8,
+  control: 8,
   card: 16,
   image: 24,
-  button: 59,
 } as const;
 
 export const typography = {

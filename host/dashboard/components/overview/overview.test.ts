@@ -73,4 +73,28 @@ describe('overview', () => {
     );
     expect(overview.health).toBe('offline');
   });
+
+  it('compensates for browser-to-bridge clock skew when computing status freshness', () => {
+    // Bridge clock is 5 s behind the browser clock: packet arrived at browser t=15000 with bridge timestamp 10000.
+    const skewed = snapshot({
+      lastPacketAt: 15_000,
+      lastPacket: { ...statusPacket, timestamp: 10_000 },
+      lastStatus: { ...statusPacket, timestamp: 10_000 },
+    });
+    const fresh = buildOverview(skewed, 15_200);
+    expect(fresh.health).toBe('healthy');
+    expect(fresh.statusAgeMs).toBe(200);
+
+    // After 2 s without a newer status, it still turns stale despite clock skew.
+    expect(buildOverview(skewed, 17_000).health).toBe('stale');
+
+    // Bridge clock 5 s ahead of the browser clock also stays healthy then turns stale on time.
+    const ahead = snapshot({
+      lastPacketAt: 10_000,
+      lastPacket: { ...statusPacket, timestamp: 15_000 },
+      lastStatus: { ...statusPacket, timestamp: 15_000 },
+    });
+    expect(buildOverview(ahead, 10_200)).toMatchObject({ health: 'healthy', statusAgeMs: 200 });
+    expect(buildOverview(ahead, 12_000).health).toBe('stale');
+  });
 });

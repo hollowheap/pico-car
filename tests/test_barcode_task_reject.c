@@ -36,6 +36,8 @@ static uint32_t g_start_us;
 static uint32_t g_start_mm;
 static uint32_t g_tick_remainder;
 static bool g_b_drop_phase;
+static bool g_b_stall_letter_report;
+static uint8_t g_expected_opcode = VEHICLE_CMD_LEFT;
 static unsigned g_command_count;
 static unsigned g_idle_waits;
 static size_t g_invalid_speed_stripe = SIZE_MAX;
@@ -69,15 +71,26 @@ ER telemetry_try_emit_barcode_sample(telemetry_barcode_sample_t const * sample)
     return E_TMOUT; /* A full telemetry queue cannot interrupt decoding. */
 }
 
-static void travel_mm (uint32_t distance)
+static void travel_um (uint32_t distance_um)
 {
     /* The capture ring timestamps have 2 µs resolution. Carry the fractional
      * tick across elements so a constant physical speed gives the correct total. */
-    uint32_t const ticks = distance * 500000U + g_tick_remainder;
+    uint32_t const ticks = distance_um * 500U + g_tick_remainder;
     g_timestamp_us += 2U * (ticks / g_speed_mm_s);
     g_tick_remainder = ticks % g_speed_mm_s;
+}
+
+static void travel_mm (uint32_t distance)
+{
+    travel_um(distance * 1000U);
     g_odometer_mm += distance;
 }
+
+/* A glitch of the other level splits one element in its middle: a paper
+ * fibre or a ragged tape edge. */
+#define GLITCH_UM (200U)
+static size_t g_glitch_stripe = SIZE_MAX;
+static unsigned g_glitch_step;
 
 ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
 {
@@ -119,7 +132,27 @@ ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
         {
             width = gp_widths[data_index];
         }
-        travel_mm(width);
+        if ((stripe == g_glitch_stripe) && (g_glitch_step < 2U))
+        {
+            /* The element's level flips for GLITCH_UM, then returns. */
+            uint32_t const half_um = ((uint32_t)width * 1000U - GLITCH_UM) / 2U;
+            travel_um((0U == g_glitch_step) ? half_um : GLITCH_UM);
+            g_glitch_step++;
+            *p_timestamp_us = g_timestamp_us;
+            *p_level = (1U == g_glitch_step) ? ((g_edge % 2U) == 0U) : ((g_edge % 2U) != 0U);
+            return IR_BARCODE_EDGE;
+        }
+        if (stripe == g_glitch_stripe)
+        {
+            uint32_t const half_um = ((uint32_t)width * 1000U - GLITCH_UM) / 2U;
+            travel_um((uint32_t)width * 1000U - GLITCH_UM - half_um);
+            g_odometer_mm += width;
+            g_glitch_step = 0U;
+        }
+        else
+        {
+            travel_mm(width);
+        }
         if (g_edge == g_odometer_jump_edge)
         {
             g_odometer_mm += 60U;
@@ -176,6 +209,10 @@ ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
                          uint32_t odometer_mm)
 {
     assert(type != TELEMETRY_EVT_BARCODE_PHASE);
+    if (g_b_stall_letter_report && (type == TELEMETRY_EVT_BARCODE))
+    {
+        longjmp(g_finish, 1);
+    }
     record_event(source, type, p1, p2, odometer_mm);
     return E_OK;
 }
@@ -183,14 +220,16 @@ ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
 ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
                              uint32_t odometer_mm)
 {
-    assert(type == TELEMETRY_EVT_BARCODE_PHASE);
+    assert((type == TELEMETRY_EVT_BARCODE_PHASE) || (type == TELEMETRY_EVT_BARCODE));
     record_event(source, type, p1, p2, odometer_mm);
-    return g_b_drop_phase ? E_TMOUT : E_OK;
+    bool const b_blocked = ((type == TELEMETRY_EVT_BARCODE_PHASE) && g_b_drop_phase) ||
+                           ((type == TELEMETRY_EVT_BARCODE) && g_b_stall_letter_report);
+    return b_blocked ? E_TMOUT : E_OK;
 }
 
 ER vehicle_command_post (uint8_t opcode, uint8_t source)
 {
-    assert(opcode == VEHICLE_CMD_LEFT && source == VEHICLE_SRC_BARCODE);
+    assert(opcode == g_expected_opcode && source == VEHICLE_SRC_BARCODE);
     g_command_count++;
     return E_OK;
 }
@@ -317,11 +356,35 @@ static void test_full_sized_markers (void)
     test_full_sized_marker(180U, true);
 }
 
+static void test_halt_with_stalled_report (void)
+{
+    static uint8_t const h[] = {3U, 1U, 1U, 1U, 1U, 3U, 3U, 1U, 1U, 1U};
+    g_expected_opcode = VEHICLE_CMD_STOP;
+    g_speed_mm_s = 120U;
+
+    replay(g_delimiter, h, 19U);
+    assert(g_command_count == 1U);
+
+    g_command_count = 0U;
+    g_b_stall_letter_report = true;
+    replay(g_delimiter, h, 19U);
+
+    barcode_stats_t stats;
+    barcode_stats(&stats);
+    assert(stats.last_letter == 'H' && stats.last_action == BARCODE_ACTION_STOP);
+    assert(g_command_count == 1U);
+}
+
 int main (int argc, char ** argv)
 {
     if (argc == 2 && strcmp(argv[1], "full-sized") == 0)
     {
         test_full_sized_markers();
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "halt-with-stalled-report") == 0)
+    {
+        test_halt_with_stalled_report();
         return 0;
     }
     assert(argc == 1);
@@ -427,5 +490,19 @@ int main (int argc, char ** argv)
     barcode_stats(&stats);
     assert(stats.last_letter == 'Z' && stats.last_action == BARCODE_ACTION_REJECTED && g_command_count == 1U);
     test_full_sized_markers();
+
+    /* A glitch inside the first wide bar of the A joins the bar again. The
+     * glitch shows only after the bar's first part has been read, so the
+     * decoding phase may be reported one stripe early; the symbol is not. */
+    g_speed_mm_s = 100U;
+    g_glitch_stripe = 10U;
+    replay(g_delimiter, g_a, 19U);
+    g_glitch_stripe = SIZE_MAX;
+    assert(g_event_count == 4U);
+    expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, 0U, 10U);
+    assert((g_events[1].type == TELEMETRY_EVT_BARCODE_PHASE) &&
+           (g_events[1].p1 == TELEMETRY_BARCODE_PHASE_DECODING));
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_COMPLETE, 0U, 29U);
+    expect_event(3U, TELEMETRY_EVT_BARCODE, 'A', (uint16_t)((250U << 4U) | BARCODE_ACTION_REJECTED), 29U);
     return 0;
 }

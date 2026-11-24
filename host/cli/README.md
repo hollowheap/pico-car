@@ -57,3 +57,5 @@ The outage check script `test_wifi_outage.py` (kept outside the repository) star
 telemetry, drops the link for 30 seconds, and checks reconnect (NFR6), live
 decode, and the CLI command path including the heartbeat run ID. Set `PICO_CAR_CLI_DIR` and
 `PICO_CAR_SCHEMA` when running it against a worktree.
+
+On this continuous-floor build, `command start` enables obstacle hugging. The earlier `command start_continuous_floor` remains available. For a course with possible drop-offs, use `command start_stationary` while stopped, or select **Stop at obstacles** in the dashboard Start popup.

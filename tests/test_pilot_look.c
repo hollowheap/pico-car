@@ -298,6 +298,46 @@ static void test_too_few_points_give_no_face(void)
     CHECK(look_face(&look, &g_origin, &face));
 }
 
+/* One stray echo among the rays of a flat face. */
+#define STRAY_SERVO_DECI   (100)
+#define STRAY_NEAR_MM      (120.0)
+#define SMALL_NEAR_MM      (20.0)
+#define FACE_NORMAL_TOL    (10)
+#define FACE_DIST_TOL_MM   (5)
+
+static void flat_face_with_stray(look_t * p_look, double near_mm)
+{
+    look_pose_t const pose = car();
+
+    look_clear(p_look);
+    for (int32_t s = -150; s <= 150; s += 50)
+    {
+        double const c = cos((double)s * RAD_PER_DECI);
+        double const range = (SENSOR_TO_FACE_MM / c) - ((STRAY_SERVO_DECI == s) ? near_mm : 0.0);
+        CHECK(look_add(p_look, &pose, s, LOOK_ECHO_VALID, (int32_t)lround(range)));
+    }
+}
+
+static void test_stray_ray_leaves_the_face(void)
+{
+    look_t      look;
+    look_face_t clean;
+    look_face_t face;
+
+    flat_face_with_stray(&look, 0.0);
+    CHECK(look_face(&look, &g_origin, &clean));
+
+    flat_face_with_stray(&look, STRAY_NEAR_MM);
+    CHECK(look_face(&look, &g_origin, &face));
+    CHECK(abs(face.normal_deci - clean.normal_deci) <= FACE_NORMAL_TOL);
+    CHECK(abs(face.dist_mm - clean.dist_mm) <= FACE_DIST_TOL_MM);
+
+    /* A ray within the face tolerance stays in the fit. */
+    flat_face_with_stray(&look, SMALL_NEAR_MM);
+    CHECK(look_face(&look, &g_origin, &face));
+    CHECK(face.dist_mm < clean.dist_mm);
+}
+
 int main(void)
 {
     test_narrow_face_has_both_edges();
@@ -309,6 +349,7 @@ int main(void)
     test_ray_is_placed_from_the_pose();
     test_scan_buffer_keeps_full_range_in_eight_byte_rays();
     test_too_few_points_give_no_face();
+    test_stray_ray_leaves_the_face();
 
     if (0 != g_failures)
     {

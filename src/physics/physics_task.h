@@ -56,6 +56,7 @@ typedef struct
 {
     SYSTIM   sample_time;        /* Operating time when this cycle began.  */
     uint32_t cycles;
+    uint32_t forward_sample_us;
     uint32_t reference_request;
     uint32_t overruns;           /* Wake-ups missed while still working.   */
     uint32_t max_work_us;        /* Longest cycle, read to send.           */
@@ -66,14 +67,17 @@ typedef struct
     uint16_t heading_ddeg;       /* 0..3599 deci-degrees, tilt-compensated. */
     int16_t  yaw_rate_cdps;      /* Best available yaw rate, 0.01 deg/s.   */
     int16_t  a_fwd_mg;           /* Forward acceleration residual, mg.     */
+    int16_t  forward_specific_mg; /* Forward accelerometer reading, mg. */
     int16_t  pitch_cdeg;         /* Filtered pitch before hump-word packing. */
     int16_t  report_roll_cdeg;   /* Smoothed telemetry roll. */
     int16_t  roll_cdeg;          /* Roll, left-down positive, 0.01 deg.    */
     int16_t  az_mg;              /* Board z reading, mg.                   */
     uint16_t amag_mg;            /* Acceleration magnitude, mg.            */
     uint8_t  attitude_state;     /* attitude_state_t, holds on a failed read. */
+    uint8_t  pivot_scale_pct;    /* Pivot witness in percent, 0 for none.  */
     bool     attitude_sample_valid; /* Current cycle has calibrated acceleration. */
     bool     heading_valid;      /* heading_ddeg is fresh and usable.      */
+    bool     heading_gated;      /* Offset learnt, field in band and rates agree. */
     bool     calibrated;         /* Hump detector has its rest reference.  */
     bool     collecting_rest;    /* Fresh qualifying gravity or settled-pose sample. */
     uint8_t  rest_interruptions; /* Interruptions since boot, modulo 256. */

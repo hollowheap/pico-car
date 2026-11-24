@@ -355,6 +355,24 @@ permille with valid encoder progress. Scan-aiming pivots and straight driving
 keep the 450 permille ceiling. The 400 permille base still applies when the
 wheel stalls or its feedback is invalid. Confirm the trial limit on the car.
 
+#### Qualify sonar center and travel
+
+The current firmware cap is ±20°. Qualify ±30° first on the installed mount. With the servo axis 10 mm from the rear wall, the board rear plane 5 mm forward of the axis and 22.5 mm to either board edge, near-corner clearance is `10 + 5 cos(θ) − 22.5 sin(|θ|)` mm. Check those dimensions and anything protruding behind the board.
+
+| Command magnitude | Nominal wall gap |
+| --- | ---: |
+| 20° | 7.00 mm |
+| 30° | 3.08 mm |
+| 35° | 1.19 mm |
+| 37° | 0.45 mm |
+| 38° | 0.09 mm |
+
+With propulsion disabled, mark the chassis forward centerline using the axle midpoint and a second chassis reference. Mark the board normal by placing a square against the face. Command 0° and compare the lines with an overhead camera or angle gauge. Record signed yaw error at cold boot and after returning from each wing. Aim for a repeatable error within 1°. Adjust the horn or center pulse if zero is consistently offset, then repeat. The current nominal center pulse is 1494 µs. A difference between return directions exposes backlash or compliance. A 1° centering error consumes about 0.37 mm of one side's nominal clearance near 35°.
+
+Use a bench-only servo command to increase angle in small increments on both sides and watch the minimum rear gap. Include powered reversals and settling overshoot, with the cable routed as it will be on the course. Record the smallest gap and the measurement uncertainty. Stop increasing travel if any part touches or the measurement cannot distinguish the gap from zero. Keep the course firmware at ±20° pending qualification of both ±30° endpoints. Consider ±35° after that pass. Enabling the wider candidate in the course image also needs one spare bit in the internal ping reply.
+
+A bench trace can capture timestamped PWM, requested and effective commanded angle, trigger, reply, range and echo class. Join camera or gauge measurements by trial and cue and label physical angle and gap separately. The servo provides no physical-angle feedback. Capture to RAM and export after the fixture stops so console output does not alter timing. The standalone bench currently writes USB logs. A separate read-only Bench replay is planned.
+
 #### Continuous-floor hug
 
 Normal Start selects these maneuvers.
@@ -379,8 +397,10 @@ at `10bbfd6`. The line task runs the pilot and the motion service applies its wh
    With a recorded near contact, the first look back is scheduled after 86 mm
    of outward travel. The car checks turning room while stationary, aims back
    at that contact using wheel odometry, and samples up to 20° toward the
-   chosen edge in 5° increments. A matching surface followed by adjacent
-   clear bearings gives a revised outward target with the same 192 mm turning
+   chosen edge in 5° increments. The stationary clearance check allows 3°
+   of settled heading error and corrects larger errors before taking a fresh
+   reading. A matching surface followed by adjacent clear bearings gives a
+   revised outward target with the same 192 mm turning
    allowance. The calculation allows 25 mm of depth uncertainty at the contact.
    If the view is inconclusive, the car can take one further 30 mm step on the
    same side and repeat. Each view has a three-second deadline including the
@@ -388,12 +408,22 @@ at `10bbfd6`. The line task runs the pilot and the motion service applies its wh
    All outward distances count from the same departure and each new forward
    leg requires fresh clearance. These are initial settings for the mounted sonar.
    From the parallel lane the car approaches an oblique view of the chosen side.
-   It stops, aims inward and takes a nine-bearing fan. With no confirmed end it
-   advances in checked 30 mm steps while the side remains observable. Adjacent
-   returns must extend along the face and the next bearing must see open space
+   When a post lies entirely across the entry axis, a clear bearing adjacent
+   to the outermost hit can establish an edge bound across that axis.
+   The car stops, aims inward and takes a nine-bearing fan. It advances on
+   the chosen side by 60 mm with side evidence or probes 30 mm for a better
+   view. Adjacent returns must extend along the face and the next bearing must see open space
    or a deeper surface. The last supported hit supplies the measured endpoint.
    The car uses its forward coordinate to clear the corner before turning inward.
-   Missing replies and an unobservable side trigger a bounded retry or retreat.
+   When a rounded side disappears from the oblique fan, the car checks
+   broadside if there is room to turn. An all-clear broadside fan leaves
+   obstacle breadth unknown. An incomplete fan gets one retry at the same
+   station. A timed-out scan or exhausted edge search stops the car on the
+   chosen side. A measured forward leg, including the final move past the
+   corner, stops the attempt after three continuous seconds waiting for
+   clearance. If a stalled leg starts a stationary recovery probe, the bypass
+   reports a timeout when that probe fails to confirm clearance within three
+   seconds.
 3. The car turns inward and scans toward the original line. A blocked return causes
    a turn back to parallel, a measured drive forward and a new inward scan.
    A new obstruction during departure can send the car back along the measured leg
@@ -509,7 +539,7 @@ encoder-measured bypass described above.
   a connecting surface. A confirmed rear plane can then support the return
   to the original lateral coordinate. If the rear cannot be qualified, the
   wheels stop. A mirrored eight-face host case exercises both a visible and
-  an acoustically invisible rear. Measured paths and limits
+  an acoustically invisible rear.
 - **Face fit and edge test.** Echoes on a face are fitted to a line. A hit is
   trusted up to 25 degrees off the face normal. The edge test applies the
   9.5 degree beam correction described under the planner.
@@ -615,12 +645,20 @@ encoder-measured bypass described above.
   crossing before handing control to the follower. A safety interruption
   requires a fresh crossing. Exhausting the sweep without one stops the
   wheels with `HUG_TIMEOUT`.
+  After the follower has held the line for 100 mm, the pilot reports the
+  body heading against the entry heading and the lateral offset from the
+  entry line in a `rejoin` event. A heading more than a quarter turn from
+  the entry heading means the car is following the line the wrong way. The
+  pilot then starts the local line search. The 100 mm hold is a guess until
+  it is measured on the car.
 - **Walls.** A wall is followed for ever. The hug stops only for a sensor fault,
   STOP or a move timeout.
 - **Move timeout.** Each hug pivot or drive must end within three times its
   planned time, and never sooner than the 1 s stuck window. A move that takes
-  longer ends the hug and stops the car with reason HUG_TIMEOUT, which latches
-  until an accepted START or RESET.
+  longer ends the hug and stops the car with reason HUG_TIMEOUT. After a 2 s
+  rest the pilot forgets the maneuver and surveys again from rest, up to 3
+  times; then the stop holds until an accepted START or RESET. One metre of
+  forward travel restores the attempts.
 
 #### Returning to the line behind a measured box during geometric recovery
 
@@ -691,6 +729,17 @@ The bounded-floor option holds at the obstacle on courses with possible drop-off
   than PILOT_STALE_MS (100 ms) and says nothing about the sonar. While a hold
   is on, a STALE_LATCHED shows as HELD; a SONAR_LATCHED does not. An operator
   STOP holds the car until START; RESET does not release it.
+- **Crawl without sonar.** On a continuous floor a SONAR_LATCHED stop rests
+  2 s (`PILOT_RECOVER_MS`), then the line follower crawls at no more than
+  `PILOT_BLIND_CRAWL_MM_S` (80 mm/s) with reason BLIND_CRAWL (wire 15). The
+  wheels stand in for the sonar. The supervisor flags a loaded wheel: a
+  forward wheel under half its target with at least twice the duty its learnt
+  grounded baseline needs, for two checks (`DRIVE_LOAD_*`). The pilot ignores
+  the flag on a hump. A loaded wheel, or no forward travel for 1 s, is a
+  contact: the car backs off 40 mm, rests and crawls again. Each crawl uses
+  one of the 3 automatic recovery attempts. Usable forward pings end the
+  latch and the crawl. A bounded course keeps the stop. All limits are
+  guesses until measured on the car.
   A sonar that leaves two requests of the hug in a row without a reply
   (`HUG_LOST_REPLIES`, 800 ms each) also stops the pilot with reason SONAR. The
   hug keeps asking and goes on at the next reply; that stop is not a latch.
@@ -741,7 +790,10 @@ The bounded-floor option holds at the obstacle on courses with possible drop-off
   on the spot toward the side that saw the line last, and back the other way.
   A failed search is retried up to `LINE_RETRY_COUNT` (3) times: the car turns
   back to the heading it had when the search began, reverses `LINE_REVERSE_MM`
-  (150 mm) straight and searches again. A reverse in which the slower wheel
+  (150 mm) and searches again. The follower records its encoder heading every
+  `LINE_TRAIL_STEP_MM` (40 mm) of forward travel, for the last 640 mm, so each
+  reverse steers back along the path the car drove, including a curve before
+  the gap. Without a record (after a turn) it reverses straight. A reverse in which the slower wheel
   backs up less than `LINE_REVERSE_STEP_MM` (10 mm) in `LINE_REVERSE_STALL_MS`
   (1.5 s) is blocked (a jam of one wheel counts): it ends as a failed retry,
   and the car searches again. The pilot's stuck check does not back off after
@@ -1029,10 +1081,13 @@ base limit. The trial ceiling has host coverage and needs vehicle measurement
 under load. A driven wheel that
 makes no encoder edges no longer faults the motion service. The pilot backs
 off and tries again if both wheels stay still for 1 s. A wheel that stays
-still while the other moves stops the car with reason ENCODER. Once the
-operator checks the wheels and clears the path, one accepted START clears
-recoverable pilot latches, including ENCODER and HUG_TIMEOUT. Emergency
-stop stays latched until reboot. The hug's own lost-replies SONAR stop
+still while the other moves stops the car with reason ENCODER. ENCODER,
+HUG_TIMEOUT and COURSE_CLEARANCE end by themselves after a 2 s rest: the
+pilot surveys from rest and drives on, up to 3 times until one metre of clean
+forward travel. After the last attempt, one accepted START clears them.
+Each attempt, including each crawl without sonar, sends a `recovery` event
+with the stop reason it clears and the attempt number out of 3.
+Emergency stop stays latched until reboot. The hug's own lost-replies SONAR stop
 ends at the next reply. A CLI RESET acknowledges faults and leaves the
 wheels held. After a pickup or overturn, set the car down level and still
 before START. The supervisor holds the wheels during level-ground calibration.
@@ -1112,15 +1167,15 @@ Known points for the team:
   obstacle hold instead (see Phase 2).
 - **Open, line follower:** `line_task` sends 20 ms speed leases on a loop
   that waits up to 20 ms, so a lease can expire before the next one and
-  latch `MOTION_FAULT_EXPIRED` until reboot (`motion state=4 fault=2` in the
-  log). It was hidden while the TIMER was frozen after power-on; Buddy 5
+  raise `MOTION_FAULT_EXPIRED` (`motion state=4 fault=2` in the log). The
+  fault now clears in place after 500 ms; repeated faults still reboot. It was hidden while the TIMER was frozen after power-on; Buddy 5
   now starts the TIMER (TIMERAWL rule), so it can show up. Suggested fix
   for the owner: a lease of 40–200 ms, for example `5 * poll_ms * 1000`.
 - `obstacle_nav.c` logs `(line:nav) motion state=.. fault=.. hold=..` whenever
   the motion service changes state, so silent motor faults show up.
-- If the ultrasonic sensor is unplugged, Buddy 5 faults with NO_ECHO after 3 pings and
-  holds the car, so line following stops too. This is deliberate, and the car
-  does not restart by itself.
+- If the ultrasonic sensor is unplugged, the sonar task faults with NO_ECHO after 3 pings
+  and the pilot stops. On a continuous floor the pilot then crawls without
+  the sonar (see "Crawl without sonar").
 - GP21 is the motion stop button in `main.uf2` and the "send" button in
   `obstacle_bench.uf2`.
 - `gpio_irq_init()` enables the IRQ only on the core that calls it.

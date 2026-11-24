@@ -67,12 +67,14 @@ target_compile_options(test_physics_connection PRIVATE
 target_link_libraries(test_physics_connection PRIVATE m)
 add_test(NAME physics_connection COMMAND test_physics_connection)
 add_test(NAME physics_snapshot_expiry COMMAND test_physics_connection snapshot-expiry)
+add_test(NAME physics_acceleration_acquisition_time COMMAND test_physics_connection acceleration-acquisition-time)
 add_test(NAME physics_attitude_events COMMAND test_physics_connection attitude-events)
 add_test(NAME physics_hump_events COMMAND test_physics_connection hump-events)
 add_test(NAME physics_stationary_start COMMAND test_physics_connection stationary-start)
 add_test(NAME physics_stationary_setdown COMMAND test_physics_connection stationary-setdown)
 add_test(NAME physics_calibration_gap COMMAND test_physics_connection calibration-gap)
 add_test(NAME physics_repeated_read_loss COMMAND test_physics_connection repeated-read-loss)
+add_test(NAME physics_start_witness COMMAND test_physics_connection start-witness)
 
 # RP2040 I2C1 polling driver against a register model in the test.
 add_executable(test_i2c_rp2040 test_i2c_rp2040.c ${PHYSICS_SRC}/i2c_rp2040.c)
@@ -81,6 +83,7 @@ target_include_directories(test_i2c_rp2040 PRIVATE ${PHYSICS_SRC}
 target_compile_options(test_i2c_rp2040 PRIVATE -include stddef.h
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME i2c_rp2040 COMMAND test_i2c_rp2040)
+add_test(NAME i2c_completion_interrupt_armed COMMAND test_i2c_rp2040 completion-interrupt-armed)
 
 # Obstacle avoidance pure modules
 set(OBSTACLE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/obstacle)
@@ -91,27 +94,26 @@ target_include_directories(test_obstacle_servo PRIVATE
     ${OBSTACLE_SRC} ${APP_INCLUDE} shim shim_obstacle_servo)
 target_compile_options(test_obstacle_servo PRIVATE -Wall -Wextra -Werror -Wpedantic)
 add_test(NAME obstacle_servo_boot_center COMMAND test_obstacle_servo)
+add_test(NAME obstacle_trigger_readback COMMAND test_obstacle_servo trigger-readback)
 
-foreach(pilot RANGE 0 1)
-    add_executable(test_obstacle_aim_${pilot} test_obstacle_aim.c
-        ${OBSTACLE_SRC}/scan_task.c ${OBSTACLE_SRC}/statechart.c
-        ${OBSTACLE_SRC}/geometry.c ${OBSTACLE_SRC}/planner.c ${OBSTACLE_SRC}/scan_algo.c)
-    target_include_directories(test_obstacle_aim_${pilot} PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE} shim)
-    target_compile_definitions(test_obstacle_aim_${pilot} PRIVATE PICO_CAR_PILOT=${pilot})
-    target_compile_options(test_obstacle_aim_${pilot} PRIVATE
-        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/sonar_task_kernel.h"
-        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-    add_test(NAME obstacle_aim_${pilot} COMMAND test_obstacle_aim_${pilot})
-    add_test(NAME obstacle_echo_timing_${pilot} COMMAND test_obstacle_aim_${pilot} echo-timing)
-endforeach()
-
-add_test(NAME obstacle_aim_pilot_mirrored COMMAND test_obstacle_aim_1 mirror)
-add_test(NAME obstacle_aim_stop_settle COMMAND test_obstacle_aim_1 stop-settle)
-add_test(NAME obstacle_aim_stop_spacing COMMAND test_obstacle_aim_1 stop-spacing)
-add_test(NAME obstacle_aim_stop_echo COMMAND test_obstacle_aim_1 stop-echo)
-add_test(NAME obstacle_aim_stop_late_echo COMMAND test_obstacle_aim_1 stop-late-echo)
-add_test(NAME obstacle_aim_stop_pending COMMAND test_obstacle_aim_1 stop-pending)
-add_test(NAME obstacle_aim_legacy_stop_settle COMMAND test_obstacle_aim_0 stop-settle)
+add_executable(test_obstacle_aim test_obstacle_aim.c
+    ${OBSTACLE_SRC}/scan_task.c ${OBSTACLE_SRC}/sonar_health.c
+    ${OBSTACLE_SRC}/geometry.c ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_aim PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE} shim)
+target_compile_options(test_obstacle_aim PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/sonar_task_kernel.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_aim COMMAND test_obstacle_aim)
+add_test(NAME obstacle_echo_timing COMMAND test_obstacle_aim echo-timing)
+add_test(NAME obstacle_trigger_low_no_echo COMMAND test_obstacle_aim trigger-low)
+add_test(NAME obstacle_aimed_echo_fault COMMAND test_obstacle_aim aimed-echo-fault)
+add_test(NAME obstacle_aimed_forward_stream COMMAND test_obstacle_aim aimed-forward)
+add_test(NAME obstacle_aim_pilot_mirrored COMMAND test_obstacle_aim mirror)
+add_test(NAME obstacle_aim_stop_settle COMMAND test_obstacle_aim stop-settle)
+add_test(NAME obstacle_aim_stop_spacing COMMAND test_obstacle_aim stop-spacing)
+add_test(NAME obstacle_aim_stop_echo COMMAND test_obstacle_aim stop-echo)
+add_test(NAME obstacle_aim_stop_late_echo COMMAND test_obstacle_aim stop-late-echo)
+add_test(NAME obstacle_aim_stop_pending COMMAND test_obstacle_aim stop-pending)
 
 add_executable(test_obstacle_scan test_obstacle_scan.c
     ${OBSTACLE_SRC}/scan_algo.c)
@@ -120,45 +122,6 @@ target_link_libraries(test_obstacle_scan PRIVATE m)
 target_compile_options(test_obstacle_scan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
-
-add_executable(test_obstacle_plan test_obstacle_plan.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/planner.c
-    ${OBSTACLE_SRC}/scan_algo.c)
-target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
-target_compile_options(test_obstacle_plan PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME obstacle_plan COMMAND test_obstacle_plan)
-
-add_executable(test_obstacle_statechart test_obstacle_statechart.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/statechart.c
-    ${OBSTACLE_SRC}/planner.c
-    ${OBSTACLE_SRC}/scan_algo.c)
-target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
-target_compile_options(test_obstacle_statechart PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
-
-add_executable(test_obstacle_nav_core test_obstacle_nav_core.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/planner.c
-    ${OBSTACLE_SRC}/scan_algo.c
-    ${OBSTACLE_SRC}/nav_core.c)
-target_include_directories(test_obstacle_nav_core PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
-target_compile_options(test_obstacle_nav_core PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME obstacle_nav_core COMMAND test_obstacle_nav_core)
-
-add_executable(test_obstacle_follow test_obstacle_follow.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/planner.c
-    ${OBSTACLE_SRC}/scan_algo.c
-    ${OBSTACLE_SRC}/follow.c)
-target_include_directories(test_obstacle_follow PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
-target_compile_options(test_obstacle_follow PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME obstacle_follow COMMAND test_obstacle_follow)
 
 add_executable(test_obstacle_ping test_obstacle_ping.c)
 target_include_directories(test_obstacle_ping PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
@@ -171,38 +134,21 @@ add_test(NAME obstacle_ping COMMAND test_obstacle_ping)
 add_executable(test_obstacle_comms test_obstacle_comms.c
     ${OBSTACLE_SRC}/comms.c
     ${OBSTACLE_SRC}/obstacle.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/statechart.c
-    ${OBSTACLE_SRC}/planner.c
-    ${OBSTACLE_SRC}/scan_algo.c)
+    ${OBSTACLE_SRC}/sonar_health.c)
 target_include_directories(test_obstacle_comms PRIVATE
     ${OBSTACLE_SRC} ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
-target_compile_definitions(test_obstacle_comms PRIVATE PICO_CAR_PILOT=0)
 target_compile_options(test_obstacle_comms PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tk/flg_fake.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_comms COMMAND test_obstacle_comms)
-add_test(NAME obstacle_legacy_plan_source COMMAND test_obstacle_comms legacy-plan-source)
 
-# Exercise the real startup facade and stopped-state navigation adapter in both modes.
-foreach(pilot IN ITEMS 0 1)
-    set(target test_obstacle_start_${pilot})
-    if(pilot)
-        set(start_sources test_pilot_sonar_start.c)
-    else()
-        set(start_sources test_obstacle_start_contract.c ${OBSTACLE_SRC}/obstacle_nav.c)
-    endif()
-    add_executable(${target} ${start_sources} ${OBSTACLE_SRC}/motion_link.c
-        ${OBSTACLE_SRC}/nav_core.c ${OBSTACLE_SRC}/follow.c
-        ${OBSTACLE_SRC}/geometry.c ${OBSTACLE_SRC}/planner.c ${OBSTACLE_SRC}/scan_algo.c)
-    target_include_directories(${target} PRIVATE
-        ${OBSTACLE_SRC} ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
-    target_compile_definitions(${target} PRIVATE PICO_CAR_PILOT=${pilot})
-    target_compile_options(${target} PRIVATE
-        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_line/line_task_ports.h"
-        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-    add_test(NAME obstacle_start_${pilot} COMMAND ${target})
-endforeach()
+add_executable(test_obstacle_start test_pilot_sonar_start.c ${OBSTACLE_SRC}/motion_link.c)
+target_include_directories(test_obstacle_start PRIVATE
+    ${OBSTACLE_SRC} ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_obstacle_start PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_line/line_task_ports.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_start COMMAND test_obstacle_start)
 
 add_executable(test_barcode_parser test_barcode_parser.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
@@ -294,6 +240,8 @@ add_test(NAME line_corner_wheel_demands COMMAND test_line_control corner-wheel-d
 add_executable(test_line_task_contract test_line_slope_contract.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_task.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_filter.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/start_check.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
@@ -306,16 +254,20 @@ add_executable(test_line_task_contract test_line_slope_contract.c
     ${OBSTACLE_SRC}/scan_algo.c
     ${TELEMETRY_SRC}/packet.c)
 target_include_directories(test_line_task_contract PRIVATE
-    ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/shim ../src/motion)
-target_compile_definitions(test_line_task_contract PRIVATE PICO_CAR_PILOT=1)
+    ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/shim ../src/motion ../src/track)
 target_compile_options(test_line_task_contract PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_line/line_task_ports.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_line_task_contract PRIVATE m)
 add_test(NAME line_task_slope_left COMMAND test_line_task_contract left)
+foreach(startup_case grounded airborne no-imu late-imu no-wheel blocked clearance-lost noisy-baseline)
+    add_test(NAME startup_check_${startup_case} COMMAND test_line_task_contract startup-check-${startup_case})
+endforeach()
 add_test(NAME line_task_slope_right COMMAND test_line_task_contract right)
 add_test(NAME line_task_retry_events COMMAND test_line_task_contract retry-events)
 add_test(NAME bounded_course_hold COMMAND test_line_task_contract bounded-course-hold)
+add_test(NAME bounded_course_c582_box_removed COMMAND test_line_task_contract bounded-course-box-removed)
+add_test(NAME bounded_course_c616_invalid_rest COMMAND test_line_task_contract bounded-course-box-invalid-rest)
 add_test(NAME bounded_course_probe_left COMMAND test_line_task_contract bounded-course-probe-left)
 add_test(NAME bounded_course_probe_right COMMAND test_line_task_contract bounded-course-probe-right)
 add_test(NAME bounded_course_clear_distance COMMAND test_line_task_contract bounded-course-clear-distance)
@@ -323,12 +275,16 @@ add_test(NAME bounded_course_cutoff COMMAND test_line_task_contract bounded-cour
 add_test(NAME bounded_course_ping_gap COMMAND test_line_task_contract bounded-course-ping-gap)
 add_test(NAME bounded_course_slow_clear COMMAND test_line_task_contract bounded-course-slow-clear)
 add_test(NAME pilot_coherent_motion_snapshot COMMAND test_line_task_contract coherent-motion-snapshot)
+add_test(NAME pilot_motion_timing_fault_hold COMMAND test_line_task_contract motion-timing-fault)
 add_test(NAME line_resume_clear COMMAND test_line_task_contract pose-clear)
 add_test(NAME line_resume_near COMMAND test_line_task_contract pose-near)
 add_test(NAME line_cancel_turn_after_pose_loss COMMAND test_line_task_contract pose-during-turn)
 add_test(NAME barcode_route_ambiguous COMMAND test_line_task_contract probe-solid)
 add_test(NAME junction_left_wheel_pause COMMAND test_line_task_contract junction-left-pause)
 add_test(NAME junction_right_wheel_pause COMMAND test_line_task_contract junction-right-pause)
+add_test(NAME junction_probe_cancel_event COMMAND test_line_task_contract junction-cancel)
+add_test(NAME junction_stripe_event COMMAND test_line_task_contract junction-stripe)
+add_test(NAME turn_pivot_rises COMMAND test_line_task_contract turn-rise)
 add_test(NAME pilot_turn_obstacle COMMAND test_line_task_contract turn-obstacle)
 add_test(NAME pilot_turn_sonar_fault COMMAND test_line_task_contract turn-sonar-fault)
 add_test(NAME pilot_straight_obstacle COMMAND test_line_task_contract straight-obstacle)
@@ -337,6 +293,7 @@ add_test(NAME line_task_contract_pending_obstacle COMMAND test_line_task_contrac
 add_test(NAME line_task_contract_pending_stale COMMAND test_line_task_contract pending-stale)
 add_test(NAME pilot_stale_line_capture COMMAND test_line_task_contract stale-line-capture)
 add_test(NAME pilot_turn_stale_line_capture COMMAND test_line_task_contract turn-stale-line-capture)
+add_test(NAME line_route_plain_square_left COMMAND test_line_task_contract route-plain-square-left -5.5 0 nov20)
 
 add_executable(test_pilot_observations test_pilot_observations.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
@@ -530,7 +487,8 @@ add_executable(test_supervisor_start_contract test_supervisor_start_contract.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/faults.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/assemble.c)
 target_include_directories(test_supervisor_start_contract PRIVATE ${SUPERVISOR_TEST_INCLUDES})
-target_compile_definitions(test_supervisor_start_contract PRIVATE PICO_CAR_PILOT=1)
+target_compile_definitions(test_supervisor_start_contract PRIVATE
+    PICO_CAR_BUILD_HASH=0x1234ABCU PICO_CAR_BUILD_DIRTY=1)
 target_compile_options(test_supervisor_start_contract PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/supervisor_kernel.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
@@ -548,6 +506,7 @@ endforeach()
 add_test(NAME supervisor_settling_pickup COMMAND test_supervisor_start_contract settling-pickup)
 add_test(NAME supervisor_settling_tilted COMMAND test_supervisor_start_contract settling-tilted)
 add_test(NAME supervisor_pickup_during_run COMMAND test_supervisor_start_contract running-pickup)
+add_test(NAME supervisor_unverified_start COMMAND test_supervisor_start_contract unverified-start)
 add_test(NAME supervisor_watchdog_gap COMMAND test_supervisor_start_contract watchdog-gap)
 add_test(NAME supervisor_watchdog_physics COMMAND test_supervisor_start_contract watchdog-physics)
 add_test(NAME supervisor_drive_feedback_validity COMMAND test_supervisor_start_contract drive-feedback-validity)
@@ -565,6 +524,26 @@ add_test(NAME supervisor_offline_watchdog_reset COMMAND test_supervisor_start_co
 add_test(NAME supervisor_offline_other_reset COMMAND test_supervisor_start_contract other-reset-offline)
 add_test(NAME supervisor_start_button COMMAND test_supervisor_start_contract start-button)
 add_test(NAME supervisor_start_button_gates COMMAND test_supervisor_start_contract start-button-gates)
+foreach(resume_case IN ITEMS resume resume-bounded resume-used resume-stopped resume-corrupt resume-power)
+    add_test(NAME supervisor_watchdog_${resume_case} COMMAND test_supervisor_start_contract watchdog-${resume_case})
+endforeach()
+add_test(NAME supervisor_watchdog_run_token COMMAND test_supervisor_start_contract run-token)
+add_test(NAME telemetry_build_identity COMMAND test_supervisor_start_contract build-identity)
+add_test(NAME motion_stop_timing COMMAND test_supervisor_start_contract stop-timing)
+add_test(NAME motion_estop_timing COMMAND test_supervisor_start_contract estop-timing)
+add_test(NAME telemetry_reserved_stationary_opcode COMMAND test_cmd reserved-stationary-opcode)
+add_test(NAME motion_overlapping_stop_timing COMMAND test_supervisor_start_contract overlapping-stop-timing)
+add_test(NAME motion_stale_rest_is_ignored COMMAND test_supervisor_start_contract stale-rest-is-ignored)
+add_test(NAME motion_gp21_stop_timing COMMAND test_supervisor_start_contract gp21-stop-timing)
+add_test(NAME motion_stop_timing_without_brake_evidence COMMAND test_supervisor_start_contract stop-timing-without-brake-evidence)
+add_test(NAME motion_stop_episode_rearms_after_motion COMMAND test_supervisor_start_contract stop-episode-rearms-after-motion)
+add_test(NAME motion_stop_timing_after_duty_returns COMMAND test_supervisor_start_contract stop-timing-after-duty-returns)
+add_test(NAME motion_no_rearm_from_pre_release_motion COMMAND test_supervisor_start_contract no-rearm-from-pre-release-motion)
+add_test(NAME motion_between_pass_estop_after_motion COMMAND test_supervisor_start_contract between-pass-estop-after-motion)
+add_test(NAME motion_between_pass_estop_without_motion COMMAND test_supervisor_start_contract between-pass-estop-without-motion)
+add_test(NAME supervisor_stop_with_slow_telemetry_consumer COMMAND test_supervisor_start_contract stop-with-slow-telemetry-consumer)
+add_test(NAME supervisor_stationary_start_is_refused COMMAND test_supervisor_start_contract stationary-start-is-refused)
+add_test(NAME supervisor_watchdog_rejects_stationary_resume COMMAND test_supervisor_start_contract watchdog-resume-reject-stationary)
 
 # RP2040 reset reasons from the application watchdog adapter.
 add_executable(test_watchdog_reset test_watchdog_reset.c
@@ -573,7 +552,8 @@ target_include_directories(test_watchdog_reset PRIVATE
     ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim ${CMAKE_CURRENT_SOURCE_DIR}/shim_motion)
 target_compile_options(test_watchdog_reset PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-foreach(reset_case IN ITEMS timer forced both_watchdog power run debug unknown mixed)
+foreach(reset_case IN ITEMS timer forced both_watchdog power run debug unknown mixed
+        token token-corrupt token-magic)
     add_test(NAME watchdog_reset_${reset_case} COMMAND test_watchdog_reset ${reset_case})
 endforeach()
 
@@ -617,6 +597,17 @@ target_compile_options(test_motion_controller PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME motion_controller COMMAND test_motion_controller)
 
+add_executable(test_motion_feedforward test_motion_feedforward.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/motor_setup.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/pid.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/odometry.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/encoder_math.c)
+target_include_directories(test_motion_feedforward PRIVATE
+    ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_motion_feedforward PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME motion_feedforward COMMAND test_motion_feedforward)
+
 add_executable(test_motion_feedback test_motion_feedback.c
     ../src/motion/controller.c ../src/motion/pid.c ../src/motion/odometry.c
     ../src/motion/encoder_math.c ../src/motion/motion_inbox.c
@@ -629,8 +620,8 @@ target_compile_options(test_motion_feedback PRIVATE
 target_link_options(test_motion_feedback PRIVATE -Wl,--gc-sections)
 foreach(case signed-snapshot feedback-age-boundary reject-delayed-feedback
              estop-brake-failure boot-estop-brake-failure estop-remote-wake
-             estop-gpio-wake estop-gpio-queued estop-final-admission
-             estop-unavailable-irq normal-output-admission state-events)
+             estop-gpio-wake estop-gpio-queued estop-final-admission estop-feedback-until-rest
+             estop-unavailable-irq normal-output-admission state-events feedback-after-hold-release)
     string(REPLACE "-" "_" test_name "${case}")
     add_test(NAME motion_${test_name} COMMAND test_motion_feedback ${case})
 endforeach()
@@ -643,6 +634,11 @@ target_include_directories(test_encoder_pio_wait PRIVATE
 target_compile_options(test_encoder_pio_wait PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME encoder_pio_wait COMMAND test_encoder_pio_wait)
+
+add_executable(test_encoder_capture test_encoder_capture.c ../src/motion/quadrature.c)
+target_include_directories(test_encoder_capture PRIVATE ${APP_INCLUDE} ../src/motion shim shim_motion)
+target_compile_options(test_encoder_capture PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME encoder_capture_avoids_masked_wait COMMAND test_encoder_capture)
 
 # IR capture pure helpers: barcode edge decision and alarm catch-up.
 add_executable(test_ir_edge test_ir_edge.c)
@@ -690,6 +686,10 @@ target_compile_options(test_pilot_latches PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_pilot_latches PRIVATE m)
 add_test(NAME pilot_latches COMMAND test_pilot_latches)
+add_test(NAME pilot_blind_crawl COMMAND test_pilot_latches blind-crawl)
+foreach(latch_case encoder hug-timeout course-clearance)
+    add_test(NAME pilot_recover_${latch_case} COMMAND test_pilot_latches recover-${latch_case})
+endforeach()
 add_test(NAME pilot_latches_steering_handoff COMMAND test_pilot_latches steering-handoff)
 add_test(NAME pilot_latches_inner_wheel_stop COMMAND test_pilot_latches inner-wheel-stop)
 add_test(NAME pilot_latches_unconfirmed_marker COMMAND test_pilot_latches unconfirmed-marker)
@@ -703,6 +703,9 @@ add_test(NAME pilot_course_held_contact COMMAND test_pilot_latches course-held-c
 add_test(NAME pilot_course_slip_floor COMMAND test_pilot_latches course-slip-floor)
 add_test(NAME pilot_course_movement_breaks_clear_streak COMMAND test_pilot_latches course-movement-breaks-clear-streak)
 add_test(NAME pilot_forward_startup_deadline COMMAND test_pilot_latches never-seen-forward-startup-deadline)
+add_test(NAME pilot_dropout_uses_one_interval COMMAND test_pilot_latches dropout-uses-one-interval)
+add_test(NAME pilot_fan_deadline_survives_missing_replies COMMAND test_pilot_latches fan-deadline-survives-missing-replies)
+add_test(NAME pilot_measured_retreat_keeps_recovery_eligible COMMAND test_pilot_latches measured-retreat-keeps-recovery-eligible)
 
 add_executable(test_liveness test_liveness.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/liveness.c)
@@ -718,3 +721,28 @@ add_executable(test_bypass_legs test_bypass_legs.c ../src/pilot/hug.c ../src/pil
 target_include_directories(test_bypass_legs PRIVATE ${APP_INCLUDE} ${OBSTACLE_SRC})
 target_compile_options(test_bypass_legs PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_bypass_measured_legs COMMAND test_bypass_legs)
+add_test(NAME obstacle_frozen_leg_ends_at_deadline COMMAND test_bypass_legs frozen-leg-ends-at-deadline)
+add_test(NAME obstacle_same_pose_cannot_repeat_fan COMMAND test_bypass_legs same-pose-cannot-repeat-fan)
+add_test(NAME obstacle_contact_fan_uses_measured_edge COMMAND test_bypass_legs contact-fan-uses-measured-edge)
+add_test(NAME obstacle_contact_fan_preserves_unknown COMMAND test_bypass_legs contact-fan-preserves-unknown)
+
+add_executable(test_pilot_rejoin test_pilot_rejoin.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot_log.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/bypass.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
+    ${OBSTACLE_SRC}/geometry.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+target_include_directories(test_pilot_rejoin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${OBSTACLE_SRC})
+target_compile_options(test_pilot_rejoin PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_pilot_rejoin PRIVATE m)
+add_test(NAME rejoin_outcome_reported COMMAND test_pilot_rejoin outcome-reported)
+add_test(NAME rejoin_wrong_way_searches COMMAND test_pilot_rejoin wrong-way-searches)
+add_test(NAME rejoin_bypass_end_silent COMMAND test_pilot_rejoin bypass-end-silent)

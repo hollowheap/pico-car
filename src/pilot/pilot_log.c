@@ -8,6 +8,15 @@ void pilot_log_init(pilot_log_t * p_log)
 {
     p_log->behaviour = (uint8_t)PILOT_LOG_NONE;
     p_log->reason    = (uint8_t)PILOT_REASON_NONE;
+    p_log->recoveries = 0U;
+}
+
+uint8_t pilot_log_recovery(pilot_log_t * p_log, uint8_t recoveries)
+{
+    uint8_t const attempt = (recoveries > p_log->recoveries) ? recoveries : 0U;
+
+    p_log->recoveries = recoveries;
+    return attempt;
 }
 
 bool pilot_log_note(pilot_log_t * p_log, pilot_cmd_t const * p_cmd)

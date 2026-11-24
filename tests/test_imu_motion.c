@@ -27,6 +27,27 @@
 #define TRACK_M     (0.12f)
 #define MAG_EVERY   (3U)     /* New mag sample every 3rd call: ~16.7 Hz. */
 
+/* Pivots on the spot and the car's hard-iron field. */
+#define PIVOT_MPS        (0.05f)  /* Wheel speed of a pivot on the spot.   */
+#define PIVOT_DPS        (((2.0f * PIVOT_MPS) / TRACK_M) * RAD_TO_DEG)
+#define PIVOT_STEPS(deg) ((uint32_t)(((deg) / (PIVOT_DPS * DT_S)) + 0.5f))
+#define SEARCH_SWEEP_DEG (135.0f) /* A line search sweep each way.        */
+#define STEPS_FOR_S(sec) ((uint32_t)(((sec) / DT_S) + 0.5f))
+#define IRON_X_G         (0.12f)
+#define IRON_Y_G         (-0.08f)
+#define OFFSET_TOL_G     (0.02f)
+#define START_PSI_DEG    (30.0f)
+#define BENT_MIN_DEG     (10.0f)  /* The offset bends the heading this far. */
+#define HEADING_TOL_DEG  (3.0f)
+#define DRIVEN_INNER_MPS (0.10f)
+#define DRIVEN_OUTER_MPS (0.20f)
+#define DRIVEN_TURN_S    (2.4f)
+#define REST_S           (0.2f)
+#define WITNESS_S        (0.5f)   /* Past the 300 ms witness settle.      */
+#define SLIP_SHARE       (0.6f)
+#define SHARE_TOL        (0.05f)
+#define CLEAN_SHARE_MIN  (0.95f)
+
 static int g_failures = 0;
 
 #define CHECK(cond)                                                        \
@@ -52,6 +73,8 @@ typedef struct
     bool  wheels_valid;
     bool  mag_on;          /* Deliver mag samples at all.                 */
     bool  slip;            /* Wheels report speeds but heading is fixed.  */
+    float iron_g[3];       /* Hard-iron field of the car, board frame.    */
+    float turn_share;      /* Share of the wheel yaw the body turns.      */
 } world_t;
 
 typedef struct
@@ -69,6 +92,7 @@ static void world_init (world_t * p_w)
 {
     memset (p_w, 0, sizeof (*p_w));
     p_w->mag_scale = 1.0f;
+    p_w->turn_share = 1.0f;
     p_w->motion_valid = true;
     p_w->wheels_valid = true;
     p_w->mag_on = true;
@@ -135,9 +159,9 @@ static void sim_step (sim_t * p_s, world_t * p_w)
     in.v_left_mps = p_w->v_left;
     in.v_right_mps = p_w->v_right;
     in.mag_new = p_w->mag_on && (0U == (p_s->n % MAG_EVERY));
-    in.mx_g = dot (field, fwd);
-    in.my_g = dot (field, left);
-    in.mz_g = dot (field, up);
+    in.mx_g = dot (field, fwd) + p_w->iron_g[0];
+    in.my_g = dot (field, left) + p_w->iron_g[1];
+    in.mz_g = dot (field, up) + p_w->iron_g[2];
 
     CHECK (hump_update (&p_s->hump, &hs, &p_s->hout));
     CHECK (imu_motion_update (&p_s->motion, &hs, &p_s->hout, &in,
@@ -147,7 +171,7 @@ static void sim_step (sim_t * p_s, world_t * p_w)
     if (!p_w->slip)
     {
         /* Positive yaw (left) lowers the clockwise heading. */
-        float yaw_dps = ((p_w->v_right - p_w->v_left) / TRACK_M) * RAD_TO_DEG;
+        float yaw_dps = p_w->turn_share * ((p_w->v_right - p_w->v_left) / TRACK_M) * RAD_TO_DEG;
 
         p_w->psi_deg -= yaw_dps * DT_S;
         if (p_w->psi_deg < 0.0f)
@@ -159,6 +183,21 @@ static void sim_step (sim_t * p_s, world_t * p_w)
             p_w->psi_deg -= 360.0f;
         }
     }
+}
+
+static float wrap_err (float a_deg, float b_deg)
+{
+    float d = a_deg - b_deg;
+
+    while (d > 180.0f)
+    {
+        d -= 360.0f;
+    }
+    while (d < -180.0f)
+    {
+        d += 360.0f;
+    }
+    return d;
 }
 
 static void sim_run (sim_t * p_s, world_t * p_w, uint32_t steps)
@@ -616,6 +655,148 @@ static void test_hump_classes (void)
     CHECK (MOTION_CLASS_MOVING == s.mout.motion);
 }
 
+/* A hard-iron field bends the heading until an on-the-spot pivot sweeps
+   enough of the circle; the fitted offset then gives the true heading. A
+   driven turn teaches nothing. */
+static void test_hard_iron_learnt_from_pivot (void)
+{
+    sim_t s;
+    world_t w;
+
+    printf ("hard_iron_offset_learnt_from_pivot\n");
+    sim_init (&s);
+    world_init (&w);
+    w.iron_g[0] = IRON_X_G;
+    w.iron_g[1] = IRON_Y_G;
+    w.psi_deg = START_PSI_DEG;
+    sim_calibrate (&s, &w);
+    CHECK (!s.mout.mag_offset_learnt);
+    CHECK (fabsf (wrap_err (s.mout.heading_deg, w.psi_deg)) > BENT_MIN_DEG);
+
+    /* A driven left turn. */
+    w.v_left = DRIVEN_INNER_MPS;
+    w.v_right = DRIVEN_OUTER_MPS;
+    sim_run (&s, &w, STEPS_FOR_S (DRIVEN_TURN_S));
+    CHECK (!s.mout.mag_offset_learnt);
+
+    /* A line search on the spot: one sweep one way, then two back. */
+    w.v_left = -PIVOT_MPS;
+    w.v_right = PIVOT_MPS;
+    sim_run (&s, &w, PIVOT_STEPS (SEARCH_SWEEP_DEG));
+    w.v_left = PIVOT_MPS;
+    w.v_right = -PIVOT_MPS;
+    {
+        unsigned steps = PIVOT_STEPS (2.0f * SEARCH_SWEEP_DEG);
+        bool saw_learn = false;
+        while (steps-- > 0U)
+        {
+            bool const was_learnt = s.mout.mag_offset_learnt;
+            sim_step (&s, &w);
+            if (!was_learnt && s.mout.mag_offset_learnt)
+            {
+                saw_learn = true;
+                CHECK (!s.mout.mag_yaw_valid);
+                CHECK (!s.mout.yaw_disagree);
+            }
+        }
+        CHECK (saw_learn);
+    }
+    printf ("  learnt %d, offset %.3f %.3f\n", (int)s.mout.mag_offset_learnt,
+            (double)s.motion.cfg.mag_offset_g[0], (double)s.motion.cfg.mag_offset_g[1]);
+    CHECK (s.mout.mag_offset_learnt);
+    CHECK (fabsf (s.motion.cfg.mag_offset_g[0] - w.iron_g[0]) < OFFSET_TOL_G);
+    CHECK (fabsf (s.motion.cfg.mag_offset_g[1] - w.iron_g[1]) < OFFSET_TOL_G);
+
+    w.v_left = 0.0f;
+    w.v_right = 0.0f;
+    sim_run (&s, &w, STEPS_FOR_S (REST_S));
+    CHECK (s.mout.heading_valid);
+    CHECK (fabsf (wrap_err (s.mout.heading_deg, w.psi_deg)) < HEADING_TOL_DEG);
+}
+
+/* With the offset learnt, a pivot the field shows at SLIP_SHARE of the
+   encoder rate is wheel slip. The witness reports the share once the spin is
+   steady in one direction, and never while the car drives. */
+static void test_pivot_witness (void)
+{
+    sim_t s;
+    world_t w;
+
+    printf ("pivot_witness_reports_wheel_slip\n");
+    sim_init (&s);
+    world_init (&w);
+    w.iron_g[0] = IRON_X_G;
+    w.iron_g[1] = IRON_Y_G;
+    sim_calibrate (&s, &w);
+    w.v_left = -PIVOT_MPS;
+    w.v_right = PIVOT_MPS;
+    sim_run (&s, &w, PIVOT_STEPS (SEARCH_SWEEP_DEG));
+    CHECK (!s.mout.mag_offset_learnt);
+    CHECK (0.0f == s.mout.pivot_scale);
+    w.v_left = PIVOT_MPS;
+    w.v_right = -PIVOT_MPS;
+    sim_run (&s, &w, PIVOT_STEPS (2.0f * SEARCH_SWEEP_DEG));
+    CHECK (s.mout.mag_offset_learnt);
+
+    w.turn_share = SLIP_SHARE;
+    w.v_left = -PIVOT_MPS;
+    w.v_right = PIVOT_MPS;
+    sim_step (&s, &w);
+    CHECK (0.0f == s.mout.pivot_scale);
+    sim_run (&s, &w, STEPS_FOR_S (WITNESS_S));
+    printf ("  slipping scale %.3f\n", (double)s.mout.pivot_scale);
+    CHECK (fabsf (s.mout.pivot_scale - SLIP_SHARE) < SHARE_TOL);
+
+    w.turn_share = 1.0f;
+    sim_run (&s, &w, STEPS_FOR_S (WITNESS_S));
+    printf ("  clean scale %.3f\n", (double)s.mout.pivot_scale);
+    CHECK (s.mout.pivot_scale > CLEAN_SHARE_MIN);
+
+    w.v_left = SPEED_MPS;
+    w.v_right = SPEED_MPS;
+    sim_run (&s, &w, STEPS_FOR_S (REST_S));
+    CHECK (0.0f == s.mout.pivot_scale);
+}
+
+/* Heading is gated only when the hard-iron offset is learnt, the field is in
+   band and the encoder and magnetometer turn rates agree. A 1% wheel scale
+   error stays inside the rate-agreement band; a field disturbance drops the
+   gate. */
+static void test_heading_gated (void)
+{
+    sim_t s;
+    world_t w;
+
+    printf ("heading_gated_requires_learnt_offset_and_agreement\n");
+    sim_init (&s);
+    world_init (&w);
+    w.iron_g[0] = IRON_X_G;
+    w.iron_g[1] = IRON_Y_G;
+    w.psi_deg = START_PSI_DEG;
+    sim_calibrate (&s, &w);
+    CHECK (!s.mout.heading_gated);
+
+    w.v_left = -PIVOT_MPS;
+    w.v_right = PIVOT_MPS;
+    sim_run (&s, &w, PIVOT_STEPS (SEARCH_SWEEP_DEG));
+    w.v_left = PIVOT_MPS;
+    w.v_right = -PIVOT_MPS;
+    sim_run (&s, &w, PIVOT_STEPS (2.0f * SEARCH_SWEEP_DEG));
+    CHECK (s.mout.mag_offset_learnt);
+
+    /* Drive straight with 1% wheel speed scale error on the right wheel. */
+    w.v_left = SPEED_MPS;
+    w.v_right = SPEED_MPS * 1.01f;
+    sim_run (&s, &w, STEPS_FOR_S (1.0f));
+    CHECK (s.mout.heading_gated);
+    CHECK (fabsf (wrap_err (s.mout.heading_deg, w.psi_deg)) < HEADING_TOL_DEG);
+
+    /* Disturb the magnetic field out of band: gate drops. */
+    w.mag_scale = 4.0f;
+    sim_run (&s, &w, STEPS_FOR_S (0.2f));
+    CHECK (!s.mout.heading_gated);
+}
+
 int main (void)
 {
     test_init_validation ();
@@ -634,6 +815,9 @@ int main (void)
     test_forward_spike_is_ignored ();
     test_reported_braking ();
     test_hump_classes ();
+    test_hard_iron_learnt_from_pivot ();
+    test_pivot_witness ();
+    test_heading_gated ();
 
     if (0 == g_failures)
     {

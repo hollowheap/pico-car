@@ -6,7 +6,7 @@
  * The bench starts the motion service and the line sensors, nothing else: no
  * obstacle task, no supervisor, no telemetry. Output goes to the USB console.
  * Copy the lines that start with a tag in capitals (STEP, SENS, LINE, DRV,
- * ENC) into a file and give the file to the analysis scripts.
+ * ENC, ODO, PIV) into a file and give the file to the analysis scripts.
  *
  *   GP20 short press = next item (the item is printed)
  *   GP20 long press (1 s) = run it (3 s countdown, a press stops the run)
@@ -25,24 +25,33 @@
  *   ODO   The motors stay off for 30 s. Push the car along a ruler, or turn a
  *         wheel one full turn by hand. Prints the distance and the encoder
  *         edges each wheel counted, so the encoder scale can be checked.
+ *   PIVOT Pivot on a taped cross for one full turn after the first crossing.
+ *         Prints encoder yaw and pivot share at each of the four crossings.
+ *   TIME  Capture actual stationary bench pass and feedback-read timing.
+ *         Exports the trace as JSONL after the trial.
  *
  * NOTE: usermain() is the name the kernel calls, so it has no module prefix.
  */
 
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Keep the standard size_t when importing the kernel interfaces. */
+#define PROHIBIT_DEF_SIZE_T
 #include <tk/smp.h>
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
+#include "bench/trace.h"
 #include "motion/motion.h"
 #include "motion/motor_setup.h"
 #include "../motion/motion_service.h"
 #include "platform/chassis.h"
 #include "platform/isr.h"
 #include "platform/log.h"
+#include "platform/units.h"
 #include "platform/watchdog.h"
 #include "track/line_control.h"
 #include "track/track.h"
@@ -80,7 +89,14 @@
 #define SENS_RUN_MS    (20000U)
 #define SENS_POLL_MS   (5U)
 #define DECI_PER_DEG   (10)
-#define PERCENT        (100)
+#define TIMING_PASSES  (64U)
+#define TIMING_ROWS_PER_PASS (3U)
+#define TRACE_USB_WAIT_POLLS (20U)
+#define TRACE_USB_PENDING_LIMIT (1024U)
+
+#ifndef PICO_CAR_BENCH_BUILD
+#define PICO_CAR_BENCH_BUILD "unknown"
+#endif
 
 typedef enum
 {
@@ -91,6 +107,8 @@ typedef enum
     ITEM_LINEB,
     ITEM_LIFT,
     ITEM_ODO,
+    ITEM_PIVOT,
+    ITEM_TIMING,
     ITEM_COUNT
 } item_t;
 
@@ -102,6 +120,8 @@ static char const * const ITEM_TEXT[ITEM_COUNT] = {
     "LINEB NEW law on a straight line, 8 s (put the car back at the start)",
     "LIFT  drive 14 s: lift the car at 6 s, put it down at 10 s (1.5 m free)",
     "ODO   motors off: push the car by hand along a ruler, or turn one wheel one full turn",
+    "PIVOT pivot on a taped cross: log encoder yaw and share at four crossings",
+    "TIME  motors off: capture bench pass and feedback-read timing as JSONL",
 };
 
 typedef struct
@@ -115,6 +135,7 @@ typedef struct
 static UB g_stack_motion[STACK_BYTES] __attribute__((aligned(STACK_ALIGN)));
 static UB g_stack_bench[STACK_BYTES] __attribute__((aligned(STACK_ALIGN)));
 static step_sample_t g_step[STEP_SAMPLES];
+static bench_trace_record_t g_timing_rows[TIMING_PASSES * TIMING_ROWS_PER_PASS];
 
 static uint32_t now_ms (void)
 {
@@ -532,6 +553,140 @@ static void run_odo (void)
     log_flush ();
 }
 
+/* PIVOT: spin on a taped cross and print encoder yaw and share at 4 crossings. */
+#define PIVOT_UM_S      (LINE_SEARCH_UM_S)
+#define PIVOT_CROSSINGS (4U)
+#define PIVOT_STEP_DECI (900)
+#define PIVOT_MAX_MS    (12000U)
+
+static void run_pivot (void)
+{
+    motion_feedback_t start;
+    line_follow_t     follow;
+    uint32_t const    t0 = now_ms ();
+    uint32_t          crossings = 0U;
+    int32_t           first_yaw = 0;
+    int32_t           prev_yaw = 0;
+    bool              b_armed = false;
+
+    (void) motion_feedback_snapshot (&start);
+    line_follow_init (&follow);
+    while (((now_ms () - t0) < PIVOT_MAX_MS) && (crossings < PIVOT_CROSSINGS) && !abort_requested ())
+    {
+        motion_feedback_t        fb;
+        ir_sensors_state_t const s = ir_get_state ();
+        line_targets_t           unused = {0, 0};
+
+        drive (-PIVOT_UM_S, PIVOT_UM_S);
+        (void) motion_feedback_snapshot (&fb);
+        int64_t const diff_um = (fb.right_displacement_um - start.right_displacement_um) -
+                                (fb.left_displacement_um - start.left_displacement_um);
+        int32_t const yaw_deci = (int32_t) wheel_yaw_deci (diff_um);
+        int64_t const sensor_arc_um = (diff_um * (int64_t) LINE_SENSOR_LEAD_MM) /
+                                      (int64_t) CHASSIS_WHEEL_TRACK_MM;
+
+        (void) line_follow_update_floor (&follow, s.left, s.right, yaw_deci, sensor_arc_um,
+                                         now_ms (), true, &unused);
+        uint8_t const stripe = line_follow_take_stripe (&follow);
+        if (0U != stripe)
+        {
+            if (!b_armed)
+            {
+                first_yaw = yaw_deci;
+                prev_yaw  = yaw_deci;
+                b_armed   = true;
+            }
+            else
+            {
+                int32_t const step_yaw  = yaw_deci - prev_yaw;
+                int32_t const share_pct = (step_yaw > 0) ? ((PIVOT_STEP_DECI * PERCENT) / step_yaw) : 0;
+
+                crossings++;
+                LOG_NOW ("DATA", "bench:pivot",
+                         "PIV,%u,enc_yaw_deci=%d,share_pct=%d,total_yaw_deci=%d,stripe=%u\n",
+                         (unsigned) crossings, (int) step_yaw, (int) share_pct,
+                         (int) (yaw_deci - first_yaw), (unsigned) stripe);
+                log_flush ();
+                prev_yaw = yaw_deci;
+            }
+        }
+        (void) tk_dly_tsk (SENS_POLL_MS);
+    }
+    brake ();
+    {
+        int32_t const total_yaw   = b_armed ? (prev_yaw - first_yaw) : 0;
+        int32_t const total_share = (total_yaw > 0)
+                                        ? (((int32_t) crossings * PIVOT_STEP_DECI * PERCENT) / total_yaw)
+                                        : 0;
+
+        LOG_NOW ("DATA", "bench:pivot", "PIV_RESULT,crossings=%u,total_yaw_deci=%d,share_pct=%d\n",
+                 (unsigned) crossings, (int) total_yaw, (int) total_share);
+        log_flush ();
+    }
+}
+
+/* Export a complete machine-readable row only when the post-run USB sink has room. */
+static bool write_trace_row (void * p_ctx, char const * p_row, size_t length)
+{
+    uint32_t const dropped = tm_usb_dropped_bytes ();
+    uint32_t       polls   = 0U;
+
+    (void) p_ctx;
+    while ((polls < TRACE_USB_WAIT_POLLS) && (tm_usb_state () >= USB_UP) &&
+           (tm_usb_pending () + length > TRACE_USB_PENDING_LIMIT))
+    {
+        (void) tk_dly_tsk (LOOP_MS);
+        polls++;
+    }
+    if ((tm_usb_state () < USB_UP) || (tm_usb_pending () + length > TRACE_USB_PENDING_LIMIT))
+    {
+        return false;
+    }
+    (void) tm_putstring ((UB const *) p_row);
+    return tm_usb_dropped_bytes () == dropped;
+}
+
+static void run_timing (void)
+{
+    char                       trial[sizeof ("timing-00000000")];
+    bench_trace_header_t const header = {.build = PICO_CAR_BENCH_BUILD, .fixture = "bench-timing", .trial = trial};
+    bench_trace_t              trace;
+    uint32_t                   pass = 0U;
+    uint32_t                   start = 0U;
+
+    brake ();
+    start = in_w (TIMER_TIMERAWL);
+    (void) tm_sprintf ((UB *) trial, (UB const *) "timing-%08x", (unsigned int) start);
+    if (!bench_trace_start (&trace, &header, g_timing_rows, TIMING_PASSES * TIMING_ROWS_PER_PASS))
+    {
+        LOG_ERROR (LOG_TASK_BOOT, LOG_MOD_NONE, "cannot start timing trace");
+        return;
+    }
+    for (; (pass < TIMING_PASSES) && !abort_requested (); pass++)
+    {
+        motion_feedback_t    feedback;
+        bench_trace_record_t row = {.time_us = in_w (TIMER_TIMERAWL) - start, .kind = BENCH_TRACE_SCHEDULER,
+                                    .marker = BENCH_TRACE_RELEASE};
+
+        (void) bench_trace_record (&trace, &row);
+        if (E_OK == motion_feedback_snapshot (&feedback))
+        {
+            row.time_us = in_w (TIMER_TIMERAWL) - start;
+            row.marker  = BENCH_TRACE_CAPTURE;
+            (void) bench_trace_record (&trace, &row);
+        }
+        row.time_us = in_w (TIMER_TIMERAWL) - start;
+        row.marker  = BENCH_TRACE_COMPLETE;
+        (void) bench_trace_record (&trace, &row);
+        (void) tk_dly_tsk (LOOP_MS);
+    }
+    bench_trace_stop (&trace);
+    if (!bench_trace_export (&trace, write_trace_row, NULL))
+    {
+        LOG_WARN (LOG_TASK_BOOT, LOG_MOD_NONE, "timing trace USB export incomplete");
+    }
+}
+
 static void run_item (item_t item)
 {
     if (!countdown ())
@@ -557,6 +712,12 @@ static void run_item (item_t item)
             break;
         case ITEM_ODO:
             run_odo ();
+            break;
+        case ITEM_PIVOT:
+            run_pivot ();
+            break;
+        case ITEM_TIMING:
+            run_timing ();
             break;
         default:
             run_lift ();

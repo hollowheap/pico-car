@@ -60,6 +60,12 @@ static const struct {
     {1U, UINT32_MAX, OBSTACLE_CLASS_NO_ECHO},
 };
 static bool g_echo_timing;
+static bool g_trigger_readback_low;
+static bool g_aimed_echo_fault;
+static bool g_aimed_forward;
+static uint16_t g_published_echo_faults;
+static uint32_t g_forward_ping;
+static uint32_t g_forward_before_trigger;
 static uint32_t g_trigger_ms;
 static unsigned g_class_count;
 static bool g_late_request;
@@ -88,6 +94,29 @@ void liveness_kick (uint8_t task_bit)
     (void)task_bit;
     g_pass++;
 
+    if (g_trigger_readback_low)
+    {
+        if (g_class_count == OBSTACLE_NO_ECHO_COUNT || g_pass > 2U * OBSTACLE_NO_ECHO_COUNT + 2U)
+        {
+            longjmp(g_finish, 1);
+        }
+        return;
+    }
+    if (g_aimed_forward)
+    {
+        if (g_pings == 3U || g_pass == 12U) longjmp(g_finish, 1);
+        if (g_pings == 1U)
+        {
+            g_request = obstacle_pack_ping_req(-800, 1U);
+        }
+        return;
+    }
+    if (g_aimed_echo_fault)
+    {
+        if (g_replies == OBSTACLE_STUCK_COUNT || g_pass > OBSTACLE_STUCK_COUNT + 2U) longjmp(g_finish, 1);
+        g_request = obstacle_pack_ping_req(OBSTACLE_SERVO_LIMIT_DECI, g_pass);
+        return;
+    }
     if (g_echo_timing)
     {
         if (g_class_count == 5U) longjmp(g_finish, 1);
@@ -152,6 +181,7 @@ ER tk_wai_flg (ID flag, UINT bits, UINT mode, UINT * p_flags, TMO timeout)
     *p_flags = 0U;
     if ((bits & OBSTACLE_FLG_ECHO) != 0U)
     {
+        CHECK(!g_trigger_readback_low);
         if (g_echo_timing)
         {
             uint32_t elapsed = g_ms - g_trigger_ms;
@@ -222,11 +252,10 @@ bool obstacle_comms_travel (obstacle_travel_t * p_travel)
 bool obstacle_comms_is_pivoting (void) { return false; }
 int16_t obstacle_comms_look (void) { return 0; }
 
-void obstacle_comms_publish (obstacle_statechart_out_t const * p_out,
-                             obstacle_statechart_t const * p_fsm)
+void obstacle_comms_publish (sonar_health_t const * p_health)
 {
-    (void)p_out;
-    (void)p_fsm;
+    g_forward_ping = p_health->ping;
+    g_published_echo_faults = p_health->echo_faults;
 }
 
 uint32_t obstacle_comms_take_ping_request (void)
@@ -250,11 +279,27 @@ void obstacle_comms_publish_ping_reply (uint32_t reply)
         CHECK(g_last_reply == g_replies);
     }
     CHECK(obstacle_pack_ping_servo(reply) == g_servo);
-    CHECK(obstacle_pack_ping_echo(reply) == OBSTACLE_CLASS_VALID);
+    CHECK(obstacle_pack_get(reply, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK) ==
+          (g_aimed_echo_fault ? OBSTACLE_CLASS_STUCK : OBSTACLE_CLASS_VALID));
+    CHECK(g_forward_ping == g_forward_before_trigger);
+    if (g_aimed_forward)
+    {
+        CHECK(g_forward_before_trigger != 0U);
+        CHECK(!obstacle_pack_ping_is_reply(g_forward_before_trigger));
+        CHECK(obstacle_pack_ping_seq(g_forward_before_trigger) == 1U);
+        CHECK(obstacle_pack_ping_servo(g_forward_before_trigger) == 0);
+    }
 }
 
 void obstacle_comms_count_class (uint8_t cls)
 {
+    if (g_trigger_readback_low)
+    {
+        CHECK(cls == OBSTACLE_CLASS_NO_ECHO);
+        CHECK(g_ms == g_trigger_ms);
+        g_class_count++;
+        return;
+    }
     if (g_echo_timing)
     {
         if (g_class_count < 4U)
@@ -270,7 +315,7 @@ void obstacle_comms_count_class (uint8_t cls)
         g_class_count++;
         return;
     }
-    CHECK(cls == OBSTACLE_CLASS_VALID);
+    CHECK(cls == (g_aimed_echo_fault ? OBSTACLE_CLASS_STUCK : OBSTACLE_CLASS_VALID));
 }
 
 void scan_hw_servo_set (int16_t deci)
@@ -283,6 +328,7 @@ void scan_hw_servo_set (int16_t deci)
 uint32_t scan_hw_now_us (void) { return g_ms * 1000U; }
 bool scan_hw_is_echo_high (void)
 {
+    if (g_aimed_echo_fault) return true;
     if (g_late_request) return (g_ms - g_trigger_ms < 48U);
     if (!g_echo_timing || g_pings == 0U) return false;
     uint32_t elapsed = g_ms - g_trigger_ms;
@@ -302,6 +348,7 @@ bool scan_hw_trigger (void)
         if (g_pings > 0U) CHECK(g_ms - g_trigger_ms >= 60U);
     }
     g_trigger_ms = g_ms;
+    g_forward_before_trigger = g_forward_ping;
     g_late_request = g_stop_case == STOP_LATE_ECHO && g_pass == g_cancel_pass;
     if (g_stop_case != STOP_NONE && g_pass == g_cancel_pass && g_servo != 0)
     {
@@ -312,11 +359,12 @@ bool scan_hw_trigger (void)
         g_first_forward_ms = g_ms;
     }
     g_pings++;
-    return true;
+    return !g_trigger_readback_low;
 }
 
 uint32_t scan_hw_echo_result (uint32_t trigger_us)
 {
+    CHECK(!g_trigger_readback_low);
     if (g_late_request) return OBSTACLE_ECHO_RISE;
     if (g_echo_timing)
     {
@@ -336,6 +384,9 @@ int main (int argc, char ** argv)
     if (argc > 1)
     {
         if (strcmp(argv[1], "echo-timing") == 0) g_echo_timing = true;
+        else if (strcmp(argv[1], "trigger-low") == 0) g_trigger_readback_low = true;
+        else if (strcmp(argv[1], "aimed-echo-fault") == 0) g_aimed_echo_fault = true;
+        else if (strcmp(argv[1], "aimed-forward") == 0) g_aimed_forward = true;
         else if (strcmp(argv[1], "stop-settle") == 0) g_stop_case = STOP_SETTLE;
         else if (strcmp(argv[1], "stop-spacing") == 0) g_stop_case = STOP_SPACING;
         else if (strcmp(argv[1], "stop-echo") == 0) g_stop_case = STOP_ECHO;
@@ -348,6 +399,31 @@ int main (int argc, char ** argv)
     if (setjmp(g_finish) == 0)
     {
         scan_task_obstacle_task(0, NULL);
+    }
+    if (g_trigger_readback_low)
+    {
+        CHECK(g_pings == OBSTACLE_NO_ECHO_COUNT && g_class_count == OBSTACLE_NO_ECHO_COUNT);
+        CHECK(obstacle_pack_ping_seq(g_forward_ping) == OBSTACLE_NO_ECHO_COUNT);
+        CHECK(obstacle_pack_get(g_forward_ping, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK) ==
+              OBSTACLE_CLASS_NO_ECHO);
+        CHECK(obstacle_pack_get(g_forward_ping, OBSTACLE_PING_DIST_SH, OBSTACLE_PING_DIST_MK) == 0U);
+        CHECK((g_published_echo_faults & OBSTACLE_FAULT_NO_ECHO) != 0U);
+        return g_fail == 0U ? 0 : 1;
+    }
+    if (g_aimed_forward)
+    {
+        CHECK(g_pings == 3U && g_replies == 1U);
+        CHECK(!obstacle_pack_ping_is_reply(g_forward_ping));
+        CHECK(obstacle_pack_ping_seq(g_forward_ping) == 2U);
+        CHECK(obstacle_pack_ping_servo(g_forward_ping) == 0);
+        return g_fail == 0U ? 0 : 1;
+    }
+    if (g_aimed_echo_fault)
+    {
+        CHECK(g_replies == OBSTACLE_STUCK_COUNT && g_pings == 0U);
+        CHECK((g_published_echo_faults & OBSTACLE_FAULT_ECHO_STUCK) != 0U);
+        CHECK(g_forward_ping == 0U);
+        return g_fail == 0U ? 0 : 1;
     }
     if (g_echo_timing)
     {

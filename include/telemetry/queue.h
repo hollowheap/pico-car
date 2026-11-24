@@ -6,7 +6,9 @@
 
 #include "telemetry/packet.h"
 
-#define TELEMETRY_QUEUE_BYTES   1024u
+/* Holds one 50 ms worst-case telemetry burst (~308 B) plus a quarter, with
+ * headroom for optional raw IR frames. */
+#define TELEMETRY_QUEUE_BYTES   512u
 /* Admit optional raw IR samples only while at least half the queue is free. */
 #define TELEMETRY_RAW_HEADROOM_DIVISOR (2U)
 

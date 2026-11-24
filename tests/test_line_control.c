@@ -527,6 +527,60 @@ static void test_failed_search_turns_back_reverses_and_searches_again(void)
     assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, false, heading, travel, ms + STEP_MS, &t));
 }
 
+/* Follow a left curve of 0.2 deg per mm, lose the line, and fail the search.
+ * Each reverse retraces the recorded path: the heading at a travel inside the
+ * recorded curve is the heading the car had there going forward. */
+/* A left curve of 0.2 degrees per millimetre, CURVE_MM long. The check
+ * skips the first records and the last trail step, where the interpolation
+ * has no neighbour. */
+#define CURVE_DECI_PER_MM   (2)
+#define CURVE_MM            (400)
+#define CURVE_STEP_MM       (5)
+#define RETRACE_FROM_MM     (60)
+#define RETRACE_TO_MM       (CURVE_MM - LINE_TRAIL_STEP_MM)
+#define RETRACE_TOL_DECI    (30)
+#define RETRACE_MIN_SAMPLES (100U)
+
+static void test_reverse_retraces_the_recorded_curve(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    unsigned checked = 0U;
+    int pass;
+
+    line_follow_init(&f);
+    for (int32_t mm = 0; mm <= CURVE_MM; mm += CURVE_STEP_MM)
+    {
+        travel = (int64_t)mm * UM_PER_MM;
+        heading = CURVE_DECI_PER_MM * mm;
+        ms += STEP_MS;
+        (void)follow(&f, true, true, heading, travel, ms, &t);
+    }
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (LINE_FOLLOW_STOPPED != f.status); pass++)
+    {
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+        if ((t.left_um_s < 0) && (t.right_um_s < 0) && (travel > RETRACE_FROM_MM * UM_PER_MM) &&
+            (travel < RETRACE_TO_MM * UM_PER_MM))
+        {
+            int32_t const want = (int32_t)(CURVE_DECI_PER_MM * (travel / UM_PER_MM));
+
+            assert(abs(heading - want) <= RETRACE_TOL_DECI);
+            checked++;
+        }
+    }
+    assert(checked > RETRACE_MIN_SAMPLES);
+
+    /* A turn on the spot leaves no record to steer a reverse back to. */
+    assert(0U != f.trail_count);
+    line_follow_set_side(&f, LINE_SIDE_LEFT);
+    assert(0U == f.trail_count);
+}
+
 /* Run the closed loop until the retry count reaches want_retry; returns the
  * pass state in the arguments. */
 static void run_to_retry(line_follow_t * p_f, line_targets_t * p_t, int32_t * p_heading,
@@ -1694,6 +1748,48 @@ static void test_corner_stripe_crosses_both_detectors(void)
     assert(state.status == LINE_FOLLOW_SEARCHING && targets.right_um_s < 0);
 }
 
+/* The detectors cross one stripe STRIPE_SKEW_MM apart. A graze is shorter
+ * than any stripe the follower measures. */
+#define STRIPE_RUN_MM  (60)
+#define STRIPE_SKEW_MM (3)
+#define GRAZE_MM       (5)
+
+static uint8_t cross_stripes(int left_from, int left_to, int right_from, int right_to, unsigned * p_reports)
+{
+    line_follow_t state;
+    line_targets_t targets;
+    uint8_t report = 0U;
+    line_follow_init(&state);
+    *p_reports = 0U;
+    for (int mm = 0; mm <= STRIPE_RUN_MM; ++mm)
+    {
+        (void)line_follow_update(&state, mm >= left_from && mm < left_to, mm >= right_from && mm < right_to, 0,
+                                 mm * UM_PER_MM, (uint32_t)mm * STEP_MS, &targets);
+        uint8_t const taken = line_follow_take_stripe(&state);
+        if (taken != 0U)
+        {
+            report = taken;
+            (*p_reports)++;
+        }
+    }
+    return report;
+}
+
+static void test_stripe_reported_once(void)
+{
+    unsigned reports = 0U;
+    assert(cross_stripes(0, LINE_WIDTH_MM - STRIPE_SKEW_MM, STRIPE_SKEW_MM, LINE_WIDTH_MM + STRIPE_SKEW_MM,
+                         &reports) == (LINE_STRIPE_LEFT | LINE_STRIPE_RIGHT | LINE_STRIPE_CORROBORATED));
+    assert(reports == 1U);
+    assert(cross_stripes(0, LINE_WIDTH_MM, 0, LINE_WIDTH_MM, &reports) ==
+           (LINE_STRIPE_LEFT | LINE_STRIPE_RIGHT | LINE_STRIPE_CORROBORATED));
+    assert(reports == 1U);
+    assert(cross_stripes(0, 0, 0, LINE_WIDTH_MM, &reports) == LINE_STRIPE_RIGHT);
+    assert(reports == 1U);
+    assert(cross_stripes(0, GRAZE_MM, 0, 0, &reports) == 0U);
+    assert(reports == 0U);
+}
+
 static void test_wide_left_crossing_needs_corroboration(void)
 {
     for (int marker = 0; marker <= 1; ++marker)
@@ -1920,6 +2016,7 @@ int main(int argc, char * argv[])
     test_marker_bridge_separates_tape_stripes();
     test_corner_stripe_crosses_both_detectors();
     test_wide_left_crossing_needs_corroboration();
+    test_stripe_reported_once();
     test_deferred_route_keeps_corner_survey();
     test_transverse_stripe_with_overlapping_left_readers();
     test_junction_sweeps();
@@ -1936,6 +2033,7 @@ int main(int argc, char * argv[])
     test_targets_cap();
     test_gap_then_search_on_the_spot();
     test_failed_search_turns_back_reverses_and_searches_again();
+    test_reverse_retraces_the_recorded_curve();
     test_hit_during_retry_resumes_following();
     test_retry_count_clears_on_a_search_hit();
     test_retry_clears_past_the_loss_point();

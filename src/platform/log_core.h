@@ -14,8 +14,9 @@
 #include "platform/log.h"
 #include "platform/static_assert.h"
 
-/** Records in the ring. Must be a power of two. */
-#define LOG_RING_LEN (64U)
+/** Records in the ring. Must be a power of two. Telemetry drains every 50 ms;
+ *  32 records hold a burst plus a quarter margin. */
+#define LOG_RING_LEN (32U)
 
 STATIC_ASSERT (0U == (LOG_RING_LEN & (LOG_RING_LEN - 1U)),
                "LOG_RING_LEN must be a power of two");

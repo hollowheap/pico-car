@@ -107,6 +107,8 @@ typedef struct
     int32_t head_deci;
 } look_pose_t;
 
+STATIC_ASSERT(sizeof(look_pose_t) == 12U, "look_pose_t size");
+
 typedef struct
 {
     int32_t x_mm;        /* centre of the VALID points */
@@ -115,17 +117,23 @@ typedef struct
     int32_t dist_mm;     /* from the position to the face line */
 } look_face_t;
 
+STATIC_ASSERT(sizeof(look_face_t) == 16U, "look_face_t size");
+
 typedef enum
 {
     LOOK_SIDE_LEFT = 0, /* left of the normal, seen from the car */
     LOOK_SIDE_RIGHT
 } look_side_t;
 
+STATIC_ASSERT(sizeof(look_side_t) <= 4U, "look_side_t size");
+
 typedef struct
 {
     int32_t x_mm; /* beam-corrected point on the face line */
     int32_t y_mm;
 } look_edge_t;
+
+STATIC_ASSERT(sizeof(look_edge_t) == 8U, "look_edge_t size");
 
 /** A VALID or TOO_CLOSE reading is a point; OPEN and NONE are not. */
 bool look_echo_is_point(uint8_t echo);
@@ -153,7 +161,9 @@ bool look_face(look_t const * p_look, look_pose_t const * p_from,
                look_face_t * p_face);
 
 /** Fit the face using only positive echoes up to max_range_mm. The complete
- *  look remains available for checking which rays pass beyond that face. */
+ *  look remains available for checking which rays pass beyond that face.
+ *  A ray that lies more than LOOK_FACE_MATCH_MM off the face fitted without
+ *  it is a stray: the single worst one is dropped and the face refitted once. */
 bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
                     uint16_t max_range_mm, look_face_t * p_face);
 
