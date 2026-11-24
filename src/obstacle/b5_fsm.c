@@ -37,8 +37,6 @@ static void    accept_plan (b5_fsm_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
                             b5_fsm_out_t * p_out);
 static bool    check_health (b5_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
                              b5_fsm_out_t * p_out);
-static bool    check_collision (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
-                                uint32_t now_ms, b5_fsm_out_t * p_out);
 static void    ping_monitor (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                              uint32_t now_ms, b5_fsm_out_t * p_out);
 static void    ping_scanning (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
@@ -221,8 +219,7 @@ void b5_fsm_ping (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
     p_fsm->last_class = cls;
     p_fsm->last_dist  = dist;
 
-    if ((!check_health(p_fsm, cls, now_ms, p_out)) &&
-        (!check_collision(p_fsm, cls, dist, now_ms, p_out)))
+    if (!check_health(p_fsm, cls, now_ms, p_out))
     {
         switch (p_fsm->state)
         {
@@ -721,56 +718,6 @@ static bool check_health (b5_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
     else
     {
         /* Already stopped and not reset: nothing more to do. */
-    }
-
-    return (b_stopped);
-}
-
-/*!
- * @brief Collision guard while the car may be moving round the obstacle.
- *
- * NOTE: [Chat] Only REACQUIRE is guarded. In WAIT_STOP the car is already
- * braking, and in BYPASS Navigation first backs away from an obstacle that
- * is too close (b5_plan_ahead_mm()), so a close reading straight ahead
- * there is expected; stopping for it would leave the car stuck in front of
- * the obstacle. Navigation's virtual bumper covers contact in every
- * bypass phase. While Navigation's side scan runs (b5_fsm_set_guard_off())
- * the car stands still, so a close reading only means "in the way" and
- * clears the count instead.
- *
- * @param[in,out] p_fsm   Statechart.
- * @param[in]     cls     Ping class.
- * @param[in]     dist_mm Ping distance.
- * @param[in]     now_ms  Current time.
- * @param[out]    p_out   Requests for the task.
- *
- * @return True if this ping stopped Buddy 5.
- */
-static bool check_collision (b5_fsm_t * p_fsm, uint8_t cls, uint16_t dist_mm,
-                             uint32_t now_ms, b5_fsm_out_t * p_out)
-{
-    bool const b_guarded = (B5_STATE_REACQUIRE == p_fsm->state);
-    bool const b_close   = (!p_fsm->b_guard_off) && (B5_CLASS_VALID == cls) &&
-                         (dist_mm < B5_COLLISION_MM);
-    bool b_stopped = false;
-
-    if (!b_guarded)
-    {
-        /* The car is stopped or following the line normally. */
-    }
-    else if (!b_close)
-    {
-        cnt_set(p_fsm, B5_CNT_COLL_SH, B5_CNT_COLL_MK, 0U);
-    }
-    else if (cnt_inc(p_fsm, B5_CNT_COLL_SH, B5_CNT_COLL_MK) >=
-             B5_COLLISION_HITS)
-    {
-        enter_stopped(p_fsm, B5_CAUSE_COLLISION, now_ms, p_out);
-        b_stopped = true;
-    }
-    else
-    {
-        /* One close reading so far: wait for the next one. */
     }
 
     return (b_stopped);

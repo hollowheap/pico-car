@@ -94,13 +94,6 @@
 /* [Spec] Consecutive VALID hits needed to report an obstacle. */
 #define B5_DETECT_HITS (2U)
 
-/* [Default] Readings closer than this call the emergency stop (only in
- * REACQUIRE, see check_collision() in b5_fsm.c). */
-#define B5_COLLISION_MM (80U)
-
-/* [Default] Consecutive close readings needed for the emergency stop. */
-#define B5_COLLISION_HITS (2U)
-
 /* ------------------------------------------------------------------ *
  * Scan grid [Spec].
  * ------------------------------------------------------------------ */
@@ -577,13 +570,11 @@ B5_CT_ASSERT(ping_after_wait, B5_ECHO_WAIT_MS < B5_PING_PERIOD_MS);
 B5_CT_ASSERT(unknown_cnt_fits, B5_NO_ECHO_COUNT <= B5_CNT3_MAX);
 B5_CT_ASSERT(stuck_cnt_fits, B5_STUCK_COUNT <= B5_CNT2_MAX);
 B5_CT_ASSERT(hit_cnt_fits, B5_DETECT_HITS <= B5_CNT3_MAX);
-B5_CT_ASSERT(coll_cnt_fits, B5_COLLISION_HITS <= B5_CNT2_MAX);
 B5_CT_ASSERT(clear_cnt_fits, B5_ESCAPE_CLEAR_PINGS <= B5_CNT3_MAX);
 B5_CT_ASSERT(nav_brake_in_time, B5_NAV_BRAKE_MS < B5_WAIT_STOP_MS);
 B5_CT_ASSERT(nav_speed_in_range, B5_NAV_SPEED_UM_S <= 200000U);
 B5_CT_ASSERT(sensors_in_front, (B5_AXLE_TO_SONAR_MM < B5_AXLE_TO_FRONT_MM) &&
                                    (B5_AXLE_TO_IR_MM < B5_AXLE_TO_FRONT_MM));
-B5_CT_ASSERT(sweep_reading_safe, B5_COLLISION_MM < B5_LANE_RIGHT_MM);
 B5_CT_ASSERT(sweep_pings_fit, (B5_SWEEP_PINGS > 0U) && (B5_SWEEP_PINGS < 8U));
 B5_CT_ASSERT(side_assumed_in_range,
              (B5_SIDE_ASSUMED_DECI > 0) &&
