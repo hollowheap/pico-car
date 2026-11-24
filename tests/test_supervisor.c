@@ -377,10 +377,11 @@ static void test_reset_while_running_holds_until_start (void)
     run_state_tick (&ctx, &in, &out);
     CHECK (MOTION_HOLD_OPERATOR == out.hold_mask);
 
-    /* A second RESET changes nothing. */
+    /* RESET also cancels any pending route while already held. */
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_RESET, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_accepted && (MOTION_HOLD_OPERATOR == out.hold_mask));
+    CHECK (out.b_cancel_turn && out.b_obstacle_stop);
 
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
@@ -444,6 +445,9 @@ static void test_emergency_stop_latches (void)
     /* The motion latch seen on a tick latches the state too (the STOP pin). */
     run_state_init (&ctx);
     in.b_estop = true;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RESET, VEHICLE_SRC_TELEMETRY),
+                       &in, &out);
+    CHECK (out.b_rejected && !out.b_sticky_clear && !out.b_accepted);
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
 }
