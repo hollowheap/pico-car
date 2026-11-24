@@ -440,14 +440,20 @@ static uint32_t odometer_mm (void)
 
 static void emit (uint8_t source, uint8_t type, int16_t p1, uint16_t p2)
 {
-    (void) telemetry_emit_event (source, type, p1, p2, odometer_mm ());
+    (void) telemetry_try_emit_event (source, type, p1, p2, odometer_mm ());
+}
+
+static void emit_cmd_ack (uint8_t type, int16_t p1, uint16_t cmd_id)
+{
+    (void) telemetry_post_cmd_ack (type, p1, cmd_id, odometer_mm ());
 }
 
 void supervisor_turn_refused (uint8_t opcode)
 {
     supervisor_set_turning (false);
-    emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_CMD_REJECT,
-          (int16_t) (((uint32_t) RUN_REJECT_BUSY << CMD_EVENT_REASON_SHIFT) | (uint32_t) opcode), 0U);
+    emit_cmd_ack ((uint8_t) TELEMETRY_EVT_CMD_REJECT,
+                  (int16_t) (((uint32_t) RUN_REJECT_BUSY << CMD_EVENT_REASON_SHIFT) | (uint32_t) opcode),
+                  0U);
 }
 
 /* A pending resume keeps the token the last reset left, until it runs or is cancelled. */
@@ -639,17 +645,17 @@ static void watch_stop_timing (bool b_estop)
         uint16_t const rest = (confirmed && (elapsed_ms < STOP_TIMING_MAX_MS))
                                   ? (uint16_t) elapsed_ms : STOP_TIMING_MAX_MS;
         p_timing->state = STOP_EPISODE_REPORTED;
-        (void) telemetry_emit_event ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR,
-                                     (uint8_t) TELEMETRY_EVT_STOP_TIMING,
-                                     (int16_t) ((duty > INT16_MAX) ? INT16_MAX : duty),
-                                     rest, observed ? telemetry_odometer_mm (&feedback) : 0U);
+        (void) telemetry_try_emit_event ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR,
+                                         (uint8_t) TELEMETRY_EVT_STOP_TIMING,
+                                         (int16_t) ((duty > INT16_MAX) ? INT16_MAX : duty),
+                                         rest, observed ? telemetry_odometer_mm (&feedback) : 0U);
     }
 }
 
 /* Carry out what a step decided. */
 static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command)
 {
-    /* Reporting can wait for the telemetry queue's producer mutex. */
+    /* Stop and hold updates always precede non-blocking telemetry handoff. */
     if (p_res->b_motion_estop)
     {
         (void) motion_request_stop ();
@@ -682,8 +688,7 @@ static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command
 
         if (p_res->b_accepted)
         {
-            emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_CMD_ACCEPT,
-                  (int16_t) what, cmd.cmd_id);
+            emit_cmd_ack ((uint8_t) TELEMETRY_EVT_CMD_ACCEPT, (int16_t) what, cmd.cmd_id);
             LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "command %d from %d accepted, id=%d run=%d",
                       (int) cmd.opcode, (int) cmd.source, (int) cmd.cmd_id, (int) cmd.run_id);
             if (vehicle_is_start (cmd.opcode) && !g_b_watchdog_resume_pending)
@@ -693,8 +698,9 @@ static void apply (const run_result_t * p_res, vehicle_cmd_t cmd, bool b_command
         }
         else if (p_res->b_rejected)
         {
-            emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_CMD_REJECT,
-                  (int16_t) (what | ((uint32_t) p_res->reason << CMD_EVENT_REASON_SHIFT)), cmd.cmd_id);
+            emit_cmd_ack ((uint8_t) TELEMETRY_EVT_CMD_REJECT,
+                          (int16_t) (what | ((uint32_t) p_res->reason << CMD_EVENT_REASON_SHIFT)),
+                          cmd.cmd_id);
             LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "command %d from %d refused (%d), id=%d run=%d",
                       (int) cmd.opcode, (int) cmd.source, (int) p_res->reason, (int) cmd.cmd_id,
                       (int) cmd.run_id);

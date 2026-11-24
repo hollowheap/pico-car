@@ -209,7 +209,8 @@ send_evicting (const uint8_t * stored, INT stored_len)
    consumer only ever frees space. The one effect is that a sent-back event
    lands behind the frames queued after it. */
 static ER
-push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
+push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout,
+            bool b_count_drop)
 {
     INT stored_len = 0;
     ER  result     = E_OK;
@@ -233,7 +234,7 @@ push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
     result = tk_loc_mtx(g_push_mtx, lock_timeout);
     if (result != E_OK)
     {
-        if ((TMO_POL == lock_timeout) && (E_TMOUT == result))
+        if (b_count_drop && (TMO_POL == lock_timeout) && (E_TMOUT == result))
         {
             (void) atomic_inc(&g_drop_count);
         }
@@ -247,7 +248,10 @@ push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
         result = tk_ref_mbf(g_mbf_telem_id, &info);
         if ((E_OK != result) || (info.frbufsz < (SZ)(TELEMETRY_QUEUE_BYTES / TELEMETRY_RAW_HEADROOM_DIVISOR)))
         {
-            (void)atomic_inc(&g_drop_count);
+            if (b_count_drop)
+            {
+                (void)atomic_inc(&g_drop_count);
+            }
             (void)tk_unl_mtx(g_push_mtx);
             return (E_OK == result) ? E_TMOUT : result;
         }
@@ -259,10 +263,14 @@ push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
         {
             result = send_evicting(frame, stored_len);
         }
-        else
+        else if (b_count_drop)
         {
             /* Callers ignore the result, so the counter is the only trace. */
             (void) atomic_inc(&g_drop_count);
+        }
+        else
+        {
+            /* Retained by the caller's handoff ring until the next drain. */
         }
     }
     (void) tk_unl_mtx(g_push_mtx);
@@ -272,13 +280,25 @@ push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
 ER
 telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
 {
-    return push_frame(frame, len, qos, TMO_FEVR);
+    return push_frame(frame, len, qos, TMO_FEVR, true);
 }
 
 ER
 telemetry_queue_try_push (const uint8_t * frame, uint16_t len)
 {
-    return push_frame(frame, len, 1U, TMO_POL);
+    return push_frame(frame, len, 1U, TMO_POL, true);
+}
+
+ER
+telemetry_queue_try_push_no_drop (const uint8_t * frame, uint16_t len)
+{
+    return push_frame(frame, len, 1U, TMO_POL, false);
+}
+
+void
+telemetry_queue_note_drop (void)
+{
+    (void) atomic_inc(&g_drop_count);
 }
 
 ER

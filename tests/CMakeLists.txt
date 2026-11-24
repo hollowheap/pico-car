@@ -426,7 +426,9 @@ add_test(NAME telemetry_assemble COMMAND test_assemble)
 add_executable(test_telemetry_emit test_telemetry_emit.c
     ${TELEMETRY_SRC}/emit.c ${TELEMETRY_SRC}/queue.c ${TELEMETRY_SRC}/packet.c)
 target_include_directories(test_telemetry_emit PRIVATE ${TELEMETRY_TEST_INCLUDES})
-target_compile_options(test_telemetry_emit PRIVATE ${TELEMETRY_TEST_FLAGS})
+target_compile_options(test_telemetry_emit PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/emit_kernel.h"
+    ${TELEMETRY_TEST_FLAGS})
 add_test(NAME telemetry_emit COMMAND test_telemetry_emit)
 
 add_executable(test_telemetry_stream_loss test_telemetry_stream_loss.c)
@@ -544,6 +546,7 @@ add_test(NAME motion_no_rearm_from_pre_release_motion COMMAND test_supervisor_st
 add_test(NAME motion_between_pass_estop_after_motion COMMAND test_supervisor_start_contract between-pass-estop-after-motion)
 add_test(NAME motion_between_pass_estop_without_motion COMMAND test_supervisor_start_contract between-pass-estop-without-motion)
 add_test(NAME supervisor_stop_with_slow_telemetry_consumer COMMAND test_supervisor_start_contract stop-with-slow-telemetry-consumer)
+add_test(NAME supervisor_saturated_ack_handoff_stop COMMAND test_supervisor_start_contract saturated-ack-handoff-stop)
 add_test(NAME supervisor_stationary_start_is_refused COMMAND test_supervisor_start_contract stationary-start-is-refused)
 add_test(NAME supervisor_watchdog_rejects_stationary_resume COMMAND test_supervisor_start_contract watchdog-resume-reject-stationary)
 

@@ -497,9 +497,18 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
 
     (void)tk_get_otm(&now);
     uint32_t last_ms = now.lo;
+    UW       last_ack_overflow = 0U;
     for (;;)
     {
         liveness_kick(LIVE_TELEMETRY);
+        (void)telemetry_drain_cmd_acks();
+        UW const ack_overflow = telemetry_cmd_ack_overflow_count();
+        if (ack_overflow != last_ack_overflow)
+        {
+            LOG_WARN(LOG_TASK_TELEMETRY, LOG_MOD_NONE,
+                     "cmd ack handoff overflow=%u", (unsigned)ack_overflow);
+            last_ack_overflow = ack_overflow;
+        }
         (void)tk_get_otm(&now);
         uint32_t const elapsed = now.lo - last_ms;
         uint32_t const ticks = elapsed / TELEMETRY_PASS_MS;
@@ -521,6 +530,7 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
             pass = (pass + ticks) % TELEMETRY_DIAG_PASSES;
             last_ms += ticks * TELEMETRY_PASS_MS;
             log_drain();
+            (void)telemetry_drain_cmd_acks();
         }
         (void)tk_get_otm(&now);
         uint32_t const used_ms = now.lo - last_ms;
