@@ -110,7 +110,6 @@ test_constants (void)
     CHECK ((unsigned) TELEMETRY_CMD_STRAIGHT == 0x07u);
     CHECK ((unsigned) TELEMETRY_CMD_RECALIBRATE == 0x08u);
     CHECK ((unsigned) TELEMETRY_CMD_START_CONTINUOUS_FLOOR == 0x09u);
-    CHECK ((unsigned) TELEMETRY_CMD_START_STATIONARY == 0x0Au);
 }
 
 static void
@@ -172,12 +171,14 @@ test_parse_rejects (void)
     CHECK (telemetry_cmd_parse (frame, 10u, &c) == TELEMETRY_CMD_BAD_LENGTH);
     CHECK (memcmp (&c, &sentinel, sizeof (c)) == 0); /* output untouched */
 
-    for (op = 0u; op <= (uint8_t) TELEMETRY_CMD_START_STATIONARY; op++)
+    for (op = 0u; op <= (uint8_t) TELEMETRY_CMD_START_CONTINUOUS_FLOOR; op++)
     {
         frame[4] = op;
         CHECK (telemetry_cmd_parse (frame, 9u, &c) == TELEMETRY_CMD_OK);
         CHECK (c.opcode == op);
     }
+    frame[4] = 0x0Au;
+    CHECK (telemetry_cmd_parse (frame, 9u, &c) == TELEMETRY_CMD_BAD_OPCODE);
     frame[4] = 0x0Bu;
     CHECK (telemetry_cmd_parse (frame, 9u, &c) == TELEMETRY_CMD_BAD_OPCODE);
     frame[4] = 0xFFu;

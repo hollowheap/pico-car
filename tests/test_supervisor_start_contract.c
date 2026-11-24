@@ -448,16 +448,24 @@ static void check_calibrating_start (const char * scenario)
     bool const b_settling = (strcmp (scenario, "calibrating-settling") == 0);
     bool const b_floor = (strcmp (scenario, "calibrating-floor") == 0);
     bool const b_stationary = (strcmp (scenario, "calibrating-stationary") == 0);
-    bool const b_start = b_stationary || b_floor || b_settling || (strcmp (scenario, "calibrating-start") == 0);
+    bool const b_start = b_floor || b_settling || (strcmp (scenario, "calibrating-start") == 0);
     g_mqtt_seen = true;
     g_physics.attitude_unknown = !b_settling;
     g_physics.calibrated = b_settling;
     g_physics.level_still = false;
     g_physics.collecting_rest = true;
-    CHECK (E_OK == vehicle_command_post_ids (b_stationary ? VEHICLE_CMD_START_STATIONARY : (b_floor ? VEHICLE_CMD_START_CONTINUOUS_FLOOR : VEHICLE_CMD_START),
+    CHECK (E_OK == vehicle_command_post_ids (b_stationary ? 10U : (b_floor ? VEHICLE_CMD_START_CONTINUOUS_FLOOR : VEHICLE_CMD_START),
                                              VEHICLE_SRC_TELEMETRY, 27534U, 1U));
     one_pass ();
-    CHECK (0U == g_reply_id);
+    if (b_stationary)
+    {
+        CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type && 27534U == g_reply_id);
+        CHECK (RUN_REJECT_OPCODE == (g_reply_detail >> 12));
+    }
+    else
+    {
+        CHECK (0U == g_reply_id);
+    }
     CHECK (0U == supervisor_start_count () && 0U == g_obstacle_starts);
     CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
     if (strcmp (scenario, "calibrating-stop") == 0)
@@ -518,9 +526,9 @@ static void check_calibrating_start (const char * scenario)
     if (b_start)
     {
         CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type && 27534U == g_reply_id);
-        bool continuous_floor = b_stationary;
+        bool continuous_floor = false;
         CHECK (1U == supervisor_start_snapshot (&continuous_floor) && 1U == g_obstacle_starts && 0U == g_holds);
-        CHECK (continuous_floor == !b_stationary);
+        CHECK (continuous_floor);
         CHECK (0U == g_calibration_requests);
     }
     else
@@ -1772,8 +1780,11 @@ int main (int argc, char ** argv)
         g_mqtt_seen = true;
         g_token_valid = (0 != strcmp (argv[1], "watchdog-resume-corrupt"));
         g_token_flags = (uint8_t)(PLATFORM_RUN_ARMED | PLATFORM_RUN_CONTINUOUS);
-        if ((0 == strcmp (argv[1], "watchdog-resume-bounded")) ||
-            (0 == strcmp (argv[1], "watchdog-resume-reject-stationary")))
+        if (0 == strcmp (argv[1], "watchdog-resume-bounded"))
+        {
+            g_token_resumes = (uint8_t)(SUPERVISOR_WATCHDOG_RESUMES - 1U);
+        }
+        else if (0 == strcmp (argv[1], "watchdog-resume-reject-stationary"))
         {
             g_token_flags = PLATFORM_RUN_ARMED;
             g_token_resumes = (uint8_t)(SUPERVISOR_WATCHDOG_RESUMES - 1U);
@@ -1814,27 +1825,33 @@ int main (int argc, char ** argv)
         CHECK (0U == supervisor_start_snapshot (&floor) && !floor);
         /* Only an operator may choose the test floor for the next run. */
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_BARCODE, false);
+        CHECK (RUN_REJECT_SOURCE == (g_reply_detail >> 12));
         set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_TELEMETRY, false);
         set_sonar_connection_fault (0U);
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_TELEMETRY, true);
         CHECK (1U == supervisor_start_snapshot (&floor) && floor);
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_TELEMETRY, false);
+        CHECK (RUN_REJECT_BUSY == (g_reply_detail >> 12));
         expect_turn_reply (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, true);
         CHECK (1U == supervisor_start_snapshot (&floor) && !floor);
         g_physics.calibrated = true;
         g_physics.attitude_unknown = false;
         remote_start (12U);
         CHECK (2U == supervisor_start_snapshot (&floor) && floor);
-        expect_turn_reply (VEHICLE_CMD_START_STATIONARY, VEHICLE_SRC_TELEMETRY, false);
+        expect_turn_reply (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY, false);
+        CHECK (RUN_REJECT_BUSY == (g_reply_detail >> 12));
+        expect_turn_reply (10U, VEHICLE_SRC_TELEMETRY, false);
+        CHECK (RUN_REJECT_OPCODE == (g_reply_detail >> 12));
+        CHECK (2U == supervisor_start_snapshot (&floor) && floor);
         expect_turn_reply (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, true);
         g_physics.calibrated = true;
         g_physics.attitude_unknown = false;
-        expect_turn_reply (VEHICLE_CMD_START_STATIONARY, VEHICLE_SRC_BARCODE, false);
-        expect_turn_reply (VEHICLE_CMD_START_STATIONARY, VEHICLE_SRC_TELEMETRY, true);
-        CHECK (3U == supervisor_start_snapshot (&floor) && !floor);
-        expect_turn_reply (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY, false);
-        CHECK (3U == supervisor_start_snapshot (&floor) && !floor);
+        expect_turn_reply (10U, VEHICLE_SRC_BARCODE, false);
+        CHECK (RUN_REJECT_OPCODE == (g_reply_detail >> 12));
+        expect_turn_reply (10U, VEHICLE_SRC_TELEMETRY, false);
+        CHECK (RUN_REJECT_OPCODE == (g_reply_detail >> 12));
+        CHECK (2U == supervisor_start_snapshot (&floor) && !floor);
     }
     else if (0 == strcmp (argv[1], "settling-pickup") || 0 == strcmp (argv[1], "settling-tilted"))
     {
@@ -1915,7 +1932,7 @@ int main (int argc, char ** argv)
     }
     else if (0 == strcmp (argv[1], "watchdog-resume-bounded"))
     {
-        check_watchdog_resume (false, (uint8_t)(SUPERVISOR_WATCHDOG_RESUMES - 1U));
+        check_watchdog_resume (true, (uint8_t)(SUPERVISOR_WATCHDOG_RESUMES - 1U));
     }
     else if ((0 == strcmp (argv[1], "watchdog-resume-used")) ||
              (0 == strcmp (argv[1], "watchdog-resume-stopped")) ||

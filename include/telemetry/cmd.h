@@ -24,8 +24,8 @@ typedef enum
     TELEMETRY_CMD_ESTOP = 6u,
     TELEMETRY_CMD_STRAIGHT = 7u,
     TELEMETRY_CMD_RECALIBRATE = 8u,
-    TELEMETRY_CMD_START_CONTINUOUS_FLOOR = 9u,
-    TELEMETRY_CMD_START_STATIONARY = 10u
+    TELEMETRY_CMD_START_CONTINUOUS_FLOOR = 9u
+    /* 10u (0x0A) is reserved; never reuse for a new command. */
 } telemetry_cmd_opcode_t;
 
 STATIC_ASSERT (sizeof(telemetry_cmd_opcode_t) <= 4U,
