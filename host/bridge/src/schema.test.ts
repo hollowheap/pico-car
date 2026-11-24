@@ -89,4 +89,12 @@ describe("protocol schema", () => {
     expect(diag.name).toBe("diag");
     expect(diag.values).toMatchObject({ cmd_last_id: 1234, line_edges_total: 0x1234ffff });
   });
+
+  it("keeps withdrawn wire opcode 10 reserved out of active commands", () => {
+    expect(schema.commands.start).toBe(1);
+    expect(schema.commands.start_continuous_floor).toBe(9);
+    expect(schema.commands).not.toHaveProperty("start_stationary");
+    expect(Object.values(schema.commands)).not.toContain(10);
+    expect(schema.reserved_commands).toMatchObject({ start_stationary: 10 });
+  });
 });

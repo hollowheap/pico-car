@@ -20,6 +20,7 @@ export type ProtocolSchema = {
   topics: Record<string, string>;
   packets: Record<string, Packet>;
   commands: Record<string, number>;
+  reserved_commands?: Record<string, number>;
 };
 
 export type DecodedPacket = {

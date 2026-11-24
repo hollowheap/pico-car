@@ -40,6 +40,26 @@ describe("commands", () => {
     expect(() => parseCommandRequest({ action: "start_stationary" }, shipped)).toThrow("unknown command");
   });
 
+  it("refuses reserved commands during parsing, encoding, and session framing while keeping start aliases", () => {
+    const shipped = loadProtocolSchema(new URL("../../../protocol/telemetry.yaml", import.meta.url).pathname);
+    expect(encodeCommand(shipped, "start", 1, 0x1234, 5)[4]).toBe(1);
+    expect(encodeCommand(shipped, "start_continuous_floor", 2, 0x1234, 5)[4]).toBe(9);
+    expect(() => encodeCommand(shipped, "start_stationary", 3, 0x1234, 5)).toThrow("unknown command");
+
+    const session = readySession(10, 9);
+    expect(() => session.frame(shipped, "start_stationary", 0)).toThrow("unknown command");
+    expect(cmdIdOf(session.frame(shipped, "start", 0))).toBe(10);
+
+    const overlapping: ProtocolSchema = {
+      ...schema,
+      commands: { ...schema.commands, start_stationary: 10, reused_opcode: 10 },
+      reserved_commands: { start_stationary: 10 },
+    };
+    expect(() => parseCommandRequest({ action: "start_stationary" }, overlapping)).toThrow("unknown command");
+    expect(() => parseCommandRequest({ action: "reused_opcode" }, overlapping)).toThrow("unknown command");
+    expect(() => encodeCommand(overlapping, "reused_opcode", 1, 1, 1)).toThrow("unknown command");
+  });
+
   it("rejects inherited Object.prototype property names instead of encoding STOP", () => {
     for (const action of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"]) {
       expect(() => parseCommandRequest({ action }, schema)).toThrow("unknown command");

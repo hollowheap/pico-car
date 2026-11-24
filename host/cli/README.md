@@ -58,4 +58,10 @@ telemetry, drops the link for 30 seconds, and checks reconnect (NFR6), live
 decode, and the CLI command path including the heartbeat run ID. Set `PICO_CAR_CLI_DIR` and
 `PICO_CAR_SCHEMA` when running it against a worktree.
 
-On this continuous-floor build, `command start` enables obstacle hugging. The earlier `command start_continuous_floor` remains available. For a course with possible drop-offs, use `command start_stationary` while stopped, or select **Stop at obstacles** in the dashboard Start popup.
+## Floor precondition
+
+Autonomous runs assume a verified continuous supporting floor without drop-offs.
+Verify the course surface before sending `command start`. Both `command start`
+and the compatibility alias `command start_continuous_floor` arm continuous-floor
+obstacle hugging. Stationary start (`start_stationary`, wire opcode 10) has been
+withdrawn and is refused by the CLI, bridge, and firmware.
