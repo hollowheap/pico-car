@@ -76,11 +76,13 @@ add_test(NAME physics_calibration_gap COMMAND test_physics_connection calibratio
 add_test(NAME physics_repeated_read_loss COMMAND test_physics_connection repeated-read-loss)
 add_test(NAME physics_start_witness COMMAND test_physics_connection start-witness)
 
-# RP2040 I2C1 polling driver against a register model in the test.
+# RP2040 I2C1 interrupt-driven driver against register and timer models.
 add_executable(test_i2c_rp2040 test_i2c_rp2040.c ${PHYSICS_SRC}/i2c_rp2040.c)
 target_include_directories(test_i2c_rp2040 PRIVATE ${PHYSICS_SRC}
-    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_options(test_i2c_rp2040 PRIVATE -include stddef.h
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tk/flg_fake.h"
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/i2c_rp2040_kernel.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME i2c_rp2040 COMMAND test_i2c_rp2040)
 add_test(NAME i2c_completion_interrupt_armed COMMAND test_i2c_rp2040 completion-interrupt-armed)

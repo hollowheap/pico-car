@@ -26,9 +26,8 @@
 #include "telemetry/wire_schema.h"
 
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
-/* Attempts per transaction for a re-init and its readback. On a dead bus each
- * failed attempt takes about 6 ms, so two keep the re-init inside the 20 ms
- * cycle. */
+/* Attempts per bus transaction for a re-init and its readback. The bounded
+ * waits of one transaction total at most 9 ms (see i2c_rp2040.h). */
 #define REINIT_ATTEMPTS    (2U)
 #define CONFIG_CHECK_CYCLES (100U)  /* Configuration readback every 2 s. */
 #define SLEEP_TIMEOUT_MS   (200)    /* Wake-up missing for 10 periods.   */
