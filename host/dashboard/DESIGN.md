@@ -212,6 +212,11 @@ Base unit: 4px.
   confirmations. The send handler checks status age again when pressed.
   The navbar distinguishes an initial wait from expired readings and clears
   the current mode when stale. An emergency latch requires a vehicle reboot.
+- The navbar Bench link opens a read-only replay of an exported bench trace.
+  The web file input rejects files above the parser limit before reading them,
+  and a rejected file keeps the previous report. Bench shows provenance,
+  device timing, commanded output, physical measurements and capture gaps.
+  It has no vehicle commands and does not touch the course history.
 - At 1280 × 800, Course trace and Activity share the first column, Line and
   Obstacle the middle column, and Motion, Physics and Faults the right column.
   Orientation controls sit at the end of the course header. The Course card

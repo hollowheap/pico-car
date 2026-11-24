@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { Platform, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Brand, ThemeToggle } from '../components/console/ConsoleNav';
+import { BenchLink, Brand, ThemeToggle } from '../components/console/ConsoleNav';
 import { bannerMessage, ModeBanner, reportedHoldMessage } from '../components/console/ModeBanner';
 import { NavbarReadings } from '../components/console/NavbarReadings';
 import { StatusRail } from '../components/console/StatusRail';
@@ -83,6 +83,7 @@ function RootNavigator() {
                 <StatusRail hasNotice={notice !== null} compact={!wide} health={overview.health} packet={latest.status} />
                 {wide && notice !== null ? <ModeBanner compact message={notice} offline={overview.health === 'offline'} /> : null}
                 {wide ? readings : null}
+                <BenchLink active={pathname === '/bench'} />
                 <ThemeToggle />
               </View>
               {wide ? null : readings}
