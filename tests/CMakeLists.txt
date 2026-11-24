@@ -727,6 +727,16 @@ add_test(NAME obstacle_frozen_leg_ends_at_deadline COMMAND test_bypass_legs froz
 add_test(NAME obstacle_same_pose_cannot_repeat_fan COMMAND test_bypass_legs same-pose-cannot-repeat-fan)
 add_test(NAME obstacle_contact_fan_uses_measured_edge COMMAND test_bypass_legs contact-fan-uses-measured-edge)
 add_test(NAME obstacle_contact_fan_preserves_unknown COMMAND test_bypass_legs contact-fan-preserves-unknown)
+add_test(NAME obstacle_fan_glitch_keeps_deadline COMMAND test_bypass_legs fan-glitch-keeps-deadline)
+add_test(NAME obstacle_fixed_pose_fan_once COMMAND test_bypass_legs fixed-pose-fan-once)
+add_test(NAME obstacle_fixed_pose_hands_off_once COMMAND test_bypass_legs fixed-pose-hands-off-once)
+add_test(NAME obstacle_hold_clock_excludes_fan_gap COMMAND test_bypass_legs hold-clock-excludes-fan-gap)
+add_test(NAME obstacle_fixed_pose_stall_retrigger_once COMMAND test_bypass_legs fixed-pose-stall-retrigger-once)
+add_test(NAME obstacle_fixed_pose_relook_cannot_restart_fan COMMAND test_bypass_legs fixed-pose-relook-cannot-restart-fan)
+add_test(NAME obstacle_new_encounter_gets_bounded_fan COMMAND test_bypass_legs new-encounter-gets-bounded-fan)
+add_test(NAME obstacle_dropouts_are_not_a_new_encounter COMMAND test_bypass_legs dropouts-are-not-a-new-encounter)
+add_test(NAME obstacle_nonstationary_expired_fan_hands_off_once COMMAND test_bypass_legs nonstationary-expired-fan-hands-off-once)
+add_test(NAME obstacle_single_wheel_travel_keeps_fan_closed COMMAND test_bypass_legs single-wheel-travel-keeps-fan-closed)
 
 add_executable(test_pilot_rejoin test_pilot_rejoin.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
