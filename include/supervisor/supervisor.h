@@ -43,9 +43,6 @@
 
 typedef struct
 {
-    /* Called about once a second from the supervisor task, for work that needs
-       data only the composition root has (stack marks). May be NULL. */
-    void (*p_background) (void);
     /* Number of line sensor changes since boot. May be NULL. */
     uint32_t (*p_line_edges) (void);
     /* Whether telemetry has had a broker session since boot. NULL disables offline start. */
@@ -56,8 +53,8 @@ typedef struct
     uint16_t required_mask;
 } supervisor_config_t;
 
-/* Four function pointers and a mask, padded to a word. */
-STATIC_ASSERT (sizeof(supervisor_config_t) == (4U * sizeof(void *)) + 4U,
+/* Three function pointers and a mask, padded to a word. */
+STATIC_ASSERT (sizeof(supervisor_config_t) == (3U * sizeof(void *)) + 4U,
                "supervisor_config_t size");
 
 /* Prepare the supervisor. Call once from the startup task, before the task
