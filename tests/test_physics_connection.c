@@ -2,6 +2,7 @@
 #include <setjmp.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "hump_msg.h"
@@ -78,7 +79,7 @@ ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1,
                              TELEMETRY_EVT_OVERTURN == type))
     {
         static uint8_t const expected[] = {TELEMETRY_EVT_LIFT_START, TELEMETRY_EVT_LIFT_END,
-                                           TELEMETRY_EVT_LIFT_START, TELEMETRY_EVT_OVERTURN};
+                                           TELEMETRY_EVT_OVERTURN};
 
         CHECK (g_event_count < sizeof (expected));
         CHECK ((g_event_count >= sizeof (expected)) || (expected[g_event_count] == type));
@@ -92,11 +93,6 @@ ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1,
         {
             CHECK (g_cycle >= 145U && g_cycle < 160U);
             CHECK (p1 <= 500 && p2 == 1000U);
-        }
-        else if (TELEMETRY_EVT_LIFT_START == type)
-        {
-            CHECK (g_cycle >= 160U && g_cycle < 190U);
-            CHECK (p1 == INT16_MAX && p2 == 0U);
         }
         else
         {
@@ -245,6 +241,13 @@ ER tk_slp_tsk (TMO timeout)
         {
             CHECK (0U != (system_fault_get () & FAULT_LIFTED_BIT));
             CHECK (1U == g_event_count);
+            physics_status_t snapshot;
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (snapshot.calibrated && !snapshot.attitude_sample_valid);
+        }
+        if (g_attitude_events && 180U == g_cycle)
+        {
+            CHECK (2U == g_event_count && !(system_fault_get () & FAULT_LIFTED_BIT));
         }
         if (g_attitude_events && g_cycle >= 220U)
         {
@@ -264,9 +267,28 @@ ER tk_slp_tsk (TMO timeout)
                 CHECK (!snapshot.ready && !snapshot.level_still);
             }
         }
+        if (g_hump_events && ((112U == g_cycle) || (242U == g_cycle)))
+        {
+            physics_status_t snapshot;
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            if (112U == g_cycle)
+            {
+                CHECK (snapshot.pitch_cdeg > 300 && abs(snapshot.roll_cdeg) < 100);
+            }
+            else
+            {
+                CHECK (snapshot.pitch_cdeg >= 12 && snapshot.pitch_cdeg <= 20 && snapshot.roll_cdeg < -500);
+            }
+        }
+        if (g_hump_events && 246U == g_cycle)
+        {
+            physics_status_t snapshot;
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (snapshot.roll_cdeg > 1000 && snapshot.report_roll_cdeg < 0);
+        }
         if (g_cycle == (g_attitude_events ? 453U : 250U))
         {
-            CHECK (g_event_count == (g_attitude_events ? 4U : 2U));
+            CHECK (g_event_count == (g_attitude_events ? 3U : 2U));
             longjmp (g_done, 1);
         }
         g_now_ms += (g_attitude_events && (402U == g_cycle)) ? 2U * SAMPLE_PERIOD_MS : SAMPLE_PERIOD_MS;
@@ -416,8 +438,15 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
         float const slope = (hump_ground_height (x) - hump_ground_height (x - axle)) / axle;
 
         *p_out = (lsm303_vec_t){0};
-        p_out->value[LSM303_AXIS_X] = -slope;
+        p_out->value[LSM303_AXIS_Y] = -slope;
         p_out->value[LSM303_AXIS_Z] = sqrtf (1.0f - (slope * slope));
+        if (g_cycle >= 230U)
+        {
+            /* Left side raised with a small, independently known nose-up angle. */
+            p_out->value[LSM303_AXIS_Y] = -0.0028f;
+            p_out->value[LSM303_AXIS_X] = 246U == g_cycle ? -0.4f : 0.1f;
+            p_out->value[LSM303_AXIS_Z] = sqrtf (0.99f);
+        }
         return LSM303_OK;
     }
     if (g_snapshot_case && (g_cycle > 1U))

@@ -54,6 +54,7 @@ static void rig_init (rig_t * p_rig)
     p_rig->in.fwd[2]   = 0.0f;
     p_rig->in.calibrated = true;
     p_rig->in.b_wheels_free = false;
+    p_rig->in.b_wheels_still = false;
     p_rig->in.b_on_hump = false;
     p_rig->out.state   = ATTITUDE_OK;
 }
@@ -65,7 +66,7 @@ static void sample (rig_t * p_rig, float mag, float pitch_deg, float roll_deg, f
     float const r = roll_deg * DEG_TO_RAD;
 
     p_rig->in.ax_g = (mag * sinf (p)) + (jitter * noise (p_rig));
-    p_rig->in.ay_g = (mag * sinf (r)) + (jitter * noise (p_rig));
+    p_rig->in.ay_g = -(mag * sinf (r)) + (jitter * noise (p_rig));
     p_rig->in.az_g = (mag * cosf (p) * cosf (r)) + (jitter * noise (p_rig));
     CHECK (attitude_update (&p_rig->ctx, &p_rig->in, &p_rig->out));
 }
@@ -117,7 +118,8 @@ static void test_lift_carry_level (void)
     run (&rig, 100U, 1.0f, 0.0f, 0.0f, 0.02f);
     CHECK (ATTITUDE_OK == rig.out.state);
 
-    /* A hand lifts and carries the car level for 1.2 s. The magnitude swings. */
+    /* An upward onset precedes the alternating loads during the carry. */
+    run (&rig, 16U, 1.2f, 0.0f, 0.0f, 0.0f);
     for (idx = 0U; idx < 60U; idx++)
     {
         sample (&rig, ((idx % 2U) == 0U) ? 1.2f : 0.82f, 2.0f, 1.0f, 0.02f);
@@ -212,8 +214,7 @@ static void test_floor_bounce_ends_before_confirmation (void)
         sample (&rig, 1.044f + accel, 0.0f, 0.0f, 0.0f);
         CHECK (ATTITUDE_LIFTED != rig.out.state);
     }
-    CHECK (ATTITUDE_CANDIDATE == rig.out.state);
-    for (unsigned i = 0U; i < rig.ctx.cfg.lift_hold_samples + rig.ctx.cfg.candidate_clear; i++)
+    for (unsigned i = 0U; i < rig.ctx.cfg.landing_settle_samples + rig.ctx.cfg.candidate_clear; i++)
     {
         sample (&rig, 1.044f, 0.0f, 0.0f, 0.0f);
         CHECK (ATTITUDE_LIFTED != rig.out.state);
@@ -221,21 +222,69 @@ static void test_floor_bounce_ends_before_confirmation (void)
     CHECK (ATTITUDE_OK == rig.out.state);
 }
 
-static void test_level_hand_pickup (void)
+static void test_drop_and_landing (void)
 {
     rig_t rig;
-    bool lifted = false;
-
     rig_init (&rig);
-    /* One smooth upward lift, ending at rest 250 mm higher after 0.8 s.
-     * Both halves of the acceleration profile matter for level pickups. */
-    for (unsigned i = 1U; i <= 40U; i++)
+    rig.in.b_wheels_still = true;
+    for (unsigned i = 0; i < 100U; i++)
     {
-        float const accel = 0.25f * sinf (360.0f * DEG_TO_RAD * (float)i / 40.0f);
-        sample (&rig, 1.0f + accel, 0.0f, 0.0f, 0.0f);
-        lifted |= (ATTITUDE_LIFTED == rig.out.state);
+        float const load = i < 20U ? 1.0f : i < 39U ? 0.35f : i < 55U ? 1.45f : 1.0f;
+        sample (&rig, load, 0.0f, 0.0f, 0.0f);
+        CHECK (rig.out.state != ATTITUDE_LIFTED);
     }
-    CHECK (lifted && ATTITUDE_LIFTED == rig.out.state);
+    /* Unloaded acceleration can point sideways. Its direction cannot
+     * establish that the chassis is resting on its side. */
+    for (unsigned i = 0U; i < 15U; i++)
+    {
+        sample (&rig, 0.04f, 0.0f, 85.0f, 0.0f);
+        CHECK (rig.out.state != ATTITUDE_OVERTURNED && rig.out.state != ATTITUDE_LIFTED);
+    }
+    run (&rig, 16U, 1.0f, 0.0f, 0.0f, 0.0f);
+    /* Pickup after the landing has settled, with the same stationary wheels. */
+    run (&rig, 8U, 1.08f, 0.0f, 0.0f, 0.0f);
+    CHECK (rig.out.state == ATTITUDE_LIFTED);
+}
+
+static void test_parked_vertical_onset (void)
+{
+    rig_t rig;
+    rig_init (&rig);
+    /* Calibrated rest may differ from 1 g and from board Z. */
+    rig.in.g0[0] = 1.044f * 0.60f;
+    rig.in.g0[2] = 1.044f * 0.80f;
+    rig.in.b_wheels_still = true;
+    for (unsigned i = 0U; i < 40U; i++)
+    {
+        float const load = i < 33U ? 1.054f : 1.124f;
+        rig.in.ax_g = load * 0.60f;
+        rig.in.ay_g = 0.0f;
+        rig.in.az_g = load * 0.80f;
+        CHECK (attitude_update (&rig.ctx, &rig.in, &rig.out));
+        if (i < 33U) CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+    rig_init (&rig);
+    run (&rig, 40U, 1.08f, 0.0f, 0.0f, 0.0f);
+    CHECK (ATTITUDE_LIFTED != rig.out.state);
+}
+
+static void test_level_hand_pickup (void)
+{
+    /* One smooth upward pickup ends level about 250 mm higher after 0.8 s.
+     * A pickup during travel must also work before the wheels slow down. */
+    for (unsigned parked = 0U; parked <= 1U; ++parked)
+    {
+        rig_t rig;
+        rig_init (&rig);
+        rig.in.b_wheels_still = (parked != 0U);
+        for (unsigned i = 1U; i <= 40U; i++)
+        {
+            float const accel = 0.25f * sinf (360.0f * DEG_TO_RAD * (float)i / 40.0f);
+            sample (&rig, 1.0f + accel, 0.0f, 0.0f, 0.0f);
+        }
+        CHECK (ATTITUDE_LIFTED == rig.out.state);
+    }
 }
 
 static void test_tip_on_side (void)
@@ -360,19 +409,14 @@ static void test_config_checks (void)
     CHECK (!attitude_init (NULL, &cfg));
 }
 
-/* A hold as long as lift_samples would make every bumpy hump a lift. */
-static void test_config_refuses_long_hold (void)
+/* A landing needs at least one fresh, supported observation to rearm. */
+static void test_landing_settle_config (void)
 {
-    attitude_ctx_t    ctx;
     attitude_config_t cfg;
-
+    attitude_ctx_t ctx;
     attitude_default_config (&cfg);
-    cfg.lift_hold_samples = cfg.lift_samples;
+    cfg.landing_settle_samples = 0U;
     CHECK (!attitude_init (&ctx, &cfg));
-    cfg.lift_hold_samples = (uint16_t)(cfg.lift_samples + 1U);
-    CHECK (!attitude_init (&ctx, &cfg));
-    cfg.lift_hold_samples = (uint16_t)(cfg.lift_samples - 1U);
-    CHECK (attitude_init (&ctx, &cfg));
 }
 
 static void test_wheels_free_only_candidate (void)
@@ -416,12 +460,15 @@ static void test_hump_flag_mutes_unsettled_cue (void)
         CHECK (ATTITUDE_LIFTED != rig.out.state);
     }
 
-    /* The same run without the flag lifts. */
+    /* Alternating vibration alone has no sustained upward onset. */
     rig.in.b_on_hump = false;
     for (idx = 0U; idx < 60U; idx++)
     {
         sample (&rig, ((idx % 2U) == 0U) ? 1.2f : 0.82f, 2.0f, 1.0f, 0.02f);
     }
+    CHECK (ATTITUDE_LIFTED != rig.out.state);
+    run (&rig, 20U, 1.0f, 0.0f, 0.0f, 0.0f);
+    run (&rig, 20U, 1.2f, 2.0f, 1.0f, 0.01f);
     CHECK (ATTITUDE_LIFTED == rig.out.state);
 
     /* A tilt breach on a hump still lifts. */
@@ -535,13 +582,15 @@ int main (int argc, char * argv[])
     test_interrupted_floor_tilt ();
     test_floor_bounce_ends_before_confirmation ();
     test_level_hand_pickup ();
+    test_drop_and_landing ();
+    test_parked_vertical_onset ();
     test_tip_on_side ();
     test_upside_down ();
     test_placement_by_hand ();
     test_failed_read_keeps_state ();
     test_zero_reference_keeps_lift ();
     test_config_checks ();
-    test_config_refuses_long_hold ();
+    test_landing_settle_config ();
     test_wheels_free_only_candidate ();
     test_hump_flag_mutes_unsettled_cue ();
     test_hump_ending_mid_candidate_is_not_a_lift ();

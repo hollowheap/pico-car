@@ -192,11 +192,22 @@ return on the normal build starts a stationary obstacle survey. An interrupted
 turn or bypass needs a fresh plan. A held-high sonar pulse at the echo deadline
 has no measured range and cannot clear the hold.
 
-A missed sample restarts the IMU's set-down confirmation. A pickup also cancels the active obstacle maneuver.
-If both tilt and acceleration evidence lapse, the next disturbance starts
-a fresh pickup count. The final sample must still show qualifying tilt or
-acceleration. Sustained tilt still counts over a hump, and a confirmed lift
-or overturn holds the wheels until operator recovery.
+The accelerometer reads about 1 g on level ground. Pickup detection subtracts
+the calibrated rest load along the measured vertical. With two fresh stationary
+wheel readings, five consecutive samples more than 0.05 g upward confirm a
+pickup (about 100 ms at 50 Hz). During travel a pickup needs 15 consecutive upward samples. The first three
+must exceed 0.12 g and the rest must stay above 0.05 g. A supported tilt above 20° for 15 samples independently confirms a
+pickup. A moving hump masks the upward cue. After a downward unload, ten
+samples back within 0.05 g of the rest magnitude rearm the pickup check.
+Missing samples interrupt confirmation. A confirmed pickup cancels the active
+maneuver and requires operator START after set-down. The thresholds still
+need a labelled hand-pickup and landing run on this car.
+
+Physics telemetry sends the filtered pitch in centidegrees and smooths roll
+over about 150 ms. A failed accelerometer read clears the frame’s calibrated
+attitude flag until a usable sample arrives. The safety detector uses each
+sensor sample directly. The logged board Z and acceleration magnitude include
+gravity and retain impact peaks at the telemetry sampling instants.
 
 A link outage during a run leaves local navigation active. With Wi-Fi configured,
 the car retries five seconds after a failed association or a lost link. The USB

@@ -66,10 +66,13 @@ typedef struct
     uint16_t heading_ddeg;       /* 0..3599 deci-degrees, tilt-compensated. */
     int16_t  yaw_rate_cdps;      /* Best available yaw rate, 0.01 deg/s.   */
     int16_t  a_fwd_mg;           /* Forward acceleration residual, mg.     */
+    int16_t  pitch_cdeg;         /* Filtered pitch before hump-word packing. */
+    int16_t  report_roll_cdeg;   /* Smoothed telemetry roll. */
     int16_t  roll_cdeg;          /* Roll, left-down positive, 0.01 deg.    */
     int16_t  az_mg;              /* Board z reading, mg.                   */
     uint16_t amag_mg;            /* Acceleration magnitude, mg.            */
     uint8_t  attitude_state;     /* attitude_state_t, holds on a failed read. */
+    bool     attitude_sample_valid; /* Current cycle has calibrated acceleration. */
     bool     heading_valid;      /* heading_ddeg is fresh and usable.      */
     bool     calibrated;         /* Hump detector has its rest reference.  */
     bool     collecting_rest;    /* Fresh qualifying gravity or settled-pose sample. */

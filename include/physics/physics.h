@@ -32,6 +32,7 @@ typedef struct
     int16_t  pitch_cdeg;     /* Pitch in centi-degrees.                 */
     int16_t  yaw_rate_cdps;  /* Best available yaw rate, 0.01 deg/s.    */
     int16_t  a_fwd_mg;       /* Forward acceleration residual, mg.      */
+    int16_t  report_roll_cdeg; /* Smoothed telemetry roll in centidegrees. */
     int16_t  roll_cdeg;      /* Roll, left-down positive, 0.01 deg.     */
     int16_t  az_mg;          /* Board z reading, mg.                    */
     uint16_t amag_mg;        /* Acceleration magnitude, mg.             */
@@ -42,6 +43,7 @@ typedef struct
     uint8_t  motion;         /* Motion class from the IMU.              */
     uint8_t  faults;         /* Latched B4 faults.                      */
     uint8_t  attitude_state; /* Wire attitude_state: ok, candidate, lifted, overturned. */
+    bool     attitude_sample_valid; /* Fresh calibrated tilt measurement. */
     bool     ready;          /* The task has produced a recent message. */
     bool     calibrated;     /* Hump detector has its rest reference.   */
     bool     heading_valid;  /* heading_ddeg is fresh and usable.       */
@@ -58,7 +60,7 @@ typedef struct
 } physics_status_t;
 
 /* Fixed-size supervisor and telemetry snapshot. */
-STATIC_ASSERT (sizeof(physics_status_t) == 44U, "physics_status_t size");
+STATIC_ASSERT (sizeof(physics_status_t) == 48U, "physics_status_t size");
 
 /* Set up the task's message buffers and cyclic handler. The composition
  * root creates the task named by task_id and calls physics_run() from it,
