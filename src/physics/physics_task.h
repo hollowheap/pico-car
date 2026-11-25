@@ -115,9 +115,6 @@ void physics_car_config (physics_task_config_t * p_cfg);
 /* The supervisor sets the wheels-run-free cue. It raises CANDIDATE only. */
 void physics_task_set_wheels_free (bool b_free);
 
-/* Clear the latched I2C fault on the next cycle. */
-void physics_task_request_clear_fault (void);
-
 #endif /* PHYSICS_TASK_H */
 
 /*** end of file ***/

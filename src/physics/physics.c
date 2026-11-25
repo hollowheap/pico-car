@@ -126,9 +126,4 @@ void physics_set_wheels_free (bool b_free)
     physics_task_set_wheels_free(b_free);
 }
 
-void physics_request_clear_fault (void)
-{
-    physics_task_request_clear_fault();
-}
-
 /*** end of file ***/
