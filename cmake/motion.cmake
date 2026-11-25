@@ -11,11 +11,11 @@ target_link_libraries(motion_core PUBLIC platform mtk3smp)
 target_compile_options(motion_core PRIVATE ${FIRMWARE_WARNINGS})
 
 # The pinned SDK exposes the PIO headers to the C99 encoder adapter.
-add_library(motion_pio STATIC app_program/motion/drv_encoder.c)
-target_include_directories(motion_pio SYSTEM PRIVATE ${PICO_SDK_INCLUDES})
-pico_generate_pio_header(motion_pio ${PROJECT_SOURCE_DIR}/app_program/motion/quadrature.pio)
-target_link_libraries(motion_pio PUBLIC mtk3smp PRIVATE pico_base_headers)
-target_compile_options(motion_pio PRIVATE ${FIRMWARE_WARNINGS})
+add_library(motion_encoder_pio STATIC app_program/motion/drv_encoder.c)
+target_include_directories(motion_encoder_pio SYSTEM PRIVATE ${PICO_SDK_INCLUDES})
+pico_generate_pio_header(motion_encoder_pio ${PROJECT_SOURCE_DIR}/app_program/motion/quadrature.pio)
+target_link_libraries(motion_encoder_pio PUBLIC mtk3smp PRIVATE pico_base_headers)
+target_compile_options(motion_encoder_pio PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(motion_service STATIC
     app_program/motion/motion_service.c
@@ -26,13 +26,13 @@ add_library(motion_service STATIC
     app_program/motion/quadrature.c
 )
 target_include_directories(motion_service PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
-target_link_libraries(motion_service PUBLIC platform motion_core motion_pio mtk3smp
-    PRIVATE telemetry)
+target_link_libraries(motion_service PUBLIC platform motion_core motion_encoder_pio mtk3smp
+    PRIVATE comms)
 target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
 
 
 # The default firmware runs this controller from the line task.
-add_library(pilot STATIC
+add_library(motion_pilot STATIC
     app_program/motion/pilot/pilot.c
     app_program/motion/pilot/avoidance.c
     app_program/motion/pilot/contour.c
@@ -46,6 +46,6 @@ add_library(pilot STATIC
     app_program/motion/pilot/look.c
     app_program/motion/pilot/pilot_log.c
 )
-target_include_directories(pilot PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
-target_link_libraries(pilot PUBLIC line_control platform obstacle)
-target_compile_options(pilot PRIVATE ${FIRMWARE_WARNINGS})
+target_include_directories(motion_pilot PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
+target_link_libraries(motion_pilot PUBLIC ir_line_control platform obstacle)
+target_compile_options(motion_pilot PRIVATE ${FIRMWARE_WARNINGS})

@@ -14,8 +14,8 @@ target_link_libraries(obstacle PUBLIC platform mtk3smp)
 target_compile_options(obstacle PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 
-add_library(obstacle_motion STATIC app_program/obstacle/motion_link.c)
-target_include_directories(obstacle_motion PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
-target_link_libraries(obstacle_motion PUBLIC obstacle motion_service platform mtk3smp)
-target_compile_options(obstacle_motion PRIVATE
+add_library(obstacle_motion_input STATIC app_program/obstacle/motion_link.c)
+target_include_directories(obstacle_motion_input PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
+target_link_libraries(obstacle_motion_input PUBLIC obstacle motion_service platform mtk3smp)
+target_compile_options(obstacle_motion_input PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})

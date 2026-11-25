@@ -364,10 +364,10 @@ foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
     target_link_libraries(${app_target} PRIVATE
         motion_service
-        track
+        ir
         platform
-        telemetry
-        barcode
+        comms
+        ir_barcode
         mtk3smp
     )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset
@@ -392,7 +392,7 @@ foreach(app_target IN ITEMS main)
     target_compile_options(${app_target} PRIVATE ${FIRMWARE_WARNINGS})
 endforeach()
 
-target_link_libraries(main PRIVATE obstacle_motion supervisor physics)
-target_link_libraries(track PUBLIC pilot)
+target_link_libraries(main PRIVATE obstacle_motion_input supervisor imu)
+target_link_libraries(ir PUBLIC motion_pilot)
 
 include(cmake/bench.cmake)

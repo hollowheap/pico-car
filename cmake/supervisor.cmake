@@ -9,7 +9,7 @@ add_library(supervisor STATIC
     app_program/supervisor/supervisor/telem.c
 )
 target_include_directories(supervisor PUBLIC app_program PRIVATE app_program/supervisor)
-target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle physics mtk3smp)
+target_link_libraries(supervisor PUBLIC platform comms motion_service obstacle imu mtk3smp)
 target_compile_options(supervisor PRIVATE ${FIRMWARE_WARNINGS})
 
 # The hardware watchdog is on by default. A watchdog reset returns the
