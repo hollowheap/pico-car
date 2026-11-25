@@ -36,8 +36,7 @@ export function longestLineRecovery(events: EventRow[], since: number | null = n
 
 /**
  * Summarise the most recent run: from the last `runStart` event, or from the
- * first sample when there is none, up to its `runStop`. There is no run id on the wire, so this is
- * one summary and never a list of runs.
+ * first sample when there is none, up to its `runStop`.
  */
 export function summarizeRun(trail: TrailPoint[], events: EventRow[], bootStart: number | null = null): RunSummary {
   let since = bootStart ?? -Infinity;
@@ -49,8 +48,11 @@ export function summarizeRun(trail: TrailPoint[], events: EventRow[], bootStart:
     }
   });
   // Several events in a bridge drain may share a receipt timestamp.
-  const inRun = events.filter((event, index) => event.timestamp > since || (event.timestamp === since && index >= startIndex));
-  const stop = inRun.find((event) => event.name === 'runStop')?.timestamp ?? Infinity;
+  const afterStart = events.filter((event, index) => event.timestamp > since || (event.timestamp === since && index >= startIndex));
+  const stopIndex = afterStart.findIndex((event) => event.name === 'runStop');
+  const stop = afterStart[stopIndex]?.timestamp ?? Infinity;
+  const inRun = stopIndex < 0 ? afterStart : afterStart.filter((event, index) =>
+    event.timestamp < stop || (event.timestamp === stop && index <= stopIndex));
   const samples = trail.filter((sample) => sample.timestamp >= since && sample.timestamp <= stop);
   const first = samples[0];
   const last = samples[samples.length - 1];
