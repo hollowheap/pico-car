@@ -62,6 +62,8 @@ typedef enum
     LINE_SIDE_RIGHT
 } line_side_t;
 
+STATIC_ASSERT (sizeof(line_side_t) <= 4U, "line_side_t size");
+
 typedef enum
 {
     /** At least one sensor sees the line, or no side is recorded yet. */
@@ -72,12 +74,17 @@ typedef enum
     LINE_FOLLOW_LOST
 } line_follow_status_t;
 
+STATIC_ASSERT (sizeof(line_follow_status_t) <= 4U,
+               "line_follow_status_t size");
+
 typedef enum
 {
     LINE_TURN_KIND_LEFT = 1, /* 90 degrees counter-clockwise */
     LINE_TURN_KIND_RIGHT,    /* 90 degrees clockwise */
     LINE_TURN_KIND_UTURN     /* 180 degrees, pivots like RIGHT */
 } line_turn_kind_t;
+
+STATIC_ASSERT (sizeof(line_turn_kind_t) <= 4U, "line_turn_kind_t size");
 
 typedef enum
 {
@@ -86,6 +93,8 @@ typedef enum
     /** Overshoot, stale feedback, or a step without a started turn. */
     LINE_TURN_ABORTED
 } line_turn_status_t;
+
+STATIC_ASSERT (sizeof(line_turn_status_t) <= 4U, "line_turn_status_t size");
 
 /** Wheel targets in um/s. */
 typedef struct

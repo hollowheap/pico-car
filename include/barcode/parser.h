@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "platform/static_assert.h"
+
 #define BARCODE_NO_CHAR     0xFFU
 #define BARCODE_PARSER_INIT ((barcode_parser_t){0})
 
@@ -35,6 +37,8 @@ typedef struct
      */
     bool is_reverse : 1;
 } barcode_parser_t;
+
+STATIC_ASSERT (sizeof(barcode_parser_t) == 6U, "barcode_parser_t size");
 
 /** Feeds the new element into the parser.
  * If at the end of a barcode, returns a number 0-25, representing 'A'-'Z'.

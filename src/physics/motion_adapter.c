@@ -14,8 +14,9 @@
 
 #define UM_TO_M        (1.0e-6f)
 #define US_TO_S        (1.0e-6f)
-#define FUTURE_LIMIT   (0x80000000UL)   /* now - ts beyond this: future. */
-#define WHEEL_MEAN_WEIGHT (0.5f)        /* Mean of the two wheels.       */
+#define FUTURE_LIMIT      (0x80000000UL) /* now - ts beyond this: future. */
+#define FUTURE_SLACK_US   (100U)         /* Allow a few us sampling jitter. */
+#define WHEEL_MEAN_WEIGHT (0.5f)         /* Mean of the two wheels.       */
 
 bool motion_adapter_init (motion_adapter_t * p_ad, float accel_alpha)
 {
@@ -54,7 +55,7 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     }
 
     age_us = now_us - p_reading->timestamp_us;   /* Wrap-safe. */
-    if (age_us > FUTURE_LIMIT)
+    if ((age_us > FUTURE_LIMIT) && ((0U - age_us) <= FUTURE_SLACK_US))
     {
         /* The motion task can sample a few microseconds after this cycle's
          * clock read. Treat that as fresh, not as a 71-minute-old sample. */

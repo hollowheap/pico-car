@@ -3,6 +3,7 @@
 
 #include <tk/tkernel.h>
 
+#include "platform/static_assert.h"
 #include "telemetry/cmd.h"
 
 typedef enum
@@ -13,6 +14,8 @@ typedef enum
     CONNECTION_READY,
     CONNECTION_FAULT
 } connection_state_t;
+
+STATIC_ASSERT (sizeof(connection_state_t) <= 4U, "connection_state_t size");
 
 /* Injected by the composition root so telemetry never calls mission or
  * motion directly. */

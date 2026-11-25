@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 #define TCP_TRANSPORT_HOST_MAX      64u
 #define TCP_TRANSPORT_RX_CAPACITY  512u
 #define TCP_TRANSPORT_TX_CAPACITY  512u
@@ -18,6 +20,9 @@ typedef enum
     TCP_TRANSPORT_FAILED,
     TCP_TRANSPORT_CLOSED
 } tcp_transport_state_t;
+
+STATIC_ASSERT (sizeof(tcp_transport_state_t) <= 4U,
+               "tcp_transport_state_t size");
 
 /* Queue a connection request.  The lwIP owner task opens it on the next poll. */
 bool tcp_transport_open (const char * host, uint16_t port);
