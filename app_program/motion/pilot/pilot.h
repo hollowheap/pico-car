@@ -259,7 +259,7 @@ typedef struct
     avoidance_t   avoidance;
 } pilot_state_t;
 
-STATIC_ASSERT(sizeof(pilot_state_t) == 608U, "pilot_state_t size");
+STATIC_ASSERT(sizeof(pilot_state_t) == 616U, "pilot_state_t size");
 
 /** Clear the state: no latch, follower at its start. The line task calls it
  *  once, at boot. */

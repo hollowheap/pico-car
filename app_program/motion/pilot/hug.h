@@ -170,6 +170,23 @@ STATIC_ASSERT((HUG_REFINE_ZONE_DECI <= HUG_SERVO_MAX_DECI) &&
 #define HUG_MOVE_TIMES        (3U)
 #define HUG_MOVE_FLOOR_MS     (1000U)
 
+/** A hug or bypass that runs longer than this from its start ends the same
+ *  way: the car stops with reason HUG_TIMEOUT. The need is worked out for a
+ *  280 mm box (the one OBSTACLE_BOX_GAP_MM was sized on) from
+ *  the speeds above and in bypass/internal.h, with a scan of
+ *  HUG_SCAN_BATCH_MS and a settle of HUG_SETTLE_MS at every stop:
+ *    drive at 140 mm/s: 340 out + 624 along + 340 back = 1304 mm   9.3 s
+ *    drive at  70 mm/s: 150 mm of creep                             2.1 s
+ *    four 90 degree route pivots at 107 deg/s, 80 % turn            4.2 s
+ *    look pivots 2 x 115 and 2 x 45 degrees                         3.7 s
+ *    two 90 degree pivots at 49 deg/s (the slow rate)               4.6 s
+ *    four scans of 1.8 s                                            7.2 s
+ *    sixteen settles of 0.2 s                                       3.2 s
+ *  That is 34.3 s, and 1.5 times it is 50 s. Scans, pivots and settles are
+ *  23 s of the need whatever the box size, so the cap cannot go much lower
+ *  without cutting the stop-and-look count. */
+#define HUG_RUN_MAX_MS        (50000U)
+
 /** A hug that began with a stall keeps a note of it. A look from the backed-off
  *  pose that sees no face ends the hug (a release): the block went away. A
  *  second stall while the note stands is the same place: the hug backs off at
@@ -254,6 +271,7 @@ typedef struct
     uint32_t contact_scan_ms; /* start time of the full survey used for a stationary recheck */
     uint32_t last_motion_ms; /* last measured wheel displacement while the hug owns the chassis */
     uint32_t t_ms;          /* request, scan, or movement timer as selected by state */
+    uint32_t run_ms;        /* start of the hug, for HUG_RUN_MAX_MS */
     union
     {
         struct { int32_t x_mm; int32_t y_mm; } drive;
@@ -336,7 +354,7 @@ typedef struct
     } anchor;
 } hug_t;
 
-STATIC_ASSERT(sizeof(hug_t) == 200U, "hug_t size");
+STATIC_ASSERT(sizeof(hug_t) == 204U, "hug_t size");
 
 /** Idle, no memory of a face. Keeps the last fine fan's settled pose, so a latch cannot
  *  re-arm a fan at an unmoved pose. The struct must hold a previous hug or be zeroed. */

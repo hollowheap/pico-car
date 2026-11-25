@@ -595,6 +595,7 @@ static void begin(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in)
     p_hug->b_bend_check = false;
     p_hug->recheck_hits = 0U;
     p_hug->last_motion_ms = p_in->now_ms;
+    p_hug->run_ms = p_in->now_ms;
     p_hug->x_um = 0;
     p_hug->b_require_rear = !p_hug->b_approach_tape;
     p_hug->b_can_resume = false;
@@ -786,14 +787,8 @@ static void observe_idle(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, 
     }
 }
 
-bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
+static void track_tick(hug_t * p_hug, hug_in_t const * p_in)
 {
-    bool const b_was_active = (ST_IDLE != p_hug->state);
-    bool b_guard = false;
-    bool b_forward = false;
-    bool b_takes = false;
-
-    hug_zero_out(p_out);
     if (ST_IDLE != p_hug->state)
     {
         hug_odo_update(p_hug, p_in);
@@ -810,6 +805,35 @@ bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t *
     else
     {
         /* Nothing to track while idle. */
+    }
+}
+
+static bool run_expired(hug_t * p_hug, hug_in_t const * p_in, hug_out_t * p_out)
+{
+    bool const b_expired = (ST_IDLE != p_hug->state) &&
+        ((p_in->now_ms - p_hug->run_ms) >= HUG_RUN_MAX_MS);
+
+    if (b_expired)
+    {
+        p_hug->bypass.phase = BYPASS_IDLE;
+        hug_finish(p_hug);
+        p_out->b_timeout = 1U;
+    }
+    return b_expired;
+}
+
+bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
+{
+    bool const b_was_active = (ST_IDLE != p_hug->state);
+    bool b_guard = false;
+    bool b_forward = false;
+    bool b_takes = false;
+
+    hug_zero_out(p_out);
+    track_tick(p_hug, p_in);
+    if (run_expired(p_hug, p_in, p_out))
+    {
+        return false;
     }
     if (p_hug->bypass.phase != BYPASS_IDLE)
     {

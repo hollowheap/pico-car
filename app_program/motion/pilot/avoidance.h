@@ -41,6 +41,6 @@ typedef struct
     bool          b_course_stuck : 1; /* stall recovery needs operator clearance */
 } avoidance_t;
 
-STATIC_ASSERT(sizeof(avoidance_t) == 420U, "avoidance_t size");
+STATIC_ASSERT(sizeof(avoidance_t) == 424U, "avoidance_t size");
 
 #endif /* PILOT_AVOIDANCE_H */

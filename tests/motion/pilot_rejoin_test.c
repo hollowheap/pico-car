@@ -344,7 +344,9 @@ static void outcome_reported(int side, bool b_early)
     fixture_t f;
 
     fixture_init(&f);
+    uint32_t const start_ms = f.meas.now_ms;
     bypass_to_exit(&f, side, b_early);
+    assert((f.meas.now_ms - start_ms) < HUG_RUN_MAX_MS);
     assert(0U == f.reports);
     assert(b_early == (0 != wheel_yaw_deci(hug_of(&f)->diff_um)));
     assert(side * REPORT_LATERAL_MM == hug_of(&f)->y_um / UM_PER_MM);

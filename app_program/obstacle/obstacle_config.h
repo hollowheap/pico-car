@@ -285,7 +285,8 @@
 /* [Default] Limits. All of them stop the car (cause BYPASS_LIMIT or
  * LINE_TIMEOUT) instead of letting it drive blind.
  *   HUG_MAX_MS        face following, from the start of REACQUIRE (the
- *                     distance budget does not end a wall);
+ *                     distance budget does not end a wall; the pilot
+ *                     enforces HUG_RUN_MAX_MS, derived in hug.h);
  *   BOX_ALONG_MAX_MM  distance along a box before it is called too deep;
  *   ESCAPE_CLEARS     clear forward pings that end the escape turn;
  *   ESCAPE_STEP_*     once the planned angle is reached and the beam still
@@ -293,7 +294,7 @@
  *                     STEP_DECI every STEP_MS, so the car keeps turning
  *                     away instead of standing still;
  *   ESCAPE_TURN_MAX_DECI the furthest the escape turns from the line. */
-#define OBSTACLE_HUG_MAX_MS       (60000U)
+#define OBSTACLE_HUG_MAX_MS       (50000U)
 #define OBSTACLE_BOX_ALONG_MAX_MM (2500U)
 #define OBSTACLE_HUG_EXTRA_MM     (100U)
 #define OBSTACLE_HUG_MIN_MM       (200U)

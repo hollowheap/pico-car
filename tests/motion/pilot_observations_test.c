@@ -1175,6 +1175,43 @@ static void test_hug_timeout(void)
     check(requests <= 2U, "a fixed pose gets no second full fan");
 }
 
+/* A hug, or a bypass, that is still moving stops at HUG_RUN_MAX_MS from its
+ * start with the move timeout: the hug ends and the output stands. */
+static void run_cap_at(bool b_bypass, uint32_t now_ms, hug_out_t * p_out, hug_t * p_hug)
+{
+    static look_t look;
+    hug_in_t in = {0};
+
+    hug_init(p_hug);
+    look_clear(&look);
+    p_hug->state = (uint8_t)HUG_CODE_ST_PIVOT;
+    p_hug->bypass.phase = b_bypass ? (uint8_t)BYPASS_PARALLEL : (uint8_t)BYPASS_IDLE;
+    p_hug->run_ms = 0U;
+    p_hug->last_motion_ms = now_ms;
+    p_hug->t_ms = now_ms + HUG_RUN_MAX_MS;
+    in.now_ms = now_ms;
+    (void)hug_step(p_hug, &look, &in, p_out);
+}
+
+static void test_run_cap(void)
+{
+    hug_t hug;
+    hug_out_t out;
+
+    check(HUG_RUN_MAX_MS == 50000U, "the run cap is 50 s");
+    for (unsigned b_bypass = 0U; b_bypass < 2U; b_bypass++)
+    {
+        run_cap_at(0U != b_bypass, HUG_RUN_MAX_MS - 1U, &out, &hug);
+        check(0U == out.b_timeout, "a run inside the cap goes on");
+        check(hug_active(&hug), "a run inside the cap stays active");
+        run_cap_at(0U != b_bypass, HUG_RUN_MAX_MS, &out, &hug);
+        check(0U != out.b_timeout, "a run at the cap times out");
+        check(!hug_active(&hug) && (BYPASS_IDLE == hug.bypass.phase), "a run at the cap ends the hug");
+        check((0 == out.speed_mm_s) && (0 == out.turn_deci_s), "a run at the cap stands");
+    }
+    (void)printf("run cap ok\n");
+}
+
 static void test_slip_evidence(void)
 {
     enum { PLATEAU, WRAP, REPLAY, INTERRUPTED, HEALTHY, TURNING, DISAGREEING, REPLY,
@@ -1677,6 +1714,7 @@ int main(void)
     test_note();
     test_move_timeout();
     test_hug_timeout();
+    test_run_cap();
     test_slip_evidence();
     test_pivot_witness_pose();
     test_contour_executor();
