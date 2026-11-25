@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
-import { scoreCourse, type CalibrationCheckpoint } from '../lib/course-calibration';
-import type { LinkPacket } from '../lib/link';
+import { scoreCourse, type CalibrationCheckpoint } from './course-calibration.js';
+import type { LinkPacket } from './link.js';
 
 function readHistory(path: string): LinkPacket[] {
   return readFileSync(path, 'utf8').split('\n').flatMap((line, index) => {
@@ -29,7 +29,7 @@ function isCheckpoint(value: unknown): value is CalibrationCheckpoint {
 try {
   const [historyPath, checkpointsPath] = process.argv.slice(2);
   if (!historyPath || !checkpointsPath || process.argv.length !== 4) {
-    throw new Error('Usage: node --import tsx tools/score-course.ts HISTORY.jsonl CHECKPOINTS.json');
+    throw new Error('Usage: node --import tsx src/console/score-course.ts HISTORY.jsonl CHECKPOINTS.json');
   }
   const measured: unknown = JSON.parse(readFileSync(checkpointsPath, 'utf8'));
   if (!Array.isArray(measured) || !measured.every(isCheckpoint)) {

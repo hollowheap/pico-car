@@ -1,7 +1,7 @@
-import type { EventKind } from '../events';
-import { BIT_FIELDS, ENUMS } from '../schema.generated';
-import type { EventRow, TrailPoint } from '../telemetry-store';
-import { RAD_PER_DEG, SPEED_GAP_MS, WHEEL_TRACK_MM, sampleSpeed, type CourseHump, type CourseJunction, type CourseMarker, type CoursePoint } from './geometry';
+import type { EventKind } from '../events.js';
+import { BIT_FIELDS, ENUMS } from '../schema.generated.js';
+import type { EventRow, TrailPoint } from '../telemetry-store.js';
+import { RAD_PER_DEG, SPEED_GAP_MS, WHEEL_TRACK_MM, sampleSpeed, type CourseHump, type CourseJunction, type CourseMarker, type CoursePoint } from './geometry.js';
 
 export function eventKey(event: Pick<EventRow, 'eventId' | 'timestamp' | 'type'>): string {
   return `${event.eventId}:${event.timestamp}:${event.type}`;

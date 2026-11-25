@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { LinkPacket } from '../../src/lib/link';
-import { currentScanReturn, profileHits, profileSurfaces, scanPoints, scanSurfaces, sparseProfileSurfaces, SCAN_MAX_MM, SLOT_COUNT } from '../../src/lib/scan';
+import { currentScanReturn, profileHits, profileSurfaces, scanPoints, scanSurfaces, sparseProfileSurfaces, SCAN_MAX_MM, SLOT_COUNT } from '../../../bridge/src/console/scan.js';
 import { ENUMS } from '../../src/lib/schema.generated';
 
 const { valid, open, noEcho } = ENUMS.echoClass;

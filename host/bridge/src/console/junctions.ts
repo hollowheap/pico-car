@@ -1,5 +1,5 @@
-import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated';
-import type { EventRow } from './telemetry-store';
+import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated.js';
+import type { EventRow } from './telemetry-store.js';
 
 export type JunctionDirection = 'Left' | 'Right' | 'U-turn' | 'Straight';
 export type JunctionStripeShape = 'T / cross' | 'Left branch' | 'Right branch' | 'Stripe';

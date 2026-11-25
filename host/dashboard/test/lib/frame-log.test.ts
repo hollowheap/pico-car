@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { appendFrame, createFrameLog, FRAME_LOG_LIMIT, readFramePage, readFrameSlice } from '../../src/lib/frame-log';
-import { replayHistory, type HistoryRecord } from '../../src/lib/history';
+import { appendFrame, createFrameLog, FRAME_LOG_LIMIT } from '../../../bridge/src/console/frame-log.js';
+import { readFramePage, readFrameSlice } from '../../src/lib/frame-log';
+import { replayHistory, type HistoryRecord } from './history-fixture';
 import type { LinkPacket } from '../../src/lib/link';
 
 const frame = (timestamp: number, packet = 'status', topic = 'car/s', value = timestamp): HistoryRecord => ({

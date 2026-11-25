@@ -1,6 +1,6 @@
-import { PILOT_REASON, pilotReason } from './events';
-import { BIT_FIELDS, ENUMS, FAULT_BITS } from './schema.generated';
-import type { EventRow } from './telemetry-store';
+import { PILOT_REASON, pilotReason } from './events.js';
+import { BIT_FIELDS, ENUMS, FAULT_BITS } from './schema.generated.js';
+import type { EventRow } from './telemetry-store.js';
 
 export type ActivityGroup = { event: EventRow; members: EventRow[] };
 const liftMask = 1 << BIT_FIELDS.holdMask.lift;

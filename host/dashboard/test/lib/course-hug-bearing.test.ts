@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
-import { buildCourse } from '../../src/lib/course';
-import { compactTrail } from '../../src/lib/course-retention';
-import { courseSession } from '../../src/lib/course-session';
+import { buildCourse } from '../../../bridge/src/console/course.js';
+import { compactTrail } from '../../../bridge/src/console/course-retention.js';
+import { courseSession } from '../../../bridge/src/console/course-session.js';
 import type { LinkPacket } from '../../src/lib/link';
-import { emptyStore, reduceStore, type TelemetryStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore, type TelemetryStore } from '../../../bridge/src/console/telemetry-store.js';
 
 const status = (t: number, seq: number, heading: number, odo = 0): LinkPacket => ({
   timestamp: t, packet: 'status', values: { seq, heading_ddeg: heading, odometer_mm: odo, speed_mms: 0 },

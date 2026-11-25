@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { groupActivity } from '../../src/lib/activity';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { groupActivity } from '../../../bridge/src/console/activity.js';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 function records(gap = 0, boundary = false, mask = 16) {
   // The six records from the captured pickup arrived over 71 ms.

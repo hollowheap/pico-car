@@ -4,10 +4,10 @@ import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop } from 're
 
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import type { RunSummary } from '../../lib/run-summary';
+import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
 import { enumLabel, headingDegrees } from '../../lib/schema';
 import { BIT_FIELDS, ENUMS } from '../../lib/schema.generated';
-import type { PitchSample } from '../../lib/telemetry-store';
+import type { PitchSample } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 import { Button } from '../ui/button';
 import { DecodedFrameFields } from './FrameLogPanel';

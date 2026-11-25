@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import type { ReactElement, ReactNode } from 'react';
 import { expect, it, vi } from 'vitest';
 
-import { buildCourse } from '../../../src/lib/course';
+import { createConsoleView } from '../../../../bridge/src/console/view';
 import type { LinkPacket } from '../../../src/lib/link';
 import { ENUMS } from '../../../src/lib/schema.generated';
 import { themeFor } from '../../../src/lib/theme';
@@ -23,18 +23,23 @@ vi.mock('react-native', () => ({
     <span data-testid={testID} aria-label={accessibilityLabel}>{children}</span>,
 }));
 vi.mock('../../../src/lib/theme-provider', () => ({ useTheme: () => themeFor('dark') }));
-vi.mock('../../../src/components/console/Panel', () => ({ Panel: ({ children, right }: Props & { right?: ReactNode }) => <>{right}{children}</>, useDense: () => true }));
+vi.mock('../../../src/components/console/Panel', () => ({
+  Panel: ({ children, right }: Props & { right?: ReactNode }) => <>{right}{children}</>, useDense: () => true,
+}));
 vi.mock('../../../src/components/console/StatusPill', () => ({
   StatusPill: ({ label, accessibilityLabel }: { label: string; accessibilityLabel?: string }) =>
     <span aria-label={accessibilityLabel}>{label}</span>,
 }));
-vi.mock('../../../src/components/console/ScanReadings', () => ({ ScanReadings: ({ children }: Props) => <div data-testid="obstacle-sonar-view">{children}</div> }));
+vi.mock('../../../src/components/console/ScanReadings', () => ({
+  ScanReadings: ({ children }: Props) => <div data-testid="obstacle-sonar-view">{children}</div>,
+}));
 
 function renderHug(values?: LinkPacket['values'], profileValues?: LinkPacket['values']): string {
   const obstacle = values === undefined ? undefined : { packet: 'obstacle', timestamp: 100, values } as const;
   const profile = profileValues === undefined ? undefined : { packet: 'profile', timestamp: 100, values: profileValues } as const;
+  const { view } = createConsoleView(profile ? [profile] : []).read();
   return renderToStaticMarkup(
-    <ObstaclePanel course={buildCourse([], [])} obstacle={obstacle} ping={undefined} profile={profile} nowMs={100} />,
+    <ObstaclePanel scan={view.scan} obstacle={obstacle} ping={undefined} profile={profile} nowMs={100} />,
   );
 }
 

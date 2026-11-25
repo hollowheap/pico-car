@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { groupActivity } from '../../lib/activity';
+import type { ConsoleView } from '../../lib/console-view';
 import { eventKey } from '../../lib/course';
-import type { EventKind } from '../../lib/events';
+import type { EventKind } from '../../../../bridge/src/console/events.js';
 import { useLogWindow } from '../../lib/useLogWindow';
 import type { PanelStatus } from '../../lib/panel-state';
 import { enumLabel } from '../../lib/schema';
-import type { EventRow } from '../../lib/telemetry-store';
+import type { EventRow } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 import type { EventInspection } from '../../lib/useEventInspection';
 import { Button } from '../ui/button';
@@ -16,12 +16,11 @@ import { formatTime, metres } from './format';
 import { Panel, useDense } from './Panel';
 
 type Props = {
-  events: EventRow[];
+  groups: ConsoleView['groups'];
   inspection: EventInspection;
   onShowCourse?: () => void;
   /** Optional space for event rows in compact layouts. */
   maxHeight?: number;
-  runStart?: number | null;
   title?: string;
   status?: PanelStatus;
   style?: StyleProp<ViewStyle>;
@@ -222,7 +221,7 @@ const EVENT_ROW_EST_PX = 38;
 
 /** Events with the schema name, the time, the odometer and the decoded p1 and p2. */
 export function EventTimeline({
-  events, inspection, onShowCourse,
+  groups, inspection, onShowCourse,
   title = 'Events', status, style,
 }: Props) {
   const theme = useTheme();
@@ -233,8 +232,6 @@ export function EventTimeline({
   const revealShown = useCallback(() => setReveal(null), []);
   const kinds = FILTERS.find((item) => item.key === filter)?.kinds ?? null;
   const matchesFilter = (event: EventRow) => kinds === null || kinds.includes(event.text.kind);
-  // Oldest first so the latest event sits at the bottom of the scroll viewport.
-  const groups = useMemo(() => groupActivity(events), [events]);
   const filterCounts = useMemo(() => {
     const counts: Record<Filter, number> = {
       all: groups.length, alerts: 0, fault: 0, obstacle: 0, line: 0, turn: 0, barcode: 0, physics: 0, command: 0, system: 0,
@@ -308,7 +305,7 @@ export function EventTimeline({
       {detail}
       {rows.length === 0 ? (
         <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
-          {events.length === 0 ? 'No events yet.' : 'No events in this filter.'}
+          {groups.length === 0 ? 'No events yet.' : 'No events in this filter.'}
         </Text>
       ) : (
         <ScrollView

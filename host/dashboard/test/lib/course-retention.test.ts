@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 
-import { buildCourse } from '../../src/lib/course';
-import { emptyStore, reduceStore, TRAIL_MAX } from '../../src/lib/telemetry-store';
+import { buildCourse } from '../../../bridge/src/console/course.js';
+import { emptyStore, reduceStore, TRAIL_MAX } from '../../../bridge/src/console/telemetry-store.js';
 
 it('keeps the boot origin, early corner and current pose across repeated trace compaction', () => {
   const end = 2 * TRAIL_MAX;

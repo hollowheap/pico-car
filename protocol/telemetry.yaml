@@ -3,7 +3,8 @@
 # against this file; do not hand-edit generated constants or decoders.
 #
 # Run `npm --prefix host/dashboard run generate` after every change. It writes
-#   host/dashboard/lib/schema.generated.ts   dashboard constants
+#   host/dashboard/src/lib/schema.generated.ts   dashboard constants
+#   host/bridge/src/console/schema.generated.ts  bridge projection constants
 #   include/telemetry/wire_schema.h          firmware offsets, sizes, codes
 #   protocol/vectors.json                    known-good bytes for every packet
 #   tests/telemetry_vectors.h                the same bytes for the C test

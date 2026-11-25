@@ -1,9 +1,9 @@
-import { placeSurface, SONAR_FORWARD_MM } from '../scan';
-import type { EventRow, ForwardReturnStamp, ObstacleStamp, TrailPoint } from '../telemetry-store';
-import { placeCourseEvents } from './events';
-import { RAD_PER_DEG, courseBounds, headingWrap, placeContact, reconstruct, wireMm, type Course, type CoursePoint } from './geometry';
+import { placeSurface, SONAR_FORWARD_MM } from '../scan.js';
+import type { EventRow, ForwardReturnStamp, ObstacleStamp, TrailPoint } from '../telemetry-store.js';
+import { placeCourseEvents } from './events.js';
+import { RAD_PER_DEG, courseBounds, headingWrap, placeContact, reconstruct, wireMm, type Course, type CoursePoint } from './geometry.js';
 
-export { eventKey } from './events';
+export { eventKey } from './events.js';
 export {
   closestPointOnSegment,
   courseStrokes,
@@ -26,7 +26,7 @@ export {
   type CourseTraceSegment,
   type ObstacleContact,
   type SpeedBand,
-} from './geometry';
+} from './geometry.js';
 
 export function buildCourse(
   trail: TrailPoint[],

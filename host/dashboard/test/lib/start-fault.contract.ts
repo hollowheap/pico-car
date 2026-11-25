@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 
-import { describeEvent } from './events';
-import { faultTiles } from './faults';
-import { ENUMS, FAULT_BITS } from './schema.generated';
+import { describeEvent } from '../../../bridge/src/console/events.js';
+import { faultTiles } from '../../../bridge/src/console/faults.js';
+import { ENUMS, FAULT_BITS } from '../../src/lib/schema.generated';
 
 it.each([73, 0])('explains a START refused because of a hardware connection for command %i', (cmdId) => {
   // Signed wire value 0xA101: hardware fault, telemetry source, START.

@@ -5,16 +5,16 @@ import { Platform, StyleSheet, Text, View, useWindowDimensions } from 'react-nat
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BenchLink, Brand, ThemeToggle } from '../components/console/ConsoleNav';
-import { bannerMessage, ModeBanner, reportedHoldMessage } from '../components/console/ModeBanner';
+import { bannerMessage, currentHoldMessage, ModeBanner } from '../components/console/ModeBanner';
 import { NavbarReadings } from '../components/console/NavbarReadings';
 import { StatusRail } from '../components/console/StatusRail';
 import { CommandWorkspace, ControlsProvider } from '../components/controls/ControlsPanel';
 import { buildOverview, type OverviewHealth } from '../components/overview/overview';
 import { getLinkUrl, getServiceUrl, LINK_CONFIG_ERROR, SERVICE_CONFIG_ERROR } from '../lib/config';
 import { consoleFrame } from '../lib/console-frame';
-import { FAULT_ESTOP_BIT } from '../lib/faults';
 import { GLOBAL_CSS } from '../lib/global-css';
 import { snapshotClockOffset } from '../lib/link';
+import { FAULT_BITS } from '../lib/schema.generated';
 import { TelemetryProvider, useTelemetry } from '../lib/telemetry-context';
 import { ThemeProvider, useTheme } from '../lib/theme-provider';
 import { useCommand } from '../lib/useCommand';
@@ -27,9 +27,9 @@ function RootNavigator() {
   const { width, height } = useWindowDimensions();
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
-  const { snapshot, store } = useTelemetry();
+  const { snapshot, store, view } = useTelemetry();
   const serviceUrl = getServiceUrl();
-  const { feedback, feedbackError, send } = useCommand(serviceUrl, store.resetAt, store.events);
+  const { feedback, feedbackError, send } = useCommand(serviceUrl, store.resetAt, view.replies);
   const nowMs = useNow();
   const wide = width >= 960;
   const frame = consoleFrame(width, height);
@@ -39,8 +39,8 @@ function RootNavigator() {
   const overview = buildOverview(vehicle, nowMs);
   const readings = <NavbarReadings latest={latest} connected={overview.health !== 'offline'} nowMs={timelineNow} />;
   const faults = latest.status?.values.faults;
-  const notice = bannerMessage(overview, faults, reportedHoldMessage(store, timelineNow));
-  const emergencyLatched = faults !== undefined && (faults & (1 << FAULT_ESTOP_BIT)) !== 0;
+  const notice = bannerMessage(overview, faults, currentHoldMessage(view.hold, timelineNow));
+  const emergencyLatched = faults !== undefined && (faults & (1 << FAULT_BITS.estopLatched)) !== 0;
   const commandsDisabled = snapshot.status !== 'open' || snapshot.bridge?.mqtt === 'disconnected' || serviceUrl === null;
   const safetyAvailable = hasCurrentStatus(overview.health);
   const missionAvailable = pathname === '/' && faults !== undefined && safetyAvailable;

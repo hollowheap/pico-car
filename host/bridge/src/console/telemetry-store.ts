@@ -1,12 +1,12 @@
-import { describeEvent, eventName, type EventText } from './events';
-import { recordWheels, type WheelSample } from './wheel-history';
-import { compactTrail } from './course-retention';
-import { LINE_SIGNALS_MAX, type LineSignalSample } from './line-signals';
-import type { LinkPacket } from './link';
-import { odometerDiscontinuous } from './odometer';
-import { hasSpeedFault, headingDegrees, pivotScalePercent } from './schema';
-import { profileSurfaces, stationaryContact, type Survey } from './scan';
-import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated';
+import { describeEvent, eventName, type EventText } from './events.js';
+import { recordWheels, type WheelSample } from './wheel-history.js';
+import { compactTrail } from './course-retention.js';
+import { LINE_SIGNALS_MAX, type LineSignalSample } from './line-signals.js';
+import type { LinkPacket } from './link.js';
+import { odometerDiscontinuous } from './odometer.js';
+import { hasSpeedFault, headingDegrees, pivotScalePercent } from './schema.js';
+import { profileSurfaces, stationaryContact, type Survey } from './scan.js';
+import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated.js';
 
 /** Keep up to 20 minutes at full resolution, then simplify the older geometry. */
 export const TRAIL_MAX = 6000;

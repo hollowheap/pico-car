@@ -5,7 +5,7 @@ import Svg, { Circle, G, Line, Path, Polygon, Rect } from 'react-native-svg';
 import { steeringFraction, wheelPlotSeries, WHEEL_WINDOW_MS, type SpeedPoint, type WheelPlotSeries, type WheelSample } from '../../lib/wheel-history';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import type { RunSummary } from '../../lib/run-summary';
+import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
 import { enumLabel } from '../../lib/schema';
 import { useTheme } from '../../lib/theme-provider';
 import { timeToX } from '../../lib/time-plot';

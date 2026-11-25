@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { scoreCourse } from '../../src/lib/course-calibration';
+import { scoreCourse } from '../../../bridge/src/console/course-calibration.js';
 import type { LinkPacket } from '../../src/lib/link';
 
 const status = (seq: number, odometerMm: number, headingDeg: number): LinkPacket => ({

@@ -106,14 +106,13 @@ npm start
 
 Open **http://127.0.0.1:5281**. One server hosts the dashboard, WebSocket,
 history and command API. Logs continue while the browser is closed.
-When the dashboard reconnects, it uses retained bridge history to fill gaps
-in the course trace, charts and frame log. If that request fails, the dashboard
-keeps showing live data and retries while connected. It then rebuilds those
-views with the recovered samples. History and the live stream share a stable
-ID and arrival order for each receipt. This keeps receipts distinct within one
-millisecond, preserves the exact Reset boundary on reload, and lets reconnect
-replay follow arrival order after a backward clock adjustment. The frame log
-and event labels show the bridge’s wall-clock receipt times.
+The bridge builds the course, run summary and instrument views from retained
+telemetry. On connect and reconnect, the dashboard receives a complete view,
+then updates as the bridge records new receipts. History and the live stream
+share a stable ID and arrival order for each receipt. This keeps receipts
+distinct within one millisecond, preserves the exact Reset boundary, and
+keeps arrival order across a backward clock adjustment. The frame log and
+event labels show the bridge’s wall-clock receipt times.
 If the history file becomes unwritable during a run, live telemetry continues
 and recent packets stay available in memory. The dashboard shows the recording
 failure and the bridge saves the retained packets when writes resume. A gap
@@ -138,9 +137,10 @@ The station uses the local broker on TCP 1883, starting Mosquitto with
 listener over Wi-Fi. Set `MQTT_URL` to use another broker. Only a broker
 started by the station is stopped on exit.
 
-Native history is stored in `host/bridge/history.jsonl`. Set
-`BRIDGE_HISTORY_PATH` to use another file. Keep a single writer for each
-history file.
+Native history is stored in `host/bridge/history.jsonl`. The bridge also saves
+course geometry in a `.course` sidecar so compacted history can retain the
+earlier course. Set `BRIDGE_HISTORY_PATH` to use another file. Keep a single
+writer for each history file.
 
 An optional Compose deployment runs the station and broker with the
 `bridge-data` volume for history:

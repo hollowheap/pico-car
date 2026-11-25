@@ -3,7 +3,7 @@ import { useCallback, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { eventKey, type Course } from './course';
-import type { EventRow } from './telemetry-store';
+import type { EventRow } from '../../../bridge/src/console/telemetry-store.js';
 
 type Selection =
   | { kind: 'event'; key: string; restoreFocus?: () => void }

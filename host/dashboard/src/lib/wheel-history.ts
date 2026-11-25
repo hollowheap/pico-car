@@ -1,26 +1,14 @@
-import type { LinkPacket } from './link';
-
-export type WheelSample = {
-  at: number;
-  seq?: number;
-  left?: number;
-  right?: number;
-  leftTarget?: number;
-  rightTarget?: number;
-  leftDuty?: number;
-  rightDuty?: number;
-};
-export type SpeedPoint = { at: number; value: number };
-export type WheelPlotSeries = {
-  measured: SpeedPoint[][];
-  estimated: [SpeedPoint, SpeedPoint][];
-  targets: SpeedPoint[][];
-};
+import type { SpeedPoint, WheelPlotSeries, WheelSample } from '../../../bridge/src/console/wheel-history.js';
+export type { SpeedPoint, WheelPlotSeries, WheelSample } from '../../../bridge/src/console/wheel-history.js';
 
 export const WHEEL_WINDOW_MS = 10000;
+
 const MAX_GAP_MS = 600;
+
 const MAX_INTERPOLATE_GAP_MS = 1000;
+
 const MAX_INTERPOLATE_SEQ_GAP = 4;
+
 const STEERING_MIN_WHEEL_MMS = 5;
 
 /** Signed steering balance, with full deflection once the inner wheel stops or reverses. */
@@ -29,25 +17,6 @@ export function steeringFraction(left?: number, right?: number): number {
   if (Math.max(Math.abs(left), Math.abs(right)) < STEERING_MIN_WHEEL_MMS) return 0;
   const travel = Math.abs(left) + Math.abs(right);
   return (left - right) / travel;
-}
-
-export function recordWheels(history: WheelSample[], packet: LinkPacket): WheelSample[] {
-  const v = packet.values;
-  const last = history.at(-1);
-  if (last && (packet.timestamp < last.at || (last.seq === v.seq &&
-      (last.at === packet.timestamp || (v.seq !== undefined && packet.timestamp - last.at <= MAX_GAP_MS))))) return history;
-  const usable = !v.motion_fault;
-  const sample: WheelSample = {
-    at: packet.timestamp,
-    seq: v.seq,
-    left: usable ? v.left_mms : undefined,
-    right: usable ? v.right_mms : undefined,
-    leftTarget: usable ? v.left_target_mms : undefined,
-    rightTarget: usable ? v.right_target_mms : undefined,
-    leftDuty: usable ? v.left_duty_pm : undefined,
-    rightDuty: usable ? v.right_duty_pm : undefined,
-  };
-  return [...history.filter(p => p.at >= sample.at - (WHEEL_WINDOW_MS + MAX_INTERPOLATE_GAP_MS)).slice(-127), sample];
 }
 
 export function wheelSegments(history: WheelSample[], now: number, side: 'left' | 'right') {

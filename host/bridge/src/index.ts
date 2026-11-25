@@ -6,6 +6,8 @@ import { loadConfig } from "./config.js";
 import { randomInt } from "node:crypto";
 import { CommandTimeoutError, createCommandSession, parseCommandRequest, PUBACK_TIMEOUT_MS, publishWithTimeout, type CommandRequest } from "./command.js";
 import { createHistoryStore } from "./history.js";
+import { courseStorage } from "./console/retention.js";
+import { createConsoleView } from "./console/view.js";
 import { createLiveServer } from "./live.js";
 import { startLocalBroker } from "./local-broker.js";
 import { createMqttIngest } from "./mqtt.js";
@@ -19,6 +21,9 @@ const dashboard = existsSync(join(config.dashboardPath, "index.html"))
 if (station && !dashboard) throw new Error("Dashboard export missing. Run npm run build from the repository root.");
 const schema = loadProtocolSchema(config.schemaPath);
 const history = createHistoryStore(config.historyPath, config.historyMaxRecords, config.historyMaxEvents);
+const view = createConsoleView(history.list(config.historyMaxRecords).reverse(), courseStorage(config.historyPath));
+const COURSE_SAVE_INTERVAL_MS = 10_000;
+const saveCourse = setInterval(view.save, COURSE_SAVE_INTERVAL_MS);
 const broker = station && !process.env.MQTT_URL ? await startLocalBroker() : undefined;
 process.once("exit", () => broker?.kill());
 let live: ReturnType<typeof createLiveServer> | null = null;
@@ -36,6 +41,7 @@ const ingest = createMqttIngest(config, schema, (packet, topic) => {
     packet: packet.name,
     values: packet.values,
   });
+  view.append(receipt);
   live?.broadcast(receipt);
   console.log(`${packet.name}: ${JSON.stringify(packet.values)}`);
 });
@@ -151,6 +157,17 @@ const server = createServer((request, response) => {
     return;
   }
 
+  if (url.pathname === "/view") {
+    if (request.method !== "GET") {
+      response.setHeader("allow", "GET, OPTIONS");
+      sendJson(response, 405, { error: "use GET for the console view" });
+    } else {
+      response.setHeader("cache-control", "no-store");
+      sendJson(response, 200, view.read());
+    }
+    return;
+  }
+
   if (url.pathname === "/command") {
     response.setHeader("allow", "POST, OPTIONS");
     sendJson(response, 405, { error: "use POST for commands" });
@@ -168,7 +185,7 @@ live = createLiveServer(server, () => ({
   packets: ingest.stats.packets,
   lastPacketAt: ingest.stats.lastPacketAt,
   historyStorage: history.storageStatus(),
-}));
+}), view.read);
 
 server.listen(config.httpPort, config.httpHost, () => {
   const address = server.address();
@@ -180,6 +197,8 @@ let closing = false;
 function shutdown(): void {
   if (closing) return;
   closing = true;
+  clearInterval(saveCourse);
+  view.save();
   live?.close();
   server.close();
   ingest.client.end(true);

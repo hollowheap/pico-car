@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
 import Svg, { Circle, Defs, Ellipse, G, Line, LinearGradient, Pattern, Polygon, Polyline, RadialGradient, Rect, Stop, Text as SvgText } from 'react-native-svg';
 
-import { eventKey, type Course, type CourseMarker, type CoursePoint, type CourseTraceSegment } from '../../../lib/course';
+import { eventKey, type Course, type CourseMarker, type CoursePoint } from '../../../lib/course';
+import type { CourseTraceSegment } from '../../../../../bridge/src/console/course.js';
 
-import type { EventKind } from '../../../lib/events';
+import type { EventKind } from '../../../../../bridge/src/console/events.js';
 import { useTheme } from '../../../lib/theme-provider';
 import { SurfaceStroke } from '../SurfaceStroke';
 

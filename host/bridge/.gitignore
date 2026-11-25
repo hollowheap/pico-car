@@ -2,3 +2,5 @@ node_modules/
 dist/
 history.jsonl
 history.jsonl.tmp
+history.jsonl.course
+history.jsonl.course.tmp

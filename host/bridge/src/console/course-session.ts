@@ -1,11 +1,15 @@
-import { compactTrail } from './course-retention';
-import type { LinkPacket } from './link';
-import { STALE_AFTER_MS } from './panel-state';
-import { SLOT_COUNT, type Survey } from './scan';
-import { pivotScalePercent } from './schema';
-import { HEARTBEAT_TIMER_WRAP_MS, TRAIL_MAX, emptyStore, acceptedReset, precedesReset, reduceStore, type ObstacleStamp, type TelemetryStore, type TrailPoint } from './telemetry-store';
+import { compactTrail } from './course-retention.js';
+import type { LinkPacket } from './link.js';
+import { STALE_AFTER_MS } from './freshness.js';
+import { SLOT_COUNT, type Survey } from './scan.js';
+import { pivotScalePercent } from './schema.js';
+import { HEARTBEAT_TIMER_WRAP_MS, TRAIL_MAX, emptyStore, acceptedReset, precedesReset, reduceStore, type ObstacleStamp, type TelemetryStore, type TrailPoint } from './telemetry-store.js';
 
-type StoragePort = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+export type StoragePort = {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+};
 type SavedObstacle = Omit<ObstacleStamp, 'sample' | 'headingSample'> & { sample: number; headingSample?: number };
 type Saved = { scope: string; runId: number; uptime: number; time: number; start: number | null;
   trail: TrailPoint[]; obstacle?: SavedObstacle };
@@ -146,7 +150,6 @@ export function courseSession(scope: string, storage?: StoragePort) {
   const resetKey = 'pico-car.reset.' + scope;
   let cutoff: ResetBoundary | undefined;
   try {
-    storage ??= typeof window === 'undefined' ? undefined : window.sessionStorage;
     saved = read(scope, storage);
     const boundary: number | ResetBoundary | null = JSON.parse(storage?.getItem(resetKey) ?? 'null');
     if (typeof boundary === 'number' && word(boundary, Number.MAX_SAFE_INTEGER) && boundary > 0) {

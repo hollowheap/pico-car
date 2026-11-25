@@ -1,4 +1,4 @@
-import { FAULT_BITS } from './schema.generated';
+import { FAULT_BITS } from './schema.generated.js';
 
 /**
  * How a set fault reads on the dashboard. `critical` faults hold or stop the

@@ -37,6 +37,9 @@ disconnected, no heartbeat is fresh or no diag frame arrived, and 400 for an inv
 means the bridge sent the frame; it does not confirm that the car applied
 the command.
 
-`GET /history?limit=100` returns recorded telemetry. A browser uses the
-station's origin for HTTP and WebSocket requests. An HTTPS reverse proxy
-must forward WebSocket upgrades for WSS clients.
+`GET /history?limit=100` returns recorded telemetry. `GET /view` returns the
+current console snapshot, including the derived course, events, run summary
+and recent frames. A WebSocket client can set `?console=1` to receive a full
+`console` snapshot on connect and `consoleUpdate` messages with changes.
+The raw packet stream uses the same WebSocket without that query parameter.
+An HTTPS reverse proxy must forward WebSocket upgrades for WSS clients.

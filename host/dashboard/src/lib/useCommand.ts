@@ -3,7 +3,7 @@ import { useRef, useState } from 'react';
 import { postCommand, type CommandAction } from './command';
 import { SERVICE_CONFIG_ERROR } from './config';
 import { COMMANDS } from './schema.generated';
-import type { EventRow } from './telemetry-store';
+import type { ConsoleView } from './console-view';
 
 export type PendingCommandReply = {
   action?: CommandAction;
@@ -16,31 +16,24 @@ export type PendingCommandReply = {
 
 export function correlateCommandReply(
   reply: PendingCommandReply,
-  events: readonly EventRow[],
+  replies: ConsoleView['replies'],
 ): { text: string; error: boolean } {
   if (reply.cmdId === undefined || reply.error) {
     return { text: reply.text, error: reply.error };
   }
   const opcode = reply.action === undefined ? undefined : COMMANDS[reply.action];
+  const outcome = replies[opcode === undefined ? `${reply.cmdId}` : `${opcode}:${reply.cmdId}`];
+  if (outcome === undefined) return { text: reply.text, error: reply.error };
   const label = reply.label ?? reply.action ?? 'command';
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i]!;
-    if (event.name !== 'cmdAccept' && event.name !== 'cmdReject') continue;
-    if (event.p2 !== reply.cmdId) continue;
-    if (opcode !== undefined && (event.p1 & 0xff) !== opcode) continue;
-    if (event.name === 'cmdAccept') {
-      return { text: `${label} accepted by car.`, error: false };
-    }
-    const detail = event.text.detail ? `: ${event.text.detail}` : '.';
-    return { text: `${label} refused by car${detail}`, error: true };
-  }
-  return { text: reply.text, error: reply.error };
+  if (outcome.accepted) return { text: `${label} accepted by car.`, error: false };
+  const detail = outcome.detail ? `: ${outcome.detail}` : '.';
+  return { text: `${label} refused by car${detail}`, error: true };
 }
 
 export function useCommand(
   serviceUrl: string | null,
   resetAt: number | null,
-  events: readonly EventRow[] = [],
+  replies: ConsoleView['replies'] = {},
 ) {
   const [reply, setReply] = useState<PendingCommandReply | null>(null);
   const latestRequest = useRef(0);
@@ -63,6 +56,6 @@ export function useCommand(
       .catch((reason: Error) => showReply(reason.message, true));
   };
 
-  const current = reply?.resetAt === resetAt ? correlateCommandReply(reply, events) : null;
+  const current = reply?.resetAt === resetAt ? correlateCommandReply(reply, replies) : null;
   return { feedback: current?.text ?? null, feedbackError: current?.error ?? false, send };
 }

@@ -2,11 +2,12 @@ import { useEffect, useId, useMemo, useRef, useState, type ComponentRef } from '
 import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import Svg, { Circle, Defs, Line, LinearGradient, Rect, Stop } from 'react-native-svg';
 
-import { courseTapeRuns, courseTraceSegments, eventKey, orientCourse, type Course, type CourseMarker, type CourseOrientation, type CoursePoint } from '../../../lib/course';
+import type { CourseDrawing } from '../../../lib/console-view';
+import { eventKey, orientCourse, type Course, type CourseMarker, type CourseOrientation, type CoursePoint } from '../../../lib/course';
 import type { LinkStatus } from '../../../lib/link';
 import type { PanelStatus } from '../../../lib/panel-state';
-import type { RunSummary } from '../../../lib/run-summary';
-import type { EventRow } from '../../../lib/telemetry-store';
+import type { RunSummary } from '../../../../../bridge/src/console/run-summary.js';
+import type { EventRow } from '../../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../../lib/theme-provider';
 import { useReducedMotion } from '../../../lib/useReducedMotion';
 import { Button } from '../../ui/button';
@@ -16,6 +17,7 @@ import { CourseLayers, Mark, RAMP_CLIMB_COLOR, scaleBarMm, SPEED_MAX_MMS, SPEED_
 
 type Props = {
   course: Course;
+  drawing: CourseDrawing[CourseOrientation];
   summary: RunSummary;
   speedMms: number | null;
   speedLive: boolean;
@@ -172,6 +174,7 @@ function MarkerControl({ group, selectedKey, onSelectEvent, onSelectCluster }: {
 
 export function CourseTrace({
   course: worldCourse,
+  drawing: { strokes, tapeRuns },
   summary, speedMms, speedLive,
   orientation = 'north-up',
   onOrientationChange,
@@ -285,8 +288,6 @@ export function CourseTrace({
   const carUp = orientation === 'car-up' && heading !== null;
   const compass = course.headingReference === 'compass';
   const upLabel = compass ? 'North up' : 'Trace up';
-  const strokes = useMemo(() => courseTraceSegments(course), [course]);
-  const tapeRuns = useMemo(() => courseTapeRuns(course), [course]);
   const { bounds, points, markers, obstacle, forwardReturn } = course;
   const plotBounds = useMemo(() => {
     let { minX, maxX, minY, maxY } = bounds;

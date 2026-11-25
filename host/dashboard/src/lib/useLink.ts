@@ -1,14 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
-import { courseSession } from './course-session';
-import { appendFrame, createFrameLog, type FrameLog } from './frame-log';
-import { fetchHistory, HISTORY_CATCHUP_LIMIT, syncHistory } from './history';
-import {
-  LinkClient,
-  type LinkPacket,
-  type LinkSnapshot,
-  type SocketLike,
-} from './link';
-import { emptyStore, precedesReset, reduceStore, type TelemetryStore } from './telemetry-store';
+import { useEffect, useState } from 'react';
+import { applyConsoleUpdate, EMPTY_CONSOLE, type ConsoleSnapshot } from './console-view';
+import { isConsoleSnapshot, LinkClient, type LinkSnapshot, type SocketLike } from './link';
+
+const HTTP_FALLBACK_DELAY_MS = 250;
 
 const initial: LinkSnapshot = {
   status: 'disconnected',
@@ -17,75 +11,68 @@ const initial: LinkSnapshot = {
   bridge: { mqtt: 'unknown', packets: 0, lastPacketAt: null },
 };
 
-export type LinkState = {
-  snapshot: LinkSnapshot;
-  /** The latest packet of each kind, the trail, the events and the loss count. */
-  store: TelemetryStore;
-  frameLog: FrameLog;
-};
+export type LinkState = Omit<ConsoleSnapshot, 'lastPacket'> & { snapshot: LinkSnapshot };
 
-const emptyReadings = (revision = 0) => ({ store: emptyStore(), frameLog: createFrameLog([], revision) });
-
-/**
- * Connect to the bridge. When `serviceUrl` is set, the recorded frames fill the
- * trail and the events on startup and after each reconnect.
- */
-export function useLink(url: string | undefined, serviceUrl?: string): LinkState {
+/** Subscribe to the bridge projection. A new socket receives a complete snapshot. */
+export function useLink(url: string | undefined, serviceUrl: string | undefined): LinkState {
   const [snapshot, setSnapshot] = useState<LinkSnapshot>(initial);
-  const [readings, setReadings] = useState(emptyReadings);
-  const revision = useRef(0);
+  const [readings, setReadings] = useState(EMPTY_CONSOLE);
 
   useEffect(() => {
-    let current = emptyReadings(++revision.current);
-    let preview: typeof current | null = null;
-    setReadings(current);
-    if (!url) {
-      setSnapshot(initial);
-      return;
-    }
-
+    setReadings(EMPTY_CONSOLE);
+    setSnapshot(initial);
+    let current: ConsoleSnapshot | null = null;
+    let frameRevision = 0;
+    let receivedLive = false;
+    const request = new AbortController();
+    const show = (next: ConsoleSnapshot) => {
+      current = next;
+      setReadings({ ...next, frameLog: { ...next.frameLog, revision: frameRevision } });
+    };
+    const timer = serviceUrl && setTimeout(() => {
+      // The socket usually delivers its own snapshot first. HTTP also works
+      // through proxies that disallow WebSocket upgrades.
+      void fetch(`${serviceUrl.replace(/\/+$/, '')}/view`, { signal: request.signal })
+        .then((response): Promise<unknown> | null => response.ok ? response.json() : null)
+        .then((next) => {
+          if (!request.signal.aborted && !receivedLive && isConsoleSnapshot(next)) show(next);
+        })
+        .catch(() => { /* The WebSocket supplies its own snapshot when it connects. */ });
+    }, url ? HTTP_FALLBACK_DELAY_MS : 0);
+    const cancelFallback = () => {
+      if (timer) clearTimeout(timer);
+      request.abort();
+    };
+    if (!url) return cancelFallback;
+    const target = new URL(url);
+    target.searchParams.set('console', '1');
     const client = new LinkClient({
-      url,
-      createSocket: (target) => new WebSocket(target) as unknown as SocketLike,
+      url: target.href,
+      createSocket: (address) => new WebSocket(address) as unknown as SocketLike,
       idleTimeoutMs: 8000,
     });
-    const unsubscribeState = client.onState(setSnapshot);
-    const session = courseSession(JSON.stringify([url, serviceUrl]));
-    const save = () => session.save(current.store);
-    if (typeof window !== 'undefined') window.addEventListener?.('pagehide', save);
-    const apply = (frames: LinkPacket[], provisional = false) => {
-      let { store, frameLog } = provisional && preview !== null ? preview : current;
-      if (!provisional && preview !== null) frameLog = { ...frameLog, revision: ++revision.current };
-      for (const packet of frames) {
-        const next = provisional ? reduceStore(store, packet) : session.reduce(store, packet);
-        if (next.resetAt !== store.resetAt || next.resetOrder !== store.resetOrder ||
-            next.resetReceiptId !== store.resetReceiptId) {
-          frameLog = createFrameLog([], ++revision.current);
-        }
-        if (!precedesReset(packet, next.resetAt, next.resetOrder)) frameLog = appendFrame(frameLog, packet);
-        store = next;
-      }
-      if (provisional) {
-        preview = { store, frameLog };
-        setReadings(preview);
-      } else {
-        preview = null;
-        current = { store: session.restore(store), frameLog };
-        setReadings(current);
-      }
-    };
-    const unsubscribePacket = serviceUrl
-      ? syncHistory(client, (signal) => fetchHistory(serviceUrl, HISTORY_CATCHUP_LIMIT, fetch, signal), apply)
-      : client.onPacket((packet) => apply([packet]));
+    const unsubscribeState = client.onState((state) => {
+      if (state.status !== 'open') receivedLive = false;
+      setSnapshot(state.status === 'open' && !receivedLive ? { ...state, status: 'connecting' } : state);
+    });
+    const unsubscribeConsole = client.onConsole((update) => {
+      const next = applyConsoleUpdate(receivedLive ? current : null, update);
+      if (next === null) return;
+      receivedLive = true;
+      cancelFallback();
+      if (update.type === 'console' || current?.frameLog.revision !== next.frameLog.revision) frameRevision++;
+      // A replacement snapshot can reuse bridge row ids after a reconnect.
+      show(next);
+      setSnapshot(client.snapshot());
+    });
     client.connect();
-
     return () => {
-      if (typeof window !== 'undefined') window.removeEventListener?.('pagehide', save);
+      cancelFallback();
       unsubscribeState();
-      unsubscribePacket();
+      unsubscribeConsole();
       client.close();
     };
   }, [url, serviceUrl]);
 
-  return { snapshot, ...readings };
+  return { snapshot, store: readings.store, view: readings.view, frameLog: readings.frameLog };
 }

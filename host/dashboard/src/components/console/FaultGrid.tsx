@@ -1,12 +1,11 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import { faultTiles, type TileState } from '../../lib/faults';
+import type { ConsoleView } from '../../lib/console-view';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import type { RunSummary } from '../../lib/run-summary';
 import { bitLabels, enumLabel } from '../../lib/schema';
-import type { DiagRates } from '../../lib/telemetry-store';
+import type { DiagRates } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 import { MetricCell } from './MetricCell';
 import { Panel, useExpanded } from './Panel';
@@ -15,14 +14,13 @@ import { StatusPill } from './StatusPill';
 
 type Props = {
   level: number | undefined;
-  sticky: number | undefined;
+  tiles: ConsoleView['faults'];
   obstacle?: LinkPacket;
   diag?: LinkPacket;
   rates?: DiagRates;
   lossPercent?: number | null;
   status?: PanelStatus;
   style?: StyleProp<ViewStyle>;
-  run?: RunSummary;
 };
 
 const VIEWS = { matrix: 'Matrix', health: 'Health' } as const;
@@ -46,7 +44,7 @@ const SHORT_LABEL: Record<number, string> = {
   15: 'Reset',
 };
 
-const STATE_LABEL: Record<TileState, string> = {
+const STATE_LABEL: Record<ConsoleView['faults'][number]['state'], string> = {
   set: 'Active',
   'was-set': 'Previously set',
   ok: 'OK',
@@ -55,14 +53,13 @@ const STATE_LABEL: Record<TileState, string> = {
 
 const TASKS = ['Motion', 'Line', 'Obstacle', 'Physics', 'Telem', 'Conn', 'Barcode'] as const;
 
-export function FaultGrid({ level, sticky, obstacle, diag, rates, lossPercent, status, style }: Props) {
+export function FaultGrid({ level, tiles, obstacle, diag, rates, lossPercent, status, style }: Props) {
   const theme = useTheme();
   const expanded = useExpanded();
   const [view, setView] = useState<keyof typeof VIEWS>('matrix');
   const [selectedBit, setSelectedBit] = useState<number | null>(null);
   const [hoveredBit, setHoveredBit] = useState<number | null>(null);
   const [focusedBit, setFocusedBit] = useState<number | null>(null);
-  const tiles = faultTiles(level, sticky);
   const showMatrix = expanded || view === 'matrix';
   const inspected = showMatrix ? tiles.find(tile => tile.bit === (hoveredBit ?? focusedBit ?? selectedBit)) : undefined;
   const o = obstacle?.values;

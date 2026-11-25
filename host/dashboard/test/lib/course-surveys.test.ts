@@ -1,12 +1,12 @@
 import { expect, it } from 'vitest';
 
-import { buildCourse, orientCourse } from '../../src/lib/course';
-import { compactTrail } from '../../src/lib/course-retention';
-import { courseSession } from '../../src/lib/course-session';
+import { buildCourse, orientCourse } from '../../../bridge/src/console/course.js';
+import { compactTrail } from '../../../bridge/src/console/course-retention.js';
+import { courseSession } from '../../../bridge/src/console/course-session.js';
 import type { LinkPacket } from '../../src/lib/link';
-import { obstacleView } from '../../src/lib/obstacle-view';
-import { profileSurfaces } from '../../src/lib/scan';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { obstacleView } from '../../../bridge/src/console/obstacle-view.js';
+import { profileSurfaces } from '../../../bridge/src/console/scan.js';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 const profile = (timestamp: number, first = 16, status = 0, req_id = 1): LinkPacket => {
   const slots = Object.fromEntries(Array.from({ length: 37 }, (_, i) => [

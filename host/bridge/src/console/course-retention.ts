@@ -1,6 +1,6 @@
-import { closestPointOnSegment, reconstruct, type CoursePoint } from './course';
-import { placeSurface, type Survey } from './scan';
-import type { TelemetryStore, TrailPoint } from './telemetry-store';
+import { closestPointOnSegment, reconstruct, type CoursePoint } from './course.js';
+import { placeSurface, type Survey } from './scan.js';
+import type { TelemetryStore, TrailPoint } from './telemetry-store.js';
 
 /** Squared error if a point is removed from its neighbors' polyline. */
 function shortcutError(a: CoursePoint, b: CoursePoint, c: CoursePoint): number {

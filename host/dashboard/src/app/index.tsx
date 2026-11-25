@@ -1,5 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react';
 import { Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 
 import { AttitudePanel, DynamicsPanel } from '../components/console/AttitudePanel';
@@ -14,13 +14,12 @@ import { Panel, PanelDense } from '../components/console/Panel';
 import { TabbedCard } from '../components/console/TabbedCard';
 import { ControlsPanel } from '../components/controls/ControlsPanel';
 import { consoleFrame } from '../lib/console-frame';
-import { buildCourse, latestCourseSpeed, type Course, type CourseOrientation } from '../lib/course';
+import type { ConsoleView } from '../lib/console-view';
+import type { Course, CourseOrientation } from '../lib/course';
 import { focusElement } from '../lib/focus';
 import { FRAME_LOG_LIMIT } from '../lib/frame-log';
 import { snapshotClockOffset } from '../lib/link';
 import { panelStatus } from '../lib/panel-state';
-import { summarizeRun } from '../lib/run-summary';
-import { statusLossPercent } from '../lib/telemetry-store';
 import { useTelemetry } from '../lib/telemetry-context';
 import { useEventInspection } from '../lib/useEventInspection';
 import { useNow } from '../lib/useNow';
@@ -35,23 +34,23 @@ type ActivityTab = keyof typeof ACTIVITY_TABS;
 const POSE_PAIR_GRACE_MS = 32;
 const COLUMN_GAP = 10;
 
-function useSettledCourse(candidate: Course, runStart: number | null, awaitingPair: string | null): Course {
-  const [last, setLast] = useState({ course: candidate, runStart });
+function useSettledCourse({ course, drawing }: Pick<ConsoleView, 'course' | 'drawing'>, runStart: number | null, awaitingPair: string | null) {
+  const [last, setLast] = useState({ course, drawing, runStart });
   const [expired, setExpired] = useState<string | null>(null);
   const wait = awaitingPair !== null && awaitingPair !== expired && last.runStart === runStart && last.course.positionKnown;
 
   useEffect(() => {
     if (!wait) {
-      setLast((previous) => previous.course === candidate && previous.runStart === runStart ? previous : { course: candidate, runStart });
+      setLast((previous) => previous.course === course && previous.runStart === runStart ? previous : { course, drawing, runStart });
     }
-  }, [candidate, runStart, wait]);
+  }, [course, drawing, runStart, wait]);
   useEffect(() => {
     if (!wait || awaitingPair === null) return;
     const timeout = setTimeout(() => setExpired(awaitingPair), POSE_PAIR_GRACE_MS);
     return () => clearTimeout(timeout);
   }, [awaitingPair, wait]);
 
-  return wait ? last.course : candidate;
+  return wait ? last : { course, drawing };
 }
 
 export default function ConsoleScreen() {
@@ -61,7 +60,7 @@ export default function ConsoleScreen() {
 
 function ConsoleDashboard() {
   const { section, event } = useLocalSearchParams<{ section?: string; event?: string }>();
-  const { snapshot, store, frameLog } = useTelemetry();
+  const { snapshot, store, frameLog, view } = useTelemetry();
   const { width, height: windowHeight } = useWindowDimensions();
   const clockOffsetMs = snapshotClockOffset(snapshot, store.latest.status);
   const nowMs = useNow() + clockOffsetMs;
@@ -124,20 +123,12 @@ function ConsoleDashboard() {
     requestAnimationFrame(() => { if (!restore()) focusPanel('course'); });
   };
 
-  const candidate = useMemo(
-    () => buildCourse(store.trail, store.events, store.obstacle, store.trailStart, store.forwardReturn),
-    [store.trail, store.events, store.obstacle, store.trailStart, store.forwardReturn],
-  );
   const statusState = state('status');
-  const summary = useMemo(() => summarizeRun(store.trail, store.events, store.trailStart),
-    [store.trail, store.events, store.trailStart]);
-  const lastPose = store.trail.at(-1);
+  const { summary } = view;
   // A status frame can reach the browser just before its same-sequence motion
   // frame. Keep the preceding plot for at most two frames while that pair lands.
-  const awaitingPair = snapshot.status === 'open' && statusState.kind === 'ready' &&
-    !candidate.positionKnown && lastPose?.headingDeg === null && lastPose.seq !== undefined && lastPose.wheels === undefined
-    ? `${store.trailStart ?? ''}/${lastPose.seq}/${lastPose.timestamp}` : null;
-  const course = useSettledCourse(candidate, store.trailStart, awaitingPair);
+  const awaitingPair = snapshot.status === 'open' && statusState.kind === 'ready' ? view.pendingPose : null;
+  const { course, drawing } = useSettledCourse(view, store.trailStart, awaitingPair);
   const inspection = useEventInspection(course, store.events, store.trailStart, event);
   const controlsHeight = largeDesktop ? 148 : 128;
   const courseHeight = threeColumns
@@ -155,8 +146,7 @@ function ConsoleDashboard() {
   const faultsHeight = Math.min(Math.round(col3Avail * 0.34), 250);
   const physicsHeight = Math.round((col3Avail - faultsHeight) * 0.54);
   const dynamicsHeight = col3Avail - faultsHeight - physicsHeight;
-  const eventList = <EventTimeline events={store.events} inspection={inspection} onShowCourse={() => show('course', true)}
-    runStart={store.trailStart} />;
+  const eventList = <EventTimeline groups={view.groups} inspection={inspection} onShowCourse={() => show('course', true)} />;
 
   return (
     <ScrollView contentContainerStyle={[styles.page, { padding: pageInset, maxWidth }]} ref={scroll} testID="console-page">
@@ -167,8 +157,9 @@ function ConsoleDashboard() {
               style={{ height: courseHeight }}>
               <CourseTrace
                 course={course}
+                drawing={drawing[orientation]}
                 summary={summary}
-                speedMms={latestCourseSpeed(latest.status, lastPose)}
+                speedMms={view.speedMms}
                 speedLive={statusState.kind === 'ready' && snapshot.status === 'open' && snapshot.bridge?.mqtt !== 'disconnected'}
                 height={plotHeight}
                 linkStatus={snapshot.status}
@@ -201,13 +192,14 @@ function ConsoleDashboard() {
           <View style={[styles.group, { gap: gridGap }, columns && styles.column, threeColumns && [styles.instrumentGrid, { flexBasis: gridGap }]]}>
             <View style={[styles.group, { gap: gridGap }, threeColumns && styles.column]}>
               <View ref={panelRef('line')} tabIndex={-1} testID="console-line" style={threeColumns && { height: lineHeight }}>
-                <LineBarcodePanel diag={latest.diag} events={store.events} rates={store.diagRates} summary={summary}
+                <LineBarcodePanel diag={latest.diag} rates={store.diagRates} summary={summary}
+                  barcode={view.barcode} junction={view.junction} longestRecoveryMm={view.longestRecoveryMm}
                   lineSignals={store.lineSignals} barcodeEdges={store.barcodeEdges} nowMs={nowMs}
-                  clockOffsetMs={clockOffsetMs} runStartMs={store.trailStart}
+                  clockOffsetMs={clockOffsetMs}
                   status={state('status')} statusPacket={latest.status} style={threeColumns && styles.fillCard} />
               </View>
               <View ref={panelRef('obstacle')} tabIndex={-1} testID="console-obstacle" style={threeColumns && { height: obstacleHeight }}>
-                <ObstaclePanel course={course} nowMs={nowMs} obstacle={latest.obstacle} ping={store.obstaclePing} summary={summary}
+                <ObstaclePanel scan={view.scan} nowMs={nowMs} obstacle={latest.obstacle} ping={store.obstaclePing} summary={summary}
                   profile={latest.profile} status={state('obstacle')} style={threeColumns && styles.fillCard} />
               </View>
               <View ref={panelRef('motion')} tabIndex={-1} testID="console-motion" style={threeColumns && { height: motionHeight }}>
@@ -240,9 +232,9 @@ function ConsoleDashboard() {
                   style={threeColumns && styles.fillCard} />
               </View>
               <View ref={panelRef('faults')} tabIndex={-1} testID="console-faults" style={threeColumns && { height: faultsHeight }}>
-                <FaultGrid level={latest.status?.values.faults} obstacle={latest.obstacle} diag={latest.diag}
-                  rates={store.diagRates} lossPercent={statusLossPercent(store)} status={state('status')}
-                  sticky={latest.diag?.values.sticky_faults} run={summary} style={threeColumns && styles.fillCard} />
+                <FaultGrid tiles={view.faults} level={latest.status?.values.faults} obstacle={latest.obstacle} diag={latest.diag}
+                  rates={store.diagRates} lossPercent={view.lossPercent} status={statusState}
+                  style={threeColumns && styles.fillCard} />
               </View>
             </View>
           </View>

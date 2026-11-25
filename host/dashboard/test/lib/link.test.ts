@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { syncHistory, type HistoryRecord } from '../../src/lib/history';
+import { syncHistory, type HistoryRecord } from './history-fixture';
 import { LinkClient, type SocketLike } from '../../src/lib/link';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 class FakeSocket implements SocketLike {
   onopen: (() => void) | null = null;

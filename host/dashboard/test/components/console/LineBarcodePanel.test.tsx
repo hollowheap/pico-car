@@ -4,9 +4,8 @@ import { createRequire } from 'node:module';
 import type { ReactElement, ReactNode } from 'react';
 import { expect, it, vi } from 'vitest';
 
+import { createConsoleView } from '../../../../bridge/src/console/view';
 import type { LinkPacket } from '../../../src/lib/link';
-import { summarizeRun } from '../../../src/lib/run-summary';
-import { emptyStore, reduceStore } from '../../../src/lib/telemetry-store';
 import { themeFor } from '../../../src/lib/theme';
 import { LineBarcodePanel } from '../../../src/components/console/LineBarcodePanel';
 
@@ -28,11 +27,15 @@ function readings(diagValues?: LinkPacket['values'], hasStatus = true, lineBits?
   const event = (id: number, type: number, p1 = 0, p2 = 0): LinkPacket => ({
     packet: 'event', timestamp: id * 100, values: { event_id: id, event_type: type, p1, p2 },
   });
-  const store = [event(1, 0x10, 65, 5), event(2, 0x11), event(3, 0x18)].reduce(reduceStore, emptyStore());
+  const projection = createConsoleView([event(1, 0x10, 65, 5), event(2, 0x11), event(3, 0x18)]);
   const diag = diagValues && { packet: 'diag', timestamp: 600, values: diagValues };
   const statusPacket = lineBits === undefined ? undefined : { packet: 'status', timestamp: 600, values: { line_bits: lineBits } };
-  return renderToStaticMarkup(<LineBarcodePanel statusPacket={statusPacket} diag={diag} events={store.events}
-    rates={{}} lineSignals={[]} nowMs={600} runStartMs={null} summary={summarizeRun([], store.events)}
+  if (diag !== undefined) projection.append(diag);
+  if (statusPacket !== undefined) projection.append(statusPacket);
+  const { store, view } = projection.read();
+  return renderToStaticMarkup(<LineBarcodePanel statusPacket={store.latest.status} diag={store.latest.diag}
+    rates={store.diagRates} lineSignals={store.lineSignals} nowMs={600} summary={view.summary}
+    barcode={view.barcode} junction={view.junction} longestRecoveryMm={view.longestRecoveryMm}
     status={hasStatus ? { kind: 'ready' } : { kind: 'loading', message: 'Waiting for status' }} />);
 }
 

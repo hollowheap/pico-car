@@ -1,6 +1,6 @@
-import { barcodeHasNoAction } from './events';
-import { odometerDiscontinuous } from './odometer';
-import type { EventRow, TrailPoint } from './telemetry-store';
+import { barcodeHasNoAction } from './events.js';
+import { odometerDiscontinuous } from './odometer.js';
+import type { EventRow, TrailPoint } from './telemetry-store.js';
 
 export type RunSummary = {
   scope: 'This run' | 'Recorded';

@@ -1,6 +1,6 @@
-import { buildCourse } from './course';
-import { packetOnTimeline, type LinkPacket } from './link';
-import { emptyStore, reduceStore } from './telemetry-store';
+import { buildCourse } from './course.js';
+import { packetOnTimeline, type LinkPacket } from './link.js';
+import { emptyStore, reduceStore } from './telemetry-store.js';
 
 export type CalibrationCheckpoint = {
   label: string;

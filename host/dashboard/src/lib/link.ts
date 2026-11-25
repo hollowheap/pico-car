@@ -1,3 +1,5 @@
+import type { ConsoleSnapshot, ConsoleUpdate } from './console-view';
+
 export type LinkPacket = {
   timestamp: number;
   packet: string;
@@ -75,7 +77,26 @@ export type LinkClientOptions = {
 type ParsedMessage =
   | { kind: 'packet'; packet: LinkPacket }
   | { kind: 'status'; bridge: BridgeStatus }
+  | { kind: 'console'; update: ConsoleUpdate }
   | null;
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function isFrameLog(value: unknown): value is Record<string, unknown> {
+  return record(value) && Array.isArray(value.blocks) &&
+    Number.isSafeInteger(value.nextId) && Number.isSafeInteger(value.revision);
+}
+
+function isLastPacket(value: unknown): boolean {
+  return value === null || (record(value) && Number.isFinite(value.timestamp));
+}
+
+export function isConsoleSnapshot(value: unknown): value is ConsoleSnapshot {
+  return record(value) && record(value.store) && record(value.store.latest) &&
+    record(value.view) && record(value.view.course) && record(value.view.drawing) &&
+    isFrameLog(value.frameLog) && isLastPacket(value.lastPacket);
+}
 
 function parseMessage(data: unknown): ParsedMessage {
   if (typeof data !== 'string') {
@@ -87,8 +108,20 @@ function parseMessage(data: unknown): ParsedMessage {
   } catch {
     return null;
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-  const message = parsed as Record<string, unknown>;
+  if (!record(parsed)) return null;
+  const message = parsed;
+
+  if (message.type === 'console') {
+    if (typeof message.clockMs !== 'number' || !Number.isFinite(message.clockMs) || !isConsoleSnapshot(message.data)) return null;
+    return { kind: 'console', update: { type: 'console', clockMs: message.clockMs, data: message.data } };
+  }
+  if (message.type === 'consoleUpdate') {
+    const frames = message.frames;
+    if (!Number.isFinite(message.clockMs) || !record(message.store) || !record(message.view) ||
+        !Array.isArray(message.removed) || !isLastPacket(message.lastPacket) ||
+        (frames !== undefined && (!isFrameLog(frames) || !Number.isSafeInteger(frames.from)))) return null;
+    return { kind: 'console', update: message as unknown as ConsoleUpdate };
+  }
 
   if (message.type === 'status') {
     const mqtt = message.mqtt;
@@ -167,6 +200,7 @@ export class LinkClient {
   };
   private readonly stateListeners = new Set<(snapshot: LinkSnapshot) => void>();
   private readonly packetListeners = new Set<(packet: LinkPacket) => void>();
+  private readonly consoleListeners = new Set<(update: ConsoleUpdate) => void>();
 
   constructor(options: LinkClientOptions) {
     this.options = options;
@@ -198,6 +232,15 @@ export class LinkClient {
       this.armIdle();
       if (message.kind === 'status') {
         this.publish({ ...this.state, bridge: message.bridge });
+        return;
+      }
+      if (message.kind === 'console') {
+        const { update } = message;
+        const { lastPacket, store } = update.type === 'console' ? update.data : update;
+        const age = lastPacket === null ? 0 : Math.max(0, update.clockMs - (lastPacket.receivedAt ?? lastPacket.timestamp));
+        this.publish({ ...this.state, lastPacket, lastPacketAt: lastPacket === null ? null : this.now() - age,
+          lastStatus: store.latest === undefined ? this.state.lastStatus : store.latest.status ?? null });
+        for (const listener of this.consoleListeners) listener(update);
         return;
       }
       this.publish({
@@ -257,6 +300,11 @@ export class LinkClient {
   onPacket(listener: (packet: LinkPacket) => void): () => void {
     this.packetListeners.add(listener);
     return () => this.packetListeners.delete(listener);
+  }
+
+  onConsole(listener: (update: ConsoleUpdate) => void): () => void {
+    this.consoleListeners.add(listener);
+    return () => this.consoleListeners.delete(listener);
   }
 
   private armIdle(): void {

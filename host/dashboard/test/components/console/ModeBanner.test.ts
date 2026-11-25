@@ -1,10 +1,11 @@
 import { expect, it, vi } from 'vitest';
 
+import { projectedHoldMessage } from '../../../../bridge/src/console/hold';
+import { emptyStore, reduceStore, type TelemetryStore } from '../../../../bridge/src/console/telemetry-store';
 import type { LinkPacket } from '../../../src/lib/link';
 import { FAULT_BITS } from '../../../src/lib/schema.generated';
-import { emptyStore, reduceStore } from '../../../src/lib/telemetry-store';
 import type { Overview } from '../../../src/components/overview/overview';
-import { bannerMessage, reportedHoldMessage } from '../../../src/components/console/ModeBanner';
+import { bannerMessage, currentHoldMessage } from '../../../src/components/console/ModeBanner';
 
 vi.mock('react-native', () => ({
   StyleSheet: { create: (styles: unknown) => styles },
@@ -12,6 +13,8 @@ vi.mock('react-native', () => ({
   View: () => null,
 }));
 vi.mock('../../../src/lib/theme-provider', () => ({ useTheme: () => ({}) }));
+
+const holdMessage = (store: TelemetryStore, now = Date.now()) => currentHoldMessage(projectedHoldMessage(store), now);
 
 it('asks for START in the live lifted banner', () => {
   const overview: Overview = {
@@ -35,8 +38,8 @@ it('clears a previous START refusal when the car receives the next command durin
     { packet: 'event', timestamp: 1200, values: { event_type: 5, event_id: 8, p1: -28415, p2: 27534 } },
   ];
   const store = packets.reduce(reduceStore, emptyStore());
-  expect(reportedHoldMessage(store)?.title).toBe('START REFUSED');
-  expect(reportedHoldMessage(reduceStore(store, {
+  expect(holdMessage(store)?.title).toBe('START REFUSED');
+  expect(holdMessage(reduceStore(store, {
     packet: 'diag', timestamp: 1600, values: { cmd_last_id: 27535 },
   }))?.title).toBe('IMU CALIBRATION');
 });
@@ -67,21 +70,21 @@ it('explains a pilot hold on the status rail and clears it on a new decision or 
   };
   const decision = { packet: 'event', timestamp: 1900, values: { event_type: 26, event_id: 1, p2: 0x010b } };
   const store = [decision, stopped].reduce(reduceStore, emptyStore());
-  expect(reportedHoldMessage(store)).toEqual({
+  expect(holdMessage(store)).toEqual({
     title: 'COURSE CLEARANCE HOLD', action: 'The pilot surveys again after a rest. If the hold stays, clear the path, then send START.',
   });
-  expect(reportedHoldMessage(reduceStore(store, {
+  expect(holdMessage(reduceStore(store, {
     ...decision, timestamp: 2050, values: { ...decision.values, event_id: 2, p2: 0x010c },
   }))).toEqual({
     title: 'CHECKING COURSE CLEARANCE', action: 'Waiting for fresh forward clearance.',
   });
-  expect(reportedHoldMessage(reduceStore(store, {
+  expect(holdMessage(reduceStore(store, {
     ...decision, timestamp: 2100, values: { ...decision.values, event_id: 2, p2: 0x0300 },
   }))).toBeNull();
-  expect(reportedHoldMessage(reduceStore(store, {
+  expect(holdMessage(reduceStore(store, {
     ...decision, timestamp: 2100, values: { ...decision.values, event_type: 1 },
   }))).toBeNull();
-  expect(reportedHoldMessage(reduceStore(store, {
+  expect(holdMessage(reduceStore(store, {
     ...stopped, timestamp: 2100, values: { ...stopped.values, hold_mask: 4 },
   }))).toBeNull();
 });
@@ -95,11 +98,11 @@ it('explains the stationary obstacle survey reported by boot 25568', () => {
     { packet: 'status', timestamp: 60899, values: { state: 1, mode: 0, speed_mms: 0, hold_mask: 0, faults: 16, odometer_mm: 154 } },
   ];
   const store = packets.reduce(reduceStore, emptyStore());
-  expect(reportedHoldMessage(store)?.title).toBe('OBSTACLE · DETOURS OFF');
-  expect(reportedHoldMessage(store)?.action).toMatch(/Stop.*normal Start/);
+  expect(holdMessage(store)?.title).toBe('OBSTACLE · DETOURS OFF');
+  expect(holdMessage(store)?.action).toMatch(/Stop.*normal Start/);
   const next = reduceStore(store, { packet: 'event', timestamp: 60900,
     values: { event_type: 26, event_id: 33, p2: 268 } });
-  expect(reportedHoldMessage(next)?.title).toBe('CHECKING COURSE CLEARANCE');
+  expect(holdMessage(next)?.title).toBe('CHECKING COURSE CLEARANCE');
 });
 
 it('requires a reported set-down and current corroboration before prompting a pickup restart', () => {
@@ -109,7 +112,7 @@ it('requires a reported set-down and current corroboration before prompting a pi
     values: { flags: 8, attitude_state: 0, motion_class: 1, pitch_cdeg: 40, roll_cdeg: -15 } };
   const end = { packet: 'event', timestamp: 1950, values: { event_type: 57, source: 4, event_id: 1 } };
   const message = (packets: LinkPacket[], now = 2000) =>
-    reportedHoldMessage(packets.reduce(reduceStore, emptyStore()), now);
+    holdMessage(packets.reduce(reduceStore, emptyStore()), now);
   expect(message([end, status, physics])).toEqual({ title: 'UPRIGHT', action: 'Press Start to resume.' });
   expect(message([end, {...status, values: {...status.values, faults: 1 << FAULT_BITS.wifiDisconn}}, physics])?.title).toBe('UPRIGHT');
   expect(message([end, status, {...physics, timestamp: 4500}], 4500)?.title).not.toBe('UPRIGHT');
@@ -121,6 +124,11 @@ it('requires a reported set-down and current corroboration before prompting a pi
     expect(message(packets)?.title).not.toBe('UPRIGHT');
   }
   expect(message([end, status, physics], 4000)?.title).not.toBe('UPRIGHT');
+  const projected = projectedHoldMessage([end, physics, { ...status, timestamp: 3000 }].reduce(reduceStore, emptyStore()));
+  expect(currentHoldMessage(projected, 2999)?.title).toBe('PICKUP HOLD');
+  expect(currentHoldMessage(projected, 3000)?.title).toBe('UPRIGHT');
+  expect(currentHoldMessage(projected, 3500)?.title).toBe('UPRIGHT');
+  expect(currentHoldMessage(projected, 3501)?.title).toBe('PICKUP HOLD');
 });
 
 it('reports a stopped car awaiting Start after set-down while the pickup fault stays active', () => {
@@ -135,7 +143,7 @@ it('reports a stopped car awaiting Start after set-down while the pickup fault s
       values: { flags: 8, attitude_state: 0, motion_class: 1, pitch_cdeg: 40, roll_cdeg: -15 } },
   ];
   const store = frames.reduce(reduceStore, emptyStore());
-  expect(bannerMessage(overview, lifted, reportedHoldMessage(store, 2000)))
+  expect(bannerMessage(overview, lifted, holdMessage(store, 2000)))
     .toEqual({ title: 'STOPPED AFTER PICKUP', action: 'Press Start to resume.' });
-  expect(bannerMessage(overview, lifted, reportedHoldMessage(store, 5000))?.title).toBe('PICKUP DETECTED');
+  expect(bannerMessage(overview, lifted, holdMessage(store, 5000))?.title).toBe('PICKUP DETECTED');
 });

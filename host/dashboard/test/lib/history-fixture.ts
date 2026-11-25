@@ -1,5 +1,5 @@
-import { emptyStore, reduceStore, type TelemetryStore } from './telemetry-store';
-import { packetOnTimeline, type LinkClient, type LinkPacket, type LinkStatus } from './link';
+import { emptyStore, reduceStore, type TelemetryStore } from '../../../bridge/src/console/telemetry-store.js';
+import { packetOnTimeline, type LinkClient, type LinkPacket, type LinkStatus } from '../../src/lib/link';
 
 export type HistoryRecord = LinkPacket & { topic: string };
 

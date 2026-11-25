@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 
-import { buildCourse } from '../../src/lib/course';
-import { courseSession } from '../../src/lib/course-session';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { buildCourse } from '../../../bridge/src/console/course.js';
+import { courseSession } from '../../../bridge/src/console/course-session.js';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 const storage = () => {
   const records = new Map<string, string>();

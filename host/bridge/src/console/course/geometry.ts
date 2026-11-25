@@ -1,10 +1,10 @@
-import type { EventKind } from '../events';
-import type { LinkPacket } from '../link';
-import { odometerDiscontinuous } from '../odometer';
-import type { MeasuredSurface } from '../scan';
-import { hasSpeedFault } from '../schema';
-import { BIT_FIELDS, ENUMS } from '../schema.generated';
-import type { EventRow, TrailPoint } from '../telemetry-store';
+import type { EventKind } from '../events.js';
+import type { LinkPacket } from '../link.js';
+import { odometerDiscontinuous } from '../odometer.js';
+import type { MeasuredSurface } from '../scan.js';
+import { hasSpeedFault } from '../schema.js';
+import { BIT_FIELDS, ENUMS } from '../schema.generated.js';
+import type { EventRow, TrailPoint } from '../telemetry-store.js';
 
 export type CoursePoint = { x: number; y: number };
 

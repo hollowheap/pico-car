@@ -1,9 +1,9 @@
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import type { Course } from '../../lib/course';
+import type { ConsoleView } from '../../lib/console-view';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import type { RunSummary } from '../../lib/run-summary';
+import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
 import { isRecentSonarPing } from '../../lib/scan';
 import { enumLabel } from '../../lib/schema';
 import { BIT_FIELDS, ENUMS } from '../../lib/schema.generated';
@@ -17,7 +17,7 @@ import { StatusPill } from './StatusPill';
 
 type Props = {
   summary?: RunSummary;
-  course: Course;
+  scan: ConsoleView['scan'];
   obstacle: LinkPacket | undefined;
   ping: LinkPacket | undefined;
   profile: LinkPacket | undefined;
@@ -33,7 +33,7 @@ const degrees = (deci: number) => `${deci / DECI}°`;
 const hugDistance = (mm: number | undefined) =>
   mm !== undefined && Number.isFinite(mm) && mm > 0 ? `${mm} mm` : null;
 
-export function ObstaclePanel({ obstacle, ping, profile, nowMs, status, style, summary, summaryOnly = false }: Props) {
+export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, style, summary, summaryOnly = false }: Props) {
   const theme = useTheme();
   const counts = summary && <EventCounts testID="obstacle-events" scope={summary.scope}
     counts={[[summary.obstacles, 'obstacle'], [summary.bypasses, 'bypass', 'bypasses']]} />;
@@ -98,7 +98,8 @@ export function ObstaclePanel({ obstacle, ping, profile, nowMs, status, style, s
         </View>
       ) : (
         <View style={styles.scan}>
-          <ScanReadings key={`${profile?.timestamp}/${profile?.values.req_id}`} profile={profile} live={measurement} hugging={hug !== undefined}>
+          <ScanReadings key={`${profile?.timestamp}/${profile?.values.req_id}`} profile={profile} scan={scan}
+            live={measurement} hugging={hug !== undefined}>
             <View style={styles.info}>
               <View accessibilityLabel="Range and bearings" style={styles.grid}>
                 {[

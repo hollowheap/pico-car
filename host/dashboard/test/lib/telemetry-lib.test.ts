@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCourse, orientCourse, placeContact } from '../../src/lib/course';
-import { describeEvent, eventName, isCurrentStartAttitudeRefusal } from '../../src/lib/events';
-import { FAULT_META, faultTiles, summarizeFaults } from '../../src/lib/faults';
+import { buildCourse, orientCourse, placeContact } from '../../../bridge/src/console/course.js';
+import { describeEvent, eventName, isCurrentStartAttitudeRefusal } from '../../../bridge/src/console/events.js';
+import { FAULT_META, faultTiles, summarizeFaults } from '../../../bridge/src/console/faults.js';
 import type { LinkPacket } from '../../src/lib/link';
-import { longestLineRecovery, summarizeRun } from '../../src/lib/run-summary';
-import { currentScanReturn, polarToXY, rangeRings, scanPoints } from '../../src/lib/scan';
+import { longestLineRecovery, summarizeRun } from '../../../bridge/src/console/run-summary.js';
+import { currentScanReturn, polarToXY, rangeRings, scanPoints } from '../../../bridge/src/console/scan.js';
 import { ENUMS, FAULT_BITS } from '../../src/lib/schema.generated';
-import { storeFromHistory } from '../../src/lib/history';
+import { storeFromHistory } from './history-fixture';
 import { panelStatus } from '../../src/lib/panel-state';
-import { odometerDiscontinuous } from '../../src/lib/odometer';
-import { emptyStore, reduceStore, statusLossPercent, TRAIL_MAX } from '../../src/lib/telemetry-store';
+import { odometerDiscontinuous } from '../../../bridge/src/console/odometer.js';
+import { emptyStore, reduceStore, statusLossPercent, TRAIL_MAX } from '../../../bridge/src/console/telemetry-store.js';
 
 const packet = (name: string, values: Record<string, number>, timestamp = 1000): LinkPacket => ({
   timestamp,

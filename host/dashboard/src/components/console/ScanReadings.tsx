@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
+import type { ConsoleView } from '../../lib/console-view';
 import type { LinkPacket } from '../../lib/link';
-import { scanPoints, stationaryContact } from '../../lib/scan';
 import { useTheme } from '../../lib/theme-provider';
 import { Button } from '../ui/button';
 import { bearingName, resultName, SonarLegend, SonarPlot, type SonarBearing } from './SonarPlot';
@@ -11,21 +11,24 @@ const PER_PAGE = 4;
 const STACK_BELOW_PX = 560;
 
 /** A recorded profile uses the scan-start frame. A lone live return uses the current servo frame. */
-export function ScanReadings({ profile, live, hugging, children }: {
-  profile?: LinkPacket; live?: LinkPacket['values']; hugging: boolean; children?: ReactNode;
+export function ScanReadings({ profile, scan, live, hugging, children }: {
+  profile?: LinkPacket;
+  scan: ConsoleView['scan'];
+  live?: LinkPacket['values'];
+  hugging: boolean;
+  children?: ReactNode;
 }) {
   const theme = useTheme();
   const [page, setPage] = useState(0);
-  const readings: SonarBearing[] = profile === undefined ? [] : scanPoints(profile.values).filter((p) => p.measured);
   const servo = live?.servo_deci;
   const aim = servo !== undefined && Number.isFinite(servo) && Math.abs(servo) <= 200 ? servo / 10 : undefined;
-  if (!profile && aim !== undefined && live?.echo_class !== undefined) {
-    readings.push({ slot: 'live', angleDeg: aim, echoClass: live.echo_class, distMm: live.dist_mm ?? 0 });
-  }
+  const liveReading: SonarBearing | undefined = aim === undefined || live?.echo_class === undefined ? undefined
+    : { slot: 'live', angleDeg: aim, echoClass: live.echo_class, distMm: live.dist_mm ?? 0 };
+  const readings = profile ? scan.readings : liveReading === undefined ? [] : [liveReading];
   const pages = Math.ceil(readings.length / PER_PAGE);
   const label = [theme.typography.caption, { color: theme.colors.text }];
   const stacked = useWindowDimensions().width < STACK_BELOW_PX;
-  const sweep = { points: readings, status: profile?.values.status, movingBypass: profile ? stationaryContact(profile.values) : hugging };
+  const sweep = { points: readings, status: profile?.values.status, movingBypass: profile ? scan.stationaryContact : hugging };
   return (
     <View style={[styles.split, stacked ? styles.stacked : null]}>
       <View style={[styles.sonar, stacked ? styles.sonarStacked : null]}>

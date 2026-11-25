@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { postCommand } from '../../src/lib/command';
 import { COMMANDS, EVENTS } from '../../src/lib/schema.generated';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { commandReplies } from '../../../bridge/src/console/command-replies.js';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 import { correlateCommandReply } from '../../src/lib/useCommand';
 
 describe('command transport and ACK correlation', () => {
@@ -30,17 +31,17 @@ describe('command transport and ACK correlation', () => {
     const otherAccept = [
       { packet: 'event', timestamp: 100, values: { event_id: 1, event_type: EVENTS.cmdAccept, p1: (1 << 8) | COMMANDS.start, p2: 76 } },
     ].reduce(reduceStore, emptyStore()).events;
-    expect(correlateCommandReply(pending, otherAccept)).toEqual({ text: 'start sent to bridge.', error: false });
+    expect(correlateCommandReply(pending, commandReplies(otherAccept))).toEqual({ text: 'start sent to bridge.', error: false });
 
     const matchedAccept = [
       { packet: 'event', timestamp: 200, values: { event_id: 2, event_type: EVENTS.cmdAccept, p1: (1 << 8) | COMMANDS.start, p2: 77 } },
     ].reduce(reduceStore, emptyStore()).events;
-    expect(correlateCommandReply(pending, matchedAccept)).toEqual({ text: 'start accepted by car.', error: false });
+    expect(correlateCommandReply(pending, commandReplies(matchedAccept))).toEqual({ text: 'start accepted by car.', error: false });
 
     const matchedReject = [
       { packet: 'event', timestamp: 300, values: { event_id: 3, event_type: EVENTS.cmdReject, p1: (2 << 12) | (1 << 8) | COMMANDS.start, p2: 77 } },
     ].reduce(reduceStore, emptyStore()).events;
-    const rejected = correlateCommandReply(pending, matchedReject);
+    const rejected = correlateCommandReply(pending, commandReplies(matchedReject));
     expect(rejected.error).toBe(true);
     expect(rejected.text).toMatch(/refused/i);
   });

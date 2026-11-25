@@ -5,7 +5,7 @@ import {
   enumLabel,
   heartbeatAgeMs,
   type PacketName,
-} from '../../src/lib/schema';
+} from '../../../bridge/src/console/schema.js';
 import { COMMANDS, RESERVED_COMMANDS } from '../../src/lib/schema.generated';
 import vectors from '../../../../protocol/vectors.json';
 

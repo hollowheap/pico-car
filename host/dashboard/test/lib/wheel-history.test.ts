@@ -1,5 +1,5 @@
 import { it, expect } from 'vitest';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 import { steeringFraction, wheelPlotSeries, wheelSegments } from '../../src/lib/wheel-history';
 
 it('shows full steering during a pivot at any wheel speed and partial steering on a moving arc', () => {

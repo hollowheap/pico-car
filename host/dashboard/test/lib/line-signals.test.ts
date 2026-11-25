@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
 
-import { describeEvent } from '../../src/lib/events';
+import { describeEvent } from '../../../bridge/src/console/events.js';
 import { barcodeEdgeRuns, barcodeElementLabel, barcodePhaseCode, barcodePhaseLabel, lineSignalPlotData, lineSignalRuns, type LineSignalSample } from '../../src/lib/line-signals';
 import { EVENTS } from '../../src/lib/schema.generated';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 it('retains bounded status samples with unchanged odometry and resets them on boot', () => {
   const store = Array.from({ length: 100 }, (_, i) => ({

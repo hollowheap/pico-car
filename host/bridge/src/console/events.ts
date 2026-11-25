@@ -1,7 +1,7 @@
-import { BIT_FIELDS, COMMANDS, ENUMS, RESERVED_COMMANDS } from './schema.generated';
-import { FAULT_META } from './faults';
-import { barcodePhaseLabel } from './line-signals';
-import { bitLabels, enumLabel } from './schema';
+import { BIT_FIELDS, COMMANDS, ENUMS, RESERVED_COMMANDS } from './schema.generated.js';
+import { FAULT_META } from './faults.js';
+import { barcodePhaseLabel } from './line-signals.js';
+import { bitLabels, enumLabel } from './schema.js';
 
 /** What the event row draws, and what the course trace uses for its mark. */
 export type EventKind =

@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import type { LinkPacket } from '../../lib/link';
 import { STALE_AFTER_MS } from '../../lib/panel-state';
-import type { TelemetryStore } from '../../lib/telemetry-store';
+import type { TelemetryStore } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 
 // The radio starts at -32768 until sampled. The heartbeat clamps that to int8.

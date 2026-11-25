@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCourse, courseStrokes, courseTapeRuns, courseTraceSegments, latestCourseSpeed, stabilizeStraightPoints } from '../../src/lib/course';
-import { describeEvent } from '../../src/lib/events';
+import { buildCourse, courseStrokes, courseTapeRuns, courseTraceSegments, latestCourseSpeed, stabilizeStraightPoints } from '../../../bridge/src/console/course.js';
+import { describeEvent } from '../../../bridge/src/console/events.js';
 import type { LinkPacket } from '../../src/lib/link';
 import { ENUMS, FAULT_BITS } from '../../src/lib/schema.generated';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 const frame = (packet: string, timestamp: number, values: LinkPacket['values']): LinkPacket => ({ packet, timestamp, values });
 const status = (seq: number, timestamp: number, distance: number, heading = 0xffff) =>

@@ -1,6 +1,6 @@
 import { Text } from 'react-native';
 
-import type { RunSummary } from '../../lib/run-summary';
+import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
 import { useTheme } from '../../lib/theme-provider';
 
 type Count = [number | undefined, string, string?];

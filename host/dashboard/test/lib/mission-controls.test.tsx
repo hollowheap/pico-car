@@ -6,9 +6,9 @@ import { expect, it, vi } from 'vitest';
 
 import RootLayout from '../../src/app/_layout';
 import { ControlsPanel } from '../../src/components/controls/ControlsPanel';
-import { FAULT_ESTOP_BIT } from '../../src/lib/faults';
+import { FAULT_ESTOP_BIT } from '../../../bridge/src/console/faults.js';
 import type { LinkPacket } from '../../src/lib/link';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 import { themeFor } from '../../src/lib/theme';
 
 const { renderToStaticMarkup } = createRequire(import.meta.url)('react-dom/server') as {
@@ -31,7 +31,7 @@ vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({})
 vi.mock('../../src/components/console/ConsoleNav', () => ({
   BenchLink: () => null, Brand: () => null, ThemeToggle: () => null,
 }));
-vi.mock('../../src/components/console/ModeBanner', () => ({ ModeBanner: () => null, bannerMessage: () => null, reportedHoldMessage: () => null }));
+vi.mock('../../src/components/console/ModeBanner', () => ({ ModeBanner: () => null, bannerMessage: () => null, currentHoldMessage: () => null }));
 vi.mock('../../src/components/console/StatusRail', () => ({ StatusRail: () => null }));
 vi.mock('../../src/components/ui/button', () => ({
   Button: Object.assign(
@@ -42,7 +42,7 @@ vi.mock('../../src/components/ui/button', () => ({
 vi.mock('../../src/lib/config', () => ({ getLinkUrl: () => 'ws://localhost:5280/', getServiceUrl: () => 'http://localhost:5280' }));
 vi.mock('../../src/lib/telemetry-context', () => ({
   TelemetryProvider: ({ children }: { children: ReactElement }) => children,
-  useTelemetry: () => ({ store: state.store, snapshot: { status: 'open', bridge: { mqtt: 'connected' } } }),
+  useTelemetry: () => ({ store: state.store, view: { hold: null }, snapshot: { status: 'open', bridge: { mqtt: 'connected' } } }),
 }));
 vi.mock('../../src/lib/theme-provider', () => ({
   ThemeProvider: ({ children }: { children: ReactElement }) => children,

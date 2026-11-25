@@ -2,14 +2,13 @@ import { useMemo, useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
-import { barcodeActionLabel } from '../../lib/events';
-import { deriveJunctionState, type JunctionMarker } from '../../lib/junctions';
-import { barcodeElementLabel, barcodePhaseCode, barcodePhaseLabel, LINE_SIGNAL_WINDOW_MS, lineSignalPlotData, type LineSignalSample } from '../../lib/line-signals';
+import type { ConsoleView } from '../../lib/console-view';
+import { barcodeElementLabel, barcodePhaseLabel, LINE_SIGNAL_WINDOW_MS, lineSignalPlotData, type LineSignalSample } from '../../lib/line-signals';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import { longestLineRecovery, type RunSummary } from '../../lib/run-summary';
+import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
 import { BIT_FIELDS } from '../../lib/schema.generated';
-import type { DiagRates, EventRow } from '../../lib/telemetry-store';
+import type { DiagRates } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 import { clampX, timeToX } from '../../lib/time-plot';
 import { usePlotNow } from '../../lib/useNow';
@@ -24,12 +23,13 @@ type Props = {
   statusPacket: LinkPacket | undefined;
   diag: LinkPacket | undefined;
   rates: DiagRates;
-  events: EventRow[];
+  barcode: ConsoleView['barcode'];
+  junction: ConsoleView['junction'];
+  longestRecoveryMm: ConsoleView['longestRecoveryMm'];
   lineSignals: readonly LineSignalSample[];
   barcodeEdges?: readonly LinkPacket[];
   nowMs: number;
   clockOffsetMs?: number;
-  runStartMs: number | null;
   status?: PanelStatus;
   style?: StyleProp<ViewStyle>;
   summaryOnly?: boolean;
@@ -49,7 +49,7 @@ function LineSignalPlot({ bits, samples, edges, junctionMarkers, nowMs, clockOff
   edges: readonly LinkPacket[];
   bits: number | undefined;
   samples: readonly LineSignalSample[];
-  junctionMarkers: readonly JunctionMarker[];
+  junctionMarkers: Readonly<ConsoleView['junction']['markers']>;
   nowMs: number;
   clockOffsetMs?: number;
   live: boolean;
@@ -199,35 +199,17 @@ function BarcodeStrip({ edges, bits }: { edges: readonly LinkPacket[]; bits: num
  * What the line sensors see now, how the follower copes (edges per second,
  * lost count), and the last barcodes with the action each one caused.
  */
-export function LineBarcodePanel({ statusPacket, diag, rates, events, lineSignals, barcodeEdges = [], nowMs, clockOffsetMs,
-  runStartMs, status, style, summary, summaryOnly = false }: Props) {
+export function LineBarcodePanel({ statusPacket, diag, rates, barcode, junction, longestRecoveryMm,
+  lineSignals, barcodeEdges = [], nowMs, clockOffsetMs, status, style, summary, summaryOnly = false }: Props) {
   const theme = useTheme();
   const [view, setView] = useState<keyof typeof VIEWS>('live');
   const bits = statusPacket?.values.line_bits;
   const d = diag?.values;
-  const eventDecode = events.findLast((event) => event.name === 'barcode' && event.timestamp >= (runStartMs ?? -Infinity));
-  const eventIsLatest = eventDecode !== undefined && (diag === undefined || diag.values.last_barcode === undefined ||
-    eventDecode.timestamp >= diag.timestamp);
-  const code = eventIsLatest ? eventDecode.p1 & 0x7f : d?.last_barcode;
-  const letter = code === undefined || code === 0 ? null : String.fromCharCode(code);
-  const action = eventIsLatest ? eventDecode.p2 & 0x7 : d?.last_barcode_action;
+  const { actionLabel, code, earlierPhases, letter, phase } = barcode;
   const dense = useDense();
   const expanded = useExpanded();
   const text = dense ? theme.typography.caption : theme.typography.body;
-  const lifecycle = useMemo(() => events.filter((event) =>
-    event.name === 'barcodePhase' && event.timestamp >= (runStartMs ?? -Infinity) && barcodePhaseLabel(event.p1) !== undefined)
-    .sort((a, b) => a.timestamp - b.timestamp).slice(-4), [events, runStartMs]);
-  const latestPhase = lifecycle.at(-1);
-  const snapshotCode = barcodePhaseCode(bits);
-  const phaseCode = latestPhase !== undefined &&
-    (latestPhase.timestamp >= (statusPacket?.timestamp ?? -Infinity) || barcodePhaseLabel(snapshotCode) === undefined)
-    ? latestPhase.p1 : snapshotCode;
-  const phase = barcodePhaseLabel(phaseCode);
-  const phaseReport = latestPhase?.p1 === phaseCode ? latestPhase : undefined;
-  const earlierPhases = phaseReport === undefined ? lifecycle : lifecycle.slice(0, -1);
   const caption = [theme.typography.caption, { color: theme.colors.muted }];
-  const recovery = longestLineRecovery(events, runStartMs);
-  const junction = useMemo(() => deriveJunctionState(events, runStartMs), [events, runStartMs]);
   const junctionText = junction.active
     ? junction.active.direction === 'Straight' ? 'Going straight'
       : junction.active.direction === 'U-turn' ? 'U-turn' : `Turning ${junction.active.direction.toLowerCase()}`
@@ -293,7 +275,7 @@ export function LineBarcodePanel({ statusPacket, diag, rates, events, lineSignal
         )}
         <MetricCell
           label="Barcode"
-          value={letter === null ? (code === 0 ? 'None' : 'Unknown') : `${letter} (${barcodeActionLabel(action)})`}
+          value={letter === null ? (code === 0 ? 'None' : 'Unknown') : `${letter} (${actionLabel})`}
           tone={letter !== null ? 'success' : 'default'}
           testID="decoded-barcode"
           style={[styles.colDivider, { borderLeftColor: theme.colors.border }]}
@@ -309,8 +291,8 @@ export function LineBarcodePanel({ statusPacket, diag, rates, events, lineSignal
           ))}
         </View>
       )}
-      {summaryOnly || recovery === null ? null : (
-        <Text style={caption}>Longest recovery {recovery} mm</Text>
+      {summaryOnly || longestRecoveryMm === null ? null : (
+        <Text style={caption}>Longest recovery {longestRecoveryMm} mm</Text>
       )}
     </Panel>
   );

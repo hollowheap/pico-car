@@ -1,9 +1,9 @@
 import { expect, it } from 'vitest';
 
-import { describeEvent } from '../../src/lib/events';
-import { deriveJunctionState } from '../../src/lib/junctions';
+import { describeEvent } from '../../../bridge/src/console/events.js';
+import { deriveJunctionState } from '../../../bridge/src/console/junctions.js';
 import { ENUMS, EVENTS } from '../../src/lib/schema.generated';
-import { emptyStore, reduceStore } from '../../src/lib/telemetry-store';
+import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 it('tracks barcode-armed junction choice, active junction turn, and completion outcome', () => {
   const packets = [
