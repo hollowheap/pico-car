@@ -5,10 +5,14 @@
 #include <bsp/libbsp.h>
 #include "motion_pins.h"
 #include "motor.h"
+#include "platform/static_assert.h"
 
 #if TMCLK_MHz != 125
 #error "Revalidate motor PWM frequency after changing the system clock"
 #endif
+/* The slice runs at clk_sys with divider 1 and TOP = period - 1. */
+STATIC_ASSERT (((uint32_t)TMCLK_MHz * 1000000U) / MOTOR_PAIR_PERIOD == 10000U,
+               "motor PWM is 10 kHz");
 #if (MOTOR_LEFT_A != 8U) || (MOTOR_LEFT_B != 9U) || (MOTOR_RIGHT_A != 10U) ||  \
     (MOTOR_RIGHT_B != 11U)
 #error "Revalidate reserved PWM slices after changing the motor pins"
@@ -53,19 +57,37 @@ static bool       g_stopped;
 static bool       g_pair_active;
 static int16_t    g_previous_duty[MOTOR_PAIR_WHEELS];
 
-void pwm_boot_brake (void)
+/* SIO pin mask of both bridge inputs of one wheel. */
+#define WHEEL_PIN_MASK(wheel)                                      \
+    ((1U << g_motor_pins[(wheel)][0U]) | (1U << g_motor_pins[(wheel)][1U]))
+
+/* Drive the pins in mask low as SIO outputs. The level is cleared and the
+ * output enabled with one write each, before the pins leave the PWM function,
+ * so no pin of the mask is ever high or released on its own. */
+static void force_low (uint32_t mask)
 {
     unsigned int wheel   = 0U;
     unsigned int channel = 0U;
 
+    out_w(GPIO_OUT_CLR, mask);
+    out_w(GPIO_OE_SET, mask);
     for (wheel = 0U; wheel < MOTOR_PAIR_WHEELS; wheel++)
     {
         for (channel = 0U; channel < MOTOR_CHANNELS; channel++)
         {
-            (void)gpio_set_val(g_motor_pins[wheel][channel], 0U);
-            (void)gpio_set_pin(g_motor_pins[wheel][channel], GPIO_MODE_OUT);
+            UINT const pin = g_motor_pins[wheel][channel];
+
+            if ((mask & (1U << pin)) != 0U)
+            {
+                out_w(GPIO_CTRL(pin), GPIO_CTRL_FUNCSEL_SIO);
+            }
         }
     }
+}
+
+void pwm_boot_brake (void)
+{
+    force_low(WHEEL_PIN_MASK(0U) | WHEEL_PIN_MASK(1U));
 }
 
 static ER owner_context (void)
@@ -198,11 +220,7 @@ ER pwm_set_pair (int16_t left, int16_t right)
         if (plan.duty[wheel] == 0)
         {
             /* Force a zero-command wheel low before its buffered CC update. */
-            for (channel = 0U; channel < MOTOR_CHANNELS; channel++)
-            {
-                (void)gpio_set_val(g_motor_pins[wheel][channel], 0U);
-                (void)gpio_set_pin(g_motor_pins[wheel][channel], GPIO_MODE_OUT);
-            }
+            force_low(WHEEL_PIN_MASK(wheel));
         }
         if ((plan.duty[wheel] == 0) || (g_previous_duty[wheel] == 0))
         {
@@ -226,8 +244,8 @@ ER pwm_set_pair (int16_t left, int16_t right)
     }
     /* RP2040 atomic SET alias: preserve other buddies' PWM slice enables. */
     out_w(PWM_EN + PWM_ATOMIC_SET,
-          (left != 0 ? 1U << MOTOR_SLICE_FIRST : 0U) |
-              (right != 0 ? 1U << MOTOR_SLICE_LAST : 0U));
+          (plan.duty[0] != 0 ? 1U << MOTOR_SLICE_FIRST : 0U) |
+              (plan.duty[1] != 0 ? 1U << MOTOR_SLICE_LAST : 0U));
     g_pair_active = true;
     g_active      = true;
     return E_OK;

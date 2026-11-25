@@ -126,22 +126,8 @@ target_compile_definitions(mtk3smp PUBLIC
     NDEBUG
 )
 
-target_include_directories(mtk3smp PUBLIC
-    ${MTK3SMP_PATH}/include
-    ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${MTK3SMP_PATH}/config
-    ${MTK3SMP_PATH}/kernel/knlinc
-    ${MTK3SMP_PATH}/kernel/tkernel
-    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/core/armv6m
-    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/rp2040
-    ${MTK3SMP_PATH}/kernel/sysdepend/pico_rp2040
-    ${MTK3SMP_PATH}/device
-    ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
-    ${MTK3SMP_PATH}/lib/libnet/lwip/include
-    ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
-  PRIVATE
+# The Pico SDK headers the kernel build uses; the PIO encoder driver uses them too.
+set(PICO_SDK_INCLUDES
     ${PICO_SDK_PATH}/src/boards/include
     ${PICO_SDK_PATH}/src/common/hardware_claim/include
     ${PICO_SDK_PATH}/src/common/pico_base_headers/include
@@ -168,6 +154,25 @@ target_include_directories(mtk3smp PUBLIC
     ${PICO_SDK_PATH}/lib/cyw43-driver/src
     ${PICO_SDK_PATH}/lib/cyw43-driver/firmware
     ${PICO_SDK_PATH}/lib/tinyusb/src
+)
+
+target_include_directories(mtk3smp PUBLIC
+    ${MTK3SMP_PATH}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${MTK3SMP_PATH}/config
+    ${MTK3SMP_PATH}/kernel/knlinc
+    ${MTK3SMP_PATH}/kernel/tkernel
+    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/core/armv6m
+    ${MTK3SMP_PATH}/kernel/sysdepend/cpu/rp2040
+    ${MTK3SMP_PATH}/kernel/sysdepend/pico_rp2040
+    ${MTK3SMP_PATH}/device
+    ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
+    ${MTK3SMP_PATH}/lib/libnet/lwip/include
+    ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
+  PRIVATE
+    ${PICO_SDK_INCLUDES}
 )
 
 target_sources(mtk3smp PRIVATE
@@ -334,7 +339,7 @@ target_include_directories(telemetry PUBLIC include PRIVATE
 target_link_libraries(telemetry PUBLIC platform mtk3smp)
 target_compile_options(telemetry PRIVATE ${FIRMWARE_WARNINGS})
 
-# D120, D160: the supervisor. The first three files are pure and host-tested.
+# the supervisor. The first three files are pure and host-tested.
 add_library(supervisor STATIC
     src/supervisor/command_ring.c
     src/supervisor/health_core.c
@@ -346,10 +351,10 @@ target_include_directories(supervisor PUBLIC include PRIVATE src/supervisor)
 target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle physics mtk3smp)
 target_compile_options(supervisor PRIVATE ${FIRMWARE_WARNINGS})
 
-# The hardware watchdog (D160) is off by default. Turn it on only after you have
-# checked that the H-bridge inputs stay low across a chip reset (docs/supervisor.md,
-# test W1): ./configure.sh -DPICO_CAR_WATCHDOG=ON
-option(PICO_CAR_WATCHDOG "Start the RP2040 watchdog in the supervisor" OFF)
+# The hardware watchdog is on by default. A watchdog reset returns the
+# motor pins to inputs with pull-downs, so the H-bridge inputs read low. Turn it
+# off for a debug build: ./configure.sh -DPICO_CAR_WATCHDOG=OFF
+option(PICO_CAR_WATCHDOG "Start the RP2040 watchdog in the supervisor" ON)
 if(PICO_CAR_WATCHDOG)
     target_compile_definitions(supervisor PRIVATE PICO_CAR_WATCHDOG)
 endif()
@@ -366,6 +371,21 @@ target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
 target_link_libraries(motion_core PUBLIC platform mtk3smp)
 target_compile_options(motion_core PRIVATE ${FIRMWARE_WARNINGS})
 
+# The encoder state machines. The SDK PIO driver needs C11, as the kernel
+# build does; SYSTEM keeps the firmware warnings off the SDK headers.
+add_library(motion_pio STATIC
+    src/motion/encoder_pio.c
+)
+set_target_properties(motion_pio PROPERTIES
+    C_STANDARD 11
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS ON
+)
+target_include_directories(motion_pio SYSTEM PRIVATE ${PICO_SDK_INCLUDES}
+    ${CMAKE_CURRENT_LIST_DIR}/src/motion/generated)
+target_link_libraries(motion_pio PUBLIC mtk3smp)
+target_compile_options(motion_pio PRIVATE ${FIRMWARE_WARNINGS})
+
 add_library(motion_service STATIC
     src/motion/motion_service.c
     src/motion/motor_setup.c
@@ -375,7 +395,7 @@ add_library(motion_service STATIC
     src/motion/quadrature.c
 )
 target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(motion_service PUBLIC platform motion_core mtk3smp)
+target_link_libraries(motion_service PUBLIC platform motion_core motion_pio mtk3smp)
 target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(track STATIC
@@ -384,10 +404,25 @@ add_library(track STATIC
     src/track/barcode_width.c
     src/track/line_control.c
     src/track/line_filter.c
+    src/track/line_task.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(track PUBLIC platform barcode motion_service telemetry supervisor mtk3smp)
+target_link_libraries(track PUBLIC platform barcode motion_service telemetry supervisor obstacle_nav mtk3smp)
 target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
+
+# The pilot: one owner of the wheels. Pure logic, not linked into main.uf2 yet.
+add_library(pilot STATIC
+    src/pilot/pilot.c
+    src/pilot/drive.c
+    src/pilot/hug.c
+    src/pilot/look.c
+    src/pilot/pilot_log.c
+    src/track/line_control.c
+)
+target_include_directories(pilot PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/src/navigation/obstacle)
+target_link_libraries(pilot PUBLIC platform obstacle)
+target_compile_options(pilot PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(barcode STATIC
     src/barcode/action.c
@@ -445,6 +480,8 @@ add_library(obstacle STATIC
     src/navigation/obstacle/geometry.c
     src/navigation/obstacle/scan_algo.c
     src/navigation/obstacle/planner.c
+    src/navigation/obstacle/follow.c
+    src/navigation/obstacle/nav_core.c
     src/navigation/obstacle/statechart.c
     src/navigation/obstacle/comms.c
     src/navigation/obstacle/scan_hw.c
@@ -485,8 +522,21 @@ target_compile_options(obstacle_nav PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_nav supervisor)
 
+# With the pilot on, the line task drives through the pilot and the sonar task
+# feeds only the echo health checks. Off keeps the old obstacle navigation.
+option(PICO_CAR_PILOT "Drive with the pilot instead of the old obstacle navigation" ON)
+if(PICO_CAR_PILOT)
+    set(PICO_CAR_PILOT_VALUE 1)
+    target_link_libraries(track PUBLIC pilot)
+else()
+    set(PICO_CAR_PILOT_VALUE 0)
+endif()
+target_compile_definitions(track PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(obstacle PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(obstacle_nav PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+
 # Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
-# part of main.uf2. docs/bench.md says what each one measures.
+# part of main.uf2.
 add_executable(car_bench src/bench/car_bench.c)
 target_include_directories(car_bench PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(car_bench PRIVATE track motion_service platform supervisor mtk3smp)

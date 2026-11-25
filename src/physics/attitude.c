@@ -73,7 +73,9 @@ static bool config_ok (const attitude_config_t * p_cfg)
 {
     return (p_cfg->tilt_envelope_deg > 0.0f) && (p_cfg->lift_dev_g > 0.0f) &&
            (p_cfg->lift_dev_samples >= 1U) && (p_cfg->lift_hold_samples >= 1U) &&
-           (p_cfg->lift_samples >= 1U) && (p_cfg->candidate_clear >= 1U) &&
+           (p_cfg->lift_samples >= 1U) &&
+           (p_cfg->lift_hold_samples < p_cfg->lift_samples) &&
+           (p_cfg->candidate_clear >= 1U) &&
            (p_cfg->overturn_tilt_deg > p_cfg->tilt_envelope_deg) &&
            (p_cfg->overturn_roll_deg > 0.0f) && (p_cfg->overturn_samples >= 1U) &&
            (p_cfg->clear_tilt_deg > 0.0f) && (p_cfg->clear_dev_g > 0.0f) &&
@@ -215,17 +217,27 @@ static bool unsettled_cue (attitude_ctx_t * p_ctx, const attitude_output_t * p_o
     return (p_ctx->dev_hold > 0U);
 }
 
-/* b_wheels_free is the second cue (D161): the wheels turn on target with little
+/* b_wheels_free is the second cue: the wheels turn on target with little
  * duty. It raises CANDIDATE and keeps it, but only the unsettled cue or an
- * envelope breach can make LIFTED. */
+ * envelope breach can make LIFTED. While b_on_hump is set the unsettled cue
+ * is dropped and cue_count restarts; a tilt breach still counts. */
 static void step_lift (attitude_ctx_t * p_ctx, const attitude_output_t * p_out,
-                       bool b_wheels_free)
+                       bool b_wheels_free, bool b_on_hump)
 {
     const attitude_config_t * p_cfg = &p_ctx->cfg;
-    bool const b_breach = (p_out->tilt_deg > p_cfg->tilt_envelope_deg);
-    bool const b_cue    = unsettled_cue (p_ctx, p_out) || b_breach;
-    bool const b_level  = (p_out->tilt_deg < p_cfg->clear_tilt_deg) &&
-                          (fabsf (p_out->amag_g - 1.0f) < p_cfg->clear_dev_g);
+    bool const b_breach    = (p_out->tilt_deg > p_cfg->tilt_envelope_deg);
+    /* Hump bumps meet the unsettled limit; the cue still runs so its hold
+     * is current when the hump ends. */
+    bool const b_unsettled = unsettled_cue (p_ctx, p_out) && !b_on_hump;
+    bool const b_cue       = b_unsettled || b_breach;
+    bool const b_level     = (p_out->tilt_deg < p_cfg->clear_tilt_deg) &&
+                             (fabsf (p_out->amag_g - 1.0f) < p_cfg->clear_dev_g);
+
+    if (b_on_hump && !b_cue)
+    {
+        /* Cue samples from before the hump must not add to the hold after it. */
+        p_ctx->cue_count = 0U;
+    }
 
     switch (p_ctx->state)
     {
@@ -322,7 +334,7 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
         }
         else
         {
-            step_lift (p_ctx, p_out, p_in->b_wheels_free);
+            step_lift (p_ctx, p_out, p_in->b_wheels_free, p_in->b_on_hump);
         }
     }
 

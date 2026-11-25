@@ -1,5 +1,5 @@
 /** @file line_control.h
- * @brief Pure line-following and one-shot turn logic (decisions D92, D93).
+ * @brief Pure line-following and one-shot turn logic.
  *
  * No kernel, no hardware and no floating point. The caller owns the clock,
  * reads the sensors and the wheel odometry, and sends the returned wheel
@@ -19,13 +19,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/chassis.h"
 #include "platform/static_assert.h"
-
-/**
- * Cruise speed of the follower on a straight, and the cap on every follower
- * target. It must not exceed MOTOR_MAX_TARGET_UM_S (300000).
- */
-#define LINE_CRUISE_UM_S (300000)
 
 /**
  * Corner speed. The speed falls in a straight line from cruise at no heading
@@ -39,6 +34,22 @@
 #define LINE_ACCEL_MM_S2 (400)
 
 /**
+ * Cruise speed of the follower on a straight, and the cap on every follower
+ * target: 1.25 times the corner speed (125 mm/s). It must not exceed
+ * MOTOR_MAX_TARGET_UM_S (300000).
+ */
+#define LINE_CRUISE_UM_S ((LINE_CORNER_UM_S * 5) / 4)
+
+/**
+ * The follower keeps its speed in steps of this size (um/s) in a 16-bit field.
+ * It is far below the smallest rise of one pass (LINE_ACCEL_MM_S2 over 1 ms is
+ * 400 um/s), so a short pass still raises the speed.
+ */
+#define LINE_SPEED_STEP_UM_S (4)
+STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
+              "follower speed fits 16 bits");
+
+/**
  * Sonar bumper. With a ranged echo closer than LINE_BUMPER_FAR_MM the speed
  * cap falls in a straight line, to LINE_BUMPER_MIN_UM_S at LINE_BUMPER_NEAR_MM
  * and closer. NEAR is a copy of OBSTACLE_DETECT_MM, where the obstacle task
@@ -47,13 +58,6 @@
 #define LINE_BUMPER_FAR_MM   (600)
 #define LINE_BUMPER_NEAR_MM  (250)
 #define LINE_BUMPER_MIN_UM_S (120000)
-
-/**
- * Wheel track in mm. Copy of OBSTACLE_WHEEL_TRACK_MM in
- * src/navigation/obstacle/obstacle_config.h (measured on the car). Keep the
- * two in step; this module must not include the obstacle header.
- */
-#define LINE_WHEEL_TRACK_MM (107)
 
 /**
  * Geometry of the sensors, measured on the car (2026-11-12): 25 mm between the
@@ -68,7 +72,7 @@
 #define LINE_WIDTH_MM          (15)
 
 /**
- * Heading cascade (D181). The sensors move a heading target; the encoder
+ * Heading cascade. The sensors move a heading target; the encoder
  * heading follows it. All values are starting values: tune on the car.
  *
  * LINE_KH            Yaw rate per heading error, in 1/s.
@@ -95,8 +99,30 @@
  *                    last, then back the other way, until a sensor sees the
  *                    line.
  * LINE_SEARCH_SWEEP_DECI How far the search turns each way from the heading
- *                    where it started. At the end of the second turn the car
- *                    stops (status STOPPED).
+ *                    where it started.
+ * LINE_RETRY_COUNT   Retries after a failed search (a guess, not measured on
+ *                    the car). A retry turns the car back to the heading it
+ *                    had when the search began, reverses LINE_REVERSE_MM
+ *                    straight and searches again. After the last retry fails
+ *                    the car stops (status STOPPED).
+ *                    The retry count stays until a search turn finds the line
+ *                    or a hit comes past the travel where the search began
+ *                    (to 1 cm), so a reverse that only finds the line the
+ *                    car came on does not give the car new retries.
+ * LINE_REVERSE_MM    Length of that reverse, about LINE_GAP_MM so that the
+ *                    sensors come back over the ground they crossed blind (a
+ *                    guess, not measured on the car). It runs at
+ *                    LINE_SEARCH_UM_S.
+ * LINE_REVERSE_STALL_MS, LINE_REVERSE_STEP_MM
+ *                    A reverse in which the slower wheel does not back up
+ *                    LINE_REVERSE_STEP_MM within LINE_REVERSE_STALL_MS (so a
+ *                    jam of one wheel counts) is blocked: it ends and the
+ *                    search begins again, so a blocked car still reaches
+ *                    STOPPED after the retries (guesses, not measured on the
+ *                    car).
+ * LINE_HUMP_GAP_MM   LINE_GAP_MM while the physics reports a hump. The
+ *                    sensors lift off the floor at the crest, so the blind
+ *                    stretch is longer (a guess, not measured on the car).
  */
 #define LINE_KH             (8)
 #define LINE_HIT_DECI_PER_M (4000)
@@ -105,6 +131,11 @@
 #define LINE_GAP_MM         (150)
 #define LINE_SEARCH_UM_S    (90000)
 #define LINE_SEARCH_SWEEP_DECI (1350)
+#define LINE_RETRY_COUNT    (3U)
+#define LINE_REVERSE_MM     (150)
+#define LINE_REVERSE_STALL_MS (1500U)
+#define LINE_REVERSE_STEP_MM  (10)
+#define LINE_HUMP_GAP_MM    (400)
 /** A pass this much later than the last one counts as this long (ms). */
 #define LINE_DT_MAX_MS      (50U)
 
@@ -148,9 +179,11 @@ typedef enum
     LINE_FOLLOW_BRIDGING,
     /** The gap is over: the line is lost. The car turns on the spot, toward
      *  the side that saw the line last, then the other way, until a sensor
-     *  sees the line. */
+     *  sees the line. After a failed search it turns back to the heading it
+     *  had when the search began, reverses
+     *  LINE_REVERSE_MM and searches again, LINE_RETRY_COUNT times. */
     LINE_FOLLOW_SEARCHING,
-    /** Both search turns found nothing: the targets are zero. A sensor
+    /** The last retry found nothing: the targets are zero. A sensor
      *  hit, line_follow_init(), line_follow_set_side() or
      *  line_follow_start_search() ends the stop. */
     LINE_FOLLOW_STOPPED
@@ -196,6 +229,9 @@ STATIC_ASSERT(sizeof(line_targets_t) == 8U, "line_targets_t size");
  * line_side_t and line_follow_status_t values; they are bytes so the size
  * does not depend on the compiler's enum size.
  */
+#define LINE_FOLLOW_STARTED (1U)
+#define LINE_FOLLOW_HUMP    (2U)
+
 typedef struct
 {
     int64_t  anchor_um;     /* travel at the last sensor hit                   */
@@ -203,12 +239,17 @@ typedef struct
     uint32_t last_ms;
     uint8_t  side;
     uint8_t  status;
-    uint8_t  started;       /* 0 until the first pass after init or a turn     */
-    uint8_t  sweep;         /* search turn: 0 none yet, 1 first, 2 back        */
-    uint16_t speed_mm_s;    /* base speed of the last pass (in the padding)    */
+    uint8_t  flags;         /* LINE_FOLLOW_STARTED: set after the first pass since init or a turn;
+                             * LINE_FOLLOW_HUMP: the physics reports a hump (longer blind limit) */
+    uint8_t  sweep;         /* search: 0 none, 1 toward, 2 back, 3 turn back, 4 reverse */
+    uint8_t  retry;         /* retries begun since the last search hit         */
+    uint8_t  loss_cm;       /* travel of the loss, in cm modulo 256: retry clears past it */
+    uint16_t speed_q;       /* base speed of the last pass, in LINE_SPEED_STEP_UM_S */
+    int32_t  rev_mark_um;   /* reverse: distance backed up at the last progress */
+    uint16_t rev_stall_ms;  /* reverse: time since that progress               */
 } line_follow_t;
 
-STATIC_ASSERT(sizeof(line_follow_t) == 24U, "line_follow_t size");
+STATIC_ASSERT(sizeof(line_follow_t) == 32U, "line_follow_t size");
 
 /**
  * Speed cap of the sonar bumper.
@@ -224,6 +265,41 @@ int32_t line_bumper_cap_um_s(bool b_ranged, uint32_t dist_mm);
  * the two stays, so the car keeps its curve.
  */
 void line_targets_cap(line_targets_t * p_targets, int32_t cap_um_s);
+
+/**
+ * Line-lost bookkeeping of the line task, kept here so it runs on the host.
+ * b_lost is the line-lost state to report; b_stopped is set after the first
+ * STOPPED of a search.
+ */
+typedef struct
+{
+    uint8_t b_lost;
+    uint8_t b_stopped;
+} line_watch_t;
+
+STATIC_ASSERT(sizeof(line_watch_t) == 2U, "line_watch_t size");
+
+/** Returned by line_watch_step(): the follower has just stopped for the first time. */
+#define LINE_WATCH_STOP  (0x01U)
+/** Returned by line_watch_step(): the lost state ended with the hug, so clear it
+ *  without a line-found event. */
+#define LINE_WATCH_QUIET (0x02U)
+
+/**
+ * One pass of the line-lost bookkeeping, after each pilot step. Only a
+ * follower that has the wheels counts: SEARCHING or STOPPED is lost. While the
+ * hug has the wheels the line is off the sensors and the follower is started
+ * afresh when the hug ends, so a lost state then ends quietly.
+ *
+ * @param[in,out] p_watch  State.
+ * @param[in]     b_follow The follower set the command.
+ * @param[in]     b_hug    The hug set the command.
+ * @param[in]     status   Status of the follower.
+ *
+ * @return LINE_WATCH_* bits; p_watch->b_lost is the state to report.
+ */
+uint8_t line_watch_step(line_watch_t * p_watch, bool b_follow, bool b_hug,
+                        line_follow_status_t status);
 
 /**
  * Turn state. Set up with line_turn_start(). side holds a line_side_t and
@@ -252,10 +328,23 @@ void line_follow_init(line_follow_t * p_follow);
 void line_follow_set_side(line_follow_t * p_follow, line_side_t side);
 
 /**
+ * Count blind travel from the next pass, unless a search is under way. The
+ * caller uses this after driving straight without line_follow_update(), so that
+ * the straight does not count as blind travel.
+ */
+void line_follow_reanchor(line_follow_t * p_follow);
+
+/**
  * Start the search at once (status SEARCHING). The caller uses this after an
  * aborted turn. The search turns count from the heading at the next pass.
  */
 void line_follow_start_search(line_follow_t * p_follow);
+
+/**
+ * Tell the follower whether the physics reports a hump. Call it before each
+ * line_follow_update(): while set, the blind limit is LINE_HUMP_GAP_MM.
+ */
+void line_follow_set_hump(line_follow_t * p_follow, bool b_hump);
 
 /**
  * Heading of the car since boot in deci-degrees, counter-clockwise positive:

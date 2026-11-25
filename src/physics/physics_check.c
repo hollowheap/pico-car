@@ -14,7 +14,7 @@
  *
  * Keep the car still for the first second: calibration needs rest.
  *
- * Guided checks (D162). The program prints PHYS_G lines that tell you what to do
+ * Guided checks. The program prints PHYS_G lines that tell you what to do
  * and when. They answer four checks of why the hump state may always read
  * FLAT. Save the whole console to a file and run
  * `python3 tools/physics_log_summary.py FILE --checks`.

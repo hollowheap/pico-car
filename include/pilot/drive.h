@@ -17,10 +17,6 @@
 #include <stdint.h>
 
 #include "platform/static_assert.h"
-#include "track/line_control.h"
-
-/** Wheel track in mm. */
-#define DRIVE_WHEEL_TRACK_MM LINE_WHEEL_TRACK_MM
 
 /** Largest wheel target the motion service accepts (MOTOR_MAX_TARGET_UM_S). */
 #define DRIVE_MAX_TARGET_UM_S (300000)
@@ -62,9 +58,39 @@ void drive_init(drive_state_t * p_drive);
  * @param[out]    p_left_um_s  Left wheel target in um/s.
  * @param[out]    p_right_um_s Right wheel target in um/s.
  */
-void drive_step(drive_state_t * p_drive, int32_t speed_mm_s,
-                int32_t turn_deci_s, uint32_t dt_ms, int32_t * p_left_um_s,
+void drive_step(drive_state_t * p_drive, int16_t speed_mm_s,
+                int16_t turn_deci_s, uint32_t dt_ms, int32_t * p_left_um_s,
                 int32_t * p_right_um_s);
+
+/**
+ * One pass of the line follower: the turn and a slower speed reach the wheel
+ * targets at once, with the turn first as in drive_step(). A slewed steering
+ * correction comes too late for a 150 mm corner. A faster forward speed rises
+ * at DRIVE_ACCEL_MM_S2 from the mean of the last targets (0 if reversing). The
+ * next drive_step() slews from these targets.
+ *
+ * @param[in,out] p_drive      Drive state.
+ * @param[in]     speed_mm_s   Forward speed in mm/s.
+ * @param[in]     turn_deci_s  Turn rate in deci-degrees per second, CCW positive.
+ * @param[in]     dt_ms        Time since the last pass, clamped to DRIVE_DT_MAX_MS.
+ * @param[out]    p_left_um_s  Left wheel target in um/s.
+ * @param[out]    p_right_um_s Right wheel target in um/s.
+ */
+void drive_follow(drive_state_t * p_drive, int16_t speed_mm_s,
+                  int16_t turn_deci_s, uint32_t dt_ms, int32_t * p_left_um_s,
+                  int32_t * p_right_um_s);
+
+/**
+ * A safety stop: both wheel targets go to 0 at once, not through the slew
+ * limit, which would take 0.3 s from 150 mm/s. The next drive_step() starts
+ * from rest.
+ *
+ * @param[in,out] p_drive      Drive state.
+ * @param[out]    p_left_um_s  Left wheel target, 0.
+ * @param[out]    p_right_um_s Right wheel target, 0.
+ */
+void drive_safety_stop(drive_state_t * p_drive, int32_t * p_left_um_s,
+                       int32_t * p_right_um_s);
 
 #endif /* PILOT_DRIVE_H */
 

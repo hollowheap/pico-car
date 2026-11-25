@@ -1,17 +1,9 @@
 import { useState } from 'react';
 
-import type { LinkPacket } from './link';
-import {
-  deviceSentMs,
-  postCommand,
-  type CommandAction,
-} from './command';
+import { postCommand, type CommandAction } from './command';
 import { SERVICE_CONFIG_ERROR } from './config';
 
-export function useCommand(
-  serviceUrl: string | null,
-  packets: LinkPacket[],
-) {
+export function useCommand(serviceUrl: string | null) {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState(false);
 
@@ -21,21 +13,11 @@ export function useCommand(
       setFeedbackError(true);
       return;
     }
-    const sentMs = deviceSentMs(packets, Date.now());
-    if (sentMs === null) {
-      setFeedback('No fresh heartbeat. Command not sent.');
-      setFeedbackError(true);
-      return;
-    }
     setFeedback(`Sending ${action}...`);
     setFeedbackError(false);
-    const request = {
-      action,
-      cmdId: Date.now() & 0xffff,
-      runId: 0,
-      sentMs,
-    };
-    void postCommand(serviceUrl, request)
+    // The bridge numbers the command and adds the car's run ID; it refuses
+    // the command without a fresh heartbeat.
+    void postCommand(serviceUrl, { action })
       .then(() => setFeedback(`${action} sent to bridge.`))
       .catch((reason: Error) => {
         setFeedback(reason.message);

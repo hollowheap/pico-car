@@ -39,8 +39,8 @@
 /* The ping spacing in microseconds. */
 #define PING_PERIOD_US (OBSTACLE_PING_PERIOD_MS * USEC_PER_MSEC)
 
-/* Flag bits that mean "a command is waiting". */
-#define CMD_BITS (OBSTACLE_FLG_CMD | OBSTACLE_FLG_STOP)
+/* Flag bits that wake the task: a command, STOP, or a ping request. */
+#define CMD_BITS (OBSTACLE_FLG_CMD | OBSTACLE_FLG_STOP | OBSTACLE_FLG_PING)
 
 /* Last servo command. NOTE: The Boolean is a b_ member of a g_ struct,
  * which satisfies both BARR-C 7.1.m/7.1.o and the team .clang-tidy. */
@@ -58,13 +58,18 @@ static uint32_t      g_last_trig_us = 0U;
 static uint32_t now_ms (void);
 static void     handle_commands (UINT ptn);
 static void     poll_commands (void);
-static void     wait_ms (uint32_t delay_ms);
+static void     wait_ms (uint32_t delay_ms, UINT stop_bits);
+#if !PICO_CAR_PILOT
 static void     tick (void);
+#endif
 static uint32_t settle_ms (int16_t target);
+#if !PICO_CAR_PILOT
 static bool     is_car_driving (void);
+#endif
 static bool     move_servo (void);
 static void     ping (uint8_t * p_cls, uint16_t * p_dist_mm);
 static void     ping_and_step (void);
+static bool     serve_ping_request (void);
 
 /*!
  * @brief Buddy 5 task body. Never returns.
@@ -95,18 +100,28 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
 
         liveness_kick(LIVE_OBSTACLE);
         poll_commands();
+#if !PICO_CAR_PILOT
+        /* With the pilot the statechart has no time or distance limits to
+         * check: the pilot owns the wheels. */
         tick();
+#endif
         since_us = scan_hw_now_us() - g_last_trig_us;
 
-        if (move_servo())
+        if (serve_ping_request())
+        {
+            /* One requested ping was taken; loop to re-check commands. */
+        }
+        else if (move_servo())
         {
             /* The servo moved and settled; loop to re-check commands. */
         }
         else if (since_us < PING_PERIOD_US)
         {
-            /* Round up so the next pass is never early. */
+            /* Round up so the next pass is never early. A ping request ends
+             * the wait, so its servo settles while the spacing runs out. */
             wait_ms(((PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) /
-                    USEC_PER_MSEC);
+                        USEC_PER_MSEC,
+                    OBSTACLE_FLG_PING);
         }
         else
         {
@@ -138,9 +153,14 @@ static uint32_t now_ms (void)
 static void handle_commands (UINT ptn)
 {
     obstacle_statechart_out_t   out;
-    uint8_t        cmd    = 0U;
-    uint32_t const now    = now_ms();
-    uint32_t const odo_mm = obstacle_comms_odometer_mm(now);
+    obstacle_travel_t travel;
+    uint8_t           cmd    = 0U;
+    uint32_t const    now    = now_ms();
+    uint32_t          odo_mm = 0U;
+
+    (void)obstacle_comms_travel(&travel);
+    /* The bypass budget counts all travel, forward and backward. */
+    odo_mm = travel.fwd_mm + travel.back_mm;
 
     if (0U != (ptn & OBSTACLE_FLG_STOP))
     {
@@ -179,14 +199,17 @@ static void poll_commands (void)
 /*!
  * @brief Sleep, but wake up for commands.
  *
- * @param[in] delay_ms How long to sleep.
+ * @param[in] delay_ms  How long to sleep.
+ * @param[in] stop_bits Flag bits that end the sleep early. A settle wait
+ *                      passes 0: a ping request must not cut it short.
  */
-static void wait_ms (uint32_t delay_ms)
+static void wait_ms (uint32_t delay_ms, UINT stop_bits)
 {
     uint32_t const start_ms = now_ms();
     uint32_t       spent_ms = 0U;
+    bool           b_stop   = false;
 
-    while (spent_ms < delay_ms)
+    while ((spent_ms < delay_ms) && (!b_stop))
     {
         UINT ptn = 0U;
 
@@ -198,24 +221,29 @@ static void wait_ms (uint32_t delay_ms)
         if (E_OK == result)
         {
             handle_commands(ptn);
+            b_stop = (0U != (ptn & stop_bits));
         }
 
         spent_ms = now_ms() - start_ms;
     }
 }
 
+#if !PICO_CAR_PILOT
 /*!
  * @brief Let the statechart check its time and distance limits.
  */
 static void tick (void)
 {
-    obstacle_statechart_out_t   out;
-    uint32_t const now = now_ms();
+    obstacle_statechart_out_t out;
+    obstacle_travel_t         travel;
+    uint32_t const            now = now_ms();
 
+    (void)obstacle_comms_travel(&travel);
     obstacle_statechart_out_clear(&out);
-    obstacle_statechart_tick(&g_fsm, now, obstacle_comms_odometer_mm(now), &out);
+    obstacle_statechart_tick(&g_fsm, now, travel.fwd_mm + travel.back_mm, &out);
     obstacle_comms_publish(&out, &g_fsm);
 }
+#endif
 
 /*!
  * @brief Settle time for a servo move: 3 ms per degree plus 20 ms [Spec],
@@ -246,6 +274,7 @@ static uint32_t settle_ms (int16_t target)
             OBSTACLE_SETTLE_BASE_MS);
 }
 
+#if !PICO_CAR_PILOT
 /*!
  * @brief Tell whether the car may be driving in the current state (line
  *        following in MONITOR, the body turns of a scan, or the bypass).
@@ -289,6 +318,7 @@ static int16_t servo_target (void)
     }
     return (target);
 }
+#endif
 
 /*!
  * @brief Move the servo if the target angle changed.
@@ -298,6 +328,24 @@ static int16_t servo_target (void)
 static bool move_servo (void)
 {
     bool    b_moved = false;
+#if PICO_CAR_PILOT
+    /* A pilot look leaves the servo at its last ray. Free-running pings point
+     * ahead, so return to 0 once the next such ping is due. Not before: the
+     * next ray of one look arrives within the ping spacing. */
+    int16_t const target = 0;
+
+    if ((!g_servo.b_known) ||
+        ((target != g_servo.deci) && ((scan_hw_now_us() - g_last_trig_us) >= PING_PERIOD_US)))
+    {
+        scan_hw_servo_set(target);
+        g_servo.deci    = target;
+        g_servo.b_known = true;
+        wait_ms(settle_ms(target), 0U);
+        b_moved = true;
+    }
+
+    return (b_moved);
+#else
     int16_t target  = servo_target();
 
     if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
@@ -305,7 +353,7 @@ static bool move_servo (void)
         /* Let Navigation stop the wheels before the servo swings: a servo
          * swing while a motor drives disturbs the wheel encoders. The
          * target may change meanwhile, so read it again. */
-        wait_ms(OBSTACLE_SERVO_PREDELAY_MS);
+        wait_ms(OBSTACLE_SERVO_PREDELAY_MS, 0U);
         target = servo_target();
     }
 
@@ -316,11 +364,12 @@ static bool move_servo (void)
         scan_hw_servo_set(target);
         g_servo.deci    = target;
         g_servo.b_known = true;
-        wait_ms(delay_ms);
+        wait_ms(delay_ms, 0U);
         b_moved = true;
     }
 
     return (b_moved);
+#endif
 }
 
 /*!
@@ -333,9 +382,10 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
 {
     bool b_stuck = false;
 
-    /* Drop a stale ECHO bit left over from a late edge. */
-    (void)tk_clr_flg(obstacle_comms_flag(), ~(UINT)OBSTACLE_FLG_ECHO);
+    /* Empty the result first, then drop a stale ECHO bit: a late edge in
+     * between then leaves no set bit behind an empty result. */
     b_stuck        = scan_hw_rearm();
+    (void)tk_clr_flg(obstacle_comms_flag(), ~(UINT)OBSTACLE_FLG_ECHO);
     g_last_trig_us = scan_hw_now_us();
     *p_dist_mm     = 0U;
 
@@ -363,8 +413,16 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
             result = tk_wai_flg(obstacle_comms_flag(), OBSTACLE_FLG_ECHO, TWF_ORW | TWF_BITCLR,
                                 &ptn, (TMO)OBSTACLE_ECHO_WAIT_MS);
             echo_result    = scan_hw_echo_result();
-            *p_cls = scan_algo_classify(echo_result, (E_OK != result),
-                                        scan_hw_is_echo_high(), false);
+            if ((E_OK == result) && (0U == (echo_result & OBSTACLE_ECHO_DONE)))
+            {
+                /* Woken without a finished echo: this ping proves nothing. */
+                *p_cls = OBSTACLE_CLASS_NO_ECHO;
+            }
+            else
+            {
+                *p_cls = scan_algo_classify(echo_result, (E_OK != result),
+                                            scan_hw_is_echo_high(), false);
+            }
 
             if (OBSTACLE_CLASS_VALID == *p_cls)
             {
@@ -375,19 +433,88 @@ static void ping (uint8_t * p_cls, uint16_t * p_dist_mm)
 }
 
 /*!
+ * @brief Serve a pending ping request: move the servo to the clamped angle,
+ *        let it settle, keep the ping spacing, ping and publish the reply.
+ *
+ * The ping also goes to the statechart's health and collision checks, so a
+ * stuck echo or a dead sonar sets the same fault bit as a free-running ping.
+ *
+ * @return True if a request was served.
+ */
+static bool serve_ping_request (void)
+{
+    uint32_t const req = obstacle_comms_take_ping_request();
+    bool           b_served = false;
+
+    if (obstacle_pack_ping_req_is_pending(req))
+    {
+        obstacle_statechart_out_t out;
+        uint8_t                   cls     = OBSTACLE_CLASS_NO_ECHO;
+        uint16_t                  dist_mm = 0U;
+        /* Cast is safe: the clamp keeps the angle inside +-300. */
+        int16_t const target =
+            (int16_t)obstacle_pack_servo_clamp(obstacle_pack_ping_req_servo(req));
+        uint32_t since_us = 0U;
+
+        if ((!g_servo.b_known) || (target != g_servo.deci))
+        {
+            uint32_t const delay_ms = settle_ms(target);
+
+            scan_hw_servo_set(target);
+            g_servo.deci    = target;
+            g_servo.b_known = true;
+            wait_ms(delay_ms, 0U);
+        }
+
+        since_us = scan_hw_now_us() - g_last_trig_us;
+        if (since_us < PING_PERIOD_US)
+        {
+            wait_ms(((PING_PERIOD_US - since_us) + (USEC_PER_MSEC - 1U)) / USEC_PER_MSEC, 0U);
+        }
+
+        ping(&cls, &dist_mm);
+        obstacle_comms_count_class(cls);
+        obstacle_statechart_out_clear(&out);
+#if PICO_CAR_PILOT
+        obstacle_statechart_ping_health(&g_fsm, cls, dist_mm, false, now_ms(), &out);
+#else
+        obstacle_statechart_ping_guard(&g_fsm, cls, dist_mm, now_ms(), &out);
+#endif
+        obstacle_comms_publish(&out, &g_fsm);
+        obstacle_comms_publish_ping_reply(
+            obstacle_pack_ping_reply(obstacle_pack_ping_req_seq(req), cls, dist_mm, target));
+        b_served = true;
+    }
+
+    return (b_served);
+}
+
+/*!
  * @brief Take one ping and feed it to the statechart.
  */
 static void ping_and_step (void)
 {
     obstacle_statechart_out_t out;
-    uint8_t      cls     = OBSTACLE_CLASS_NO_ECHO;
-    uint16_t     dist_mm = 0U;
+    uint8_t                   cls     = OBSTACLE_CLASS_NO_ECHO;
+    uint16_t                  dist_mm = 0U;
+#if !PICO_CAR_PILOT
+    obstacle_travel_t         travel;
+    /* The body may start or stop turning during the 40 ms echo wait. */
+    bool const                b_turned = obstacle_comms_is_pivoting();
+    bool const                b_fresh  = obstacle_comms_travel(&travel);
 
-    obstacle_statechart_set_odometer(&g_fsm, obstacle_comms_odometer_mm(now_ms()));
+    /* The range check compares the net forward travel. */
+    obstacle_statechart_set_odometer(&g_fsm, travel.fwd_mm - travel.back_mm, b_fresh);
+#endif
+    obstacle_statechart_set_look(&g_fsm, g_servo.deci);
     ping(&cls, &dist_mm);
     obstacle_comms_count_class(cls);
     obstacle_statechart_out_clear(&out);
-    if (obstacle_comms_is_pivoting())
+#if PICO_CAR_PILOT
+    /* Free-running pings feed only the echo health checks. */
+    obstacle_statechart_ping_health(&g_fsm, cls, dist_mm, true, now_ms(), &out);
+#else
+    if (b_turned || obstacle_comms_is_pivoting())
     {
         obstacle_statechart_ping_guard(&g_fsm, cls, dist_mm, now_ms(), &out);
     }
@@ -395,6 +522,7 @@ static void ping_and_step (void)
     {
         obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
     }
+#endif
     obstacle_comms_publish(&out, &g_fsm);
 }
 

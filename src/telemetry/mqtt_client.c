@@ -153,6 +153,10 @@ send_packet (mqtt_client_t * client, uint8_t header, const uint8_t * body,
 
     sent = client->transport.send(client->transport.context, client->tx_buffer,
                                   index);
+    if (sent == 0)
+    {
+        return MQTT_ERR_BUSY;
+    }
     if (sent != (int) index)
     {
         return MQTT_ERR_TRANSPORT;
@@ -238,6 +242,8 @@ disconnect (mqtt_client_t * client, uint32_t now_ms)
                                      MQTT_RECONNECT_MAX_MS : next_delay;
     client->attempt_pending = false;
     client->reply_pending = false;
+    client->ping_owed = false;
+    client->puback_due = false;
     client->rx_len = 0u;
 }
 
@@ -298,36 +304,32 @@ handle_publish (mqtt_client_t * client, const uint8_t * packet,
     payload = &packet[index];
     payload_len = (uint16_t) (packet_len - index);
 
-    if (qos == 1u)
-    {
-        mqtt_result_t result = send_puback(client, packet_id, now_ms);
-        if (result != MQTT_OK)
-        {
-            return result;
-        }
-    }
-
     if ((topic_len == strlen(client->config.command_topic)) &&
-        (memcmp(topic, client->config.command_topic, topic_len) == 0) &&
-        (payload_len >= MQTT_U16_SIZE))
+        (memcmp(topic, client->config.command_topic, topic_len) == 0))
     {
-        uint16_t cmd_id = read_u16(payload);
-        int16_t  delta = 0;
-
-        if (client->has_last_cmd)
-        {
-            delta = (int16_t) (cmd_id - client->last_cmd_id);
-            if (delta <= 0)
-            {
-                return MQTT_OK;
-            }
-        }
-        client->last_cmd_id = cmd_id;
-        client->has_last_cmd = true;
+        /* Every delivery goes on: the command layer drops a QoS 1
+           redelivery by its cmd_id. */
         if (client->command_handler != 0)
         {
             client->command_handler(payload, payload_len,
                                     client->command_context);
+        }
+    }
+
+    if (qos == 1u)
+    {
+        /* The command has run, and the command layer drops a late one by
+           its age, so only the PUBACK waits for ring room. */
+        mqtt_result_t result = send_puback(client, packet_id, now_ms);
+        if (result == MQTT_ERR_BUSY)
+        {
+            client->puback_due = true;
+            client->puback_id = packet_id;
+            return MQTT_OK;
+        }
+        if (result != MQTT_OK)
+        {
+            return result;
         }
     }
 
@@ -419,6 +421,7 @@ handle_packet (mqtt_client_t * client, const uint8_t * packet,
 static mqtt_result_t
 receive_packets (mqtt_client_t * client, uint32_t now_ms)
 {
+    mqtt_result_t result = MQTT_OK;
     int got = 0;
 
     if (client->rx_len < MQTT_RX_BUFFER_SIZE)
@@ -436,6 +439,22 @@ receive_packets (mqtt_client_t * client, uint32_t now_ms)
         {
             client->rx_len = (uint16_t) (client->rx_len + got);
         }
+    }
+
+    /* The PUBACK must go out before the next packet is read, or that
+       packet's ID would overwrite puback_id. */
+    if (client->puback_due)
+    {
+        result = send_puback(client, client->puback_id, now_ms);
+        if (result == MQTT_ERR_BUSY)
+        {
+            return MQTT_ERR_BUSY;
+        }
+        if (result != MQTT_OK)
+        {
+            return MQTT_ERR_PROTOCOL;
+        }
+        client->puback_due = false;
     }
 
     while (client->rx_len >= MQTT_RX_MIN_HEADER)
@@ -461,14 +480,19 @@ receive_packets (mqtt_client_t * client, uint32_t now_ms)
         {
             break;
         }
-        if (handle_packet(client, client->rx_buffer, total_len, now_ms) !=
-            MQTT_OK)
+        result = handle_packet(client, client->rx_buffer, total_len, now_ms);
+        if (result != MQTT_OK)
         {
             return MQTT_ERR_PROTOCOL;
         }
         (void) memmove(client->rx_buffer, &client->rx_buffer[total_len],
                        (size_t) (client->rx_len - total_len));
         client->rx_len = (uint16_t) (client->rx_len - total_len);
+        /* Stop here: another PUBLISH would overwrite puback_id. */
+        if (client->puback_due)
+        {
+            return MQTT_ERR_BUSY;
+        }
     }
 
     if (client->rx_len == MQTT_RX_BUFFER_SIZE)
@@ -515,6 +539,7 @@ mqtt_result_t
 mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
 {
     mqtt_result_t result = MQTT_OK;
+    bool stalled = false;
 
     if ((client == 0) || !client->valid)
     {
@@ -542,7 +567,8 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
     }
 
     result = receive_packets(client, now_ms);
-    if (result != MQTT_OK)
+    stalled = (result == MQTT_ERR_BUSY);
+    if ((result != MQTT_OK) && !stalled)
     {
         if (client->state != MQTT_STATE_DISCONNECTED)
         {
@@ -561,22 +587,30 @@ mqtt_client_poll (mqtt_client_t * client, uint32_t now_ms)
 
     if ((client->state == MQTT_STATE_CONNECTED) &&
         (client->config.keepalive_s > 0u) &&
-        ((now_ms - client->last_tx_ms) >=
-         ((uint32_t) client->config.keepalive_s * MQTT_MS_PER_S)))
+        (client->ping_owed ||
+         ((now_ms - client->last_tx_ms) >=
+          ((uint32_t) client->config.keepalive_s * MQTT_MS_PER_S))))
     {
         result = send_packet(client, MQTT_PINGREQ, 0, 0u, now_ms);
-        if (result != MQTT_OK)
+        if ((result != MQTT_OK) && (result != MQTT_ERR_BUSY))
         {
             disconnect(client, now_ms);
         }
-        else if (!client->reply_pending)
+        else
         {
-            start_reply_timer(client, now_ms);
+            /* A busy ping stays owed: another send moves last_tx_ms, which
+               would otherwise hide it. The reply timer runs from the first
+               try, so a ring that never drains ends the session. */
+            client->ping_owed = (result == MQTT_ERR_BUSY);
+            if (!client->reply_pending)
+            {
+                start_reply_timer(client, now_ms);
+            }
         }
-        return result;
+        return (stalled && (result == MQTT_OK)) ? MQTT_ERR_BUSY : result;
     }
 
-    return MQTT_OK;
+    return stalled ? MQTT_ERR_BUSY : MQTT_OK;
 }
 
 mqtt_result_t
@@ -610,7 +644,8 @@ mqtt_client_publish (mqtt_client_t * client, const char * topic,
     index = (uint16_t) (index + len);
 
     result = send_packet(client, MQTT_PUBLISH, body, index, now_ms);
-    if (result != MQTT_OK)
+    /* A full ring drops one QoS 0 frame; a reconnect would drop seconds. */
+    if ((result != MQTT_OK) && (result != MQTT_ERR_BUSY))
     {
         disconnect(client, now_ms);
     }

@@ -1,7 +1,7 @@
 /*
  *	test_attitude.c
- *	Host tests for lift and overturn detection: the eight traces of
- *	the project notes, and a bump that must not count.
+ *	Host tests for lift and overturn detection: eight traces,
+ *	and a bump that must not count.
  */
 
 #include <math.h>
@@ -53,6 +53,7 @@ static void rig_init (rig_t * p_rig)
     p_rig->in.fwd[2]   = 0.0f;
     p_rig->in.calibrated = true;
     p_rig->in.b_wheels_free = false;
+    p_rig->in.b_on_hump = false;
     p_rig->out.state   = ATTITUDE_OK;
 }
 
@@ -256,6 +257,21 @@ static void test_config_checks (void)
     CHECK (!attitude_init (NULL, &cfg));
 }
 
+/* A hold as long as lift_samples would make every bumpy hump a lift. */
+static void test_config_refuses_long_hold (void)
+{
+    attitude_ctx_t    ctx;
+    attitude_config_t cfg;
+
+    attitude_default_config (&cfg);
+    cfg.lift_hold_samples = cfg.lift_samples;
+    CHECK (!attitude_init (&ctx, &cfg));
+    cfg.lift_hold_samples = (uint16_t)(cfg.lift_samples + 1U);
+    CHECK (!attitude_init (&ctx, &cfg));
+    cfg.lift_hold_samples = (uint16_t)(cfg.lift_samples - 1U);
+    CHECK (attitude_init (&ctx, &cfg));
+}
+
 static void test_wheels_free_only_candidate (void)
 {
     rig_t    rig;
@@ -282,6 +298,71 @@ static void test_wheels_free_only_candidate (void)
     CHECK (ATTITUDE_LIFTED == rig.out.state);
 }
 
+/* During a hump the unsettled cue does not count; a tilt breach still does. */
+static void test_hump_flag_mutes_unsettled_cue (void)
+{
+    rig_t    rig;
+    unsigned idx = 0U;
+
+    rig_init (&rig);
+    run (&rig, 100U, 1.0f, 0.0f, 0.0f, 0.02f);
+    rig.in.b_on_hump = true;
+    for (idx = 0U; idx < 60U; idx++)
+    {
+        sample (&rig, ((idx % 2U) == 0U) ? 1.2f : 0.82f, 2.0f, 1.0f, 0.02f);
+        CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
+
+    /* The same run without the flag lifts. */
+    rig.in.b_on_hump = false;
+    for (idx = 0U; idx < 60U; idx++)
+    {
+        sample (&rig, ((idx % 2U) == 0U) ? 1.2f : 0.82f, 2.0f, 1.0f, 0.02f);
+    }
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+
+    /* A tilt breach on a hump still lifts. */
+    rig_init (&rig);
+    rig.in.b_on_hump = true;
+    run (&rig, 40U, 1.0f, 30.0f, 0.0f, 0.02f);
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+}
+
+/* Cue samples counted before a hump do not add to the hold after it. */
+static void test_hump_ending_mid_candidate_is_not_a_lift (void)
+{
+    rig_t    rig;
+    unsigned idx = 0U;
+
+    rig_init (&rig);
+    rig.in.b_wheels_free = true;
+    run (&rig, 100U, 1.0f, 0.0f, 0.0f, 0.02f);
+    for (idx = 0U; idx < 9U; idx++)
+    {
+        sample (&rig, ((idx % 2U) == 0U) ? 1.3f : 0.7f, 0.0f, 0.0f, 0.0f);
+    }
+    CHECK (ATTITUDE_CANDIDATE == rig.out.state);
+
+    rig.in.b_on_hump = true;
+    for (idx = 0U; idx < 20U; idx++)
+    {
+        sample (&rig, ((idx % 2U) == 0U) ? 1.3f : 0.7f, 2.0f, 0.0f, 0.0f);
+        CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
+
+    /* The hump ends; the bumps stop. Only the hold of the unsettled cue is left. */
+    rig.in.b_on_hump = false;
+    for (idx = 0U; idx < 30U; idx++)
+    {
+        sample (&rig, 1.0f, 0.0f, 0.0f, 0.01f);
+        CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
+
+    /* A real lift after the hump still counts in full. */
+    run (&rig, 40U, 1.0f, 30.0f, 0.0f, 0.02f);
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+}
+
 int main (void)
 {
     test_flat_run ();
@@ -295,7 +376,10 @@ int main (void)
     test_placement_by_hand ();
     test_failed_read_keeps_state ();
     test_config_checks ();
+    test_config_refuses_long_hold ();
     test_wheels_free_only_candidate ();
+    test_hump_flag_mutes_unsettled_cue ();
+    test_hump_ending_mid_candidate_is_not_a_lift ();
 
     if (g_fail != 0U)
     {

@@ -29,6 +29,15 @@ static uint32_t status_word(uint8_t cls, uint16_t dist_mm, uint8_t seq)
     return word;
 }
 
+#define LOOK_DECI (150)
+
+/* A face ping word with a class, a distance and a sequence, taken at
+ * LOOK_DECI. */
+static uint32_t ping_word(uint8_t cls, uint16_t dist_mm, uint8_t seq)
+{
+    return obstacle_pack_ping(seq, cls, dist_mm, LOOK_DECI);
+}
+
 static void test_pose_straight_and_reset(void)
 {
     nav_core_t core;
@@ -45,7 +54,7 @@ static void test_pose_straight_and_reset(void)
     wheel[NAV_CORE_LEFT]  += 300 * UM_PER_MM;
     wheel[NAV_CORE_RIGHT] += 300 * UM_PER_MM;
     nav_core_update_pose(&core, wheel);
-    nav_core_follow_begin(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 3U), wheel, &in);
+    nav_core_follow_begin(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 3U), wheel, &in);
     assert(0 == in.x_mm);
     assert(300 == in.y_mm);
     assert(0 == in.head_deci);
@@ -66,7 +75,7 @@ static void test_pose_left_turn(void)
     nav_core_t core;
     int64_t    wheel[NAV_CORE_WHEELS] = {0, 0};
     /* Wheel travel of a pivot by 90 degrees: track * (pi / 2) / 2. */
-    int64_t const quarter_um = ((int64_t)OBSTACLE_WHEEL_TRACK_MM * UM_PER_MM * 900) /
+    int64_t const quarter_um = ((int64_t)CHASSIS_WHEEL_TRACK_MM * UM_PER_MM * 900) /
                                (2 * OBSTACLE_NAV_DECI_PER_RAD);
     follow_in_t in;
     int32_t     head = 0;
@@ -128,45 +137,74 @@ static void test_follow_input(void)
 
     (void)memset(&core, 0, sizeof(core));
     nav_core_reset_pose(&core, wheel);
-    nav_core_follow_begin(&core, status_word(OBSTACLE_CLASS_VALID, 250U, 7U), wheel, &in);
+    nav_core_follow_begin(&core, ping_word(OBSTACLE_CLASS_VALID, 250U, 7U), wheel, &in);
 
     /* Still on the start tape: the gate is closed, and the ping is not new. */
-    assert(!nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_VALID, 250U, 7U), wheel,
+    assert(!nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_VALID, 250U, 7U), LOOK_DECI, wheel,
                                   true, &in));
     assert(!in.b_line);
     assert(!in.b_ping);
 
     /* A new sequence is a new ping, with its class and distance. */
-    assert(!nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_VALID, 310U, 8U), wheel,
+    assert(!nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_VALID, 310U, 8U), LOOK_DECI, wheel,
                                   true, &in));
     assert(in.b_ping);
     assert(OBSTACLE_CLASS_VALID == in.cls);
     assert(310U == in.dist_mm);
     /* The same word again is not a new ping. */
-    (void)nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_VALID, 310U, 8U), wheel, true,
+    (void)nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_VALID, 310U, 8U), LOOK_DECI, wheel, true,
                                 &in);
     assert(!in.b_ping);
 
     /* Off the tape: the gate opens once; the next tape counts. */
-    assert(nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 8U), wheel, false,
+    assert(nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 8U), LOOK_DECI, wheel, false,
                                  &in));
     assert(!in.b_line);
-    assert(!nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 8U), wheel, false,
+    assert(!nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 8U), LOOK_DECI, wheel, false,
                                   &in));
-    (void)nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 8U), wheel, true, &in);
+    (void)nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 8U), LOOK_DECI, wheel, true, &in);
     assert(in.b_line);
 
-    /* The sequence wraps at 5 bits: 31 to 0 is a new ping. */
-    (void)nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 31U), wheel, false,
+    /* A new ping taken at another servo angle is not a reading at the look. */
+    (void)nav_core_follow_input(&core, obstacle_pack_ping(9U, OBSTACLE_CLASS_VALID, 200U, 0),
+                                LOOK_DECI, wheel, false, &in);
+    assert(!in.b_ping);
+
+    /* The sequence wraps at 6 bits: 63 to 0 is a new ping. */
+    (void)nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 63U), LOOK_DECI, wheel, false,
                                 &in);
-    (void)nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 0U), wheel, false,
+    (void)nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 0U), LOOK_DECI, wheel, false,
                                 &in);
     assert(in.b_ping);
 
     /* A pose reset closes the gate again. */
     nav_core_reset_pose(&core, wheel);
-    (void)nav_core_follow_input(&core, status_word(OBSTACLE_CLASS_OPEN, 0U, 0U), wheel, true, &in);
+    (void)nav_core_follow_input(&core, ping_word(OBSTACLE_CLASS_OPEN, 0U, 0U), LOOK_DECI, wheel, true, &in);
     assert(!in.b_line);
+}
+
+/* Forward and backward travel count apart: a backward move neither
+ * resets nor clamps the forward count, and the first sample is the base. */
+static void test_travel_counts(void)
+{
+    nav_travel_t travel;
+
+    (void)memset(&travel, 0, sizeof(travel));
+    nav_core_travel_update(&travel, 5000000); /* 5 m since boot: the base */
+    assert((0U == travel.fwd_mm) && (0U == travel.back_mm));
+
+    nav_core_travel_update(&travel, 5300000);
+    assert((300U == travel.fwd_mm) && (0U == travel.back_mm));
+
+    /* Back 400 mm, past the base. */
+    nav_core_travel_update(&travel, 4900000);
+    assert((300U == travel.fwd_mm) && (400U == travel.back_mm));
+
+    /* Sub-millimetre steps add up; they are not lost per call. */
+    nav_core_travel_update(&travel, 4900400);
+    nav_core_travel_update(&travel, 4900800);
+    nav_core_travel_update(&travel, 4901200);
+    assert(301U == travel.fwd_mm);
 }
 
 int main(void)
@@ -176,6 +214,7 @@ int main(void)
     test_servo_wait();
     test_repeat_gate();
     test_follow_input();
+    test_travel_counts();
     printf("obstacle nav core: all tests passed\n");
 
     return 0;

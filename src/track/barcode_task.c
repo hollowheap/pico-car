@@ -18,6 +18,7 @@
 #include "motion/motion.h"
 #include "platform/liveness.h"
 #include "platform/log.h"
+#include "platform/static_assert.h"
 #include "supervisor/supervisor.h"
 #include "telemetry/assemble.h"
 #include "telemetry/emit.h"
@@ -25,10 +26,16 @@
 #include "track/barcode.h"
 #include "track/track.h"
 
+#include "ir_pins.h"
+
 #define US_PER_MS            1000U
 #define BARCODE_GAP_US       500000U
 #define BARCODE_GAP_MS       (BARCODE_GAP_US / US_PER_MS)
-#define BARCODE_LEVEL_SPACE  1U
+
+/* The task waits in liveness slices and kicks after each one, so an idle gap
+   is this many timed-out waits in a row. */
+#define BARCODE_GAP_WAITS    (BARCODE_GAP_MS / LIVENESS_WAIT_MS)
+STATIC_ASSERT((BARCODE_GAP_WAITS * LIVENESS_WAIT_MS) == BARCODE_GAP_MS, barcode_gap_is_whole_waits);
 
 /* Event p2 of `barcode`: width/4 um in bits 4..15, reverse in bit 3, action in
    bits 0..2. A narrow width is at most 16383 um, so width/4 fits 12 bits. */
@@ -133,12 +140,35 @@ static void report_block (bool level)
     }
 }
 
+/* Wait one liveness slice for an edge. True once a whole gap passed without one. */
+static bool wait_for_gap (uint32_t * p_idle_waits)
+{
+    bool b_gap = false;
+
+    if (E_TMOUT != ir_wait_change(IR_TYPE_BARCODE, (TMO)LIVENESS_WAIT_MS))
+    {
+        *p_idle_waits = 0U;
+    }
+    else
+    {
+        (*p_idle_waits)++;
+        if (*p_idle_waits >= BARCODE_GAP_WAITS)
+        {
+            *p_idle_waits = 0U;
+            b_gap         = true;
+        }
+    }
+
+    return b_gap;
+}
+
 void barcode_task_run (void)
 {
     barcode_parser_t parser = BARCODE_PARSER_INIT;
     uint32_t         previous_us = 0U;
     bool             previous_level = false;
     bool             have_previous = false;
+    uint32_t         idle_waits = 0U;
 
     barcode_gate_init(&g_gate);
 
@@ -146,7 +176,6 @@ void barcode_task_run (void)
     {
         uint32_t timestamp_us = 0U;
         bool     level        = false;
-        ER       er           = E_OK;
 
         liveness_kick(LIVE_BARCODE);
         while (ir_barcode_pop(&timestamp_us, &level))
@@ -174,7 +203,7 @@ void barcode_task_run (void)
 
                 if (E_OK == motion_feedback_snapshot(&feedback))
                 {
-                    ok = barcode_width_um(gap_us, &feedback, &width_um);
+                    ok = barcode_width_um(gap_us, timestamp_us, &feedback, &width_um);
                 }
 
                 if (!ok)
@@ -223,8 +252,7 @@ void barcode_task_run (void)
             previous_level = level;
         }
 
-        er = ir_wait_change(IR_TYPE_BARCODE, (TMO)BARCODE_GAP_MS);
-        if (E_TMOUT == er)
+        if (wait_for_gap(&idle_waits))
         {
             if (0U != (parser.elem_index | parser.char_index))
             {

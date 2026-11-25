@@ -32,6 +32,14 @@ describe('wire schema', () => {
     }
   });
 
+  it('decodes the hug sequence byte of the obstacle frame', () => {
+    const packet = new Uint8Array(24);
+    packet[13] = 3;
+    const decoded = decodePacket('obstacle', packet);
+    expect(decoded.hug_seq).toBe(3);
+    expect(decoded).not.toHaveProperty('reserved');
+  });
+
   it('decodes a big-endian status packet', () => {
     const packet = Uint8Array.from([
       0xff, 0x6a, 0x00, 0x00, 0x03, 0xe8, 0x0e, 0x10, 0x02, 0x01, 0x01, 0x02, 0x00, 0x2a, 0x03, 0x00,
@@ -67,5 +75,8 @@ describe('wire schema', () => {
     expect(enumLabel('motionClass', 99)).toBe('UNKNOWN 99');
     expect(bitLabels('obstacleFaults', 0b1001)).toEqual(['NO ECHO', 'NO SAFE PATH']);
     expect(bitLabels('physicsFaults', 0)).toEqual([]);
+    expect(enumLabel('obstacleCause', 15)).toBe('BYPASS GAVE UP');
+    expect(enumLabel('hugState', 4)).toBe('LEG');
+    expect(enumLabel('hugSide', 2)).toBe('NONE');
   });
 });

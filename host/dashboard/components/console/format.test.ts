@@ -14,6 +14,27 @@ describe('packet summaries', () => {
     expect(summary).toContain('echo TOO CLOSE');
   });
 
+  it('names the hug state, side and sizes', () => {
+    const summary = packetSummary({
+      timestamp: 1,
+      packet: 'obstacle',
+      values: { state: 5, cause: 0, echo_class: 0, dist_mm: 90, hug_state: 4, hug_side: 1, face_mm: 120, width_mm: 0, breadth_mm: 210 },
+    });
+    expect(summary).toContain('hug LEG right');
+    expect(summary).toContain('face 120 mm');
+    expect(summary).toContain('width unknown');
+    expect(summary).toContain('breadth 210 mm');
+  });
+
+  it('shows an unseen face as unknown', () => {
+    const summary = packetSummary({
+      timestamp: 1,
+      packet: 'obstacle',
+      values: { state: 5, cause: 0, echo_class: 0, dist_mm: 90, hug_state: 0, hug_side: 2, face_mm: 0, width_mm: 0, breadth_mm: 0 },
+    });
+    expect(summary).toContain('face unknown');
+  });
+
   it('names the physics packet codes', () => {
     const summary = packetSummary({
       timestamp: 1,

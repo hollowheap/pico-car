@@ -51,7 +51,7 @@ const vectorsUrl = new URL('./vectors.json', import.meta.url);
 const testHeaderUrl = new URL('../tests/telemetry_vectors.h', import.meta.url);
 const schema = parse(readFileSync(sourceUrl, 'utf8')) as Schema;
 
-if (schema.schema !== 2) throw new Error('unsupported schema version');
+if (schema.schema !== 3) throw new Error('unsupported schema version');
 if (schema.byte_order !== 'big') throw new Error('only big-endian schemas are supported');
 
 const fieldBytes = (field: Field) => TYPE_SIZE[field.type] * (field.count ?? 1);
@@ -193,6 +193,8 @@ cLines.push('');
 cLines.push('#ifndef TELEMETRY_WIRE_SCHEMA_H');
 cLines.push('#define TELEMETRY_WIRE_SCHEMA_H');
 cLines.push('');
+cLines.push('#include "platform/static_assert.h"');
+cLines.push('');
 cLines.push(`#define TELEMETRY_SCHEMA_VERSION ${schema.schema}u`);
 cLines.push('');
 cLines.push('/* Topics: the last MQTT topic character, and the first byte of a queued frame. */');
@@ -209,6 +211,9 @@ for (const [name, packet] of Object.entries(schema.packets)) {
       cLines.push(`#define TELEMETRY_${upper(name)}_COUNT_${upper(field.name)} ${field.count}u`);
     }
   }
+  const last = packet.fields.reduce((a, b) => (b.offset > a.offset ? b : a));
+  const lastEnd = `TELEMETRY_${upper(name)}_OFF_${upper(last.name)} + ${fieldBytes(last)}u`;
+  cLines.push(`STATIC_ASSERT((${lastEnd}) <= TELEMETRY_${upper(name)}_WIRE_SIZE, "${name} last field fits the wire size");`);
 }
 cLines.push('');
 cLines.push('/* Event types. */');
@@ -288,8 +293,7 @@ for (const [name, packet] of Object.entries(schema.packets)) {
       }
     };
     if (field.count === undefined) {
-      // A reserved byte is always written as zero.
-      const value = field.name === 'reserved' ? 0 : sample(field.type);
+      const value = sample(field.type);
       write(value, field.offset);
       values[field.name] = value;
     } else {

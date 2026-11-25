@@ -149,17 +149,18 @@ def decode_packet(schema: dict, name: str, payload: bytes) -> dict:
 
 
 def encode_command(
-    schema: dict, name: str, cmd_id: int, run_id: int, sent_ms: int
+    schema: dict, name: str, cmd_id: int, run_id: int, uptime_s: int
 ) -> bytes:
+    """The 9-byte frame, big-endian: cmd_id u16, run_id u16, opcode u8,
+    uptime_s u32 (the uptime of the newest heartbeat)."""
     try:
         opcode = schema["commands"][name]
     except KeyError as exc:
         raise SchemaError(f"unknown command: {name}") from exc
     return struct.pack(
-        ">HHHBB",
+        ">HHBI",
         cmd_id & 0xFFFF,
         run_id & 0xFFFF,
-        sent_ms & 0xFFFF,
         int(opcode) & 0xFF,
-        0,
+        uptime_s & 0xFFFFFFFF,
     )

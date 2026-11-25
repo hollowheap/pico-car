@@ -7,7 +7,7 @@ import { useTheme } from '../../lib/theme-provider';
 import { bearingName } from './format';
 import { Compass } from './Compass';
 import { LevelGauge } from './LevelGauge';
-import { Panel } from './Panel';
+import { Panel, useDense } from './Panel';
 import { StatusPill } from './StatusPill';
 
 type Props = {
@@ -37,6 +37,7 @@ export function AttitudePanel({ statusPacket, physics, status, style }: Props) {
   const yawRate = physics?.values.yaw_rate_cdps === undefined ? 0 : physics.values.yaw_rate_cdps / CDEG;
   const attitude = physics?.values.attitude_state;
   const alert = attitude === 2 || attitude === 3;
+  const dense = useDense();
 
   return (
     <Panel
@@ -52,32 +53,65 @@ export function AttitudePanel({ statusPacket, physics, status, style }: Props) {
       testID="attitude-panel"
       title="Attitude"
     >
-      <View style={styles.readout}>
-        <Text style={[theme.typography.headingLg, { color: theme.colors.text }]}>
-          {heading === null ? '--' : heading.toFixed(0)}
-          <Text style={[theme.typography.subheading, { color: theme.colors.muted }]}> ° heading</Text>
+      {dense ? (
+        <>
+          <View style={styles.denseRow}>
+            <View style={styles.denseCompass}>
+              <Compass available={heading !== null} headingDeg={heading ?? 0} size={136} yawRateDps={yawRate} />
+            </View>
+            <View style={styles.denseText}>
+              <Text style={[theme.typography.heading, { color: theme.colors.text }]}>
+                {heading === null ? '--' : `${heading.toFixed(0)}°`}
+                <Text style={[theme.typography.caption, { color: theme.colors.muted }]}> heading</Text>
+              </Text>
+              <Text style={[theme.typography.label, { color: heading === null ? theme.colors.muted : theme.colors.text }]}>
+                {heading === null ? 'NO HEADING' : bearingName(heading)}
+              </Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.text }]}>
+                pitch {signed(pitch)}{'\n'}roll {signed(roll)}{'\n'}turn {signed(physics ? yawRate : null, 0)}/s
+              </Text>
+              <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+                Hump {physics === undefined ? '--' : enumLabel('humpState', physics.values.hump_state).toLowerCase()}, peak{' '}
+                {physics?.values.hump_peak_mm ?? '--'} mm. Motion{' '}
+                {physics === undefined ? '--' : enumLabel('motionClass', physics.values.motion_class).toLowerCase()}.
+              </Text>
+            </View>
+          </View>
+          <LevelGauge envelopeDeg={TILT_ENVELOPE_DEG} pitchDeg={pitch} rollDeg={roll} />
+        </>
+      ) : (
+        <>
+        <View style={styles.readout}>
+          <Text style={[theme.typography.headingLg, { color: theme.colors.text }]}>
+            {heading === null ? '--' : heading.toFixed(0)}
+            <Text style={[theme.typography.subheading, { color: theme.colors.muted }]}> ° heading</Text>
+          </Text>
+          <Text style={[theme.typography.label, { color: heading === null ? theme.colors.muted : theme.colors.text }]}>
+            {heading === null ? 'NO HEADING' : bearingName(heading)}
+          </Text>
+        </View>
+        <View style={styles.compass}>
+          <Compass available={heading !== null} headingDeg={heading ?? 0} yawRateDps={yawRate} />
+        </View>
+        <LevelGauge envelopeDeg={TILT_ENVELOPE_DEG} pitchDeg={pitch} rollDeg={roll} />
+        <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+          pitch {signed(pitch)} · roll {signed(roll)} · turn {signed(physics ? yawRate : null, 0)}/s
         </Text>
-        <Text style={[theme.typography.label, { color: heading === null ? theme.colors.muted : theme.colors.text }]}>
-          {heading === null ? 'NO HEADING' : bearingName(heading)}
+        <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+          Hump {physics === undefined ? '--' : enumLabel('humpState', physics.values.hump_state).toLowerCase()}, peak{' '}
+          {physics?.values.hump_peak_mm ?? '--'} mm. Motion{' '}
+          {physics === undefined ? '--' : enumLabel('motionClass', physics.values.motion_class).toLowerCase()}. Ticks at ±{TILT_ENVELOPE_DEG}° mark the lift envelope.
         </Text>
-      </View>
-      <View style={styles.compass}>
-        <Compass available={heading !== null} headingDeg={heading ?? 0} yawRateDps={yawRate} />
-      </View>
-      <LevelGauge envelopeDeg={TILT_ENVELOPE_DEG} pitchDeg={pitch} rollDeg={roll} />
-      <Text style={[theme.typography.body, { color: theme.colors.text }]}>
-        pitch {signed(pitch)} · roll {signed(roll)} · turn {signed(physics ? yawRate : null, 0)}/s
-      </Text>
-      <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        Hump {physics === undefined ? '--' : enumLabel('humpState', physics.values.hump_state).toLowerCase()}, peak{' '}
-        {physics?.values.hump_peak_mm ?? '--'} mm. Motion{' '}
-        {physics === undefined ? '--' : enumLabel('motionClass', physics.values.motion_class).toLowerCase()}. Ticks at ±{TILT_ENVELOPE_DEG}° mark the lift envelope.
-      </Text>
+        </>
+      )}
     </Panel>
   );
 }
 
 const styles = StyleSheet.create({
-  readout: { alignItems: 'baseline', flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
+  readout: { alignItems: 'baseline', flexDirection: 'row', gap: 12 },
   compass: { alignItems: 'center' },
+  denseCompass: { width: 136 },
+  denseRow: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  denseText: { flex: 1, gap: 4, minWidth: 0 },
 });

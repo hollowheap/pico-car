@@ -5,8 +5,10 @@
  *        the obstacle task, and the links to the motion service.
  *
  * Sharing rules:
- *   - Status word and steering word: one 32-bit store, one 32-bit load.
- *   - Fault byte and drop counter: the the obstacle task task is the only writer.
+ *   - Status word, fault word, flags, aim and drop counter: stored under one
+ *     spinlock and copied under it by obstacle_comms_copy_scalars(), so a
+ *     reader never mixes two steps. A single getter reads one whole word.
+ *   - Steering word: one 32-bit store, one 32-bit load.
  *   - Profile: a sequence lock. The writer never waits; a reader retries
  *     once and then gets E_BUSY.
  *   - Command queue and outbox: many callers, so each is guarded by a
@@ -38,9 +40,6 @@
 /* A reader of the profile tries this many times before giving up. */
 #define PROFILE_TRIES (2U)
 
-/* Milliseconds in one second, for the odometer estimate. */
-#define MSEC_PER_SECOND (1000U)
-
 /* The lock word type. Without SMP the lock is only a placeholder, because
  * pausing interrupts on the one core is enough. */
 #if TK_SUPPORT_SMP
@@ -70,6 +69,14 @@ static comms_links_t g_links = {0, 0, NULL, NULL};
 #define AIM_BODY_SHIFT (16U)
 
 static uint32_t volatile g_status = 0U;
+/* Last good wheel travel; the obstacle task only. */
+static obstacle_travel_t g_travel = {0U, 0U};
+static uint32_t volatile g_ping   = 0U;
+/* The statechart's ping word as last published, to tell a new free-running
+ * ping from one that was already shown. */
+static uint32_t g_fsm_ping_seen = 0U;
+/* The pending ping request; 0 when there is none. */
+static uint32_t volatile g_ping_req = 0U;
 static uint32_t volatile g_steer  = 0U;
 static uint16_t volatile g_faults = 0U;
 static uint8_t volatile g_drops   = 0U;
@@ -86,6 +93,7 @@ static uint8_t volatile g_plan_status   = 0U;
 static uint8_t volatile g_plan_side     = 0U;
 static uint8_t volatile g_plan_start    = 0U;
 static bool volatile g_plan_wall        = false;
+static uint8_t volatile g_plan_req_id   = 0U;
 
 /* Servo angle (low 16 bits) and body offset (high 16 bits), deci-degrees,
  * stored whole each step. */
@@ -104,6 +112,8 @@ static uint8_t volatile g_evt_count = 0U;
 
 static comms_lock_t g_cmd_lock = 0U;
 static comms_lock_t g_evt_lock = 0U;
+static comms_lock_t g_req_lock = 0U;
+static comms_lock_t g_pub_lock = 0U;
 
 /* ------------------------------------------------------------------ *
  * Private function prototypes.
@@ -149,6 +159,8 @@ ER obstacle_comms_init (obstacle_links_t const * p_links)
 #if TK_SUPPORT_SMP
     (void)InitSpinLock(&g_cmd_lock);
     (void)InitSpinLock(&g_evt_lock);
+    (void)InitSpinLock(&g_req_lock);
+    (void)InitSpinLock(&g_pub_lock);
 #endif
 
     h_new = tk_cre_flg(&cflg);
@@ -193,7 +205,8 @@ ID obstacle_comms_flag (void)
  *
  * @param[in] cmd Packed command byte (obstacle_pack_cmd()).
  *
- * @return E_OK, E_LIMIT if the queue is full, or a flag error.
+ * @return E_OK, E_LIMIT if the queue is full (the drop is counted), or a
+ *         flag error.
  */
 ER obstacle_comms_post_cmd (uint8_t cmd)
 {
@@ -226,6 +239,10 @@ ER obstacle_comms_post_cmd (uint8_t cmd)
         if (E_OK == result)
         {
             result = tk_set_flg(g_links.h_flag, OBSTACLE_FLG_CMD);
+        }
+        else
+        {
+            count_drop();
         }
     }
 
@@ -284,9 +301,9 @@ static void share_faults (uint16_t faults)
     {
         active |= FAULT_OBSTACLE_STOPPED_BIT;
     }
-    system_fault_assign((uint16_t)(FAULT_SONAR_NO_ECHO_BIT |
-                                   FAULT_ECHO_LINE_BIT |
-                                   FAULT_OBSTACLE_STOPPED_BIT),
+    system_fault_assign(FAULT_OWNER_OBSTACLE,
+                        FAULT_SONAR_NO_ECHO_BIT | FAULT_ECHO_LINE_BIT |
+                            FAULT_OBSTACLE_STOPPED_BIT,
                         active);
 }
 
@@ -299,20 +316,39 @@ static void share_faults (uint16_t faults)
  */
 void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_statechart_t const * p_fsm)
 {
-    uint8_t idx = 0U;
+    uint8_t  idx    = 0U;
+    uint32_t status = 0U;
+    uint32_t aim    = 0U;
+    uint16_t faults = 0U;
+    uint8_t  flags  = 0U;
+    UINT     intsts = 0U;
 
     if (p_out->b_call_stop && (NULL != g_links.p_stop))
     {
         (void)g_links.p_stop();
     }
 
-    g_status = obstacle_statechart_status(p_fsm);
+    status = obstacle_statechart_status(p_fsm);
     /* Bits 12 to 14 carry the give-up reason. */
-    g_faults = (uint16_t)(p_fsm->faults |
-                          (uint16_t)(((uint32_t)p_fsm->reason & OBSTACLE_STOP_REASON_MK) << OBSTACLE_STOP_REASON_SH));
-    g_flags  = obstacle_statechart_flags(p_fsm);
-    g_aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
-               (uint32_t)(uint16_t)obstacle_statechart_servo_deci(p_fsm);
+    faults = (uint16_t)(p_fsm->faults |
+                        (uint16_t)(((uint32_t)p_fsm->reason & OBSTACLE_STOP_REASON_MK) << OBSTACLE_STOP_REASON_SH));
+    flags  = obstacle_statechart_flags(p_fsm);
+    aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
+             (uint32_t)(uint16_t)obstacle_statechart_servo_deci(p_fsm);
+
+    intsts   = lock_take(&g_pub_lock);
+    g_status = status;
+    g_faults = faults;
+    g_flags  = flags;
+    g_aim    = aim;
+    lock_give(&g_pub_lock, intsts);
+
+    /* A reply to a ping request stays until the next free-running ping. */
+    if (p_fsm->ping != g_fsm_ping_seen)
+    {
+        g_fsm_ping_seen = p_fsm->ping;
+        g_ping          = p_fsm->ping;
+    }
     share_faults(p_fsm->faults);
 
     if (p_out->b_profile_changed)
@@ -332,37 +368,33 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
 }
 
 /*!
- * @brief Distance travelled, from the motion service if possible.
+ * @brief Wheel travel from the motion service.
  *
- * NOTE: Without a reading, the distance is estimated from time at the
- * configured bypass speed, so the distance limits still work (safely
- * early) on the bench.
+ * NOTE: Without a fresh reading the last good travel is kept and the result
+ * is false; no distance is estimated.
  *
- * @param[in] now_ms Current time.
+ * @param[out] p_travel Travel since boot.
  *
- * @return Distance in mm.
+ * @return True with fresh wheel feedback.
  */
-uint32_t obstacle_comms_odometer_mm (uint32_t now_ms)
+bool obstacle_comms_travel (obstacle_travel_t * p_travel)
 {
-    uint32_t                     distance_mm = 0U;
-    obstacle_distance_fn_t const p_read      = g_links.p_get_distance_mm;
-    bool                         b_have_mm   = false;
+    obstacle_distance_fn_t const p_read  = g_links.p_get_distance_mm;
+    obstacle_travel_t            fresh   = g_travel;
+    bool                         b_fresh = false;
 
     if (NULL != p_read)
     {
-        b_have_mm = (E_OK == p_read(&distance_mm));
+        b_fresh = (E_OK == p_read(&fresh));
     }
-
-    if (!b_have_mm)
+    if (b_fresh)
     {
-        distance_mm = ((now_ms / MSEC_PER_SECOND) * OBSTACLE_BYPASS_SPEED_MM_S) +
-                      (((now_ms % MSEC_PER_SECOND) * OBSTACLE_BYPASS_SPEED_MM_S) /
-                       MSEC_PER_SECOND);
+        g_travel = fresh;
     }
+    *p_travel = g_travel;
 
-    return (distance_mm);
+    return (b_fresh);
 }
-
 /*!
  * @brief Take the next event from the obstacle task's own outbox.
  *
@@ -420,6 +452,80 @@ uint32_t obstacle_comms_status (void)
 }
 
 /*!
+ * @brief Ask for one ping at a servo angle. Never blocks; safe from either
+ *        core. A request that has not started is replaced.
+ *
+ * @param[in] servo_deci Wanted angle in deci-degrees; the sonar task clamps it.
+ * @param[in] seq        Request sequence; only the low 6 bits are kept.
+ *
+ * @return E_OK, E_OBJ before init, or the flag error.
+ */
+ER obstacle_ping_request (int16_t servo_deci, uint8_t seq)
+{
+    ER result = E_OBJ;
+
+    if (g_links.h_flag > 0)
+    {
+        UINT const intsts = lock_take(&g_req_lock);
+
+        g_ping_req = obstacle_pack_ping_req(servo_deci, seq);
+        lock_give(&g_req_lock, intsts);
+
+        result = tk_set_flg(g_links.h_flag, OBSTACLE_FLG_PING);
+    }
+
+    return (result);
+}
+
+/*!
+ * @brief Latest ping word. Never blocks.
+ *
+ * @return The packed ping word; the reply flag marks a ping taken for a request.
+ */
+uint32_t obstacle_ping_read (void)
+{
+    return (g_ping);
+}
+
+/*!
+ * @brief Take the pending ping request, if any. Sonar task only.
+ *
+ * @return The request word, or 0 if none was pending.
+ */
+uint32_t obstacle_comms_take_ping_request (void)
+{
+    UINT const intsts = lock_take(&g_req_lock);
+    uint32_t   word   = g_ping_req;
+
+    g_ping_req = 0U;
+    lock_give(&g_req_lock, intsts);
+
+    return (word);
+}
+
+/*!
+ * @brief Show the ping taken for a request. Sonar task only; call after
+ *        obstacle_comms_publish() so the reply is the latest word.
+ *
+ * @param[in] word Ping word with the reply flag.
+ */
+void obstacle_comms_publish_ping_reply (uint32_t word)
+{
+    g_ping = word;
+}
+
+/*!
+ * @brief Latest face ping, with the servo angle it was taken at. Pings taken
+ *        while the body turns do not change it.
+ *
+ * @return The packed ping word (obstacle_pack_ping()).
+ */
+uint32_t obstacle_comms_ping (void)
+{
+    return (g_ping);
+}
+
+/*!
  * @brief Latest fault word.
  *
  * @return The OBSTACLE_FAULT_* bits.
@@ -430,13 +536,32 @@ uint16_t obstacle_comms_faults (void)
 }
 
 /*!
- * @brief Events dropped because an inbox or the outbox was full.
+ * @brief Events dropped because an inbox or the outbox was full, plus
+ *        commands dropped because the command queue was full.
  *
  * @return The count, saturating at 255.
  */
 uint8_t obstacle_comms_drops (void)
 {
     return (g_drops);
+}
+
+/*!
+ * @brief Copy the status scalars of one step. Never waits for the obstacle
+ *        task beyond its few stores under the same lock.
+ *
+ * @param[out] p_out Destination.
+ */
+void obstacle_comms_copy_scalars (obstacle_comms_scalars_t * p_out)
+{
+    UINT const intsts = lock_take(&g_pub_lock);
+
+    p_out->status = g_status;
+    p_out->aim    = g_aim;
+    p_out->faults = g_faults;
+    p_out->flags  = g_flags;
+    p_out->drops  = g_drops;
+    lock_give(&g_pub_lock, intsts);
 }
 
 /*!
@@ -501,6 +626,7 @@ ER obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan)
             p_plan->side       = g_plan_side;
             p_plan->start_deg  = g_plan_start;
             p_plan->b_wall     = g_plan_wall;
+            p_plan->req_id     = g_plan_req_id;
             memory_barrier();
 
             if (before == g_profile_seq)
@@ -521,16 +647,6 @@ ER obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan)
 uint32_t obstacle_comms_aim (void)
 {
     return (g_aim);
-}
-
-/*!
- * @brief Warning flags of the last step.
- *
- * @return OBSTACLE_FLAG_* bits.
- */
-uint8_t obstacle_comms_flags (void)
-{
-    return (g_flags);
 }
 
 /*!
@@ -671,17 +787,20 @@ static bool evt_pop (uint32_t * p_evt)
 }
 
 /*!
- * @brief Count one dropped event, saturating at 255.
+ * @brief Count one dropped event or command, saturating at 255. Under the
+ *        lock, because a command poster on either core also counts.
  */
 static void count_drop (void)
 {
-    uint8_t const drops = g_drops;
+    UINT const    intsts = lock_take(&g_pub_lock);
+    uint8_t const drops  = g_drops;
 
     if (drops < UINT8_MAX)
     {
         /* Cast is safe: drops is below 255. */
         g_drops = (uint8_t)(drops + 1U);
     }
+    lock_give(&g_pub_lock, intsts);
 }
 
 /*!
@@ -743,6 +862,7 @@ static void publish_profile (obstacle_statechart_t const * p_fsm)
     g_plan_side    = p_fsm->plan.side;
     g_plan_start   = p_fsm->plan.start_deg;
     g_plan_wall    = p_fsm->plan.b_wall;
+    g_plan_req_id  = p_fsm->req_id;
 
     memory_barrier();
 

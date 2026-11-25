@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* 125 MHz clk_sys / divider 1 / TOP+1 of 12500 = 10 kHz. */
 #define MOTOR_PAIR_PERIOD 12500U
 
 /* Wheels in the pair, and the full-scale duty in permille. */

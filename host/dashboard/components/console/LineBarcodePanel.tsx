@@ -6,7 +6,7 @@ import { enumLabel } from '../../lib/schema';
 import type { EventRow } from '../../lib/telemetry-store';
 import { useTheme } from '../../lib/theme-provider';
 import { formatTime } from './format';
-import { Panel } from './Panel';
+import { Panel, useDense } from './Panel';
 
 type Props = {
   statusPacket: LinkPacket | undefined;
@@ -55,7 +55,9 @@ export function LineBarcodePanel({ statusPacket, diag, events, status, style }: 
   const d = diag?.values;
   const code = d?.last_barcode ?? 0;
   const letter = code > 0 ? String.fromCharCode(code) : null;
-  const barcodes = events.filter((event) => event.text.kind === 'barcode').slice(-4).reverse();
+  const dense = useDense();
+  const text = dense ? theme.typography.caption : theme.typography.body;
+  const barcodes = events.filter((event) => event.text.kind === 'barcode').slice(dense ? -2 : -4).reverse();
 
   return (
     <Panel icon="line" status={status} style={style} testID="line-panel" title="Line and barcode">
@@ -64,11 +66,11 @@ export function LineBarcodePanel({ statusPacket, diag, events, status, style }: 
         <Lamp name="RIGHT" on={on(BIT_RIGHT)} />
         <Lamp name="CODE" on={on(BIT_BARCODE)} />
       </View>
-      <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+      <Text style={[text, { color: theme.colors.text }]}>
         Sensor changes {d?.line_edges_per_s ?? '--'}/s ({d?.line_raw_edges_per_s ?? '--'}/s raw) · lost {d?.line_lost_count ?? '--'} times
         · longest search {d?.line_search_mm ?? '--'} mm
       </Text>
-      <Text style={[theme.typography.body, { color: theme.colors.text }]}>
+      <Text style={[text, { color: theme.colors.text }]}>
         Last barcode: {letter ?? 'none'}
         {letter !== null && d !== undefined ? ` (${enumLabel('barcodeAction', d.last_barcode_action).toLowerCase()})` : ''} · read {d?.barcode_ok ?? '--'} · refused{' '}
         {d?.barcode_bad ?? '--'} · edge drops {d?.barcode_edge_drops ?? '--'}

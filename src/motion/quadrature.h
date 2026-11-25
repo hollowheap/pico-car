@@ -1,5 +1,5 @@
 /** @file quadrature.h
- * @brief Hardware-independent x4 quadrature capture state.
+ * @brief Hardware-independent decoder for the quadrature state machine words.
  */
 #ifndef ENCODER_QUAD_H
 #define ENCODER_QUAD_H
@@ -21,20 +21,23 @@ typedef struct
 typedef struct
 {
     quadrature_counts_t wheel[ENCODER_WHEELS];
-    /* Two bits per wheel: A is bit 1, B is bit 0. Upper four bits zero. */
-    uint8_t states;
+    /* The last word from each wheel's state machine. */
+    uint32_t last[ENCODER_WHEELS];
 } quadrature_t;
 
-/* No shared-state protection here: the capture driver supplies it. */
-void quadrature_init (quadrature_t * p_quad, uint8_t states);
+/* No shared-state protection here: the capture driver supplies it. Zero the
+ * counts and take words as the baseline. */
+void quadrature_init (quadrature_t * p_quad, const uint32_t words[ENCODER_WHEELS]);
 
-/* Update one wheel from a sampled two-bit A/B state. An ambiguous capture
- * (e.g. multiple edges pending) is recorded as invalid and resynchronises.
- * Invalid transitions never fabricate a direction or travelled distance.
- * Positive means 00->01->11->10->00, not necessarily car-forward.
- * Diagnostic counters roll modulo 2^32. */
-bool quadrature_update (quadrature_t * p_quad, unsigned int wheel,
-                          uint8_t state, bool ambiguous);
+/* Add the steps since the last word of one wheel. A word holds the net step
+ * count in bits 23..0 and a count of skipped states, counting down, in bits
+ * 31..24 (see quadrature.pio). The net change goes to positive or negative;
+ * steps that cancel between two words are not counted. Positive means
+ * A,B = 00->01->11->10->00, not necessarily car-forward. A skip never adds
+ * distance. Calls must come often enough that the net count moves less than
+ * 2^23 steps and the skip count less than 256 between them. Counts roll
+ * modulo 2^32. */
+bool quadrature_apply (quadrature_t * p_quad, unsigned int wheel, uint32_t word);
 
 #endif /* ENCODER_QUAD_H */
 

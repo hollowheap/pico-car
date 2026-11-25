@@ -17,6 +17,7 @@
 
 #include "hump_detect.h"
 #include "imu_motion.h"
+#include "platform/chassis.h"
 
 #define DT_S        (0.02f)
 #define SPEED_MPS   (0.15f)
@@ -219,6 +220,17 @@ static void test_init_validation (void)
     imu_motion_default_config (&cfg);
     cfg.mag_offset_g[1] = NAN;
     CHECK (!imu_motion_init (&ctx, &cfg, &hcfg));
+}
+
+/* The encoder yaw rate uses the one measured track of the chassis. */
+static void test_default_track_is_chassis (void)
+{
+    imu_motion_config_t cfg;
+
+    printf ("default_track_is_chassis_track\n");
+    imu_motion_default_config (&cfg);
+    CHECK (fabsf (cfg.track_width_m
+                  - ((float)CHASSIS_WHEEL_TRACK_MM / 1000.0f)) < 1.0e-6f);
 }
 
 static void test_rejects_bad_input (void)
@@ -457,6 +469,18 @@ static void test_wheel_slip (void)
     sim_run (&s, &w, 20U);
     CHECK (s.mout.mag_yaw_valid);
     CHECK (s.mout.yaw_disagree);
+    /* The encoder rate stays the yaw source; the magnetometer heading is
+     * no longer vouched for. */
+    CHECK (IMU_YAW_ENCODER == s.mout.yaw_src);
+    CHECK (!s.mout.heading_valid);
+
+    /* Agreement again: the heading comes back. */
+    w.v_left = SPEED_MPS;
+    w.v_right = SPEED_MPS;
+    w.slip = false;
+    sim_run (&s, &w, 20U);
+    CHECK (!s.mout.yaw_disagree);
+    CHECK (s.mout.heading_valid);
 }
 
 static void test_mag_fallback (void)
@@ -595,6 +619,7 @@ static void test_hump_classes (void)
 int main (void)
 {
     test_init_validation ();
+    test_default_track_is_chassis ();
     test_rejects_bad_input ();
     test_unknown_then_stationary ();
     test_moving_and_accelerating ();

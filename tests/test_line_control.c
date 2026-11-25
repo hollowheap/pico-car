@@ -22,7 +22,7 @@
 #define STEP_MS         10U
 #define UM_PER_MM       1000
 #define CRUISE          LINE_CRUISE_UM_S
-#define TRACK_UM        ((int64_t)LINE_WHEEL_TRACK_MM * UM_PER_MM)
+#define TRACK_UM        ((int64_t)CHASSIS_WHEEL_TRACK_MM * UM_PER_MM)
 #define DECI_PER_RAD    573
 #define PI_RAD          3.14159265358979323846
 #define LCG_MUL         1103515245U
@@ -133,9 +133,9 @@ static void test_speed_follows_heading_error(void)
     line_follow_init(&f);
     (void)follow(&f, true, true, 0, 0, 0U, &t);
     expect_targets(&t, CRUISE, CRUISE);
-    /* 10 ms on the left sensor at cruise: the slew per m times 3 mm. */
+    /* 10 ms on the left sensor at cruise: the slew per m times the travel. */
     (void)follow(&f, true, false, 0, 0, 10U, &t);
-    assert(((LINE_HIT_DECI_PER_M * 3) / 1000) == f.ref_deci);
+    assert(((((LINE_HIT_DECI_PER_M * CRUISE) / 1000000) * 10) / 1000) == f.ref_deci);
     assert((CRUISE - (((CRUISE - LINE_CORNER_UM_S) * f.ref_deci) / LINE_SLOW_DECI)) ==
            t.right_um_s);
     assert(t.left_um_s < t.right_um_s);
@@ -292,18 +292,640 @@ static void test_gap_then_search_on_the_spot(void)
         heading += 10;
         assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, heading, travel, ms, &t));
     }
-    /* At the end the car stops and stays stopped, however long it waits. */
-    for (int pass = 0; pass < 2000; pass++)
+    /* At the end of the second turn the search is not over: the car turns back
+     * toward the heading it had before the loss, to retry. */
+    ms += 10U;
+    assert(LINE_FOLLOW_SEARCHING ==
+           follow(&f, false, false, LINE_SEARCH_SWEEP_DECI, travel, ms, &t));
+    assert(t.left_um_s > 0);
+    assert(t.right_um_s < 0);
+    assert(1U == f.retry);
+}
+
+/* A closed-loop stand-in for the car: the targets turn the heading and move the
+ * travel over one pass of STEP_MS. */
+static void plant(line_targets_t const * p_t, int32_t * p_heading, int64_t * p_travel)
+{
+    *p_heading += (int32_t)((((int64_t)p_t->right_um_s - p_t->left_um_s) * STEP_MS / 1000 *
+                             DECI_PER_RAD) / TRACK_UM);
+    *p_travel  += ((int64_t)p_t->left_um_s + p_t->right_um_s) / 2 * (int64_t)STEP_MS / 1000;
+}
+
+#define RETRY_PASS_MAX 20000
+
+/* Lose the line after a hit on the right and run the closed loop until the
+ * search is over. Each reverse drives about LINE_REVERSE_MM, and there are
+ * LINE_RETRY_COUNT of them before the stop. */
+static void test_failed_search_turns_back_reverses_and_searches_again(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    line_follow_status_t status = LINE_FOLLOW_FOLLOWING;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    uint32_t reverses = 0U;
+    int64_t reverse_from_um = 0;
+    bool b_reversing = false;
+    int pass;
+
+    line_follow_init(&f);
+    (void)follow(&f, false, true, 0, 0, ms, &t);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (LINE_FOLLOW_STOPPED != status); pass++)
     {
-        ms += 10U;
-        assert(LINE_FOLLOW_STOPPED ==
-               follow(&f, false, false, LINE_SEARCH_SWEEP_DECI, travel, ms, &t));
+        bool const b_back = (t.left_um_s < 0) && (t.right_um_s < 0);
+
+        ms += STEP_MS;
+        status = follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+        if ((t.left_um_s < 0) && (t.right_um_s < 0))
+        {
+            if (!b_reversing)
+            {
+                b_reversing = true;
+                reverses++;
+                reverse_from_um = travel;
+                /* The car is back on the heading it had before the loss. */
+                assert(abs(heading) < 100);
+                assert(reverses == f.retry);
+            }
+            assert(LINE_FOLLOW_SEARCHING == status);
+            assert(abs(heading) < 100);
+        }
+        else if (b_reversing || b_back)
+        {
+            int64_t const back_um = reverse_from_um - travel;
+
+            b_reversing = false;
+            assert(back_um >= ((int64_t)(LINE_REVERSE_MM - 10) * UM_PER_MM));
+            assert(back_um <= ((int64_t)(LINE_REVERSE_MM + 10) * UM_PER_MM));
+        }
+        else
+        {
+            assert((LINE_FOLLOW_STOPPED == status) || (LINE_FOLLOW_SEARCHING == status) ||
+                   (LINE_FOLLOW_BRIDGING == status));
+        }
+        if (LINE_FOLLOW_STOPPED != status)
+        {
+            assert(reverses <= LINE_RETRY_COUNT);
+        }
+    }
+    /* Stopped only after the last retry, and then for good. */
+    assert(LINE_FOLLOW_STOPPED == status);
+    assert(LINE_RETRY_COUNT == reverses);
+    assert(LINE_RETRY_COUNT == f.retry);
+    for (pass = 0; pass < 200; pass++)
+    {
+        ms += STEP_MS;
+        assert(LINE_FOLLOW_STOPPED == follow(&f, false, false, heading, travel, ms, &t));
         expect_targets(&t, 0, 0);
     }
     /* A sensor hit ends the stop. */
+    assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, false, heading, travel, ms + STEP_MS, &t));
+}
+
+/* Run the closed loop until the retry count reaches want_retry; returns the
+ * pass state in the arguments. */
+static void run_to_retry(line_follow_t * p_f, line_targets_t * p_t, int32_t * p_heading,
+                         int64_t * p_travel, uint32_t * p_ms, uint8_t want_retry)
+{
+    int pass;
+
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (p_f->retry < want_retry); pass++)
+    {
+        *p_ms += STEP_MS;
+        (void)follow(p_f, false, false, *p_heading, *p_travel, *p_ms, p_t);
+        plant(p_t, p_heading, p_travel);
+    }
+    assert(p_f->retry == want_retry);
+}
+
+/* A hit while the car turns back or reverses ends the recovery. */
+static void test_hit_during_retry_resumes_following(void)
+{
+    uint32_t reverse_hit;
+
+    for (reverse_hit = 0U; reverse_hit < 2U; reverse_hit++)
+    {
+        line_follow_t f;
+        line_targets_t t;
+        int64_t travel = 0;
+        int32_t heading = 0;
+        uint32_t ms = 0U;
+        int pass = 0;
+
+        line_follow_init(&f);
+        (void)follow(&f, true, false, 0, 0, ms, &t);
+        (void)follow(&f, true, true, 0, 0, ms, &t);
+        while (LINE_FOLLOW_SEARCHING != f.status)
+        {
+            ms += STEP_MS;
+            travel += 1000;
+            (void)follow(&f, false, false, heading, travel, ms, &t);
+        }
+        run_to_retry(&f, &t, &heading, &travel, &ms, 1U);
+        if (0U != reverse_hit)
+        {
+            while ((t.left_um_s >= 0) || (t.right_um_s >= 0))
+            {
+                ms += STEP_MS;
+                (void)follow(&f, false, false, heading, travel, ms, &t);
+                plant(&t, &heading, &travel);
+                assert(++pass < RETRY_PASS_MAX);
+            }
+            for (pass = 0; pass < 5; pass++)
+            {
+                ms += STEP_MS;
+                (void)follow(&f, false, false, heading, travel, ms, &t);
+                plant(&t, &heading, &travel);
+            }
+            assert((t.left_um_s < 0) && (t.right_um_s < 0));
+        }
+        ms += STEP_MS;
+        assert(LINE_FOLLOW_FOLLOWING == follow(&f, false, true, heading, travel, ms, &t));
+        assert(t.left_um_s > 0);
+        assert(t.right_um_s > 0);
+        ms += STEP_MS;
+        assert(LINE_FOLLOW_BRIDGING == follow(&f, false, false, heading, travel, ms, &t));
+    }
+}
+
+/* A search turn that finds the line gives the next loss all its retries. A
+ * reverse that finds only the line the car came on does not. */
+static void test_retry_count_clears_on_a_search_hit(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    int pass;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, false, 0, 0, ms, &t);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    while (LINE_FOLLOW_SEARCHING != f.status)
+    {
+        ms += STEP_MS;
+        travel += 1000;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+    }
+    run_to_retry(&f, &t, &heading, &travel, &ms, 1U);
+    while ((t.left_um_s >= 0) || (t.right_um_s >= 0))
+    {
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+    }
+    for (pass = 0; pass < 100; pass++)
+    {
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+    }
+    /* Found while reversing. */
+    ms += STEP_MS;
+    (void)follow(&f, true, false, heading, travel, ms, &t);
+    assert(1U == f.retry);
+    /* Lost again: the second search is not a new loss. Found by a search turn. */
+    while (LINE_FOLLOW_SEARCHING != f.status)
+    {
+        ms += STEP_MS;
+        travel += 1000;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+    }
+    for (pass = 0; (pass < 10) && (1U == f.retry); pass++)
+    {
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+    }
+    ms += STEP_MS;
+    (void)follow(&f, true, false, heading, travel, ms, &t);
+    assert(0U == f.retry);
+}
+
+/* Drive on the line at 1 mm a pass, both sensors on it, for mm millimetres. */
+static void drive_on_line(line_follow_t * p_f, line_targets_t * p_t, int32_t heading,
+                          int64_t * p_travel, uint32_t * p_ms, int32_t mm)
+{
+    int32_t i;
+
+    for (i = 0; i < mm; i++)
+    {
+        *p_ms += STEP_MS;
+        *p_travel += UM_PER_MM;
+        (void)follow(p_f, true, true, heading, *p_travel, *p_ms, p_t);
+    }
+}
+
+/* Lose the line after some travel; returns the travel where the search began.
+ * One retry follows, and a hit comes after the car reversed for reverse_mm. */
+static int64_t lose_retry_and_hit(line_follow_t * p_f, line_targets_t * p_t,
+                                  int32_t * p_heading, int64_t * p_travel,
+                                  uint32_t * p_ms, int32_t reverse_mm)
+{
+    int64_t loss_um;
+    int pass = 0;
+
+    while (LINE_FOLLOW_SEARCHING != p_f->status)
+    {
+        *p_ms += STEP_MS;
+        *p_travel += UM_PER_MM;
+        (void)follow(p_f, false, false, *p_heading, *p_travel, *p_ms, p_t);
+    }
+    loss_um = *p_travel;
+    while ((0U == p_f->retry) || (p_t->left_um_s >= 0) || (p_t->right_um_s >= 0))
+    {
+        *p_ms += STEP_MS;
+        (void)follow(p_f, false, false, *p_heading, *p_travel, *p_ms, p_t);
+        plant(p_t, p_heading, p_travel);
+        assert(++pass < RETRY_PASS_MAX);
+    }
+    while ((loss_um - *p_travel) < ((int64_t)reverse_mm * UM_PER_MM))
+    {
+        *p_ms += STEP_MS;
+        (void)follow(p_f, false, false, *p_heading, *p_travel, *p_ms, p_t);
+        plant(p_t, p_heading, p_travel);
+        assert(++pass < RETRY_PASS_MAX);
+    }
+    *p_ms += STEP_MS;
     assert(LINE_FOLLOW_FOLLOWING ==
-           follow(&f, true, false, LINE_SEARCH_SWEEP_DECI, travel, ms + 10U, &t));
-    assert((t.left_um_s + t.right_um_s) > 0);
+           follow(p_f, true, true, *p_heading, *p_travel, *p_ms, p_t));
+    return loss_um;
+}
+
+/* The car follows on past the point where it lost the line: the next loss is a
+ * new one. */
+static void test_retry_clears_past_the_loss_point(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    int64_t loss_um;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    loss_um = lose_retry_and_hit(&f, &t, &heading, &travel, &ms, 60);
+    assert(1U == f.retry);
+    while ((travel - loss_um) < (15 * UM_PER_MM))
+    {
+        ms += STEP_MS;
+        travel += UM_PER_MM;
+        (void)follow(&f, true, true, heading, travel, ms, &t);
+        if (travel <= loss_um)
+        {
+            assert(1U == f.retry);
+        }
+    }
+    assert(0U == f.retry);
+}
+
+/* Four humps in one run: each loss is recovered by a reverse and followed on
+ * past its loss point, so the fourth has all its retries. */
+static void test_each_loss_in_a_run_has_all_retries(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    uint32_t loss;
+    uint32_t reverses = 0U;
+    uint8_t last_retry = 0U;
+    int pass;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    for (loss = 0U; loss < 4U; loss++)
+    {
+        int64_t loss_um;
+
+        drive_on_line(&f, &t, heading, &travel, &ms, 20);
+        assert(0U == f.retry);
+        loss_um = lose_retry_and_hit(&f, &t, &heading, &travel, &ms, 60);
+        assert(1U == f.retry);
+        while ((travel - loss_um) < (15 * UM_PER_MM))
+        {
+            drive_on_line(&f, &t, heading, &travel, &ms, 1);
+        }
+        assert(0U == f.retry);
+    }
+    /* The fourth loss is not recovered: all retries are used before the stop. */
+    drive_on_line(&f, &t, heading, &travel, &ms, 20);
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (LINE_FOLLOW_STOPPED != f.status); pass++)
+    {
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+        if (f.retry != last_retry)
+        {
+            reverses++;
+            last_retry = f.retry;
+        }
+    }
+    assert(LINE_FOLLOW_STOPPED == f.status);
+    assert(LINE_RETRY_COUNT == reverses);
+}
+
+/* A dead end: the reverse finds the line, but it ends before the loss point.
+ * The retries are not cleared and the car stops after the last. */
+static void test_dead_end_stops_after_all_retries(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    uint32_t reverses = 0U;
+    uint8_t last_retry = 0U;
+    int pass;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    drive_on_line(&f, &t, heading, &travel, &ms, 20);
+    (void)lose_retry_and_hit(&f, &t, &heading, &travel, &ms, 60);
+    last_retry = f.retry;
+    reverses = 1U;
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (LINE_FOLLOW_STOPPED != f.status); pass++)
+    {
+        bool const b_on = pass < 10;
+
+        ms += STEP_MS;
+        (void)follow(&f, b_on, b_on, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+        if (b_on)
+        {
+            travel += UM_PER_MM;
+        }
+        assert(f.retry >= last_retry);
+        if (f.retry != last_retry)
+        {
+            reverses++;
+            last_retry = f.retry;
+        }
+    }
+    assert(LINE_FOLLOW_STOPPED == f.status);
+    assert(LINE_RETRY_COUNT == f.retry);
+    assert(LINE_RETRY_COUNT == reverses);
+}
+
+/* A reverse that does not move (the car is against something) ends as a failed
+ * retry after LINE_REVERSE_STALL_MS: the search turns again, and the retries
+ * run out in a stop. */
+static void test_blocked_reverse_ends_as_a_failed_retry(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    uint32_t reverses = 0U;
+    uint32_t reverse_passes = 0U;
+    int pass;
+
+    line_follow_init(&f);
+    (void)follow(&f, false, true, 0, 0, ms, &t);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (LINE_FOLLOW_STOPPED != f.status);
+         pass++)
+    {
+        bool b_back;
+
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        b_back = (t.left_um_s < 0) && (t.right_um_s < 0);
+        if (b_back)
+        {
+            reverse_passes++;
+            reverses += (1U == reverse_passes) ? 1U : 0U;
+            /* The wheels do not turn: no travel, no heading. */
+            assert(reverse_passes <= ((LINE_REVERSE_STALL_MS / STEP_MS) + 2U));
+        }
+        else
+        {
+            reverse_passes = 0U;
+            plant(&t, &heading, &travel);
+        }
+    }
+    assert(LINE_FOLLOW_STOPPED == f.status);
+    assert(LINE_RETRY_COUNT == reverses);
+    assert(LINE_RETRY_COUNT == f.retry);
+}
+
+/* One wheel is jammed in the reverse and the other creeps back at
+ * JAM_CREEP_UM_S whatever its target: the car pivots on the jammed wheel and
+ * the mean travel grows. That is no progress of the jammed wheel: the reverse
+ * ends as a failed retry after LINE_REVERSE_STALL_MS all the same. The wheels
+ * are kept in um, as the car reads them. */
+#define JAM_CREEP_UM_S (-20000)
+
+static void test_one_wheel_jammed_reverse_ends_as_a_failed_retry(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t left_um = 0;
+    int64_t right_um = 0;
+    uint32_t ms = 0U;
+    uint32_t reverses = 0U;
+    uint32_t reverse_passes = 0U;
+    int pass;
+
+    line_follow_init(&f);
+    (void)follow(&f, false, true, 0, 0, ms, &t);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    for (pass = 0; (pass < RETRY_PASS_MAX) && (LINE_FOLLOW_STOPPED != f.status);
+         pass++)
+    {
+        bool b_back;
+
+        ms += STEP_MS;
+        (void)follow(&f, false, false, line_heading_deci(left_um, right_um),
+                     (left_um + right_um) / 2, ms, &t);
+        /* A steering correction can bring one reverse target to zero. */
+        b_back = (t.left_um_s <= 0) && (t.right_um_s <= 0) &&
+                 ((t.left_um_s < 0) || (t.right_um_s < 0));
+        if (b_back)
+        {
+            reverse_passes++;
+            reverses += (1U == reverse_passes) ? 1U : 0U;
+            assert(reverse_passes <= ((LINE_REVERSE_STALL_MS / STEP_MS) + 2U));
+        }
+        else
+        {
+            reverse_passes = 0U;
+            left_um += ((int64_t)t.left_um_s * STEP_MS) / 1000;
+        }
+        right_um += ((int64_t)(b_back ? JAM_CREEP_UM_S : t.right_um_s) *
+                     STEP_MS) / 1000;
+    }
+    assert(LINE_FOLLOW_STOPPED == f.status);
+    assert(LINE_RETRY_COUNT == reverses);
+}
+
+/* Lose the line with the search beginning at loss_um, recover by the reverse,
+ * and follow on: the retry count clears within one cm past the loss point, and
+ * not before it. */
+static void expect_retry_clears_past(int64_t loss_um)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = loss_um - ((int64_t)LINE_GAP_MM * UM_PER_MM);
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, travel, ms, &t);
+    assert(loss_um == lose_retry_and_hit(&f, &t, &heading, &travel, &ms, 60));
+    assert(1U == f.retry);
+    while ((0U != f.retry) && ((travel - loss_um) < (50 * UM_PER_MM)))
+    {
+        ms += STEP_MS;
+        travel += UM_PER_MM;
+        (void)follow(&f, true, true, heading, travel, ms, &t);
+        if (travel <= loss_um)
+        {
+            assert(1U == f.retry);
+        }
+    }
+    assert(0U == f.retry);
+    assert(travel > loss_um);
+    assert((travel - loss_um) <= (11 * UM_PER_MM));
+}
+
+/* The loss point is a cm count modulo 256: it works across the wrap, and for
+ * negative travel (the car reversed past where the run began). */
+static void test_retry_clears_across_the_cm_wrap_and_below_zero(void)
+{
+    expect_retry_clears_past(-5 * (int64_t)UM_PER_MM);
+    expect_retry_clears_past(-1234 * (int64_t)UM_PER_MM);
+    expect_retry_clears_past(2535 * (int64_t)UM_PER_MM);
+    expect_retry_clears_past(2565 * (int64_t)UM_PER_MM);
+    expect_retry_clears_past(5125 * (int64_t)UM_PER_MM);
+}
+
+/* A hit during the reverse restarts from the reverse speed: the wheels do not
+ * step from backward at LINE_SEARCH_UM_S to forward at cruise. */
+static void test_hit_during_reverse_starts_from_the_reverse_speed(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    int32_t heading = 0;
+    uint32_t ms = 0U;
+    int pass = 0;
+    int64_t const rise =
+        ((int64_t)LINE_ACCEL_MM_S2 * UM_PER_MM * STEP_MS) / 1000;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, false, 0, 0, ms, &t);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    while (LINE_FOLLOW_SEARCHING != f.status)
+    {
+        ms += STEP_MS;
+        travel += 1000;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+    }
+    run_to_retry(&f, &t, &heading, &travel, &ms, 1U);
+    while ((t.left_um_s >= 0) || (t.right_um_s >= 0))
+    {
+        ms += STEP_MS;
+        (void)follow(&f, false, false, heading, travel, ms, &t);
+        plant(&t, &heading, &travel);
+        assert(++pass < RETRY_PASS_MAX);
+    }
+    ms += STEP_MS;
+    assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, true, heading, travel, ms, &t));
+    assert(t.left_um_s > 0);
+    assert(t.left_um_s <= (LINE_SEARCH_UM_S + rise));
+    assert(t.right_um_s <= (LINE_SEARCH_UM_S + rise));
+}
+
+/* Blind travel at 2 mm a pass; returns the travel where SEARCHING begins. */
+static int64_t blind_to_search_mm(bool b_hump)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel = 0;
+    uint32_t ms = 0U;
+
+    line_follow_init(&f);
+    line_follow_set_hump(&f, b_hump);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    while ((LINE_FOLLOW_SEARCHING != f.status) && (travel < (1000 * (int64_t)UM_PER_MM)))
+    {
+        ms += STEP_MS;
+        travel += 2 * UM_PER_MM;
+        (void)follow(&f, false, false, 0, travel, ms, &t);
+    }
+
+    return travel / UM_PER_MM;
+}
+
+/* On a hump the sensors lift off the floor: the blind limit is longer. */
+static void test_hump_bridges_longer(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+
+    assert((blind_to_search_mm(false) >= LINE_GAP_MM) &&
+           (blind_to_search_mm(false) < (LINE_GAP_MM + 4)));
+    assert((blind_to_search_mm(true) >= LINE_HUMP_GAP_MM) &&
+           (blind_to_search_mm(true) < (LINE_HUMP_GAP_MM + 4)));
+
+    /* 300 mm blind: a hump bridges it, flat ground searches. */
+    line_follow_init(&f);
+    line_follow_set_hump(&f, true);
+    (void)follow(&f, true, true, 0, 0, 0U, &t);
+    assert(LINE_FOLLOW_BRIDGING == follow(&f, false, false, 0, 300 * (int64_t)UM_PER_MM, 10U, &t));
+    line_follow_set_hump(&f, false);
+    assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, 0, 300 * (int64_t)UM_PER_MM, 20U, &t));
+}
+
+/* The speed climbs at LINE_ACCEL_MM_S2 however short the pass is. */
+static uint32_t ramp_ms(uint32_t dt_ms)
+{
+    line_follow_t f;
+    line_targets_t t;
+    uint32_t ms = 0U;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, ms, &t);
+    f.speed_q    = (uint16_t)(LINE_CORNER_UM_S / LINE_SPEED_STEP_UM_S);
+    t.left_um_s  = 0;
+    while ((t.left_um_s < CRUISE) && (ms < 1000U))
+    {
+        ms += dt_ms;
+        (void)follow(&f, true, true, 0, 0, ms, &t);
+    }
+
+    return ms;
+}
+
+static void test_ramp_at_small_dt(void)
+{
+    uint32_t const ref_ms = ramp_ms(10U);
+
+    assert(ref_ms < 1000U);
+    assert(ramp_ms(1U) <= (ref_ms + 10U));
+    assert(ramp_ms(2U) <= (ref_ms + 10U));
+}
+
+/* A turn or straight ends with line_follow_set_side(); the blind travel of
+ * the follower counts from there, not from the last hit before the turn. */
+static void test_blind_travel_counts_from_the_takeover(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, 0U, &t);
+    line_follow_set_side(&f, LINE_SIDE_LEFT);
+    assert(LINE_FOLLOW_BRIDGING ==
+           follow(&f, false, false, 0, 300 * (int64_t)UM_PER_MM, 10U, &t));
 }
 
 /* A hit during the search: the car follows from where it points, at the
@@ -684,7 +1306,7 @@ static sim_result_t sim_run(sim_case_t const * p_c)
         vr += (tr - vr) * (SIM_DT_S / ((tr > vr) ? SIM_LAG_UP_S : SIM_LAG_DOWN_S));
         x += ((vl + vr) / 2.0) * cos(psi) * SIM_DT_S;
         y += ((vl + vr) / 2.0) * sin(psi) * SIM_DT_S;
-        psi += ((vr - vl) / LINE_WHEEL_TRACK_MM) * SIM_DT_S;
+        psi += ((vr - vl) / CHASSIS_WHEEL_TRACK_MM) * SIM_DT_S;
         disp_l_um += vl * 1000.0 * SIM_DT_S;
         disp_r_um += vr * 1000.0 * SIM_DT_S;
         t += SIM_DT_S;
@@ -758,8 +1380,8 @@ static void test_sim_straight_hunting(void)
     assert(cascade.max_off_mm < 25.0);
     /* The simulated sensors are points, so a centred car gets no hit and
      * searches on the spot after LINE_GAP_MM; the mean stays well under
-     * cruise. */
-    assert(cascade.mean_mm_s > 130.0);
+     * cruise, but above 43% of it (130 mm/s at a 300 mm/s cruise). */
+    assert(cascade.mean_mm_s > (0.43 * (double)LINE_CRUISE_UM_S / 1000.0));
 }
 
 static void test_sim_curves_keep_the_line(void)
@@ -971,11 +1593,11 @@ static void test_straight(void)
  * and of the tuning notes. */
 static void test_constants(void)
 {
-    assert(300000 == LINE_CRUISE_UM_S);
+    assert(125000 == LINE_CRUISE_UM_S);
     assert(100000 == LINE_CORNER_UM_S);
     assert(400 == LINE_ACCEL_MM_S2);
     assert(LINE_CRUISE_UM_S <= 300000); /* MOTOR_MAX_TARGET_UM_S */
-    assert(107 == LINE_WHEEL_TRACK_MM);
+    assert(107 == CHASSIS_WHEEL_TRACK_MM);
     assert(25 == LINE_SENSOR_SPACING_MM);
     assert(8 == LINE_KH);
     assert(4000 == LINE_HIT_DECI_PER_M);
@@ -1208,6 +1830,19 @@ int main(void)
     test_bumper_cap();
     test_targets_cap();
     test_gap_then_search_on_the_spot();
+    test_failed_search_turns_back_reverses_and_searches_again();
+    test_hit_during_retry_resumes_following();
+    test_retry_count_clears_on_a_search_hit();
+    test_retry_clears_past_the_loss_point();
+    test_each_loss_in_a_run_has_all_retries();
+    test_dead_end_stops_after_all_retries();
+    test_blocked_reverse_ends_as_a_failed_retry();
+    test_one_wheel_jammed_reverse_ends_as_a_failed_retry();
+    test_retry_clears_across_the_cm_wrap_and_below_zero();
+    test_hit_during_reverse_starts_from_the_reverse_speed();
+    test_hump_bridges_longer();
+    test_ramp_at_small_dt();
+    test_blind_travel_counts_from_the_takeover();
     test_search_hit_follows_from_the_heading();
     test_targets_never_exceed_cruise();
     test_time_wraps();

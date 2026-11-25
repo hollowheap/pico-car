@@ -154,7 +154,14 @@ static int32_t sign3 (int32_t value)
     return (value > 0) ? 1 : ((value < 0) ? -1 : 0);
 }
 
-void drive_init (drive_t * p_drive)
+/* A 16-bit millisecond count stops at UINT16_MAX. */
+static uint16_t add_ms (uint16_t total, uint32_t dt_ms)
+{
+    return (dt_ms >= (uint32_t) (UINT16_MAX - total)) ? (uint16_t) UINT16_MAX
+                                                      : (uint16_t) (total + dt_ms);
+}
+
+void health_drive_init (drive_t * p_drive)
 {
     p_drive->agree_ms    = 0U;
     p_drive->disagree_ms = 0U;
@@ -179,11 +186,11 @@ static void drive_vote (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_
     {
         if (sign3 (gap_t) == sign3 (gap_s))
         {
-            p_drive->agree_ms = (uint16_t) (p_drive->agree_ms + dt_ms);
+            p_drive->agree_ms = add_ms (p_drive->agree_ms, dt_ms);
         }
         else
         {
-            p_drive->disagree_ms = (uint16_t) (p_drive->disagree_ms + dt_ms);
+            p_drive->disagree_ms = add_ms (p_drive->disagree_ms, dt_ms);
         }
     }
     /* A wheel that turns against its command also disagrees. */
@@ -193,7 +200,7 @@ static void drive_vote (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_
             (abs32 (p_in->speed_um_s[idx]) >= DRIVE_SPEED_GAP_UM_S) &&
             (sign3 (p_in->target_um_s[idx]) != sign3 (p_in->speed_um_s[idx])))
         {
-            p_drive->disagree_ms = (uint16_t) (p_drive->disagree_ms + dt_ms);
+            p_drive->disagree_ms = add_ms (p_drive->disagree_ms, dt_ms);
         }
     }
 }
@@ -281,14 +288,14 @@ static void drive_free (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_
     }
 }
 
-bool drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms)
+bool health_drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms)
 {
     bool b_new = false;
 
     if (p_in->b_judge)
     {
         drive_vote (p_drive, p_in, dt_ms);
-        p_drive->window_ms = (uint16_t) (p_drive->window_ms + dt_ms);
+        p_drive->window_ms = add_ms (p_drive->window_ms, dt_ms);
     }
     if (p_drive->window_ms >= DRIVE_WINDOW_MS)
     {
@@ -312,7 +319,7 @@ bool drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms)
     return b_new;
 }
 
-drive_probe_t drive_probe_verdict (int32_t driven_mm, int32_t other_mm)
+drive_probe_t health_drive_probe_verdict (int32_t driven_mm, int32_t other_mm)
 {
     int32_t const driven = abs32 (driven_mm);
     int32_t const other  = abs32 (other_mm);
@@ -341,15 +348,19 @@ drive_probe_t drive_probe_verdict (int32_t driven_mm, int32_t other_mm)
 void calhold_start (calhold_t * p_hold, bool b_wait_drop)
 {
     p_hold->phase       = (uint8_t) (b_wait_drop ? CALHOLD_WAIT_DROP : CALHOLD_WAIT_CAL);
-    p_hold->passes      = 0U;
-    p_hold->b_timed_out = false;
+    p_hold->passes         = 0U;
+    p_hold->b_timed_out    = false;
+    p_hold->b_timeout_seen = false;
 }
 
 bool calhold_update (calhold_t * p_hold, bool b_calibrated)
 {
     if ((uint8_t) CALHOLD_IDLE != p_hold->phase)
     {
-        p_hold->passes++;
+        if (p_hold->passes < CALHOLD_MAX_PASSES)
+        {
+            p_hold->passes++;
+        }
         if (((uint8_t) CALHOLD_WAIT_DROP == p_hold->phase) &&
             (!b_calibrated || (p_hold->passes >= CALHOLD_DROP_PASSES)))
         {
@@ -363,12 +374,20 @@ bool calhold_update (calhold_t * p_hold, bool b_calibrated)
         {
             /* Still waiting. */
         }
-        if (((uint8_t) CALHOLD_IDLE != p_hold->phase) && (p_hold->passes >= CALHOLD_MAX_PASSES))
+        if (((uint8_t) CALHOLD_IDLE != p_hold->phase) &&
+            (p_hold->passes >= CALHOLD_MAX_PASSES))
         {
-            p_hold->phase       = (uint8_t) CALHOLD_IDLE;
             p_hold->b_timed_out = true;
         }
     }
 
     return (uint8_t) CALHOLD_IDLE != p_hold->phase;
+}
+
+bool calhold_timeout_edge (calhold_t * p_hold)
+{
+    bool const b_edge = p_hold->b_timed_out && !p_hold->b_timeout_seen;
+
+    p_hold->b_timeout_seen = p_hold->b_timed_out;
+    return b_edge;
 }

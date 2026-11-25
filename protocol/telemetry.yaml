@@ -1,4 +1,4 @@
-# Single source of truth for the vehicle wire protocol (schema 2).
+# Single source of truth for the vehicle wire protocol (schema 3).
 # Firmware, CLI, backend, and dashboard consumers are generated from or checked
 # against this file; do not hand-edit generated constants or decoders.
 #
@@ -11,7 +11,7 @@
 # Field types: int8 uint8 int16 uint16 int32 uint32, big-endian. A field with
 # `count: N` is an array of N elements of that type.
 
-schema: 2
+schema: 3
 byte_order: big
 
 topics:
@@ -39,9 +39,13 @@ packets:
       - { name: seq, offset: 12, type: uint16 }
       - { name: line_bits, offset: 14, type: uint8 }
       - { name: hold_mask, offset: 15, type: uint8 }
-  # 5 Hz. Wheels and the motion controller.
+  # 5 Hz. Wheels and the motion controller. seq here and in physics is the
+  # low byte of the status seq of the same pass: a client pairs the three
+  # frames and sees a lost one. The frames of one pass share the seq and each
+  # is one coherent snapshot of its subsystem; the three are not read at the
+  # same instant, so cross-frame alignment is to within one pass.
   motion:
-    wire_size: 16
+    wire_size: 17
     fields:
       - { name: left_mms, offset: 0, type: int16 }
       - { name: right_mms, offset: 2, type: int16 }
@@ -52,6 +56,7 @@ packets:
       - { name: motion_state, offset: 12, type: uint8, enum: motion_state }
       - { name: motion_fault, offset: 13, type: uint8, enum: motion_fault }
       - { name: overruns, offset: 14, type: uint16 }
+      - { name: seq, offset: 16, type: uint8 }
   # 5 Hz. IMU, hump and attitude. roll, az, amag, a_fwd and attitude_state
   # are filled by the attitude work (zero until then).
   physics:
@@ -71,8 +76,9 @@ packets:
       - { name: physics_faults, offset: 20, type: uint8, enum: physics_faults }
       - { name: flags, offset: 21, type: uint8, enum: physics_flags }
       - { name: attitude_state, offset: 22, type: uint8, enum: attitude_state }
-      - { name: reserved, offset: 23, type: uint8 }
-  # 2 Hz and on change. Sonar, scan and plan.
+      - { name: seq, offset: 23, type: uint8 }
+  # 2 Hz and on change. Sonar and hug. width_mm, breadth_mm and face_mm are 0
+  # until seen.
   obstacle:
     wire_size: 24
     fields:
@@ -84,18 +90,19 @@ packets:
       - { name: dist_mm, offset: 6, type: uint16 }
       - { name: closest_mm, offset: 8, type: uint16 }
       - { name: seq, offset: 10, type: uint8 }
-      - { name: req_id, offset: 11, type: uint8 }
-      - { name: plan_status, offset: 12, type: uint8 }
-      - { name: plan_side, offset: 13, type: uint8 }
-      - { name: plan_width_mm, offset: 14, type: uint16 }
-      - { name: plan_need_mm, offset: 16, type: uint16 }
-      - { name: plan_start_deg, offset: 18, type: uint8 }
-      - { name: rescans, offset: 19, type: uint8 }
+      - { name: hug_state, offset: 11, type: uint8, enum: hug_state }
+      - { name: hug_side, offset: 12, type: uint8, enum: hug_side }
+      # Counts hug publishes, low two bits (0..3, wraps): a client sees a new
+      # hug sample by a changed value. 0 until the first publish.
+      - { name: hug_seq, offset: 13, type: uint8 }
+      - { name: width_mm, offset: 14, type: uint16 }
+      - { name: breadth_mm, offset: 16, type: uint16 }
+      - { name: face_mm, offset: 18, type: uint16 }
       - { name: servo_deci, offset: 20, type: int16 }
       - { name: body_deci, offset: 22, type: int16 }
   # 1 Hz. Counters and health.
   diag:
-    wire_size: 37
+    wire_size: 45
     fields:
       - { name: sticky_faults, offset: 0, type: uint16 }
       - { name: task_alive_mask, offset: 2, type: uint16 }
@@ -123,15 +130,34 @@ packets:
       # (index in main.c stack order). Cached from the 30 s stack scan.
       - { name: stack_min_free, offset: 34, type: uint16 }
       - { name: stack_min_task, offset: 36, type: uint8 }
-  # 1 Hz. Sent by the connection task, not through the queue.
+      # Commands the supervisor inbox dropped when full: the low byte of a
+      # count that wraps. A client takes the difference between frames.
+      - { name: cmd_ring_drops, offset: 37, type: uint8 }
+      # The last command id the car accepted, 0 before the first. A sender
+      # that starts or restarts sends the next id after it.
+      - { name: cmd_last_id, offset: 38, type: uint16 }
+      # Commands the car refused, one count per cause, each the low byte of a
+      # count that wraps like cmd_ring_drops: a wrong length; an unknown
+      # opcode; another run id; an id not newer than cmd_last_id; an uptime
+      # echo more than 3 s old or ahead of the car.
+      - { name: cmd_rej_length, offset: 40, type: uint8 }
+      - { name: cmd_rej_opcode, offset: 41, type: uint8 }
+      - { name: cmd_rej_run, offset: 42, type: uint8 }
+      - { name: cmd_rej_old_id, offset: 43, type: uint8 }
+      - { name: cmd_rej_age, offset: 44, type: uint8 }
+  # 1 Hz. Sent by the connection task, not through the queue. run_id is
+  # random and non-zero at each boot; a command must carry it. drops counts
+  # the frames lost since boot: both queues plus the frames the TCP send ring
+  # had no room for, summed and held at 255.
   heartbeat:
-    wire_size: 8
+    wire_size: 10
     fields:
       - { name: uptime_s, offset: 0, type: uint32 }
       - { name: drops, offset: 4, type: uint8 }
       - { name: wifi_rssi, offset: 5, type: int8 }
       - { name: reset_reason, offset: 6, type: uint8, enum: reset_reason }
       - { name: link_state, offset: 7, type: uint8, enum: link_state }
+      - { name: run_id, offset: 8, type: uint16 }
   # On event. QoS 1 in the queue; a status frame never evicts it.
   event:
     wire_size: 12
@@ -150,11 +176,23 @@ packets:
       - { name: req_id, offset: 0, type: uint8 }
       - { name: status, offset: 1, type: uint8 }
       - { name: side, offset: 2, type: uint8 }
-      - { name: flags, offset: 3, type: uint8 }
+      - { name: flags, offset: 3, type: uint8, enum: obstacle_flags }
       - { name: closest_mm, offset: 4, type: uint16 }
       - { name: width_mm, offset: 6, type: uint16 }
       - { name: slots, offset: 8, type: uint16, count: 37 }
 
+# A command on the command topic is a 9-byte frame, big-endian:
+#   cmd_id u16, run_id u16, opcode u8, uptime_s u32
+# run_id and uptime_s are copied from the newest heartbeat. The car accepts a
+# command only when all of these hold:
+#   - run_id is the run id of this boot.
+#   - cmd_id is newer than the last id it accepted (diag cmd_last_id): at most
+#     32767 ahead in the 16-bit sequence, so it wraps after 0xFFFF. The first
+#     command after a boot may carry any id.
+#   - Its own uptime minus the echoed uptime_s is 0 to 3 s. Both count whole
+#     seconds, so a command within 3 s of the heartbeat it echoes is always
+#     accepted and one 4 s or more after it is always refused.
+# Each refusal is counted in the diag cmd_rej_* fields.
 commands:
   stop: 0x00
   start: 0x01
@@ -172,23 +210,33 @@ commands:
 #   barcode_bad  p1 = reason (1 element, 2 parity, 3 delimiter, 4 speed, 5 duplicate)
 #   barcode_block  p1 = length of a black block in mm (over 50, saturates at 32767); at most
 #                one event per 200 mm of travel
-#   cmd_accept   p1 = opcode, p2 = source (1 telemetry, 2 barcode, 3 button)
-#   cmd_reject   p1 = opcode, p2 = source << 8 | reason (1 not running, 2 busy,
-#                3 latched, 4 lifted, 5 source, 6 opcode, 7 on a hump)
+#   cmd_accept   p1 = source << 8 | opcode (source 1 telemetry, 2 barcode, 3 button),
+#                p2 = cmd_id of a telemetry command (0 from a barcode or the button)
+#   cmd_reject   p1 = reason << 12 | source << 8 | opcode, p2 = cmd_id as in
+#                cmd_accept; reason 1 not running, 2 busy, 3 latched, 4 lifted,
+#                5 source, 6 opcode, 7 on a hump, 8 stalled, 9 lean unknown;
+#                source 0 when the line task could not run a turn it was allowed
 #   task_stall   p1 = liveness bit; 0x80 = the car does not move; 0x81 = line sensors stuck;
 #                0x82 = the wheels answer crosswise (encoder plugs swapped)
 #   line_lost    p1 = side that saw the line last (0 none, 1 left, 2 right), p2 = 0 when the
-#                search starts; sent again with p2 = the search turn in degrees (each way)
-#                when the car stops
+#                search starts; sent again with p2 = 0x8000 | the retry number (1 up) when a
+#                failed search turns back, reverses and searches again; sent once more with
+#                p2 = the search turn in degrees (each way) when the car stops
 #   line_found   p1 = side that saw the line last, p2 = distance driven while lost, in mm
+#   pilot_decision  p1 = speed mm/s, p2 = behaviour << 8 | reason
+#                behaviour 0 none, 1 safety, 2 hug, 3 follow line; reason 0 none,
+#                1 stale wheel feedback, 2 estop, 3 line lost, 4 stuck,
+#                5 encoder, 6 sonar, 7 held, 8 hug move timeout,
+#                9 sonar latched, 10 stale wheel feedback latched
 #   boot         p1 = reset reason, p2 = failed self-test checks (1 imu, 2 sonar, 4 beam,
 #                8 imu not calibrated)
 #   turn_*       p1 = turn (1 left, 2 right, 3 u-turn, 4 straight), p2 = elapsed ms on done/abort
 #   run_stop     p1 = run state entered (2 stopped, 3 held, 4 latched)
 #   obstacle_seen  p1 = distance mm
-#   scan_done    p1 = plan status (0 ok, 1 clear, 2 no safe path, 3 failed), p2 = width mm
-#   bypass_start p1 = side (0 left, 1 right), p2 = start angle deg
-#   bypass_end   p1 = 0, p2 = 0 (the car is back in MONITOR)
+#   scan_done    only the old planner path sends it: p1 = plan status (0 ok, 1 clear,
+#                2 no safe path, 3 failed), p2 = width mm
+#   bypass_start p1 = side (0 left, 1 right)
+#   bypass_end   p1 = front width mm, p2 = breadth mm (0 when not seen)
 #   obstacle_stop  p1 = obstacle cause, p2 = echo class
 #   hump_end     p1 = peak mm, p2 = 1 when the height is valid
 #   fault_set, fault_clear  p1 = fault bit
@@ -206,6 +254,7 @@ events:
   barcode_block: 0x15
   line_lost: 0x18
   line_found: 0x19
+  pilot_decision: 0x1A
   obstacle_seen: 0x20
   scan_done: 0x21
   bypass_start: 0x22
@@ -286,13 +335,22 @@ enums:
       init_fail: 13
       echo_noise: 14
       bypass_gave_up: 15
-  bypass_reason:
+  hug_state:
     values:
-      none: 0
-      circled: 1
-      no_progress: 2
-      wheel_stall: 3
-      echo_lost: 4
+      idle: 0
+      contact: 1
+      backoff: 2
+      align: 3
+      leg: 4
+      look: 5
+      turn: 6
+      inner: 7
+      exit: 8
+  hug_side:
+    values:
+      left: 0
+      right: 1
+      none: 2
   echo_class:
     values:
       valid: 0
@@ -404,11 +462,11 @@ enums:
       supervisor: 5
       calibrate: 6
 
-# Shared 16-bit fault register (level bits). Matches include/platform/faults.h.
+# Shared fault register (level bits). Matches include/platform/faults.h.
 fault_bits:
   - { name: wifi_disconn, bit: 0 }
   - { name: mqtt_nack, bit: 1 }
-  - { name: motor_stall, bit: 2 }
+  - { name: motor_stall, bit: 2 }  # no longer raised: the pilot checks for a stuck car
   - { name: encoder_dead, bit: 3 }
   - { name: line_lost, bit: 4 }
   - { name: imu_nack, bit: 5 }

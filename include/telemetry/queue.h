@@ -19,9 +19,7 @@
    among the frame lengths. */
 #define TELEMETRY_EVENT_QUEUED_SIZE (TELEMETRY_EVENT_WIRE_SIZE + 1u)
 
-/* Created by the composition root before producers or the consumer run. */
-extern ID g_mbf_telem_id;
-
+/* Called by the composition root before producers or the consumer run. */
 ER telemetry_queue_create(void);
 
 /* Pushes a frame: frame[0] is the topic (TELEMETRY_TOPIC_*), the rest is the
@@ -34,8 +32,8 @@ ER telemetry_queue_create(void);
    with E_TMOUT on a full queue and nothing is evicted. A qos 0 frame on a
    full queue evicts the oldest frames while the oldest is a qos 0 frame,
    until it fits; if the oldest is an event, the new frame is rejected with
-   E_TMOUT. Every frame lost this way (evicted or rejected qos 0) adds one
-   to the drop counter. Safe to call from several tasks on both cores. */
+   E_TMOUT. Every frame lost this way (evicted, or rejected at any qos) adds
+   one to the drop counter. Safe to call from several tasks on both cores. */
 ER telemetry_queue_push(const uint8_t *frame, uint16_t len, uint8_t qos);
 
 /* Push a wire packet under `topic`: builds topic || packet and calls
@@ -48,6 +46,14 @@ ER telemetry_queue_push_packet(uint8_t topic, const uint8_t *packet,
    TELEMETRY_QUEUE_MAX_MSG bytes. Returns the frame length, or an error code. */
 INT telemetry_queue_pop(uint8_t *frame, TMO tmout);
 
+/* Frames lost since boot: evicted, rejected on a full queue at any qos, or
+   foreign on pop. The diag frame reports it; the heartbeat adds it to the
+   net queue's count. */
 UW telemetry_queue_drop_count(void);
+
+/* Host tests only: forget the queue so that the next telemetry_queue_create
+   makes a new one after the test has reset its kernel fake. The kernel
+   objects are not deleted, so firmware never calls it. */
+void telemetry_queue_test_reset(void);
 
 #endif /* TELEMETRY_QUEUE_H */

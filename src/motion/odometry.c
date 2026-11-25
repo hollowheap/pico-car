@@ -57,7 +57,6 @@ bool odometry_init (odometry_t *      p_sampler,
         {
             return false;
         }
-        initial.odometry_valid[wheel] = true;
     }
     initial.config      = *p_config;
     initial.previous    = *p_baseline;
@@ -123,9 +122,12 @@ bool odometry_update (odometry_t *     p_sampler,
         p_result->speed_valid =
             (p_result->invalid_delta == 0U) &&
             (output.elapsed_us <= next.config.max_interval_us);
-        next.odometry_valid[wheel] =
-            next.odometry_valid[wheel] && p_result->speed_valid;
-        p_result->odometry_valid = next.odometry_valid[wheel];
+        p_result->odometry_valid = p_result->speed_valid;
+        if (!p_result->speed_valid)
+        {
+            next.invalid_samples[wheel]++;
+        }
+        p_result->invalid_samples = next.invalid_samples[wheel];
     }
     next.previous = *p_input;
     *p_sampler    = next;

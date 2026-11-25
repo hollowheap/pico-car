@@ -5,6 +5,7 @@
 #define MOTION_CONTROL_H
 
 #include "pid.h"
+#include "platform/static_assert.h"
 
 typedef enum
 {
@@ -22,11 +23,11 @@ typedef enum
     MOTION_FAULT_EXPIRED,
     MOTION_FAULT_FEEDBACK,
     MOTION_FAULT_GAP,
-    MOTION_FAULT_NO_EDGES,
+    MOTION_FAULT_NO_EDGES, /* no longer raised; kept so wire codes hold */
     MOTION_FAULT_OUTPUT
 } motion_fault_t;
 
-/* An encoder fault (FEEDBACK, NO_EDGES) brakes the car without the output
+/* An encoder fault (FEEDBACK) brakes the car without the output
  * latch, and clears after the car has stood braked this long, so a glitch or
  * a stalled pivot never stops the car until a reboot. The old command is
  * dropped: the car drives again only on a new command. [Default] */
@@ -46,7 +47,6 @@ typedef struct
     pid_config_t speed[ENCODER_WHEELS];
     uint32_t           max_command_ttl_us;
     uint32_t           max_control_gap_us;
-    uint32_t           feedback_timeout_us;
     uint32_t           reversal_brake_us;
 } controller_config_t;
 
@@ -68,16 +68,23 @@ typedef struct
 
 typedef struct
 {
-    motion_state_t  state;
-    motion_fault_t  fault;
+    motion_sample_t sample;
+    int32_t         target_um_s[ENCODER_WHEELS];
     uint32_t        command_id;
     uint32_t        timestamp_us;
-    int32_t         target_um_s[ENCODER_WHEELS];
+    motion_state_t  state;
+    motion_fault_t  fault;
     int16_t         duty[ENCODER_WHEELS];
     bool            sample_available;
     bool            brake_failed;
-    motion_sample_t sample;
 } controller_status_t;
+
+/* Copied across tasks under a spinlock: widest fields first, so padding is at
+ * the tail only. The enums are 1 byte on the firmware (96 bytes) and 4 on the
+ * host (104 bytes). */
+STATIC_ASSERT ((sizeof(controller_status_t) <= 104U) &&
+                   ((sizeof(controller_status_t) % 8U) == 0U),
+               "controller_status_t size");
 
 typedef struct
 {
@@ -89,8 +96,6 @@ typedef struct
     controller_status_t status;
     uint32_t                previous_tick_us;
     uint32_t                brake_started_us;
-    uint32_t                progress_us[ENCODER_WHEELS];
-    int64_t                 last_edges[ENCODER_WHEELS];
     uint8_t                 bad_samples[ENCODER_WHEELS];
     int8_t                  drive_sign[ENCODER_WHEELS];
     uint32_t                fault_us;
@@ -101,7 +106,7 @@ typedef struct
 /* No default speed/gain/timing settings. Init issues brake through the output
  * callback; the hardware owner must already be initialised. One task owns all
  * calls. Stop and the COMMAND, EXPIRED, GAP and OUTPUT faults are terminal:
- * no public reset/rearm operation. FEEDBACK and NO_EDGES clear on their own
+ * no public reset/rearm operation. FEEDBACK clears on its own
  * after MOTION_FAULT_CLEAR_US. */
 bool controller_init (controller_t *              p_control,
                           const controller_config_t * p_config,

@@ -44,8 +44,17 @@
 /* Emergency stop supplied by the motion subsystem. */
 typedef ER (*obstacle_stop_fn_t)(void);
 
-/* Distance travelled supplied by the motion subsystem, in mm. */
-typedef ER (*obstacle_distance_fn_t)(uint32_t * p_distance_mm);
+/* Wheel travel since boot, forward and backward apart, in mm. Both counts
+ * only grow and wrap at 2^32. */
+typedef struct
+{
+    uint32_t fwd_mm;
+    uint32_t back_mm;
+} obstacle_travel_t;
+
+/* Wheel travel supplied by the motion subsystem. E_OK only with fresh wheel
+ * feedback; any other result leaves *p_travel unchanged. */
+typedef ER (*obstacle_distance_fn_t)(obstacle_travel_t * p_travel);
 
 /* Links handed to obstacle at start-up. Any member may be 0 or NULL.
  * h_nav_mbf 0 means "use obstacle's own 4-slot outbox". */
@@ -65,7 +74,7 @@ STATIC_ASSERT (sizeof(obstacle_links_t) == (3U * sizeof(void *)),
 typedef struct
 {
     uint16_t distance_mm;   /* Latest range: VALID, or 20 for TOO_CLOSE. */
-    uint16_t faults;        /* Latched OBSTACLE_FAULT_* bits (9).       */
+    uint16_t faults;        /* Latched OBSTACLE_FAULT_* bits (9) only.  */
     int16_t  servo_deci;    /* Sonar servo angle, 0.1 degree.           */
     int16_t  body_deci;     /* Body offset asked for, 0.1 degree.       */
     uint8_t  state;         /* STOPPED, MONITOR, WAIT_STOP, ...         */
@@ -73,12 +82,13 @@ typedef struct
     uint8_t  echo_class;    /* Latest echo: VALID, OPEN, TOO_CLOSE, ... */
     uint8_t  req_id;        /* Current request id.                      */
     uint8_t  seq;           /* Ping sequence, wraps at 32.              */
-    uint8_t  dropped_events; /* Events lost to a full queue.            */
+    uint8_t  dropped_events; /* Commands, events lost to a full queue.  */
     uint8_t  flags;         /* OBSTACLE_FLAG_* warning flags.           */
     bool     ready;         /* Task is running.                         */
+    uint8_t  stop_reason;   /* Bypass give-up reason, else 0.           */
 } obstacle_status_t;
 
-STATIC_ASSERT (sizeof(obstacle_status_t) == 16U, "obstacle_status_t size");
+STATIC_ASSERT (sizeof(obstacle_status_t) == 18U, "obstacle_status_t size");
 
 /* The plan from the last finished scan. It is valid after the first scan. */
 typedef struct
@@ -90,9 +100,10 @@ typedef struct
     uint8_t  side;          /* Pass the obstacle on this side.          */
     uint8_t  start_deg;     /* Out-pivot angle.                         */
     bool     b_wall;        /* The plan follows a wall.                 */
+    uint8_t  req_id;        /* Scan request this plan answers.          */
 } obstacle_plan_summary_t;
 
-STATIC_ASSERT (sizeof(obstacle_plan_summary_t) == 10U, "obstacle_plan_summary_t size");
+STATIC_ASSERT (sizeof(obstacle_plan_summary_t) == 12U, "obstacle_plan_summary_t size");
 
 /* Start obstacle. Call once from the line task, after gpio_irq_init() and
  * motion_service_init(). Uses the default links: motion-service stop and
@@ -110,11 +121,11 @@ bool obstacle_line_step (bool b_line_left, bool b_line_right);
 /* Lower-level API used when the caller needs its own links. */
 ER obstacle_init (obstacle_links_t const * p_links);
 ER obstacle_post_cmd (uint8_t cmd);
-ER obstacle_get_event (uint32_t * p_evt, TMO tmout);
 
 /* Copy the latest status. Returns E_OBJ before obstacle_init(). */
 ER obstacle_snapshot (obstacle_status_t * p_status);
 
+/* The latched OBSTACLE_FAULT_* bits. */
 uint16_t obstacle_get_faults (void);
 
 /* Copy of the scan profile: OBSTACLE_SLOT_COUNT packed slots. Never waits.
@@ -128,6 +139,17 @@ ER obstacle_copy_plan (obstacle_plan_summary_t * p_plan);
 /* Pings per echo class since boot: OBSTACLE_ECHO_CLASSES counts. The caller
  * subtracts two reads to get a rate. Does nothing before init. */
 void obstacle_echo_counts (uint32_t * p_counts);
+
+/* Ask the sonar task for one ping at a servo angle. Never blocks; safe from
+ * either core. The task clamps the angle to the servo limit, waits for the
+ * servo to settle and publishes the ping word with the reply flag, the same
+ * 6-bit sequence and the angle it used. A new request replaces one that has
+ * not started. Returns E_OBJ before init. */
+ER obstacle_ping_request (int16_t servo_deci, uint8_t seq);
+
+/* Latest ping word (obstacle_pack_ping() layout, reply flag in bit 27 when
+ * it answers a request). Never blocks. */
+uint32_t obstacle_ping_read (void);
 
 /* Event flag for NAV_EVT and NAV_STEER waits. E_OBJ before init. */
 ID obstacle_flag_id (void);

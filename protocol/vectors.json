@@ -1,5 +1,5 @@
 {
-  "schema": 2,
+  "schema": 3,
   "vectors": {
     "status": {
       "values": {
@@ -25,120 +25,119 @@
         "right_duty_pm": -24532,
         "motion_state": 207,
         "motion_fault": 144,
-        "overruns": 15033
+        "overruns": 15033,
+        "seq": 66
       },
-      "hex": "980ee361663d5f78a88fa02ccf903ab9"
+      "hex": "980ee361663d5f78a88fa02ccf903ab942"
     },
     "physics": {
       "values": {
-        "pitch_cdeg": 17105,
-        "roll_cdeg": -28226,
-        "az_mg": -15227,
-        "amag_mg": 44380,
-        "a_fwd_mg": 23346,
-        "yaw_rate_cdps": -15854,
-        "heading_ddeg": 2422,
-        "hump_peak_mm": 38160,
-        "run_peak_mm": 15839,
-        "hump_state": 238,
-        "motion_class": 207,
-        "physics_faults": 238,
-        "flags": 107,
-        "attitude_state": 82,
-        "reserved": 0
+        "pitch_cdeg": -28226,
+        "roll_cdeg": -15227,
+        "az_mg": -21156,
+        "amag_mg": 23346,
+        "a_fwd_mg": -15854,
+        "yaw_rate_cdps": 2422,
+        "heading_ddeg": 38160,
+        "hump_peak_mm": 15839,
+        "run_peak_mm": 61182,
+        "hump_state": 207,
+        "motion_class": 238,
+        "physics_faults": 107,
+        "flags": 82,
+        "attitude_state": 32,
+        "seq": 229
       },
-      "hex": "42d191bec485ad5c5b32c212097695103ddfeecfee6b5200"
+      "hex": "91bec485ad5c5b32c212097695103ddfeefecfee6b5220e5"
     },
     "obstacle": {
       "values": {
-        "state": 32,
-        "cause": 229,
-        "faults": 64870,
-        "echo_class": 230,
-        "flags": 172,
-        "dist_mm": 21294,
-        "closest_mm": 62122,
-        "seq": 22,
-        "req_id": 130,
-        "plan_status": 89,
-        "plan_side": 101,
-        "plan_width_mm": 7058,
-        "plan_need_mm": 52914,
-        "plan_start_deg": 191,
-        "rescans": 8,
-        "servo_deci": 17043,
-        "body_deci": -5278
+        "state": 253,
+        "cause": 230,
+        "faults": 44109,
+        "echo_class": 83,
+        "flags": 242,
+        "dist_mm": 5748,
+        "closest_mm": 33504,
+        "seq": 89,
+        "hug_state": 101,
+        "hug_side": 27,
+        "hug_seq": 206,
+        "width_mm": 48972,
+        "breadth_mm": 2262,
+        "face_mm": 17043,
+        "servo_deci": -5278,
+        "body_deci": -4512
       },
-      "hex": "20e5fd66e6ac532ef2aa168259651b92ceb2bf084293eb62"
+      "hex": "fde6ac4d53f2167482e059651bcebf4c08d64293eb62ee60"
     },
     "diag": {
       "values": {
-        "sticky_faults": 61024,
-        "task_alive_mask": 31688,
-        "line_lost_count": 40428,
-        "line_search_mm": 39060,
-        "barcode_ok": 48355,
-        "barcode_bad": 18358,
-        "barcode_edge_drops": 60324,
-        "last_barcode": 57,
-        "last_barcode_action": 96,
-        "telem_queue_drops": 40538,
-        "net_queue_drops": 45329,
-        "physics_overruns": 22170,
-        "telemetry_overruns": 13354,
-        "echo_valid": 42,
-        "echo_open": 208,
-        "echo_too_close": 210,
-        "echo_no_echo": 46,
-        "echo_glitch": 137,
-        "echo_stuck": 31,
-        "line_edges_per_s": 138,
-        "line_raw_edges_per_s": 52,
-        "supervisor_passes": 15749,
-        "stack_min_free": 47340,
-        "stack_min_task": 82
+        "sticky_faults": 31688,
+        "task_alive_mask": 40428,
+        "line_lost_count": 39060,
+        "line_search_mm": 48355,
+        "barcode_ok": 18358,
+        "barcode_bad": 60324,
+        "barcode_edge_drops": 14755,
+        "last_barcode": 96,
+        "last_barcode_action": 158,
+        "telem_queue_drops": 45329,
+        "net_queue_drops": 22170,
+        "physics_overruns": 13354,
+        "telemetry_overruns": 10954,
+        "echo_valid": 208,
+        "echo_open": 210,
+        "echo_too_close": 46,
+        "echo_no_echo": 137,
+        "echo_glitch": 31,
+        "echo_stuck": 138,
+        "line_edges_per_s": 52,
+        "line_raw_edges_per_s": 61,
+        "supervisor_passes": 47340,
+        "stack_min_free": 21109,
+        "stack_min_task": 165,
+        "cmd_ring_drops": 48,
+        "cmd_last_id": 7893,
+        "cmd_rej_length": 132,
+        "cmd_rej_opcode": 202,
+        "cmd_rej_run": 25,
+        "cmd_rej_old_id": 94,
+        "cmd_rej_age": 145
       },
-      "hex": "ee607bc89dec9894bce347b6eba439609e5ab111569a342a2ad0d22e891f8a343d85b8ec52"
+      "hex": "7bc89dec9894bce347b6eba439a3609eb111569a342a2acad0d22e891f8a343db8ec5275a5301ed584ca195e91"
     },
     "heartbeat": {
       "values": {
-        "uptime_s": 2777629235,
-        "drops": 48,
-        "wifi_rssi": 30,
-        "reset_reason": 132,
-        "link_state": 202
+        "uptime_s": 110880827,
+        "drops": 94,
+        "wifi_rssi": -59,
+        "reset_reason": 79,
+        "link_state": 238,
+        "run_id": 13956
       },
-      "hex": "a58f4233301e84ca"
+      "hex": "069be83b5ec54fee3684"
     },
     "event": {
       "values": {
-        "event_id": 6608,
-        "event_type": 94,
-        "source": 145,
-        "p1": 1691,
-        "p2": 24228,
-        "odometer_mm": 3315182629
+        "event_id": 60374,
+        "event_type": 243,
+        "source": 179,
+        "p1": 13651,
+        "p2": 3701,
+        "odometer_mm": 3935811304
       },
-      "hex": "19d05e91069b5ea4c599ac25"
+      "hex": "ebd6f3b335530e75ea97b6e8"
     },
     "profile": {
       "values": {
-        "req_id": 79,
-        "status": 238,
-        "side": 54,
-        "flags": 235,
-        "closest_mm": 62283,
-        "width_mm": 45957,
+        "req_id": 117,
+        "status": 133,
+        "side": 9,
+        "flags": 12,
+        "closest_mm": 28899,
+        "width_mm": 27800,
         "slots": [
-          13651,
-          3701,
-          60055,
-          30123,
-          34291,
-          2407,
-          3227,
-          28899,
-          27800,
           27989,
           54159,
           7897,
@@ -166,10 +165,19 @@
           40177,
           54836,
           29731,
-          31239
+          31239,
+          19141,
+          31039,
+          15068,
+          1438,
+          8055,
+          14442,
+          62832,
+          37279,
+          27505
         ]
       },
-      "hex": "4fee36ebf34bb38535530e75ea9775ab85f309670c9b70e36c986d55d38f1ed9e45f78299359b6526c20f3cce177aa9056813f2ea23d0ef3314c058c6f4102e1180467ef4b1489e805b39cf1d63474237a07"
+      "hex": "7585090c70e36c986d55d38f1ed9e45f78299359b6526c20f3cce177aa9056813f2ea23d0ef3314c058c6f4102e1180467ef4b1489e805b39cf1d63474237a074ac5793f3adc059e1f77386af570919f6b71"
     }
   }
 }

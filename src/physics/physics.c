@@ -69,6 +69,7 @@ ER physics_snapshot (physics_status_t * p_status)
             p_status->hump_active  = fields.hump_active;
             p_status->finished     = fields.finished;
             p_status->height_valid = fields.height_valid;
+            p_status->attitude_unknown = stats.attitude_unknown;
         }
         else
         {
@@ -90,6 +91,7 @@ ER physics_snapshot (physics_status_t * p_status)
             p_status->hump_active  = false;
             p_status->finished     = false;
             p_status->height_valid = false;
+            p_status->attitude_unknown = true;
         }
 
         result = E_OK;

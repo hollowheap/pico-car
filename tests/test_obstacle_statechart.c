@@ -390,27 +390,34 @@ static void test_range_follows_travel (void)
     obstacle_statechart_init(&fsm, &cfg, 0U);
     obstacle_statechart_out_clear(&out);
 
-    obstacle_statechart_set_odometer(&fsm, 1000U);
+    obstacle_statechart_set_odometer(&fsm, 1000U, true);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 500U, ++now, &out);
 
     /* 60 mm of travel: too short to judge. */
-    obstacle_statechart_set_odometer(&fsm, 1060U);
+    obstacle_statechart_set_odometer(&fsm, 1060U, true);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 100U, ++now, &out);
     CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
 
     /* 120 mm travelled and the range fell 110 mm (500 -> 390): consistent. */
-    obstacle_statechart_set_odometer(&fsm, 1120U);
+    obstacle_statechart_set_odometer(&fsm, 1120U, true);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 390U, ++now, &out);
     CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
 
     /* 150 mm travelled and the range did not move: a wrong target or a phantom. */
-    obstacle_statechart_set_odometer(&fsm, 1270U);
+    obstacle_statechart_set_odometer(&fsm, 1270U, true);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 385U, ++now, &out);
     CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) != 0U);
 
     /* A consistent pair clears it again. */
-    obstacle_statechart_set_odometer(&fsm, 1400U);
+    obstacle_statechart_set_odometer(&fsm, 1400U, true);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 255U, ++now, &out);
+    CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
+
+    /* No fresh travel: the old anchor is not compared with a later one. */
+    obstacle_statechart_set_odometer(&fsm, 1400U, false);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 250U, ++now, &out);
+    obstacle_statechart_set_odometer(&fsm, 1600U, true);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 250U, ++now, &out);
     CHECK((obstacle_statechart_flags(&fsm) & OBSTACLE_FLAG_ECHO_INCONSISTENT) == 0U);
 }
 
@@ -983,19 +990,17 @@ static void test_hug_budget(void)
     CHECK((fsm.faults & OBSTACLE_FAULT_LINE_TIMEOUT) != 0U);
 }
 
-/* An odometer below the bypass start (a backward move or a stale sample)
- * counts as no distance; it must not wrap to ~4e9 mm and end the bypass. */
-static void test_hug_odometer_below_start(void)
+/* The hug travel only grows, forward and backward, and wraps at 2^32: a
+ * short distance across the wrap is short, not ~4e9 mm. */
+static void test_hug_odometer_wraps(void)
 {
     obstacle_statechart_t     fsm;
     obstacle_statechart_out_t out;
 
     to_reacquire(&fsm, &out, false);
-    CHECK(fsm.bypass_mm == 1000U);
+    fsm.bypass_mm = UINT32_MAX - 10U;
     obstacle_statechart_out_clear(&out);
-    obstacle_statechart_tick(&fsm, fsm.since_ms + 100U, 999U, &out);
-    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
-    obstacle_statechart_tick(&fsm, fsm.since_ms + 100U, 0U, &out);
+    obstacle_statechart_tick(&fsm, fsm.since_ms + 100U, 20U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
     CHECK(fsm.cause != OBSTACLE_CAUSE_LINE_TIMEOUT);
 }
@@ -1036,6 +1041,42 @@ static void test_reject_in_reacquire_gives_up(void)
     CHECK(fsm.reason == 0U);
 }
 
+/* A plan with no safe path, rejected by the navigation, stops with
+ * NO_SAFE_PATH and its fault bit; it does not restart on the same obstacle. */
+static void test_no_safe_path_plan_stops(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t       cfg;
+    uint32_t                  guard = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 10U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 20U, &out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, TEST_ID), 30U, 0U, &out);
+
+    /* Open on both sides, unresolved straight ahead. */
+    while ((fsm.state == OBSTACLE_STATE_SCANNING) && (guard < 200U))
+    {
+        bool const    b_centre = (scan_algo_target(&fsm.scan) == OBSTACLE_SLOT_CENTRE);
+        uint8_t const cls = b_centre ? (uint8_t)OBSTACLE_CLASS_GLITCH : (uint8_t)OBSTACLE_CLASS_OPEN;
+
+        obstacle_statechart_out_clear(&out);
+        obstacle_statechart_ping(&fsm, cls, 0U, 40U, &out);
+        guard++;
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_PLAN);
+    CHECK(fsm.plan.status == OBSTACLE_RESULT_NO_SAFE_PATH);
+
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_REJECT, TEST_ID), 60U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_NO_SAFE_PATH);
+    CHECK((fsm.faults & OBSTACLE_FAULT_NO_SAFE_PATH) != 0U);
+}
+
 /* pings during a spin in REACQUIRE do not count for the
  * collision guard; the same readings while driving do. */
 static void test_spin_pings_skip_collision(void)
@@ -1055,6 +1096,73 @@ static void test_spin_pings_skip_collision(void)
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, 760U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
     CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
+}
+
+/* The health-only entry: close readings never latch a collision, but a stuck
+ * echo still stops the statechart. */
+static void test_ping_health_skips_collision(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t       cfg;
+    uint32_t                  ping = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+    for (ping = 0U; ping < 8U; ping++)
+    {
+        obstacle_statechart_out_clear(&out);
+        obstacle_statechart_ping_health(&fsm, OBSTACLE_CLASS_VALID, 300U, true, 400U + (ping * 60U), &out);
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+    for (ping = 0U; ping < OBSTACLE_STUCK_COUNT; ping++)
+    {
+        obstacle_statechart_out_clear(&out);
+        obstacle_statechart_ping_health(&fsm, OBSTACLE_CLASS_STUCK, 300U, true, 900U + (ping * 60U), &out);
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_ECHO_STUCK);
+}
+
+/* The health entry records the ping in the published ping word. */
+static void test_ping_health_records_word(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t       cfg;
+    uint32_t                  before = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+
+    before = fsm.ping;
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping_health(&fsm, OBSTACLE_CLASS_VALID, 700U, true, 100U, &out);
+    CHECK(obstacle_pack_get(fsm.ping, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK) ==
+          ((obstacle_pack_get(before, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK) + 1U) &
+           OBSTACLE_PING_SEQ_MK));
+    CHECK(obstacle_pack_get(fsm.ping, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK) ==
+          OBSTACLE_CLASS_VALID);
+    CHECK(obstacle_pack_get(fsm.ping, OBSTACLE_PING_DIST_SH, OBSTACLE_PING_DIST_MK) == 700U);
+    CHECK(fsm.last_dist == 700U);
+    CHECK(fsm.last_class == OBSTACLE_CLASS_VALID);
+
+    /* A requested ping has its own reply word: it updates the reading but
+     * must not pass for a ping straight ahead. */
+    before = fsm.ping;
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping_health(&fsm, OBSTACLE_CLASS_VALID, 680U, false, 130U, &out);
+    CHECK(fsm.ping == before);
+    CHECK(fsm.last_dist == 680U);
+
+    /* A guard ping changes no reading and leaves the face ping word alone. */
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping_guard(&fsm, OBSTACLE_CLASS_VALID, 650U, 160U, &out);
+    CHECK(fsm.ping == before);
+    CHECK(fsm.last_dist == 680U);
 }
 
 /* The wall plan reaches REACQUIRE through the same pivot rule. */
@@ -1084,6 +1192,102 @@ static void test_reacquire_no_steer(void)
                                  400U, 500U + (ping * 10U), &out);
         CHECK(!out.b_steer_valid);
     }
+}
+
+/* Feed health pings and return the FAULT events they raised. */
+static uint32_t health_pings(obstacle_statechart_t * p_fsm, uint8_t cls, uint32_t count,
+                             uint32_t * p_now)
+{
+    obstacle_statechart_out_t out;
+    uint32_t                  faults = 0U;
+    uint32_t                  idx    = 0U;
+    uint32_t                  evt    = 0U;
+
+    for (idx = 0U; idx < count; idx++)
+    {
+        obstacle_statechart_out_clear(&out);
+        *p_now += 1U;
+        obstacle_statechart_ping_health(p_fsm, cls, 0U, false, *p_now, &out);
+        for (evt = 0U; evt < out.evt_count; evt++)
+        {
+            if (obstacle_pack_get(out.evt[evt], OBSTACLE_EV_TYPE_SH, OBSTACLE_EV_TYPE_MK) ==
+                OBSTACLE_EVT_FAULT)
+            {
+                faults++;
+            }
+        }
+    }
+
+    return faults;
+}
+
+/* A stuck echo, a dead sonar and echo noise stop the car only while they
+ * hold: one FAULT event on the way in, and a good ping lets it go on. */
+static void test_health_fault_ends_when_cause_clears(void)
+{
+    static uint8_t const classes[3]  = {OBSTACLE_CLASS_NO_ECHO, OBSTACLE_CLASS_STUCK,
+                                        OBSTACLE_CLASS_GLITCH};
+    static uint16_t const bits[3]    = {OBSTACLE_FAULT_NO_ECHO, OBSTACLE_FAULT_ECHO_STUCK,
+                                        OBSTACLE_FAULT_ECHO_NOISE};
+    static uint32_t const counts[3]  = {OBSTACLE_NO_ECHO_COUNT, OBSTACLE_STUCK_COUNT,
+                                        OBSTACLE_GLITCH_COUNT};
+    uint32_t              idx = 0U;
+
+    for (idx = 0U; idx < 3U; idx++)
+    {
+        obstacle_statechart_t     fsm;
+        obstacle_statechart_out_t out;
+        obstacle_plan_cfg_t       cfg;
+        uint32_t                  now = 10U;
+
+        obstacle_plan_cfg_default(&cfg);
+        obstacle_statechart_init(&fsm, &cfg, 0U);
+        start_monitor(&fsm, &out);
+
+        CHECK(health_pings(&fsm, classes[idx], counts[idx], &now) == 1U);
+        CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+        CHECK((fsm.faults & bits[idx]) != 0U);
+
+        /* Still failing: no new event, the fault holds. */
+        CHECK(health_pings(&fsm, classes[idx], 20U, &now) == 0U);
+        CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+        CHECK((fsm.faults & bits[idx]) != 0U);
+
+        /* One good ping ends it. */
+        CHECK(health_pings(&fsm, OBSTACLE_CLASS_VALID, 1U, &now) == 0U);
+        CHECK((fsm.faults & bits[idx]) == 0U);
+        CHECK(fsm.state == OBSTACLE_STATE_MONITOR);
+        CHECK(fsm.cause == OBSTACLE_CAUSE_NONE);
+    }
+}
+
+/* Only the operator stop latches: echo faults coming and going do not undo it. */
+static void test_estop_survives_health_recovery(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t       cfg;
+    uint32_t                  now = 10U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_STOP, 0U), now, 0U, &out);
+
+    CHECK(health_pings(&fsm, OBSTACLE_CLASS_NO_ECHO, 10U, &now) == 0U);
+    CHECK(health_pings(&fsm, OBSTACLE_CLASS_VALID, 10U, &now) == 0U);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_EXTERNAL);
+
+    /* The operator stop also holds when it comes during an echo stop. */
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+    CHECK(health_pings(&fsm, OBSTACLE_CLASS_NO_ECHO, OBSTACLE_NO_ECHO_COUNT, &now) == 1U);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_STOP, 0U), now, 0U, &out);
+    CHECK(health_pings(&fsm, OBSTACLE_CLASS_VALID, 10U, &now) == 0U);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
 }
 
 int main(void)
@@ -1118,11 +1322,16 @@ int main(void)
     test_line_found_unchanged();
     test_stale_turned_is_not_line();
     test_hug_budget();
-    test_hug_odometer_below_start();
+    test_hug_odometer_wraps();
     test_reject_in_reacquire_gives_up();
+    test_no_safe_path_plan_stops();
     test_spin_pings_skip_collision();
+    test_ping_health_skips_collision();
+    test_ping_health_records_word();
     test_wall_reacquire();
     test_reacquire_no_steer();
+    test_health_fault_ends_when_cause_clears();
+    test_estop_survives_health_recovery();
 
     if (g_failures == 0)
     {

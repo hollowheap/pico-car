@@ -40,6 +40,7 @@
 
 #include "platform/isr.h"
 #include "../../usb_console_compat.h"
+#include "comms.h"
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
 #include "obstacle_internal.h"
@@ -144,7 +145,7 @@ static sim_car_t g_car = {0U, false};
 static sim_nav_t g_nav = {true, 0U, 0U, 0U, 0U, 0U, ITEM_NONE};
 
 static ER   sim_stop (void);
-static ER   sim_distance (uint32_t * p_distance_mm);
+static ER   sim_distance (obstacle_travel_t * p_travel);
 static void print_profile (void);
 static void print_servo_check (void);
 static void print_event (uint32_t evt);
@@ -207,15 +208,17 @@ static ER sim_stop (void)
 }
 
 /*!
- * @brief Pretend the motion service odometer.
+ * @brief Pretend the motion service travel. The pretend car only drives
+ *        forward.
  *
- * @param[out] p_distance_mm Distance travelled.
+ * @param[out] p_travel Travel since boot.
  *
  * @return E_OK.
  */
-static ER sim_distance (uint32_t * p_distance_mm)
+static ER sim_distance (obstacle_travel_t * p_travel)
 {
-    *p_distance_mm = g_car.odo_um / UM_PER_MM;
+    p_travel->fwd_mm  = g_car.odo_um / UM_PER_MM;
+    p_travel->back_mm = 0U;
 
     return (E_OK);
 }
@@ -589,7 +592,7 @@ static void sim_nav_loop (void)
         last_state = state;
         g_nav.state_ms += LOOP_MS;
 
-        while (E_OK == obstacle_get_event(&evt, TMO_POL))
+        while (E_OK == obstacle_comms_get_event(&evt, TMO_POL))
         {
             print_event(evt);
             if (g_nav.b_auto)

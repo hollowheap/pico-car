@@ -42,7 +42,7 @@ static UW g_drop_count;
 /* Serialises producers only. See telemetry_queue_push. */
 static ID g_push_mtx;
 
-ID g_mbf_telem_id;
+static ID g_mbf_telem_id;
 
 ER
 telemetry_queue_create (void)
@@ -230,9 +230,17 @@ telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
         return result;
     }
     result = tk_snd_mbf(g_mbf_telem_id, frame, stored_len, TMO_POL);
-    if ((result == E_TMOUT) && (qos == 0U))
+    if (result == E_TMOUT)
     {
-        result = send_evicting(frame, stored_len);
+        if (qos == 0U)
+        {
+            result = send_evicting(frame, stored_len);
+        }
+        else
+        {
+            /* Callers ignore the result, so the counter is the only trace. */
+            (void) atomic_inc(&g_drop_count);
+        }
     }
     (void) tk_unl_mtx(g_push_mtx);
     return result;
@@ -289,4 +297,11 @@ UW
 telemetry_queue_drop_count (void)
 {
     return atomic_add(&g_drop_count, 0u);
+}
+
+void
+telemetry_queue_test_reset (void)
+{
+    g_mbf_telem_id = 0;
+    g_push_mtx     = 0;
 }

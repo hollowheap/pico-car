@@ -7,6 +7,7 @@ export type BridgeConfig = {
   schemaPath: string;
   historyPath: string;
   historyMaxRecords: number;
+  historyMaxEvents: number;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
@@ -19,5 +20,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     schemaPath: env.PROTOCOL_SCHEMA ?? "../../protocol/telemetry.yaml",
     historyPath: env.BRIDGE_HISTORY_PATH ?? "history.jsonl",
     historyMaxRecords: Number(env.BRIDGE_HISTORY_MAX_RECORDS ?? "10000"),
+    historyMaxEvents: Number(env.BRIDGE_HISTORY_MAX_EVENTS ?? "2000"),
   };
 }

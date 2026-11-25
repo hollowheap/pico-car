@@ -31,12 +31,69 @@ bool motion_adapter_init (motion_adapter_t * p_ad, float accel_alpha)
     return true;
 }
 
+/* The motion service samples twice per physics read, so a bad sample can
+ * come and go between reads; its count of bad samples still moves. */
+static bool invalid_samples_moved (motion_adapter_t * p_ad,
+                                   const motion_reading_t * p_reading)
+{
+    bool moved = false;
+    uint32_t wheel = 0U;
+
+    for (wheel = 0U; wheel < PHYSICS_WHEEL_COUNT; wheel++)
+    {
+        moved = moved
+                || (p_reading->invalid_samples[wheel] != p_ad->prev_invalid[wheel]);
+        p_ad->prev_invalid[wheel] = p_reading->invalid_samples[wheel];
+    }
+    moved = moved && p_ad->have_invalid;
+    p_ad->have_invalid = true;
+
+    return moved;
+}
+
+/* Distance since the previous call; zero on the first call and after an
+ * invalid one. */
+static float distance_since_last (motion_adapter_t * p_ad,
+                                  const motion_reading_t * p_reading, bool odo_ok)
+{
+    float ds_m = 0.0f;
+
+    if (odo_ok)
+    {
+        if (p_ad->have_disp)
+        {
+            int64_t dl = p_reading->displacement_um[PHYSICS_WHEEL_LEFT]
+                         - p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT];
+            int64_t dr = p_reading->displacement_um[PHYSICS_WHEEL_RIGHT]
+                         - p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT];
+
+            ds_m = WHEEL_MEAN_WEIGHT * ((float)dl + (float)dr) * UM_TO_M;
+        }
+        p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT] = p_reading->displacement_um[PHYSICS_WHEEL_LEFT];
+        p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT] =
+            p_reading->displacement_um[PHYSICS_WHEEL_RIGHT];
+        p_ad->have_disp = true;
+    }
+    else
+    {
+        p_ad->have_disp = false;
+    }
+
+    return ds_m;
+}
+
+/* Time bases: the age is this cycle's clock (now_us) minus the motion stamp;
+ * dv/dt uses the motion stamps alone, because the speeds were measured then.
+ * Both come from the same 1 MHz timer, and the hump detector drops a sample
+ * older than its max_motion_age_s (25 ms), so speed and acceleration are never
+ * paired with an accelerometer reading more than 25 ms apart. */
 bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p_reading,
                     uint32_t now_us, motion_input_t * p_out)
 {
     uint32_t age_us = 0U;
     bool speeds_ok = false;
     bool odo_ok = false;
+    bool glitch = false;
     float speed = 0.0f;
 
     if ((NULL == p_ad) || (NULL == p_out))
@@ -49,6 +106,7 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     if ((NULL == p_reading) || !p_reading->available)
     {
         p_ad->have_disp = false;
+        p_ad->have_invalid = false;
         p_ad->have_speed = false;
         p_ad->accel_valid = false;
         return true;
@@ -63,8 +121,9 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     }
     speeds_ok = p_reading->speed_valid[PHYSICS_WHEEL_LEFT]
                 && p_reading->speed_valid[PHYSICS_WHEEL_RIGHT];
+    glitch = invalid_samples_moved (p_ad, p_reading);
     odo_ok = p_reading->odometry_valid[PHYSICS_WHEEL_LEFT]
-             && p_reading->odometry_valid[PHYSICS_WHEEL_RIGHT];
+             && p_reading->odometry_valid[PHYSICS_WHEEL_RIGHT] && !glitch;
 
     p_out->v_left_mps = (float)p_reading->velocity_um_s[PHYSICS_WHEEL_LEFT] * UM_TO_M;
     p_out->v_right_mps = (float)p_reading->velocity_um_s[PHYSICS_WHEEL_RIGHT]
@@ -74,29 +133,9 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     p_out->speed_mps = speed;
     p_out->age_s = (float)age_us * US_TO_S;
 
-    /* Distance since the previous call. */
-    if (odo_ok)
-    {
-        if (p_ad->have_disp)
-        {
-            int64_t dl = p_reading->displacement_um[PHYSICS_WHEEL_LEFT]
-                         - p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT];
-            int64_t dr = p_reading->displacement_um[PHYSICS_WHEEL_RIGHT]
-                         - p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT];
+    p_out->ds_m = distance_since_last (p_ad, p_reading, odo_ok);
 
-            p_out->ds_m = WHEEL_MEAN_WEIGHT * ((float)dl + (float)dr) * UM_TO_M;
-        }
-        p_ad->prev_disp_um[PHYSICS_WHEEL_LEFT] = p_reading->displacement_um[PHYSICS_WHEEL_LEFT];
-        p_ad->prev_disp_um[PHYSICS_WHEEL_RIGHT] =
-            p_reading->displacement_um[PHYSICS_WHEEL_RIGHT];
-        p_ad->have_disp = true;
-    }
-    else
-    {
-        p_ad->have_disp = false;
-    }
-
-    /* dv/dt between the motion service samples. */
+    /* dv/dt between the motion service samples, on their own stamps. */
     if (speeds_ok)
     {
         if (p_ad->have_speed && (p_reading->timestamp_us != p_ad->prev_ts_us))

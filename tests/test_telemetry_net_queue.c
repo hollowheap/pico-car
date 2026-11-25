@@ -95,7 +95,7 @@ static unsigned fill_with (uint16_t len, unsigned count)
 static void setup (void)
 {
     mbf_fake_reset();
-    g_mbf_net_tx_id = 0;
+    telemetry_net_queue_test_reset();
     CHECK(telemetry_net_queue_create() == E_OK);
 }
 
@@ -112,7 +112,7 @@ static void test_create_failure_paths (void)
     unsigned       before = g_fail;
 
     mbf_fake_reset();
-    g_mbf_net_tx_id = 0;
+    telemetry_net_queue_test_reset();
 
     CHECK(telemetry_net_queue_push(msg, 4U) == E_NOEXS);
     CHECK(telemetry_net_queue_pop(msg, TMO_POL) == E_NOEXS);
@@ -121,7 +121,6 @@ static void test_create_failure_paths (void)
 
     g_mbf_fake.create_error = E_NOMEM;
     CHECK(telemetry_net_queue_create() == E_NOMEM);
-    CHECK(g_mbf_net_tx_id == 0);
     CHECK(telemetry_net_queue_push(msg, 4U) == E_NOEXS);
 
     cfg.mbfatr = TA_USERBUF;
@@ -131,11 +130,11 @@ static void test_create_failure_paths (void)
     CHECK(tk_cre_mbf(&cfg) > 0);
     CHECK(tk_cre_mbf(&cfg) > 0);
     CHECK(telemetry_net_queue_create() == E_LIMIT);
-    CHECK(g_mbf_net_tx_id == 0);
+    CHECK(telemetry_net_queue_push(msg, 4U) == E_NOEXS);
 
     mbf_fake_reset();
     CHECK(telemetry_net_queue_create() == E_OK);
-    CHECK(g_mbf_net_tx_id > 0);
+    CHECK(telemetry_net_queue_pop(msg, TMO_POL) == E_TMOUT); /* exists, empty */
     CHECK(g_mbf_fake.create_calls == 1U);
     CHECK(push_seed(4U, 5U) == E_OK);
     CHECK(telemetry_net_queue_create() == E_OK); /* second call is a no-op */
@@ -182,7 +181,7 @@ static void test_arguments (void)
     CHECK(telemetry_net_queue_pop(msg, 77) == 1); /* oldest: the 1 B frame */
     CHECK(g_mbf_fake.last_rcv_tmout == 77);
 
-    g_mbf_net_tx_id = 0;
+    telemetry_net_queue_test_reset();
     CHECK(telemetry_net_queue_push(0, 4U) == E_PAR); /* args first */
     CHECK(telemetry_net_queue_pop(0, TMO_POL) == E_PAR);
     pass("net_arguments", before);

@@ -15,6 +15,20 @@
 #include "statechart.h"
 #include "obstacle_internal.h"
 
+/* The sonar task waits on this bit for a ping request (see
+ * obstacle_ping_request()). */
+#define OBSTACLE_FLG_PING (0x20U)
+
+/* The status scalars, copied together so that they come from one step. */
+typedef struct
+{
+    uint32_t status; /* Packed status word.                          */
+    uint32_t aim;    /* Servo deci-degrees low, body deci-degrees high. */
+    uint16_t faults; /* OBSTACLE_FAULT_* bits; give-up reason in 12-14. */
+    uint8_t  flags;  /* OBSTACLE_FLAG_* bits.                        */
+    uint8_t  drops;  /* Events and commands dropped, saturating.     */
+} obstacle_comms_scalars_t;
+
 ER   obstacle_comms_init (obstacle_links_t const * p_links);
 void obstacle_comms_set_init_failed (void);
 ID   obstacle_comms_flag (void);
@@ -23,17 +37,20 @@ ER   obstacle_comms_post_cmd (uint8_t cmd);
 bool obstacle_comms_pop_cmd (uint8_t * p_cmd);
 
 void     obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_statechart_t const * p_fsm);
-uint32_t obstacle_comms_odometer_mm (uint32_t now_ms);
+bool     obstacle_comms_travel (obstacle_travel_t * p_travel);
 
 ER       obstacle_comms_get_event (uint32_t * p_evt, TMO tmout);
 uint32_t obstacle_comms_steer (void);
 uint32_t obstacle_comms_status (void);
+uint32_t obstacle_comms_ping (void);
+uint32_t obstacle_comms_take_ping_request (void);
+void     obstacle_comms_publish_ping_reply (uint32_t word);
 uint16_t obstacle_comms_faults (void);
 uint8_t  obstacle_comms_drops (void);
+void     obstacle_comms_copy_scalars (obstacle_comms_scalars_t * p_out);
 ER       obstacle_comms_copy_profile (uint16_t * p_profile);
 ER       obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan);
 uint32_t obstacle_comms_aim (void);
-uint8_t  obstacle_comms_flags (void);
 void     obstacle_comms_count_class (uint8_t cls);
 
 /* Navigation tells the scan task that the body is turning (a scan pivot or a

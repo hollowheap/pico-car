@@ -19,6 +19,7 @@
 
 #include "hump_detect.h"
 #include "imu_motion.h"
+#include "platform/chassis.h"
 
 #define RAD_TO_DEG   (57.2957795f)
 #define DEG_TO_RAD   (0.0174532925f)
@@ -26,19 +27,33 @@
 #define MIN_NORM     (1.0e-6f)
 #define DEG_HALF_TURN (180.0f)
 #define DEG_FULL_TURN (360.0f)
+#define MM_PER_M     (1000.0f)
 
-/* imu_motion_default_config values; all are placeholders until tuned. */
+/* imu_motion_default_config values. None is measured on the car; each comment
+ * says what sets its scale. */
+/* 3 samples (60 ms): a one-sample blip never changes the class. A stopped
+ * wheel reads under 10 mm/s (one 0.08 mm encoder edge in a 10 ms motion
+ * period is 8 mm/s). 0.05 g is the rest band of the hump calibration. */
 #define DEFAULT_CLASS_SAMPLES    (3U)
 #define DEFAULT_STAT_SPEED_MPS   (0.01f)
 #define DEFAULT_STAT_DEV_G       (0.05f)
+/* Under the 0.4 m/s^2 ramp of the line follower, so a commanded speed change
+ * classes as accelerating; 20 deg/s is a 37 mm/s wheel difference. */
 #define DEFAULT_ACCEL_MPS2       (0.3f)
 #define DEFAULT_TURN_DPS         (20.0f)
-#define DEFAULT_TRACK_WIDTH_M    (0.12f)
+#define DEFAULT_TRACK_WIDTH_M    ((float)CHASSIS_WHEEL_TRACK_MM / MM_PER_M)
+/* The Earth's field is 0.25 to 0.65 G; the band keeps a margin on each side
+ * and stays inside the +/-1.3 G range. 0.1 g of extra acceleration tilts the
+ * measured down by up to 6 degrees, so the heading error is of that order. */
 #define DEFAULT_MAG_MIN_GAUSS    (0.15f)
 #define DEFAULT_MAG_MAX_GAUSS    (1.0f)
 #define DEFAULT_HEADING_DEV_G    (0.1f)
+/* A new magnetometer sample comes every 60 ms: the rate settles in about
+ * three samples, and three missed samples make it invalid. */
 #define DEFAULT_MAG_ALPHA        (0.5f)
 #define DEFAULT_MAG_TIMEOUT_S    (0.2f)
+/* Under the turn threshold, so a disagreement shows before a false turn;
+ * 5 samples (100 ms) always include a new magnetometer sample. */
 #define DEFAULT_DISAGREE_DPS     (15.0f)
 #define DEFAULT_DISAGREE_SAMPLES (5U)
 
@@ -212,6 +227,7 @@ void imu_motion_default_config (imu_motion_config_t * p_cfg)
         p_cfg->turn_dps = DEFAULT_TURN_DPS;
         p_cfg->track_width_m = DEFAULT_TRACK_WIDTH_M;
         p_cfg->mag_enabled = true;
+        /* Uncalibrated: no hard-iron offset has been measured on the car. */
         p_cfg->mag_offset_g[IMU_AXIS_X] = 0.0f;
         p_cfg->mag_offset_g[IMU_AXIS_Y] = 0.0f;
         p_cfg->mag_offset_g[IMU_AXIS_Z] = 0.0f;
@@ -318,7 +334,11 @@ static void update_disagree (imu_motion_ctx_t * p_ctx, bool enc_valid,
     }
 }
 
-/* Fill the turn-rate and heading fields of the output. */
+/* Fill the turn-rate and heading fields of the output. The encoder rate wins
+ * because the magnetometer has no hard-iron or soft-iron calibration and the
+ * motors a few centimetres away disturb it; so when the two disagree, the
+ * magnetometer heading is the one marked not valid. Wheel slip, the other
+ * cause of a disagreement, still passes through the encoder rate. */
 static void fill_yaw_output (const imu_motion_ctx_t * p_ctx,
                              imu_motion_output_t * p_out, bool enc_valid,
                              float enc_yaw)
@@ -329,9 +349,9 @@ static void fill_yaw_output (const imu_motion_ctx_t * p_ctx,
     p_out->enc_yaw_valid = enc_valid;
     p_out->mag_yaw_dps = p_ctx->mag_rate_valid ? p_ctx->mag_rate_dps : 0.0f;
     p_out->mag_yaw_valid = p_ctx->mag_rate_valid;
-    p_out->heading_deg = p_ctx->have_heading ? p_ctx->last_heading_deg : 0.0f;
-    p_out->heading_valid = p_ctx->have_heading;
     p_out->yaw_disagree = (p_ctx->disagree_count >= p_cfg->disagree_samples);
+    p_out->heading_valid = p_ctx->have_heading && !p_out->yaw_disagree;
+    p_out->heading_deg = p_out->heading_valid ? p_ctx->last_heading_deg : 0.0f;
     if (enc_valid)
     {
         p_out->yaw_rate_dps = enc_yaw;

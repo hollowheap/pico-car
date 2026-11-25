@@ -93,7 +93,7 @@ export function Compass({ headingDeg, available = true, yawRateDps = 0, size = 2
               <G key={`l${deg}`} transform={`rotate(${deg} ${at.x} ${at.y})`}>
                 <SvgLabel
                   fill={cardinal ? theme.colors.text : theme.colors.muted}
-                  fontSize={cardinal ? 15 : 11.5}
+                  fontSize={cardinal ? 15 : 12}
                   fontWeight={cardinal ? '600' : '400'}
                   textAnchor="middle"
                   x={at.x}

@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "telemetry/assemble.h"
+#include "navigation/obstacle_flags.h"
+#include "telemetry/hug_word.h"
 
 static unsigned g_fail;
 static unsigned g_checks;
@@ -206,7 +208,7 @@ static void test_status_clamps_and_nulls (void)
     telemetry_assemble_status(NULL, &m, &f, NULL, NULL, 0U, 0U, 0U, false);
     telemetry_assemble_motion(NULL, &m, &f, NULL);
     telemetry_assemble_physics(NULL, NULL);
-    telemetry_assemble_obstacle(NULL, NULL, NULL);
+    telemetry_assemble_obstacle(NULL, NULL, NULL, NULL);
 }
 
 static void test_motion (void)
@@ -326,18 +328,19 @@ static void test_obstacle (void)
     o.body_deci   = 600;
     o.flags       = 0x48U;
 
-    telemetry_assemble_obstacle(&out, &o, NULL);
+    telemetry_assemble_obstacle(&out, &o, NULL, NULL);
     CHECK(out.state == 3U);
     CHECK(out.cause == 7U);
     CHECK(out.faults == 0x181U);
     CHECK(out.echo_class == 2U);
     CHECK(out.dist_mm == 215U);
     CHECK(out.seq == 29U);
-    CHECK(out.req_id == 9U);
     CHECK(out.servo_deci == -300);
     CHECK(out.body_deci == 600);
     CHECK(out.flags == 0x48U);
-    CHECK(out.plan_width_mm == 0U);
+    CHECK(out.width_mm == 0U);
+    CHECK(out.hug_state == TELEMETRY_HUG_STATE_IDLE);
+    CHECK(out.hug_side == TELEMETRY_HUG_SIDE_NONE);
 
     plan.closest_mm = 180U;
     plan.width_mm   = 205U;
@@ -346,16 +349,153 @@ static void test_obstacle (void)
     plan.side       = 1U;
     plan.start_deg  = 60U;
     plan.b_wall     = false;
-    telemetry_assemble_obstacle(&out, &o, &plan);
+    telemetry_assemble_obstacle(&out, &o, &plan, NULL);
     CHECK(out.closest_mm == 180U);
-    CHECK(out.plan_width_mm == 205U);
-    CHECK(out.plan_need_mm == 190U);
-    CHECK(out.plan_side == 1U);
-    CHECK(out.plan_start_deg == 60U);
+    CHECK(out.width_mm == 0U);
+    CHECK(out.breadth_mm == 0U);
+    CHECK(out.face_mm == 0U);
 
-    telemetry_assemble_obstacle(&out, NULL, NULL);
+    telemetry_assemble_obstacle(&out, NULL, NULL, NULL);
     CHECK(out.state == 0U);
     CHECK(out.dist_mm == 0U);
+}
+
+/* The hug words fill the hug fields, and the servo of the latest ping. */
+static void test_obstacle_hug (void)
+{
+    telemetry_obstacle_t out;
+    obstacle_status_t    o;
+    hug_t                hug;
+    uint32_t             words[HUG_WORD_COUNT];
+    uint32_t const       none[HUG_WORD_COUNT] = {0U, 0U};
+
+    memset(&o, 0, sizeof o);
+    o.ready      = true;
+    o.servo_deci = 120;
+    o.body_deci  = 50;
+
+    /* No words, or words never published: the frame is as before. */
+    telemetry_assemble_obstacle(&out, &o, NULL, NULL);
+    CHECK(out.hug_state == TELEMETRY_HUG_STATE_IDLE);
+    CHECK(out.hug_side == TELEMETRY_HUG_SIDE_NONE);
+    CHECK(out.servo_deci == 120);
+    telemetry_assemble_obstacle(&out, &o, NULL, none);
+    CHECK(out.hug_state == TELEMETRY_HUG_STATE_IDLE);
+    CHECK(out.hug_side == TELEMETRY_HUG_SIDE_NONE);
+    CHECK(out.servo_deci == 120);
+    CHECK(out.width_mm == 0U);
+
+    /* An idle hug shows idle and no side, but keeps the sizes it has seen. */
+    memset(&hug, 0, sizeof hug);
+    hug.width_mm   = 310U;
+    hug.breadth_mm = 205U;
+    hug.face_p_mm  = 249;
+    hug.seen_mm    = 180;
+    hug_word_pack(words, &hug, -150, 700);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.hug_state == TELEMETRY_HUG_STATE_IDLE);
+    CHECK(out.hug_side == TELEMETRY_HUG_SIDE_NONE);
+    CHECK(out.width_mm == 310U);
+    CHECK(out.breadth_mm == 205U);
+    CHECK(out.face_mm == 0U);
+    CHECK(out.servo_deci == -150);
+    CHECK(out.body_deci == 0);
+
+    /* An active hug going right: state and side come from the hug. */
+    hug.state   = 3U;  /* a drive */
+    hug.then    = 5U;  /* then a look: a leg */
+    hug.side    = -1;
+    hug_word_pack(words, &hug, 300, -450);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.hug_state == TELEMETRY_HUG_STATE_LEG);
+    CHECK(out.face_mm == 180U);
+    CHECK(out.body_deci == -450);
+    CHECK(out.hug_side == TELEMETRY_HUG_SIDE_RIGHT);
+    CHECK(out.servo_deci == 300);
+    hug.side = 1;
+    hug_word_pack(words, &hug, 0, 1800);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.hug_side == TELEMETRY_HUG_SIDE_LEFT);
+    CHECK(out.body_deci == 1800);
+    hug_word_pack(words, &hug, 0, -1800);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.body_deci == -1800);
+    CHECK(out.servo_deci == 0);
+
+    /* Large values saturate in their own field and never spill. */
+    hug.width_mm   = 60000U;
+    hug.breadth_mm = 7U;
+    hug.seen_mm    = -20;
+    hug_word_pack(words, &hug, 5000, 0);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.width_mm == 4095U);
+    CHECK(out.breadth_mm == 7U);
+    CHECK(out.face_mm == 0U);
+    CHECK(out.servo_deci == 300);
+
+    /* The ranges of the pack: each distance saturates at 4095 mm, and the
+     * servo goes in whole degrees, cut toward zero, within +-30 degrees. */
+    hug.width_mm   = 4096U;
+    hug.breadth_mm = 65535U;
+    hug.seen_mm    = 4096;
+    hug_word_pack(words, &hug, 157, 0);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.width_mm == 4095U);
+    CHECK(out.breadth_mm == 4095U);
+    CHECK(out.face_mm == 4095U);
+    CHECK(out.servo_deci == 150);
+    hug.seen_mm = 4095;
+    hug_word_pack(words, &hug, -157, 0);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.face_mm == 4095U);
+    CHECK(out.servo_deci == -150);
+    hug_word_pack(words, &hug, -5000, 0);
+    telemetry_assemble_obstacle(&out, &o, NULL, words);
+    CHECK(out.servo_deci == -300);
+
+    /* The hug sequence is two bits, shows in the frame, and wraps. It does
+     * not disturb the other fields. */
+    hug.width_mm = 310U;
+    hug.seen_mm  = 180;
+    hug_word_pack(words, &hug, 0, 0);
+    CHECK(0U == hug_word_get(words[0], HUG_WORD_SEQ_SH, HUG_WORD_SEQ_MK));
+    for (uint32_t seq = 0U; seq < 6U; seq++)
+    {
+        words[0] |= hug_word_put(seq, HUG_WORD_SEQ_SH, HUG_WORD_SEQ_MK);
+        telemetry_assemble_obstacle(&out, &o, NULL, words);
+        CHECK(out.hug_seq == (seq & 3U));
+        CHECK(out.width_mm == 310U);
+        CHECK(out.face_mm == 180U);
+        CHECK(out.hug_side == TELEMETRY_HUG_SIDE_LEFT);
+        CHECK(hug_word_is_valid(words));
+        words[0] &= ~hug_word_put(HUG_WORD_SEQ_MK, HUG_WORD_SEQ_SH, HUG_WORD_SEQ_MK);
+    }
+    telemetry_assemble_obstacle(&out, &o, NULL, none);
+    CHECK(out.hug_seq == 0U);
+}
+
+/* The profile header comes from the plan of the same scan, so a client
+ * pairs the profile with that scan by req_id. */
+static void test_profile (void)
+{
+    telemetry_profile_t     out;
+    obstacle_plan_summary_t plan;
+
+    memset(&plan, 0, sizeof plan);
+    plan.closest_mm = 180U;
+    plan.width_mm   = 205U;
+    plan.status     = 2U;
+    plan.side       = 1U;
+    plan.b_wall     = true;
+    plan.req_id     = 11U;
+    memset(&out, 0xA5, sizeof out);
+    telemetry_assemble_profile(&out, &plan);
+    CHECK(out.req_id == 11U);
+    CHECK(out.status == 2U);
+    CHECK(out.side == 1U);
+    CHECK(out.closest_mm == 180U);
+    CHECK(out.width_mm == 205U);
+    CHECK(out.flags == (1U << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL));
 }
 
 int main (void)
@@ -368,6 +508,8 @@ int main (void)
     test_motion();
     test_physics();
     test_obstacle();
+    test_obstacle_hug();
+    test_profile();
 
     (void)printf("%u checks, %u failed\n", g_checks, g_fail);
     return (g_fail == 0U) ? 0 : 1;

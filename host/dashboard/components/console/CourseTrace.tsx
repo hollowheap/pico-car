@@ -1,11 +1,15 @@
-import { Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, G, Line, Polygon, Polyline, Rect } from 'react-native-svg';
 
-import type { Course } from '../../lib/course';
+import { obstacleLabel, type Course } from '../../lib/course';
 import type { EventKind } from '../../lib/events';
 import { useTheme } from '../../lib/theme-provider';
 
-type Props = { course: Course };
+type Props = {
+  course: Course;
+  /** Drawn height in px. The trace keeps its shape and centres in the width. */
+  height?: number | '100%';
+};
 
 const WIDTH = 360;
 const HEIGHT = 300;
@@ -14,6 +18,9 @@ const PAD = 28;
 const SCALE_STEPS_MM = [100, 200, 500, 1000, 2000, 5000, 10000];
 /** The smallest span the plot fits, so a short run is not blown up (mm). */
 const MIN_SPAN_MM = 600;
+
+/** Legend line of the obstacle box, which is not an event mark. */
+export const OBSTACLE_LEGEND = 'Obstacle estimate: a box in the fault colour; a dashed side is not measured.';
 
 /** Legend text of each mark shape. */
 export const MARK_LEGEND: { kind: EventKind; label: string }[] = [
@@ -55,9 +62,9 @@ function Mark({ kind, x, y, color }: { kind: EventKind; x: number; y: number; co
  * heading. North is up. It is a trace, not a map: it drifts with the heading
  * error. Marks sit where the event's odometer puts them.
  */
-export function CourseTrace({ course }: Props) {
+export function CourseTrace({ course, height = HEIGHT * 1.2 }: Props) {
   const theme = useTheme();
-  const { bounds, points, markers } = course;
+  const { bounds, points, markers, obstacle } = course;
   const spanX = Math.max(MIN_SPAN_MM, bounds.maxX - bounds.minX);
   const spanY = Math.max(MIN_SPAN_MM, bounds.maxY - bounds.minY);
   const scale = Math.min((WIDTH - 2 * PAD) / spanX, (HEIGHT - 2 * PAD) / spanY);
@@ -68,12 +75,13 @@ export function CourseTrace({ course }: Props) {
   const last = points[points.length - 1];
   const bar = [...SCALE_STEPS_MM].reverse().find((mm) => mm * scale <= WIDTH / 4) ?? SCALE_STEPS_MM[0] ?? 100;
 
+  const filling = height === '100%';
   return (
-    <View style={{ gap: 4 }}>
+    <View style={filling ? styles.filling : styles.stack}>
     <Svg
-      accessibilityLabel={`Course trace, ${points.length} points, ${markers.length} marks`}
+      accessibilityLabel={`Course trace, ${points.length} points, ${markers.length} marks${obstacle === null ? '' : `, ${obstacleLabel(obstacle)}`}`}
       accessibilityRole="image"
-      height={HEIGHT * 1.2}
+      height={height}
       preserveAspectRatio="xMidYMid meet"
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       width="100%"
@@ -90,6 +98,27 @@ export function CourseTrace({ course }: Props) {
       ) : null}
       {points[0] !== undefined ? (
         <Circle cx={sx(points[0].x)} cy={sy(points[0].y)} fill="none" r="5" stroke={theme.colors.text} strokeWidth="1.5" />
+      ) : null}
+      {obstacle !== null ? (
+        <G>
+          {obstacle.corners.map((corner, i) => {
+            const next = obstacle.corners[(i + 1) % 4] ?? corner;
+            // Edges 1 and 3 are the sides, edge 2 is the far face; edge 0 is the near face.
+            const dashed = (i === 1 || i === 3) ? obstacle.widthDashed : i === 2 && obstacle.depthDashed;
+            return (
+              <Line
+                key={i}
+                stroke={theme.colors.danger}
+                strokeDasharray={dashed ? '4 3' : undefined}
+                strokeWidth="2"
+                x1={sx(corner.x)}
+                x2={sx(next.x)}
+                y1={sy(corner.y)}
+                y2={sy(next.y)}
+              />
+            );
+          })}
+        </G>
       ) : null}
       {markers.map((marker) => (
         <Mark
@@ -108,9 +137,12 @@ export function CourseTrace({ course }: Props) {
         <Polygon fill={theme.colors.text} points={`${WIDTH - 20},12 ${WIDTH - 25},24 ${WIDTH - 15},24`} />
       </G>
     </Svg>
-      <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        Bar at the bottom left: {bar >= 1000 ? `${bar / 1000} m` : `${bar} mm`}. Arrow at the top right: north.
-      </Text>
+      {/* A drawing that fills a grid cell has no room for the caption. */}
+      {filling ? null : (
+        <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+          Bar at the bottom left: {bar >= 1000 ? `${bar / 1000} m` : `${bar} mm`}. Arrow at the top right: north.
+        </Text>
+      )}
     </View>
   );
 }
@@ -124,3 +156,8 @@ export function EventGlyph({ kind }: { kind: EventKind }) {
     </Svg>
   );
 }
+
+const styles = StyleSheet.create({
+  stack: { gap: 4 },
+  filling: { flex: 1, minHeight: 0 },
+});

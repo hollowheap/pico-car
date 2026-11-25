@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { useTheme } from '../../lib/theme-provider';
 import { Button } from '../ui/button';
-import { confirmControl, type ControlAction } from './controls';
+import { confirmControl, needsConfirm, type ControlAction } from './controls';
 
 type Props = {
   emergencyLatched: boolean;
@@ -42,8 +42,14 @@ export function ControlsPanel({
   const theme = useTheme();
 
   const request = (action: ControlAction) => {
-    setPending(action);
     setError(null);
+    if (!needsConfirm(action)) {
+      // E-stop: no confirmation step, the command goes out on this press.
+      setPending(null);
+      onAction(action);
+      return;
+    }
+    setPending(action);
   };
 
   const confirm = () => {
@@ -59,6 +65,20 @@ export function ControlsPanel({
     setPending(null);
   };
 
+  // One status line after the button groups, so it never pushes the page down.
+  const message =
+    error ?? (emergencyLatched ? 'Emergency latch engaged. Reset requires a power cycle.' : null) ?? (disabled ? disabledReason : null) ?? feedback;
+  const messageAlert = error !== null || emergencyLatched || (feedbackError && message === feedback);
+  const status =
+    message === null ? null : (
+      <Text
+        accessibilityLiveRegion="polite"
+        style={[theme.typography.caption, styles.message, { color: messageAlert ? theme.colors.danger : theme.colors.muted }]}
+      >
+        {message}
+      </Text>
+    );
+
   return (
     <View
       style={[
@@ -67,60 +87,12 @@ export function ControlsPanel({
           backgroundColor: theme.colors.card,
           borderColor: theme.colors.border,
           borderRadius: theme.radii.card,
-          padding: theme.spacing.lg,
+          paddingHorizontal: theme.spacing.lg,
+          paddingVertical: theme.spacing.md,
         },
       ]}
     >
-      <Text
-        style={[theme.typography.headingSm, { color: theme.colors.text }]}
-      >
-        {title}
-      </Text>
-      {disabled ? (
-        <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
-          {disabledReason}
-        </Text>
-      ) : null}
-      {emergencyLatched ? (
-        <Text
-          style={[
-            theme.typography.body,
-            {
-              backgroundColor: theme.colors.dangerSurface,
-              color: theme.colors.danger,
-            },
-          ]}
-        >
-          Emergency latch engaged. Reset requires a power cycle.
-        </Text>
-      ) : null}
-      {feedback === null ? null : (
-        <Text
-          style={[
-            theme.typography.body,
-            {
-              color: feedbackError
-                ? theme.colors.danger
-                : theme.colors.muted,
-            },
-          ]}
-        >
-          {feedback}
-        </Text>
-      )}
-      {error === null ? null : (
-        <Text
-          style={[
-            theme.typography.body,
-            {
-              backgroundColor: theme.colors.dangerSurface,
-              color: theme.colors.danger,
-            },
-          ]}
-        >
-          {error}
-        </Text>
-      )}
+      <Text style={[theme.typography.headingSm, { color: theme.colors.text }]}>{title}</Text>
       {pending === null ? (
         <View style={styles.row}>
           <View style={styles.group}>
@@ -198,18 +170,21 @@ export function ControlsPanel({
               <Button.Text>U-turn</Button.Text>
             </Button>
           </View>
+          {status}
         </View>
       ) : (
         <View style={styles.confirmRow}>
-          <Text style={[theme.typography.body, styles.confirmText, { color: theme.colors.text }]}>
-            Confirm {ACTION_WORDS[pending] ?? pending}?
-          </Text>
           <Button compact disabled={disabled} onPress={confirm}>
             <Button.Text>Confirm</Button.Text>
           </Button>
-          <Button compact disabled={disabled} variant="secondary" onPress={() => setPending(null)}>
+          {/* Cancel stays usable when the link drops: the user can always back out. */}
+          <Button compact variant="secondary" onPress={() => setPending(null)}>
             <Button.Text>Cancel</Button.Text>
           </Button>
+          <Text style={[theme.typography.body, styles.confirmText, { color: theme.colors.text }]}>
+            Confirm {ACTION_WORDS[pending] ?? pending}?
+          </Text>
+          {status}
         </View>
       )}
     </View>
@@ -217,9 +192,10 @@ export function ControlsPanel({
 }
 
 const styles = StyleSheet.create({
-  card: { gap: 8, borderWidth: 1 },
-  row: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' },
+  card: { alignItems: 'center', borderWidth: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
+  row: { alignItems: 'center', flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 20, minWidth: 280 },
   group: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8, maxWidth: '100%' },
-  confirmRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  confirmRow: { alignItems: 'center', flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 8, minWidth: 280 },
+  message: { flexBasis: 160, flexGrow: 1, flexShrink: 1 },
   confirmText: { flexShrink: 1, fontWeight: '600' },
 });

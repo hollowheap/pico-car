@@ -19,7 +19,7 @@ export const FAULT_META: Record<number, FaultMeta> = {
   1: { label: 'MQTT rejected', severity: 'warn', hint: 'The broker refused a publish.' },
   2: { label: 'Motor stalled', severity: 'critical', hint: 'A wheel is told to turn and has no edges.' },
   3: { label: 'Encoder fault', severity: 'critical', hint: 'An encoder is dead, or the two plugs are swapped.' },
-  4: { label: 'Line lost', severity: 'warn', hint: 'The car weaves at reduced speed until a sensor sees the line.' },
+  4: { label: 'Line lost', severity: 'warn', hint: 'The car goes straight at reduced speed and stops after 1000 mm without the line.' },
   5: { label: 'IMU not answering', severity: 'warn', hint: 'The I2C reads of the accelerometer fail.' },
   6: { label: 'Stale wheel speed', severity: 'critical', hint: 'The wheel feedback is too old.' },
   7: { label: 'Tilt out of range', severity: 'warn', hint: 'The tilt reading is not valid.' },

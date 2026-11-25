@@ -23,7 +23,8 @@ STATIC_ASSERT ((uint32_t)MOTION_FAULT_OUTPUT == TELEMETRY_MOTION_FAULT_OUTPUT,
                "OUTPUT wire code");
 
 #define STOP_PIN      21U
-#define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
+/* The STOP input is pulled up; a pressed STOP pulls it to ground. */
+#define STOP_ASSERTED_LEVEL 0U
 
 /* Control-gap limits are in microseconds; the poll delay is in milliseconds. */
 #define US_PER_MS 1000U
@@ -44,6 +45,7 @@ static bool         g_start_called;
 static controller_t g_controller;
 static ID           g_motion_task_id;
 static ID           g_motion_cyc_id;
+/* Guarded by g_service_lock: the task writes it, other cores read it. */
 static uint32_t     g_motion_overruns;
 
 static void motion_cyclic_wakeup (void * p_exinf)
@@ -146,9 +148,8 @@ static void service_halt (ER result)
 /* Set by the supervisor drive check. */
 static volatile bool g_encoder_crossed = false;
 
-/* Report the motion fault bits to the shared register: a motor with no edges
- * (stall), a dead encoder, and the latched stop. Other motion faults reach
- * telemetry through the motion packet. */
+/* Report the motion fault bits to the shared register: a dead encoder and the
+ * latched stop. Other motion faults reach telemetry through the motion packet. */
 static void report_faults (motion_fault_t fault, bool stopped)
 {
     uint16_t active = 0U;
@@ -156,10 +157,6 @@ static void report_faults (motion_fault_t fault, bool stopped)
     if (g_encoder_crossed)
     {
         active |= FAULT_ENCODER_DEAD_BIT;
-    }
-    if (MOTION_FAULT_NO_EDGES == fault)
-    {
-        active |= FAULT_MOTOR_STALL_BIT;
     }
     if (MOTION_FAULT_FEEDBACK == fault)
     {
@@ -169,9 +166,9 @@ static void report_faults (motion_fault_t fault, bool stopped)
     {
         active |= FAULT_ESTOP_LATCHED_BIT;
     }
-    system_fault_assign((uint16_t)(FAULT_MOTOR_STALL_BIT |
-                                   FAULT_ENCODER_DEAD_BIT |
-                                   FAULT_ESTOP_LATCHED_BIT),
+    system_fault_assign(FAULT_OWNER_MOTION,
+                        FAULT_MOTOR_STALL_BIT | FAULT_ENCODER_DEAD_BIT |
+                            FAULT_ESTOP_LATCHED_BIT,
                         active);
 }
 
@@ -187,9 +184,9 @@ static void service_first_status (void)
     (void)ISpinLock(&g_service_lock, &saved);
     initial_stop = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
-    if (initial_stop || gpio_get_val(STOP_PIN) == 0U)
+    if (initial_stop || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL)
     {
-        controller_tick(&g_controller, NULL, in_w(TIMER_RAW_LOW), NULL, true);
+        controller_tick(&g_controller, NULL, in_w(TIMER_TIMERAWL), NULL, true);
     }
     (void)ISpinLock(&g_service_lock, &saved);
     if (g_controller.status.state == MOTION_STOPPED)
@@ -208,30 +205,51 @@ static void service_first_status (void)
     report_faults(fault, stopped);
 }
 
-/* Run permit. until_us is written before armed, so the check never
- * sees an armed permit with an old time. */
-static volatile uint32_t g_permit_until_us = 0U;
-static volatile bool     g_permit_armed    = false;
+/* Run permit, guarded by g_service_lock: the supervisor renews it, and the
+ * motion task and the supervisor read its age on the same clock. */
+static uint32_t g_permit_renewed_us = 0U;
+static uint32_t g_permit_lease_us   = 0U;
+static bool     g_permit_armed      = false;
 
 ER motion_service_renew_permit (uint32_t lease_ms)
 {
-    g_permit_until_us = in_w(TIMER_RAW_LOW) + (lease_ms * US_PER_MS);
-    g_permit_armed    = true;
+    UINT          saved = 0U;
+    uint32_t const now  = in_w(TIMER_TIMERAWL);
+
+    (void)ISpinLock(&g_service_lock, &saved);
+    g_permit_renewed_us = now;
+    g_permit_lease_us   = lease_ms * US_PER_MS;
+    g_permit_armed      = true;
+    (void)ISpinUnlock(&g_service_lock, saved);
 
     return E_OK;
+}
+
+uint32_t motion_service_permit_age_ms (void)
+{
+    UINT          saved = 0U;
+    uint32_t const now  = in_w(TIMER_TIMERAWL);
+    uint32_t       age  = 0U;
+
+    (void)ISpinLock(&g_service_lock, &saved);
+    age = motion_permit_elapsed_ms(g_permit_armed, g_permit_renewed_us, now);
+    (void)ISpinUnlock(&g_service_lock, saved);
+
+    return age;
 }
 
 /* Hold the car while the permit is lapsed, release the hold when it is renewed. */
 static void check_permit (void)
 {
-    UINT          saved = 0U;
-    uint32_t const now  = in_w(TIMER_RAW_LOW);
+    UINT          saved    = 0U;
+    uint32_t const now     = in_w(TIMER_TIMERAWL);
+    bool           b_lapsed = false;
+
     /* Fail closed: until the supervisor first renews the permit the wheels
      * are held, so a supervisor that never starts never lets the car move. */
-    bool const     b_lapsed =
-        (!g_permit_armed) || ((int32_t)(now - g_permit_until_us) > 0);
-
     (void)ISpinLock(&g_service_lock, &saved);
+    b_lapsed = motion_permit_lapsed(g_permit_armed, g_permit_renewed_us,
+                                    g_permit_lease_us, now);
     if (b_lapsed != (0U != (g_inbox.hold_mask & MOTION_HOLD_SUPERVISOR)))
     {
         (void)motion_inbox_hold(&g_inbox, MOTION_HOLD_SUPERVISOR, b_lapsed, now);
@@ -241,17 +259,22 @@ static void check_permit (void)
 
 static void wait_motion_cycle (void)
 {
-    INT queued = 0;
+    UINT saved  = 0U;
+    INT  queued = 0;
     ER const er = tk_slp_tsk((TMO)MOTION_SLEEP_TIMEOUT_MS);
 
     queued = tk_can_wup(TSK_SELF);
     if ((E_OK == er) && (queued > 0))
     {
+        (void)ISpinLock(&g_service_lock, &saved);
         g_motion_overruns += (uint32_t)queued;
+        (void)ISpinUnlock(&g_service_lock, saved);
     }
     else if (E_TMOUT == er)
     {
+        (void)ISpinLock(&g_service_lock, &saved);
         g_motion_overruns++;
+        (void)ISpinUnlock(&g_service_lock, saved);
         service_halt(E_TMOUT);
     }
 }
@@ -274,11 +297,11 @@ static void service_cycle (motion_input_t * p_input)
     (void)ISpinLock(&g_service_lock, &saved);
     stop = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
-    stop = stop || gpio_get_val(STOP_PIN) == 0U;
+    stop = stop || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL;
     if (stop)
     {
         /* Do not wait for capture or perform conversion before STOP. */
-        controller_tick(&g_controller, NULL, in_w(TIMER_RAW_LOW), NULL,
+        controller_tick(&g_controller, NULL, in_w(TIMER_TIMERAWL), NULL,
                             true);
     }
     else
@@ -287,11 +310,11 @@ static void service_cycle (motion_input_t * p_input)
         /* Re-read the priority stop slot after capture, before output. */
         (void)ISpinLock(&g_service_lock, &saved);
         received =
-            motion_inbox_take(&g_inbox, in_w(TIMER_RAW_LOW), &command, &stop);
+            motion_inbox_take(&g_inbox, in_w(TIMER_TIMERAWL), &command, &stop);
         (void)ISpinUnlock(&g_service_lock, saved);
-        stop = stop || gpio_get_val(STOP_PIN) == 0U;
+        stop = stop || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL;
         controller_tick(&g_controller, captured ? p_input : NULL,
-                            in_w(TIMER_RAW_LOW), received ? &command : NULL,
+                            in_w(TIMER_TIMERAWL), received ? &command : NULL,
                             stop);
     }
     (void)ISpinLock(&g_service_lock, &saved);
@@ -417,7 +440,7 @@ static ER post_command (motion_command_t command, bool stamp_now)
     else
     {
         motion_inbox_result_t admitted = MOTION_INBOX_STALE;
-        uint32_t              now      = in_w(TIMER_RAW_LOW);
+        uint32_t              now      = in_w(TIMER_TIMERAWL);
 
         command.id = g_next_id + 1U;
         if (command.id == 0U)
@@ -465,7 +488,7 @@ ER motion_service_submit_request (const motion_drive_request_t * p_request)
     }
     limits[0] = g_configuration.control.speed[0].max_target_um_s;
     limits[1] = g_configuration.control.speed[1].max_target_um_s;
-    now       = in_w(TIMER_RAW_LOW);
+    now       = in_w(TIMER_TIMERAWL);
     if (!motion_request_plan(p_request, limits,
                              g_configuration.control.max_command_ttl_us, now,
                              &command))
@@ -500,7 +523,7 @@ ER motion_service_set_hold (uint32_t reason, bool held)
     }
     else
     {
-        result = motion_inbox_hold(&g_inbox, reason, held, in_w(TIMER_RAW_LOW))
+        result = motion_inbox_hold(&g_inbox, reason, held, in_w(TIMER_TIMERAWL))
                      ? E_OK
                      : E_PAR;
         g_published.hold_mask = g_inbox.hold_mask;
@@ -543,11 +566,65 @@ ER motion_service_read_status (motion_service_status_t * p_status)
     return E_OK;
 }
 
+static void fill_feedback (const motion_service_status_t * p_status,
+                           motion_feedback_t * p_feedback)
+{
+    uint32_t age_us = in_w(TIMER_TIMERAWL) - p_status->control.sample.timestamp_us;
+
+    if (age_us > CLOCK_HALF_RANGE)
+    {
+        /* The encoder can be sampled just after this clock read. */
+        age_us = 0U;
+    }
+    p_feedback->left_speed_um_s  = p_status->control.sample.wheel[ENCODER_LEFT].velocity_um_s;
+    p_feedback->right_speed_um_s = p_status->control.sample.wheel[ENCODER_RIGHT].velocity_um_s;
+    p_feedback->left_displacement_um =
+        p_status->control.sample.wheel[ENCODER_LEFT].displacement_um;
+    p_feedback->right_displacement_um =
+        p_status->control.sample.wheel[ENCODER_RIGHT].displacement_um;
+    p_feedback->timestamp_us = p_status->control.sample.timestamp_us;
+    p_feedback->age_us       = age_us;
+    p_feedback->speed_valid[ENCODER_LEFT] =
+        p_status->control.sample.wheel[ENCODER_LEFT].speed_valid;
+    p_feedback->speed_valid[ENCODER_RIGHT] =
+        p_status->control.sample.wheel[ENCODER_RIGHT].speed_valid;
+    p_feedback->odometry_valid[ENCODER_LEFT] =
+        p_status->control.sample.wheel[ENCODER_LEFT].odometry_valid;
+    p_feedback->odometry_valid[ENCODER_RIGHT] =
+        p_status->control.sample.wheel[ENCODER_RIGHT].odometry_valid;
+    p_feedback->invalid_samples[ENCODER_LEFT] =
+        p_status->control.sample.wheel[ENCODER_LEFT].invalid_samples;
+    p_feedback->invalid_samples[ENCODER_RIGHT] =
+        p_status->control.sample.wheel[ENCODER_RIGHT].invalid_samples;
+    p_feedback->fresh = p_status->ready && p_status->control.sample_available &&
+                        (age_us <= MOTION_FEEDBACK_MAX_AGE_US);
+}
+
+static void fill_status (const motion_service_status_t * p_service,
+                         motion_status_t * p_status)
+{
+    p_status->state          = (uint8_t)p_service->control.state;
+    p_status->fault          = (uint8_t)p_service->control.fault;
+    p_status->ready          = p_service->ready;
+    p_status->stop_requested = p_service->stop_requested;
+    p_status->hold_mask      = p_service->hold_mask;
+    p_status->init_error     = p_service->init_error;
+}
+
+static void fill_diag (const motion_service_status_t * p_status, uint32_t overruns,
+                       motion_diag_t * p_diag)
+{
+    p_diag->left_target_um_s    = p_status->control.target_um_s[ENCODER_LEFT];
+    p_diag->right_target_um_s   = p_status->control.target_um_s[ENCODER_RIGHT];
+    p_diag->left_duty_permille  = p_status->control.duty[ENCODER_LEFT];
+    p_diag->right_duty_permille = p_status->control.duty[ENCODER_RIGHT];
+    p_diag->overruns            = overruns;
+}
+
 ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
 {
     motion_service_status_t status;
     ER                      result = E_OK;
-    uint32_t                age_us = 0U;
 
     if (p_feedback == NULL)
     {
@@ -559,31 +636,7 @@ ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
     {
         return result;
     }
-
-    age_us = in_w(TIMER_RAW_LOW) - status.control.sample.timestamp_us;
-    if (age_us > CLOCK_HALF_RANGE)
-    {
-        /* The encoder can be sampled just after this clock read. */
-        age_us = 0U;
-    }
-    p_feedback->left_speed_um_s  = status.control.sample.wheel[ENCODER_LEFT].velocity_um_s;
-    p_feedback->right_speed_um_s = status.control.sample.wheel[ENCODER_RIGHT].velocity_um_s;
-    p_feedback->left_displacement_um =
-        status.control.sample.wheel[ENCODER_LEFT].displacement_um;
-    p_feedback->right_displacement_um =
-        status.control.sample.wheel[ENCODER_RIGHT].displacement_um;
-    p_feedback->timestamp_us = status.control.sample.timestamp_us;
-    p_feedback->age_us       = age_us;
-    p_feedback->speed_valid[ENCODER_LEFT] =
-        status.control.sample.wheel[ENCODER_LEFT].speed_valid;
-    p_feedback->speed_valid[ENCODER_RIGHT] =
-        status.control.sample.wheel[ENCODER_RIGHT].speed_valid;
-    p_feedback->odometry_valid[ENCODER_LEFT] =
-        status.control.sample.wheel[ENCODER_LEFT].odometry_valid;
-    p_feedback->odometry_valid[ENCODER_RIGHT] =
-        status.control.sample.wheel[ENCODER_RIGHT].odometry_valid;
-    p_feedback->fresh = status.ready && status.control.sample_available &&
-                        (age_us <= MOTION_FEEDBACK_MAX_AGE_US);
+    fill_feedback(&status, p_feedback);
 
     return E_OK;
 }
@@ -603,13 +656,7 @@ ER motion_status (motion_status_t * p_status)
     {
         return result;
     }
-
-    p_status->state          = (uint8_t)status.control.state;
-    p_status->fault          = (uint8_t)status.control.fault;
-    p_status->ready          = status.ready;
-    p_status->stop_requested = status.stop_requested;
-    p_status->hold_mask      = status.hold_mask;
-    p_status->init_error     = status.init_error;
+    fill_status(&status, p_status);
 
     return E_OK;
 }
@@ -618,6 +665,8 @@ ER motion_diag_snapshot (motion_diag_t * p_diag)
 {
     motion_service_status_t status;
     ER                      result = E_OK;
+    UINT                    saved  = 0U;
+    uint32_t                overruns = 0U;
 
     if (p_diag == NULL)
     {
@@ -629,12 +678,37 @@ ER motion_diag_snapshot (motion_diag_t * p_diag)
     {
         return result;
     }
+    (void)ISpinLock(&g_service_lock, &saved);
+    overruns = g_motion_overruns;
+    (void)ISpinUnlock(&g_service_lock, saved);
+    fill_diag(&status, overruns, p_diag);
 
-    p_diag->left_target_um_s     = status.control.target_um_s[ENCODER_LEFT];
-    p_diag->right_target_um_s    = status.control.target_um_s[ENCODER_RIGHT];
-    p_diag->left_duty_permille   = status.control.duty[ENCODER_LEFT];
-    p_diag->right_duty_permille  = status.control.duty[ENCODER_RIGHT];
-    p_diag->overruns             = g_motion_overruns;
+    return E_OK;
+}
+
+ER motion_snapshot (motion_status_t * p_status, motion_feedback_t * p_feedback,
+                    motion_diag_t * p_diag)
+{
+    motion_service_status_t status;
+    UINT                    saved    = 0U;
+    uint32_t                overruns = 0U;
+
+    if ((p_status == NULL) || (p_feedback == NULL) || (p_diag == NULL))
+    {
+        return E_PAR;
+    }
+    if (!g_start_called)
+    {
+        return E_OBJ;
+    }
+    (void)ISpinLock(&g_service_lock, &saved);
+    status   = g_published;
+    overruns = g_motion_overruns;
+    (void)ISpinUnlock(&g_service_lock, saved);
+
+    fill_status(&status, p_status);
+    fill_feedback(&status, p_feedback);
+    fill_diag(&status, overruns, p_diag);
 
     return E_OK;
 }
@@ -657,6 +731,11 @@ ER motion_request_stop (void)
 ER motion_renew_permit (uint32_t lease_ms)
 {
     return motion_service_renew_permit(lease_ms);
+}
+
+uint32_t motion_permit_age_ms (void)
+{
+    return motion_service_permit_age_ms();
 }
 
 void motion_note_encoder_crossed (bool b_crossed)

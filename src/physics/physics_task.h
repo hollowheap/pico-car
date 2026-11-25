@@ -12,7 +12,8 @@
  *
  * I2C failures retry (max_attempts per transaction), then latch the I2C
  * fault, which is sent in the message; the task keeps polling. If the
- * sensor is missing at start-up, init is retried once a second.
+ * sensor is missing at start-up, or lost, init is retried once a second.
+ * The configuration is read back every 2 s and init runs again on a mismatch.
  *
  * Full message buffer: the new message is dropped and counted (micro
  * T-Kernel has no drop-oldest mode; the team decision is still pending).
@@ -65,6 +66,8 @@ typedef struct
     uint8_t  attitude_state;     /* attitude_state_t, holds on a failed read. */
     bool     heading_valid;      /* heading_ddeg is fresh and usable.      */
     bool     calibrated;         /* Hump detector has its rest reference.  */
+    bool     attitude_unknown;   /* Lean not known; attitude fields are the
+                                    last known. */
 } physics_task_stats_t;
 
 void physics_task_default_config (physics_task_config_t * p_cfg);
@@ -90,7 +93,7 @@ void physics_task_request_new_run (void);
  * car sees. */
 void physics_car_config (physics_task_config_t * p_cfg);
 
-/* The supervisor sets the wheels-run-free cue (D161). It raises CANDIDATE only. */
+/* The supervisor sets the wheels-run-free cue. It raises CANDIDATE only. */
 void physics_task_set_wheels_free (bool b_free);
 
 /* Clear the latched I2C fault on the next cycle. */

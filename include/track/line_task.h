@@ -29,6 +29,11 @@ STATIC_ASSERT (sizeof(line_task_stats_t) <= 6U, "line_task_stats_t size");
 /* Consistent enough for telemetry: each field is read whole. */
 void line_task_stats (line_task_stats_t * p_stats);
 
+/* The hug snapshot for the obstacle frame: two words (telemetry/hug_word.h)
+ * read together under one spinlock. Both are 0 until the pilot has run, and
+ * with the pilot off. p_words holds HUG_WORD_COUNT (2) words. */
+void line_task_hug (uint32_t * p_words);
+
 /* Task body. Never returns. */
 void line_task_run (void);
 

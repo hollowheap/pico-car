@@ -9,13 +9,18 @@
 #include <tk/tkernel.h>
 
 #include "platform/liveness.h"
+#include "supervisor/health_ids.h"
 
 /* The kernel atomics work on 32-bit words. */
 static UW g_live_bits = 0U;
 
 void liveness_kick (uint8_t task_bit)
 {
-    (void) atomic_bitset (&g_live_bits, (UW) (1UL << task_bit));
+    /* A shift of 32 or more is undefined, and no task owns a bit past the list. */
+    if (task_bit < LIVE_TASKS)
+    {
+        (void) atomic_bitset (&g_live_bits, (UW) (1UL << task_bit));
+    }
 }
 
 uint16_t liveness_take (void)

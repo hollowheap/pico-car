@@ -9,6 +9,8 @@ type Props = {
   range?: [number, number];
 };
 
+// The view box stretches to the panel width, so the strokes must not scale
+// with it: a scaled stroke turns each steep step into a wide blob.
 const WIDTH = 100;
 const VIEW_HEIGHT = 40;
 
@@ -41,8 +43,9 @@ export function Sparkline({ values, color, label, height = 64, range }: Props) {
     >
       <Line
         stroke={color}
-        strokeDasharray="2 3"
-        strokeWidth="0.5"
+        strokeDasharray="4 6"
+        strokeWidth="1"
+        vectorEffect="non-scaling-stroke"
         x1="0"
         x2={WIDTH}
         y1={VIEW_HEIGHT / 2}
@@ -55,7 +58,8 @@ export function Sparkline({ values, color, label, height = 64, range }: Props) {
         stroke={color}
         strokeLinecap="round"
         strokeLinejoin="round"
-        strokeWidth="1.5"
+        strokeWidth="2"
+        vectorEffect="non-scaling-stroke"
       />
     </Svg>
   );

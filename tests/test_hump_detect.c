@@ -257,6 +257,12 @@ static void test_init_validation (void)
     cfg.fwd_axis = 3U;
     CHECK (!hump_init (&ctx, &cfg));
     hump_default_config (&cfg);
+    cfg.up_axis = 3U;
+    CHECK (!hump_init (&ctx, &cfg));
+    hump_default_config (&cfg);
+    cfg.up_axis = cfg.fwd_axis;
+    CHECK (!hump_init (&ctx, &cfg));
+    hump_default_config (&cfg);
     cfg.fwd_sign = 0;
     CHECK (!hump_init (&ctx, &cfg));
     hump_default_config (&cfg);
@@ -276,6 +282,12 @@ static void test_init_validation (void)
     CHECK (!hump_init (&ctx, &cfg));
     hump_default_config (&cfg);
     cfg.cal_max_spread_deg = 0.0f;
+    CHECK (!hump_init (&ctx, &cfg));
+    hump_default_config (&cfg);
+    cfg.cal_max_tilt_deg = 0.0f;
+    CHECK (!hump_init (&ctx, &cfg));
+    hump_default_config (&cfg);
+    cfg.cal_max_tilt_deg = 90.0f;
     CHECK (!hump_init (&ctx, &cfg));
 }
 
@@ -386,6 +398,53 @@ static void test_calibration (void)
     make_sample (&cfg, 0.0f, 0.0f, 0.0f, &sample);
     CHECK (hump_update (&ctx, &sample, &out));
     CHECK (!out.calibrated);
+}
+
+/* True when n samples of one fixed board pose complete calibration. */
+static bool calibrates_at (const hump_config_t * p_cfg, float ax, float ay,
+                           float az, uint32_t n_samples)
+{
+    hump_ctx_t ctx;
+    bool done = false;
+    uint32_t i;
+
+    CHECK (hump_init (&ctx, p_cfg));
+    for (i = 0U; i < n_samples; i++)
+    {
+        hump_sample_t sample;
+        hump_output_t out;
+
+        memset (&sample, 0, sizeof (sample));
+        sample.ax_g = ax;
+        sample.ay_g = ay;
+        sample.az_g = az;
+        sample.motion_valid = true;
+        CHECK (hump_update (&ctx, &sample, &out));
+        done = done || (HUMP_EVENT_CAL_DONE == out.event);
+    }
+    return done;
+}
+
+/* The board lies flat on the car: calibration needs z up and a tilt from
+ * vertical within cal_max_tilt_deg, so a tilt past that or an upside-down car
+ * never sets the rest reference. A 5 degree slope still calibrates. */
+static void test_calibration_pose_gate (void)
+{
+    hump_config_t cfg;
+    float const d5 = 5.0f * DEG_TO_RAD;
+    float const d15 = 15.0f * DEG_TO_RAD;
+
+    printf ("calibration_pose_gate\n");
+    hump_default_config (&cfg);
+    CHECK (calibrates_at (&cfg, 0.0f, 0.0f, 1.0f, 500U));
+    CHECK (calibrates_at (&cfg, sinf (d5), 0.0f, cosf (d5), 500U));
+    CHECK (calibrates_at (&cfg, 0.0f, sinf (d5), cosf (d5), 500U));
+    CHECK (!calibrates_at (&cfg, sinf (d15), 0.0f, cosf (d15), 500U));
+    CHECK (!calibrates_at (&cfg, 0.0f, sinf (d15), cosf (d15), 500U));
+    CHECK (!calibrates_at (&cfg, 0.0f, 0.0f, -1.0f, 500U));
+
+    cfg.cal_max_tilt_deg = 20.0f;
+    CHECK (calibrates_at (&cfg, sinf (d15), 0.0f, cosf (d15), 500U));
 }
 
 static void test_no_detection_before_calibration (void)
@@ -628,6 +687,7 @@ static void test_axis_mapping (void)
             hump_default_config (&cfg);
             cfg.fwd_axis = axis;
             cfg.fwd_sign = sign;
+            cfg.up_axis = (HUMP_AXIS_Z == axis) ? HUMP_AXIS_Y : HUMP_AXIS_Z;
             res = run (&cfg, &prof, 20U, 250U, 0U);
             CHECK (1U == res.finished);
             CHECK (fabsf (res.last_peak_m - base.last_peak_m) < 0.0005f);
@@ -746,11 +806,49 @@ static void test_two_humps (void)
     CHECK (2U == res.complete);
 }
 
+static void test_speed_ok_output (void)
+{
+    hump_config_t cfg;
+    hump_ctx_t ctx;
+    hump_sample_t sample;
+    hump_output_t out;
+
+    printf ("speed_ok_is_fresh_forward_motion_this_call\n");
+    hump_default_config (&cfg);
+    CHECK (hump_init (&ctx, &cfg));
+    memset (&sample, 0, sizeof (sample));
+    sample.az_g = 1.0f;
+    sample.motion_valid = true;
+    sample.motion_age_s = 0.005f;
+    sample.speed_mps = SPEED_MPS;
+    CHECK (hump_update (&ctx, &sample, &out));
+    CHECK (out.speed_ok);
+
+    sample.speed_mps = 0.0f;
+    CHECK (hump_update (&ctx, &sample, &out));
+    CHECK (!out.speed_ok);
+
+    sample.speed_mps = SPEED_MPS;
+    sample.motion_age_s = 0.030f;
+    CHECK (hump_update (&ctx, &sample, &out));
+    CHECK (!out.speed_ok);
+
+    sample.motion_age_s = 0.005f;
+    sample.motion_valid = false;
+    CHECK (hump_update (&ctx, &sample, &out));
+    CHECK (!out.speed_ok);
+
+    sample.motion_valid = true;
+    CHECK (hump_update (&ctx, &sample, &out));
+    CHECK (out.speed_ok);
+}
+
 int main (void)
 {
     test_init_validation ();
     test_update_rejects_bad_input ();
     test_calibration ();
+    test_calibration_pose_gate ();
     test_no_detection_before_calibration ();
     test_flat_ground ();
     test_single_hump ();
@@ -766,6 +864,7 @@ int main (void)
     test_below_min_speed ();
     test_incomplete_hump ();
     test_two_humps ();
+    test_speed_ok_output ();
 
     if (0 == g_failures)
     {

@@ -119,3 +119,28 @@ bool motion_inbox_take (motion_inbox_t * p_inbox, uint32_t now_us,
     }
     return false;
 }
+
+#define PERMIT_US_PER_MS (1000U)
+
+bool motion_permit_lapsed (bool b_armed, uint32_t renewed_us, uint32_t lease_us,
+                           uint32_t now_us)
+{
+    return !b_armed || ((int32_t)(now_us - renewed_us - lease_us) > 0);
+}
+
+uint32_t motion_permit_elapsed_ms (bool b_armed, uint32_t renewed_us,
+                                   uint32_t now_us)
+{
+    uint32_t const age_us = now_us - renewed_us;
+    uint32_t       age_ms = age_us / PERMIT_US_PER_MS;
+
+    if (!b_armed)
+    {
+        age_ms = UINT32_MAX;
+    }
+    else if (0U != (age_us % PERMIT_US_PER_MS))
+    {
+        age_ms++;
+    }
+    return age_ms;
+}

@@ -1,30 +1,10 @@
-import type { LinkPacket } from './link';
 import { COMMANDS } from './schema.generated';
 
 export type CommandAction = keyof typeof COMMANDS;
 
 export type CommandRequest = {
-  action: string;
-  cmdId: number;
-  runId: number;
-  sentMs: number;
+  action: CommandAction;
 };
-
-export function deviceSentMs(
-  packets: LinkPacket[],
-  nowMs: number,
-): number | null {
-  const heartbeat = packets.find((packet) => packet.packet === 'heartbeat');
-  const uptime = heartbeat?.values.uptime_s;
-  if (heartbeat === undefined || uptime === undefined) {
-    return null;
-  }
-  const elapsed = Math.max(0, nowMs - heartbeat.timestamp);
-  if (elapsed > 1500) {
-    return null;
-  }
-  return (uptime * 1000 + elapsed) & 0xffff;
-}
 
 export async function postCommand(
   serviceUrl: string,

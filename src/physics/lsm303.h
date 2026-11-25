@@ -21,7 +21,8 @@
  *   registers and reads them back instead.
  *
  * Every transaction is retried up to max_attempts times. A bus that times
- * out is given a recovery (9 clocks + STOP) before the retry. A transaction
+ * out or reports a controller error (such as lost arbitration) is given a
+ * recovery (9 clocks + STOP) before the retry. A transaction
  * that fails every attempt latches the fault flag; reading continues.
  */
 
@@ -110,9 +111,15 @@ typedef struct
 } lsm303_vec_t;
 
 /* Check the identity, write the configuration and read it back.
- * max_attempts must be 1 to 8. */
+ * max_attempts must be 1 to 8. The counters in *p_dev are not reset, so a
+ * sensor initialised again keeps its totals; a zeroed device starts at zero. */
 lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus,
                              uint8_t max_attempts);
+
+/* Read back the accelerometer control registers. A mismatch marks the
+ * sensor not ready, so the caller runs init again. Requires a successful
+ * init. */
+lsm303_result_t lsm303_check_config (lsm303_t * p_dev);
 
 /* One 6-byte burst read. Requires a successful init. */
 lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out);

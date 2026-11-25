@@ -1,6 +1,6 @@
 /*
  *	edge_events.h
- *	Events that follow from state changes (D163). The supervisor reads the
+ *	Events that follow from state changes. The supervisor reads the
  *	run state, the obstacle state and the hump flags every pass. This module
  *	says which event a change produces. Pure C: no kernel call, so a host
  *	test drives it.

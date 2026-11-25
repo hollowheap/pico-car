@@ -1,6 +1,6 @@
 /** @file attitude.h
  *
- * @brief Lift and overturn detection from the gravity direction (D140).
+ * @brief Lift and overturn detection from the gravity direction.
  *
  * Pure logic with no hardware access. It uses the angle to the rest gravity
  * vector g0, which the hump detector stores when it calibrates, so it does
@@ -9,6 +9,11 @@
  *   tilt  angle between the current acceleration and g0 (0 on flat ground)
  *   roll  sideways angle, left-down positive
  *   amag  acceleration magnitude in g
+ *
+ * The unsettled cue (|amag - 1 g| over the limit) counts toward LIFTED over
+ * lift_samples samples, except while b_on_hump is set: hump bumps meet that
+ * limit. A tilt breach still counts. Known gap: a hump taken below the hump
+ * detector's minimum speed or in reverse has no mask, so its bumps can lift.
  *
  * States: OK, CANDIDATE, LIFTED, OVERTURNED. Before the rest calibration the
  * module reports OK and calibrated = false. All limits are placeholders until
@@ -61,6 +66,7 @@ typedef struct
     float g0[ATTITUDE_AXES];      /* Rest gravity vector, board axes, g.        */
     float fwd[ATTITUDE_AXES];     /* Unit vector of travel, board axes.         */
     bool  b_wheels_free;          /* The wheels turn on target with low duty.   */
+    bool  b_on_hump;              /* Driving over a hump: no unsettled cue.     */
 } attitude_input_t;
 
 typedef struct

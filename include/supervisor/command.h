@@ -1,6 +1,6 @@
 /*
  *	command.h
- *	Vehicle command opcodes and sources (D120).
+ *	Vehicle command opcodes and sources.
  *
  *	The opcode values are the wire opcodes of protocol/telemetry.yaml, so a
  *	command from the dashboard needs no translation.
@@ -28,12 +28,16 @@
 #define VEHICLE_SRC_BARCODE   (2U)
 #define VEHICLE_SRC_BUTTON    (3U)
 
+/* The ids name a telemetry command in its events; both are 0 for a barcode
+   or the button. */
 typedef struct
 {
-    uint8_t opcode;
-    uint8_t source;
+    uint16_t cmd_id; /* the cmd_id of the command frame */
+    uint16_t run_id; /* the run ID it carried */
+    uint8_t  opcode;
+    uint8_t  source;
 } vehicle_cmd_t;
 
-STATIC_ASSERT (sizeof(vehicle_cmd_t) == 2U, "vehicle_cmd_t size");
+STATIC_ASSERT (sizeof(vehicle_cmd_t) == 6U, "vehicle_cmd_t size");
 
 #endif /* SUPERVISOR_COMMAND_H */

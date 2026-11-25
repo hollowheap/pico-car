@@ -5,11 +5,11 @@
  * fake transport that records every byte sent and replays scripted received
  * bytes (optionally in small chunks), then checks the exact MQTT 3.1.1 bytes
  * of CONNECT, SUBSCRIBE, PUBLISH, PUBACK and PINGREQ, the handshake state
- * machine, QoS 1 command delivery with duplicate suppression, keepalive
+ * machine, QoS 1 command delivery (every delivery passed on), keepalive
  * timing and reconnect behaviour.
  *
- * The assertions pin MQTT 3.1.1 behaviour plus decision D91 (10 s reply
- * timeouts, 1 s to 30 s reconnect backoff).
+ * The assertions pin MQTT 3.1.1 behaviour plus the 10 s reply timeouts and
+ * the 1 s to 30 s reconnect backoff.
  */
 
 #include <stdbool.h>
@@ -50,6 +50,8 @@ typedef struct
     unsigned recv_calls;
     bool     fail_send;
     bool     short_send;
+    bool     full_send; /* no room: send returns 0 */
+    uint16_t max_send;  /* 0 = no limit; a longer send returns 0 */
     bool     fail_recv;
 } fake_t;
 
@@ -66,6 +68,10 @@ fake_send (void * context, const uint8_t * data, uint16_t len)
     if (f->short_send)
     {
         return (int) len - 1;
+    }
+    if (f->full_send || ((f->max_send != 0u) && (len > f->max_send)))
+    {
+        return 0;
     }
     CHECK ((f->sent_len + len) <= FAKE_SENT_MAX); /* fixture capacity */
     if ((f->sent_len + len) <= FAKE_SENT_MAX)
@@ -241,7 +247,7 @@ build_publish (uint8_t * out, uint8_t flags, const char * topic,
     return (uint16_t) (i + plen);
 }
 
-/* 8-byte command payload; only cmd_id matters to the MQTT layer. */
+/* 5-byte command payload; the MQTT layer passes it on unread. */
 static void
 cmd_payload (uint8_t * out, uint16_t cmd_id)
 {
@@ -249,10 +255,7 @@ cmd_payload (uint8_t * out, uint16_t cmd_id)
     out[1] = (uint8_t) cmd_id;
     out[2] = 0x12u;
     out[3] = 0x34u;
-    out[4] = 0x00u;
-    out[5] = 0x64u;
-    out[6] = 0x01u;
-    out[7] = 0x00u;
+    out[4] = 0x01u;
 }
 
 /* Deliver a QoS 1 command publish and poll once. */
@@ -260,12 +263,12 @@ static mqtt_result_t
 deliver_cmd (rig_t * r, uint8_t flags, uint16_t packet_id, uint16_t cmd_id,
              uint32_t now)
 {
-    uint8_t payload[8];
+    uint8_t payload[5];
     uint8_t pkt[64];
     uint16_t n;
 
     cmd_payload (payload, cmd_id);
-    n = build_publish (pkt, flags, CMD_TOPIC, packet_id, payload, 8u);
+    n = build_publish (pkt, flags, CMD_TOPIC, packet_id, payload, 5u);
     fake_feed (&r->fake, pkt, n);
     return mqtt_client_poll (&r->client, now);
 }
@@ -714,7 +717,7 @@ test_publish_before_suback_is_protocol_error (void)
 {
     rig_t r;
     uint8_t pkt[64];
-    uint8_t payload[8];
+    uint8_t payload[5];
     uint16_t n;
 
     rig_init (&r);
@@ -722,7 +725,7 @@ test_publish_before_suback_is_protocol_error (void)
     fake_feed (&r.fake, CONNACK_OK, sizeof (CONNACK_OK));
     CHECK (mqtt_client_poll (&r.client, 1u) == MQTT_OK);
     cmd_payload (payload, 1u);
-    n = build_publish (pkt, 0x00u, CMD_TOPIC, 0u, payload, 8u);
+    n = build_publish (pkt, 0x00u, CMD_TOPIC, 0u, payload, 5u);
     fake_feed (&r.fake, pkt, n);
     CHECK (mqtt_client_poll (&r.client, 2u) == MQTT_ERR_PROTOCOL);
     CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
@@ -883,6 +886,30 @@ test_publish_transport_failure (void)
     CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
 }
 
+/* A full send ring is a slow link, not a broken session: the frame is
+   dropped and the session stays up. A reconnect would lose seconds of
+   frames instead of one. */
+static void
+test_publish_ring_full_keeps_session (void)
+{
+    rig_t r;
+    uint32_t mark;
+    static const uint8_t body[4] = { 1, 2, 3, 4 };
+    /* 0x30 = PUBLISH, QoS 0; RL = 2 + 1 + 4 = 7. */
+    static const uint8_t want[] = { 0x30, 0x07, 0x00, 0x01, 's', 1, 2, 3, 4 };
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (mqtt_client_publish (&r.client, "s", body, 4u, 100u)
+           == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    r.fake.full_send = false;
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_publish (&r.client, "s", body, 4u, 110u) == MQTT_OK);
+    CHECK (sent_since_is (&r.fake, mark, want, sizeof (want)));
+}
+
 /* ---- inbound PUBLISH / PUBACK ------------------------------------------ */
 
 static void
@@ -890,7 +917,7 @@ test_cmd_qos1_puback_and_dispatch (void)
 {
     rig_t r;
     uint32_t mark;
-    uint8_t want_payload[8];
+    uint8_t want_payload[5];
     static const uint8_t puback[4] = { 0x40, 0x02, 0x00, 0x2A };
 
     rig_init (&r);
@@ -899,9 +926,9 @@ test_cmd_qos1_puback_and_dispatch (void)
     mark = fake_mark (&r.fake);
     CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_OK);
     CHECK (r.probe.calls == 1u);
-    CHECK (r.probe.len == 8u);
+    CHECK (r.probe.len == 5u);
     cmd_payload (want_payload, 1u);
-    CHECK (memcmp (r.probe.payload, want_payload, 8u) == 0);
+    CHECK (memcmp (r.probe.payload, want_payload, 5u) == 0);
     CHECK (r.probe.ctx == (void *) &r.probe);
     /* PUBACK: 0x40, RL 2, the packet ID of the PUBLISH. */
     CHECK (sent_since_is (&r.fake, mark, puback, sizeof (puback)));
@@ -914,70 +941,223 @@ test_cmd_duplicate_delivery (void)
     rig_t r;
     uint32_t mark;
     static const uint8_t puback_2b[4] = { 0x40, 0x02, 0x00, 0x2B };
-    static const uint8_t puback_2c[4] = { 0x40, 0x02, 0x00, 0x2C };
 
     rig_init (&r);
     rig_handshake (&r, 0u);
     CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_OK);
     CHECK (r.probe.calls == 1u);
 
-    /* Broker retransmission: DUP set, same packet ID.  Acked again, not
-       dispatched again. */
+    /* Broker retransmission: DUP set, same packet ID. Acked again and
+       passed on; the command layer drops the repeated cmd_id. */
     mark = fake_mark (&r.fake);
     CHECK (deliver_cmd (&r, 0x0Au, 0x002Au, 1u, 11u) == MQTT_OK);
-    CHECK (r.probe.calls == 1u);
+    CHECK (r.probe.calls == 2u);
     CHECK (!nothing_sent_since (&r.fake, mark));
     CHECK (r.fake.sent[mark] == 0x40u);
 
-    /* Same cmd_id under a fresh packet ID: acked, still not dispatched. */
+    /* Any cmd_id, older or newer, is acked and passed on. */
     mark = fake_mark (&r.fake);
-    CHECK (deliver_cmd (&r, 0x02u, 0x002Bu, 1u, 12u) == MQTT_OK);
-    CHECK (r.probe.calls == 1u);
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Bu, 0u, 12u) == MQTT_OK);
+    CHECK (r.probe.calls == 3u);
     CHECK (sent_since_is (&r.fake, mark, puback_2b, sizeof (puback_2b)));
+}
 
-    /* A newer cmd_id is dispatched. */
+/* The command runs when it arrives; only the PUBACK waits for ring room. The
+   next PUBLISH is not read until that PUBACK is out, so the acks go out in
+   order and every command runs once. */
+static void
+test_cmd_puback_busy_retried (void)
+{
+    rig_t r;
+    uint32_t mark;
+    uint8_t payload[5];
+    uint8_t pkt[64];
+    uint16_t n;
+    static const uint8_t acks[8] = { 0x40, 0x02, 0x00, 0x2A,
+                                     0x40, 0x02, 0x00, 0x2B };
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
     mark = fake_mark (&r.fake);
-    CHECK (deliver_cmd (&r, 0x02u, 0x002Cu, 2u, 13u) == MQTT_OK);
-    CHECK (r.probe.calls == 2u);
-    CHECK (sent_since_is (&r.fake, mark, puback_2c, sizeof (puback_2c)));
+    cmd_payload (payload, 2u);
+    n = build_publish (pkt, 0x02u, CMD_TOPIC, 0x002Au, payload, 5u);
+    fake_feed (&r.fake, pkt, n);
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Bu, 1u, 10u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    CHECK (r.probe.calls == 1u);
+    CHECK (mqtt_client_poll (&r.client, 11u) == MQTT_ERR_BUSY);
+    CHECK (r.probe.calls == 1u);
+    CHECK (nothing_sent_since (&r.fake, mark));
 
-    /* An older cmd_id is acked but dropped. */
-    CHECK (deliver_cmd (&r, 0x02u, 0x002Du, 1u, 14u) == MQTT_OK);
+    r.fake.full_send = false;
+    CHECK (mqtt_client_poll (&r.client, 12u) == MQTT_OK);
     CHECK (r.probe.calls == 2u);
+    CHECK (sent_since_is (&r.fake, mark, acks, sizeof (acks)));
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_poll (&r.client, 13u) == MQTT_OK);
+    CHECK (r.probe.calls == 2u);
+    CHECK (nothing_sent_since (&r.fake, mark));
 }
 
+/* The command layer drops a command older than its age limit, so a command
+   held back until the ring drains would be lost without a trace. It must
+   reach the handler at receipt, not when the PUBACK finally goes out. */
 static void
-test_cmd_id_wrap (void)
+test_cmd_puback_busy_dispatches_at_receipt (void)
+{
+    rig_t r;
+    uint32_t mark;
+    static const uint8_t puback[4] = { 0x40, 0x02, 0x00, 0x2A };
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    mark = fake_mark (&r.fake);
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10000u) == MQTT_ERR_BUSY);
+    CHECK (r.probe.calls == 1u);
+
+    r.fake.full_send = false;
+    CHECK (mqtt_client_poll (&r.client, 13000u) == MQTT_OK);
+    CHECK (r.probe.calls == 1u);
+    CHECK (sent_since_is (&r.fake, mark, puback, sizeof (puback)));
+}
+
+/* A ring that never drains is still bounded by the keep-alive: the ping
+   cannot be sent either, its reply timer runs, and the session ends. The
+   command ran when it arrived. */
+static void
+test_cmd_puback_busy_times_out (void)
+{
+    rig_t r;
+    const uint32_t t_ping = 30000u;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_poll (&r.client, t_ping) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS - 1u)
+           == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS)
+           == MQTT_ERR_TRANSPORT);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+    CHECK (r.probe.calls == 1u);
+}
+
+/* A keep-alive ping that fits does not hide a PUBACK that still does not. */
+static void
+test_cmd_puback_busy_ping_fits (void)
+{
+    rig_t r;
+    uint32_t mark;
+    static const uint8_t puback[4] = { 0x40, 0x02, 0x00, 0x2A };
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.max_send = 2u;
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_poll (&r.client, 30000u) == MQTT_ERR_BUSY);
+    CHECK (r.fake.sent[r.fake.sent_len - 2u] == 0xC0u);
+
+    r.fake.max_send = 0u;
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_poll (&r.client, 30010u) == MQTT_OK);
+    CHECK (sent_since_is (&r.fake, mark, puback, sizeof (puback)));
+    CHECK (r.probe.calls == 1u);
+}
+
+/* A PUBACK still due when the session ends belongs to that session: the
+   next one must not start with it. */
+static void
+test_cmd_due_puback_not_sent_after_reconnect (void)
+{
+    rig_t r;
+    uint32_t mark;
+    uint32_t i;
+    unsigned hits = 0u;
+    static const uint8_t old_ack[4] = { 0x40, 0x02, 0x00, 0x2A };
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_poll (&r.client, 30000u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_poll (&r.client, 40000u) == MQTT_ERR_TRANSPORT);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+
+    r.fake.full_send = false;
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_poll (&r.client, 100000u) == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_CONNACK);
+    fake_feed (&r.fake, CONNACK_OK, sizeof (CONNACK_OK));
+    CHECK (mqtt_client_poll (&r.client, 100000u) == MQTT_OK);
+    fake_feed (&r.fake, SUBACK_OK, sizeof (SUBACK_OK));
+    CHECK (mqtt_client_poll (&r.client, 100000u) == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    for (i = mark; (i + 4u) <= r.fake.sent_len; i++)
+    {
+        if (memcmp (&r.fake.sent[i], old_ack, 4u) == 0)
+        {
+            hits++;
+        }
+    }
+    CHECK (hits == 0u);
+    CHECK (r.probe.calls == 1u);
+}
+
+/* The command has run by the time a hard PUBACK failure drops the session. */
+static void
+test_cmd_puback_hard_failure_keeps_command (void)
+{
+    rig_t r;
+    uint8_t payload[5];
+    uint8_t pkt[64];
+    uint16_t n;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.fail_send = true;
+    cmd_payload (payload, 1u);
+    n = build_publish (pkt, 0x02u, CMD_TOPIC, 0x002Au, payload, 5u);
+    fake_feed (&r.fake, pkt, n);
+    CHECK (mqtt_client_poll (&r.client, 10u) == MQTT_ERR_PROTOCOL);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+    CHECK (r.probe.calls == 1u);
+}
+
+/* A hard failure while retrying a due PUBACK drops the session. */
+static void
+test_cmd_due_puback_hard_failure (void)
 {
     rig_t r;
 
     rig_init (&r);
     rig_handshake (&r, 0u);
-    CHECK (deliver_cmd (&r, 0x02u, 1u, 0xFFFEu, 10u) == MQTT_OK);
-    CHECK (deliver_cmd (&r, 0x02u, 2u, 0xFFFFu, 11u) == MQTT_OK);
-    CHECK (r.probe.calls == 2u);
-    CHECK (deliver_cmd (&r, 0x02u, 3u, 0x0000u, 12u) == MQTT_OK);
-    CHECK (r.probe.calls == 3u);
-    CHECK (deliver_cmd (&r, 0x02u, 4u, 0xFFFFu, 13u) == MQTT_OK);
-    CHECK (r.probe.calls == 3u);
-    /* +0x8000 from the last ID (0x0000) counts as older. */
-    CHECK (deliver_cmd (&r, 0x02u, 5u, 0x8000u, 14u) == MQTT_OK);
-    CHECK (r.probe.calls == 3u);
-    CHECK (deliver_cmd (&r, 0x02u, 6u, 0x7FFFu, 15u) == MQTT_OK);
-    CHECK (r.probe.calls == 4u);
+    r.fake.full_send = true;
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, 10u) == MQTT_ERR_BUSY);
+    r.fake.full_send = false;
+    r.fake.fail_send = true;
+    CHECK (mqtt_client_poll (&r.client, 11u) == MQTT_ERR_PROTOCOL);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+    CHECK (r.probe.calls == 1u);
 }
 
+/* A SUBSCRIBE the ring cannot take ends the handshake. */
 static void
-test_cmd_first_id_zero (void)
+test_subscribe_busy_drops_handshake (void)
 {
     rig_t r;
 
     rig_init (&r);
-    rig_handshake (&r, 0u);
-    CHECK (deliver_cmd (&r, 0x02u, 1u, 0u, 10u) == MQTT_OK);
-    CHECK (r.probe.calls == 1u);
-    CHECK (deliver_cmd (&r, 0x02u, 2u, 0u, 11u) == MQTT_OK);
-    CHECK (r.probe.calls == 1u);
+    CHECK (mqtt_client_poll (&r.client, 0u) == MQTT_OK);
+    fake_feed (&r.fake, CONNACK_OK, sizeof (CONNACK_OK));
+    r.fake.full_send = true;
+    CHECK (mqtt_client_poll (&r.client, 0u) == MQTT_ERR_PROTOCOL);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
 }
 
 static void
@@ -992,9 +1172,9 @@ test_cmd_qos0 (void)
     CHECK (deliver_cmd (&r, 0x00u, 0u, 1u, 10u) == MQTT_OK);
     CHECK (r.probe.calls == 1u);
     CHECK (nothing_sent_since (&r.fake, mark)); /* no PUBACK for QoS 0 */
-    /* The ID filter applies to QoS 0 as well. */
+    /* A repeat is passed on too; the command layer drops it. */
     CHECK (deliver_cmd (&r, 0x00u, 0u, 1u, 11u) == MQTT_OK);
-    CHECK (r.probe.calls == 1u);
+    CHECK (r.probe.calls == 2u);
 }
 
 static void
@@ -1026,12 +1206,14 @@ test_cmd_other_topic_and_short_payload (void)
     CHECK (mqtt_client_poll (&r.client, 11u) == MQTT_OK);
     CHECK (r.probe.calls == 0u);
 
-    /* Command topic but fewer than 2 payload bytes: acked, ignored. */
+    /* A short payload on the command topic: acked and passed on; the
+       command layer rejects its length. */
     n = build_publish (pkt, 0x02u, CMD_TOPIC, 7u, one, 1u);
     fake_feed (&r.fake, pkt, n);
     mark = fake_mark (&r.fake);
     CHECK (mqtt_client_poll (&r.client, 12u) == MQTT_OK);
-    CHECK (r.probe.calls == 0u);
+    CHECK (r.probe.calls == 1u);
+    CHECK (r.probe.len == 1u);
     CHECK (sent_since_is (&r.fake, mark, puback, sizeof (puback)));
 }
 
@@ -1137,7 +1319,7 @@ test_cmd_null_handler (void)
 }
 
 static void
-test_cmd_dedup_survives_reconnect (void)
+test_cmd_redelivery_after_reconnect (void)
 {
     rig_t r;
 
@@ -1153,10 +1335,9 @@ test_cmd_dedup_survives_reconnect (void)
 
     r.fake.rx_pos = r.fake.rx_len;
     rig_handshake_at (&r, 20u + RECONNECT_MS, 20u + RECONNECT_MS);
-    /* The broker redelivers the unacknowledged command after reconnect. */
+    /* The broker redelivers the unacknowledged command after reconnect;
+       it is passed on for the command layer to drop. */
     CHECK (deliver_cmd (&r, 0x0Au, 1u, 5u, 2000u) == MQTT_OK);
-    CHECK (r.probe.calls == 1u);
-    CHECK (deliver_cmd (&r, 0x02u, 2u, 6u, 2001u) == MQTT_OK);
     CHECK (r.probe.calls == 2u);
 }
 
@@ -1407,6 +1588,115 @@ test_ping_send_failure (void)
     r.fake.fail_send = true;
     CHECK (mqtt_client_poll (&r.client, 30000u) == MQTT_ERR_TRANSPORT);
     CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+}
+
+/* A keepalive ping that finds the ring full goes on the next poll. */
+static void
+test_ping_ring_full_retries (void)
+{
+    rig_t r;
+    uint32_t mark;
+    static const uint8_t want[] = { 0xC0, 0x00 };
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (mqtt_client_poll (&r.client, 30000u) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    r.fake.full_send = false;
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_poll (&r.client, 30010u) == MQTT_OK);
+    CHECK (sent_since_is (&r.fake, mark, want, sizeof (want)));
+}
+
+/* A ring that stays full gets no reply either: the ping that cannot be sent
+   still starts the reply timer, so the stalled stream ends the session. */
+static void
+test_ping_ring_full_times_out (void)
+{
+    rig_t r;
+    uint32_t mark;
+    static const uint8_t pingresp[2] = { 0xD0, 0x00 };
+    const uint32_t t_ping = 30000u;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (mqtt_client_poll (&r.client, t_ping) == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS - 1u)
+           == MQTT_ERR_BUSY);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS)
+           == MQTT_ERR_TRANSPORT);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_DISCONNECTED);
+    r.fake.full_send = false;
+    CHECK (mqtt_client_poll (&r.client,
+                             t_ping + MQTT_REPLY_TIMEOUT_MS + RECONNECT_MS)
+           == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_WAIT_CONNACK);
+
+    /* The ring frees up in time: the ping goes out on the retry and its
+       PINGRESP ends the wait that the busy attempt began. */
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (mqtt_client_poll (&r.client, t_ping) == MQTT_ERR_BUSY);
+    r.fake.full_send = false;
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_poll (&r.client, t_ping + 10u) == MQTT_OK);
+    CHECK ((r.fake.sent_len - mark) == 2u);
+    CHECK (r.fake.sent[mark] == 0xC0u);
+    fake_feed (&r.fake, pingresp, sizeof (pingresp));
+    CHECK (mqtt_client_poll (&r.client, t_ping + 20u) == MQTT_OK);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS)
+           == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+}
+
+/* A busy ping stays owed when a PUBACK or a publish moves the last send
+   time: the broker must still get its PINGREQ, or the reply timer ends a
+   healthy session. */
+static void
+test_ping_owed_survives_other_sends (void)
+{
+    rig_t r;
+    uint32_t mark;
+    static const uint8_t pingresp[2] = { 0xD0, 0x00 };
+    static const uint8_t puback_ping[6] = { 0x40, 0x02, 0x00, 0x2A,
+                                            0xC0, 0x00 };
+    static const uint8_t ping[2] = { 0xC0, 0x00 };
+    static const uint8_t body[2] = { 0x01, 0x02 };
+    const uint32_t t_ping = 30000u;
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (mqtt_client_poll (&r.client, t_ping) == MQTT_ERR_BUSY);
+    r.fake.full_send = false;
+    mark = fake_mark (&r.fake);
+    CHECK (deliver_cmd (&r, 0x02u, 0x002Au, 1u, t_ping + 5u) == MQTT_OK);
+    CHECK (sent_since_is (&r.fake, mark, puback_ping, sizeof (puback_ping)));
+    fake_feed (&r.fake, pingresp, sizeof (pingresp));
+    CHECK (mqtt_client_poll (&r.client, t_ping + 20u) == MQTT_OK);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS)
+           == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
+
+    rig_init (&r);
+    rig_handshake (&r, 0u);
+    r.fake.full_send = true;
+    CHECK (mqtt_client_poll (&r.client, t_ping) == MQTT_ERR_BUSY);
+    r.fake.full_send = false;
+    CHECK (mqtt_client_publish (&r.client, "s", body, sizeof (body),
+                                t_ping + 5u) == MQTT_OK);
+    mark = fake_mark (&r.fake);
+    CHECK (mqtt_client_poll (&r.client, t_ping + 10u) == MQTT_OK);
+    CHECK (sent_since_is (&r.fake, mark, ping, sizeof (ping)));
+    fake_feed (&r.fake, pingresp, sizeof (pingresp));
+    CHECK (mqtt_client_poll (&r.client, t_ping + 20u) == MQTT_OK);
+    CHECK (mqtt_client_poll (&r.client, t_ping + MQTT_REPLY_TIMEOUT_MS)
+           == MQTT_OK);
+    CHECK (mqtt_client_state (&r.client) == MQTT_STATE_CONNECTED);
 }
 
 /* ---- reconnect / backoff ----------------------------------------------- */
@@ -1660,17 +1950,24 @@ main (void)
     test_publish_remaining_length_encoding ();
     test_publish_oversize ();
     test_publish_transport_failure ();
+    test_publish_ring_full_keeps_session ();
     test_cmd_qos1_puback_and_dispatch ();
     test_cmd_duplicate_delivery ();
-    test_cmd_id_wrap ();
-    test_cmd_first_id_zero ();
+    test_cmd_puback_busy_retried ();
+    test_cmd_puback_busy_dispatches_at_receipt ();
+    test_cmd_puback_busy_times_out ();
+    test_cmd_puback_busy_ping_fits ();
+    test_cmd_due_puback_not_sent_after_reconnect ();
+    test_cmd_puback_hard_failure_keeps_command ();
+    test_cmd_due_puback_hard_failure ();
+    test_subscribe_busy_drops_handshake ();
     test_cmd_qos0 ();
     test_cmd_other_topic_and_short_payload ();
     test_cmd_qos2_is_protocol_error ();
     test_cmd_chunked_delivery ();
     test_cmd_back_to_back ();
     test_cmd_null_handler ();
-    test_cmd_dedup_survives_reconnect ();
+    test_cmd_redelivery_after_reconnect ();
     test_inbound_protocol_errors ();
     test_rx_buffer_overflow ();
     test_keepalive_ping ();
@@ -1681,6 +1978,9 @@ main (void)
     test_pingresp_timeout ();
     test_pingresp_timeout_tick_wrap ();
     test_ping_send_failure ();
+    test_ping_ring_full_retries ();
+    test_ping_ring_full_times_out ();
+    test_ping_owed_survives_other_sends ();
     test_reconnect_after_recv_failure ();
     test_reconnect_connect_send_failure ();
     test_reconnect_backoff_resets_after_suback ();

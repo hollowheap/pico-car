@@ -1,6 +1,6 @@
 # Static web build of the dashboard, served by nginx. The bridge addresses are
-# baked in at build time (Expo inlines EXPO_PUBLIC_* values), so the launcher
-# passes the tailnet URLs as build arguments.
+# baked in at build time (Expo inlines EXPO_PUBLIC_* values), so compose.yaml
+# passes the bridge URLs as build arguments.
 FROM node:24-alpine AS build
 
 WORKDIR /app/host/dashboard

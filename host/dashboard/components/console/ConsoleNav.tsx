@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useState } from 'react';
 import {
   Platform,
@@ -26,51 +25,35 @@ function webFocusRing(theme: Theme): ViewStyle | undefined {
   } as ViewStyle;
 }
 
-function Brand() {
+/** The product name. The app has one page, so the name is a heading and not a link. */
+export function Brand() {
   const theme = useTheme();
-  const [focused, setFocused] = useState(false);
-  const [hovered, setHovered] = useState(false);
 
   return (
-    <Pressable
-      accessibilityLabel="PICO-CAR home"
-      accessibilityRole="link"
-      focusable
-      onBlur={() => setFocused(false)}
-      onFocus={() => setFocused(true)}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      onPress={() => router.push('/')}
-      style={({ pressed }) => [
-        styles.brand,
-        focused ? webFocusRing(theme) : null,
-        pressed && styles.pressed,
-      ]}
-    >
+    <View style={styles.brand}>
       <CarIcon color={theme.colors.accent} />
-      <Text
-        style={[
-          theme.typography.headingSm,
-          styles.brandText,
-          { color: hovered ? theme.colors.accent : theme.colors.text },
-        ]}
-      >
+      <Text accessibilityRole="header" aria-level={1} style={[theme.typography.headingSm, styles.brandText, { color: theme.colors.text }]}>
         PICO-CAR
       </Text>
-    </Pressable>
+    </View>
   );
 }
 
-function ThemeToggle() {
-  const { mode, colors } = useTheme();
+export function ThemeToggle() {
+  const theme = useTheme();
+  const { mode, colors } = theme;
   const toggle = useThemeToggle();
+  const [focused, setFocused] = useState(false);
   const dark = mode === 'dark';
   return (
     <Pressable
       accessibilityLabel={dark ? 'Switch to light mode' : 'Switch to dark mode'}
       accessibilityRole="button"
+      onBlur={() => setFocused(false)}
+      onFocus={() => setFocused(true)}
       onPress={toggle}
       style={({ pressed }) => [
+        focused ? webFocusRing(theme) : null,
         styles.themeButton,
         {
           backgroundColor: pressed ? colors.elevated : colors.card,
@@ -120,5 +103,4 @@ const styles = StyleSheet.create({
   },
   brandText: { fontWeight: '600', letterSpacing: 1.2 },
   themeButton: { alignItems: 'center', borderRadius: 59, borderWidth: 1, height: 44, justifyContent: 'center', width: 44 },
-  pressed: { opacity: 0.7 },
 });

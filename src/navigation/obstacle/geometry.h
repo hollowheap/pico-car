@@ -50,6 +50,10 @@ int32_t  geom_wrap_deci (int32_t deci);
 int32_t  geom_abs (int32_t value);
 int32_t  geom_mul_q14 (int32_t value, int32_t q14);
 uint32_t geom_isqrt (uint32_t value);
+/* Dot product of (dx, dy) with a unit vector: given as Q14 cos and sin, or as
+ * an angle. */
+int32_t  geom_dot_q14 (int32_t cos_q14, int32_t sin_q14, int32_t dx_mm, int32_t dy_mm);
+int32_t  geom_dot_mm (int32_t angle_deci, int32_t dx_mm, int32_t dy_mm);
 
 void    geom_pose_reset (geom_pose_t * p_pose, int64_t left_um, int64_t right_um);
 void    geom_pose_update (geom_pose_t * p_pose, int64_t left_um, int64_t right_um);

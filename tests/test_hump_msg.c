@@ -42,7 +42,6 @@ static void test_size_and_layout (void)
 
     printf ("size_and_layout\n");
     CHECK (4U == sizeof (packed_hump_t));
-    CHECK (32U == PHYSICS_MBF_BUFSZ);
     CHECK (0x00E0U == PHYSICS_SHARED_FAULT_MASK);
 
     /* All-zero fields: pitch 0 is offset code 64 at bits 8-14. */

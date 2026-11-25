@@ -12,9 +12,12 @@ type Props = {
   /** The range where the car stops for an obstacle, mm. */
   detectMm: number;
   maxMm?: number;
+  /** Drawn height in px. The plot keeps its shape and centres in the width. */
+  height?: number | '100%';
 };
 
-const WIDTH = 300;
+// Wide enough for the outer ring and the marks on its edge.
+const WIDTH = 340;
 const HEIGHT = 190;
 const CAR_X = WIDTH / 2;
 const CAR_Y = HEIGHT - 14;
@@ -25,9 +28,9 @@ const SPOKES = [-60, -30, 0, 30, 60];
 /**
  * Half-disc scan plot with the car at the bottom. Rings every 100 mm. A filled
  * dot is an echo, a ring on the edge is open space, a cross on the edge is a bad
- * echo (no echo, glitch, stuck, too close). The wedge is the live sonar beam.
+ * echo (no echo, glitch, stuck, too close). The pie slice is the live sonar beam.
  */
-export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600 }: Props) {
+export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600, height = HEIGHT * 1.2 }: Props) {
   const theme = useTheme();
   const mmPerUnit = maxMm / (CAR_Y - 20);
   const at = (angle: number, mm: number) => polarToXY(angle, mm, mmPerUnit, CAR_X, CAR_Y);
@@ -46,7 +49,7 @@ export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600 
     <Svg
       accessibilityLabel={`Scan plot, ${points.filter((p) => p.mark === 'echo').length} echoes`}
       accessibilityRole="image"
-      height={HEIGHT * 1.2}
+      height={height}
       preserveAspectRatio="xMidYMid meet"
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       width="100%"
@@ -62,10 +65,10 @@ export function ScanPlot({ points, servoDeg, beamHalfDeg, detectMm, maxMm = 600 
       })}
       <Path d={arc(detectMm)} fill="none" stroke={theme.colors.muted} strokeDasharray="4 3" strokeWidth="1" />
       {beam === null ? null : (
-        <Polygon
+        <Path
+          d={`M ${CAR_X} ${CAR_Y} L ${beam[0]?.x} ${beam[0]?.y} A ${maxMm / mmPerUnit} ${maxMm / mmPerUnit} 0 0 0 ${beam[1]?.x} ${beam[1]?.y} Z`}
           fill={theme.colors.accent}
           opacity={0.28}
-          points={`${CAR_X},${CAR_Y} ${beam[0]?.x},${beam[0]?.y} ${beam[1]?.x},${beam[1]?.y}`}
         />
       )}
       {points.map((point) => {

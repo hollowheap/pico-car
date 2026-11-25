@@ -34,8 +34,9 @@ bool motion_glue_read (motion_reading_t * p_reading)
     p_reading->displacement_um[1] = feedback.right_displacement_um;
     for (wheel = 0U; wheel < PHYSICS_WHEEL_COUNT; wheel++)
     {
-        p_reading->speed_valid[wheel]    = feedback.speed_valid[wheel];
-        p_reading->odometry_valid[wheel] = feedback.odometry_valid[wheel];
+        p_reading->speed_valid[wheel]     = feedback.speed_valid[wheel];
+        p_reading->odometry_valid[wheel]  = feedback.odometry_valid[wheel];
+        p_reading->invalid_samples[wheel] = feedback.invalid_samples[wheel];
     }
 
     return true;

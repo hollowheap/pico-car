@@ -28,6 +28,7 @@
 static uint8_t  run_count (uint8_t count, bool b_match);
 static uint32_t window_push (uint8_t * p_hist, bool b_hit);
 static uint16_t ranged_dist (uint8_t cls, uint16_t dist_mm);
+static void     record_ping (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist);
 static void     check_plausibility (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm);
 static uint32_t event_base (uint32_t type, uint32_t req_id);
 static void     emit (obstacle_statechart_out_t * p_out, uint32_t evt);
@@ -38,10 +39,16 @@ static uint16_t fault_bit (uint8_t cause);
 static void     enter_stopped (obstacle_statechart_t * p_fsm, uint8_t cause, uint32_t now_ms,
                                obstacle_statechart_out_t * p_out);
 static bool     is_cause_cleared (obstacle_statechart_t const * p_fsm);
+static void     clear_cause (obstacle_statechart_t * p_fsm);
 static void     accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms, uint32_t odo_mm,
                              obstacle_statechart_out_t * p_out);
+static void     reject_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms,
+                             obstacle_statechart_out_t * p_out);
+static uint8_t  health_cause (obstacle_statechart_t * p_fsm, uint8_t cls);
 static bool     check_health (obstacle_statechart_t * p_fsm, uint8_t cls, uint32_t now_ms,
                               obstacle_statechart_out_t * p_out);
+static void     follow_health (obstacle_statechart_t * p_fsm, uint8_t cls, uint32_t now_ms,
+                               obstacle_statechart_out_t * p_out);
 static bool     check_collision (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
                                  uint32_t now_ms, obstacle_statechart_out_t * p_out);
 static void     ping_monitor (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
@@ -92,6 +99,8 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm,
     p_fsm->last_class       = OBSTACLE_CLASS_NO_ECHO;
     p_fsm->last_dist        = 0U;
     p_fsm->seq              = 0U;
+    p_fsm->ping             = 0U;
+    p_fsm->look_deci        = 0;
     p_fsm->steer            = OBSTACLE_STEER_HOLD;
     p_fsm->steer_seq        = 0U;
     p_fsm->counts           = (obstacle_counters_t){0};
@@ -104,6 +113,7 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm,
     p_fsm->anchor_odo_mm    = 0U;
     p_fsm->anchor_dist      = 0U;
     p_fsm->b_anchor         = false;
+    p_fsm->b_odo_fresh      = false;
     p_fsm->b_inconsistent   = false;
     p_fsm->boot_pings       = 0U;
     p_fsm->boot_hits        = 0U;
@@ -170,9 +180,7 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
         case OBSTACLE_CMD_RESET:
             if ((OBSTACLE_STATE_STOPPED == state) && (is_cause_cleared(p_fsm)))
             {
-                p_fsm->faults     = 0U;
-                p_fsm->cause      = OBSTACLE_CAUSE_NONE;
-                p_fsm->reason     = 0U;
+                clear_cause(p_fsm);
                 p_fsm->b_reset_ok = true;
             }
         break;
@@ -180,6 +188,7 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
         case OBSTACLE_CMD_START:
             if ((OBSTACLE_STATE_STOPPED == state) && (p_fsm->b_reset_ok))
             {
+                clear_cause(p_fsm);
                 p_fsm->b_reset_ok = false;
                 enter(p_fsm, OBSTACLE_STATE_MONITOR, now_ms);
             }
@@ -205,7 +214,7 @@ void obstacle_statechart_command (obstacle_statechart_t * p_fsm, uint8_t cmd,
         case OBSTACLE_CMD_REJECT:
             if ((OBSTACLE_STATE_PLAN == state) && b_our_id)
             {
-                enter_stopped(p_fsm, OBSTACLE_CAUSE_PLAN_REJECTED, now_ms, p_out);
+                reject_plan(p_fsm, now_ms, p_out);
             }
             else if ((OBSTACLE_STATE_BYPASS == state) || (OBSTACLE_STATE_REACQUIRE == state))
             {
@@ -268,9 +277,7 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
 {
     uint16_t const dist = ranged_dist(cls, dist_mm);
 
-    p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
-    p_fsm->last_class = cls;
-    p_fsm->last_dist  = dist;
+    record_ping(p_fsm, cls, dist);
     check_plausibility(p_fsm, cls, dist);
 
     if (check_health(p_fsm, cls, now_ms, p_out))
@@ -312,9 +319,6 @@ void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
 {
     uint16_t const dist = ranged_dist(cls, dist_mm);
 
-    p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
-    p_fsm->last_class = cls;
-    p_fsm->last_dist  = dist;
     /* A spin of the face follow sweeps the beam across the face it turns
      * beside, which is never the car driving into it: in REACQUIRE
      * those pings feed only the health checks. */
@@ -322,6 +326,25 @@ void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
     {
         (void)check_collision(p_fsm, dist, now_ms, p_out);
     }
+}
+
+void obstacle_statechart_ping_health (obstacle_statechart_t * p_fsm, uint8_t cls,
+                                      uint16_t dist_mm, bool b_ahead, uint32_t now_ms,
+                                      obstacle_statechart_out_t * p_out)
+{
+    uint16_t const dist = ranged_dist(cls, dist_mm);
+
+    if (b_ahead)
+    {
+        record_ping(p_fsm, cls, dist);
+    }
+    else
+    {
+        p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
+        p_fsm->last_class = cls;
+        p_fsm->last_dist  = dist;
+    }
+    follow_health(p_fsm, cls, now_ms, p_out);
 }
 
 /*!
@@ -338,9 +361,9 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
 {
     uint32_t const elapsed_ms  = now_ms - p_fsm->since_ms;
     uint32_t const scan_age_ms = now_ms - p_fsm->scan_progress_ms;
-    /* The odometer can fall below the bypass start (a backward move or a
-     * stale sample); wrapping would end the bypass at once. */
-    uint32_t const hugged_mm   = (odo_mm > p_fsm->bypass_mm) ? (odo_mm - p_fsm->bypass_mm) : 0U;
+    /* odo_mm is all wheel travel, forward and backward: it only grows, so
+     * the modular difference stays right across the wrap. */
+    uint32_t const hugged_mm   = odo_mm - p_fsm->bypass_mm;
     uint8_t        cause       = OBSTACLE_CAUSE_NONE;
 
     switch (p_fsm->state)
@@ -527,9 +550,21 @@ uint8_t obstacle_statechart_flags (obstacle_statechart_t const * p_fsm)
     return (flags);
 }
 
-void obstacle_statechart_set_odometer (obstacle_statechart_t * p_fsm, uint32_t odo_mm)
+void obstacle_statechart_set_odometer (obstacle_statechart_t * p_fsm, uint32_t odo_mm,
+                                       bool b_fresh)
 {
-    p_fsm->odo_mm = odo_mm;
+    p_fsm->odo_mm      = odo_mm;
+    p_fsm->b_odo_fresh = b_fresh;
+    if (!b_fresh)
+    {
+        /* Travel is unknown until fresh feedback: start the P2 check over. */
+        p_fsm->b_anchor = false;
+    }
+}
+
+void obstacle_statechart_set_look (obstacle_statechart_t * p_fsm, int16_t look_deci)
+{
+    p_fsm->look_deci = look_deci;
 }
 
 /* Plausibility checks on a ping. They raise flags and never stop the car.
@@ -552,7 +587,7 @@ static void check_plausibility (obstacle_statechart_t * p_fsm, uint8_t cls, uint
         }
     }
 
-    if ((OBSTACLE_CLASS_VALID == cls) && (dist_mm < OBSTACLE_CONSIST_RANGE_MM))
+    if (p_fsm->b_odo_fresh && (OBSTACLE_CLASS_VALID == cls) && (dist_mm < OBSTACLE_CONSIST_RANGE_MM))
     {
         int32_t const travel = (int32_t)(p_fsm->odo_mm - p_fsm->anchor_odo_mm);
 
@@ -611,6 +646,23 @@ static uint32_t window_push (uint8_t * p_hist, bool b_hit)
 
 /* The range of a ping that has one: the reading for VALID, and the minimum
  * range for TOO_CLOSE. Any other class has none (0). */
+/*!
+ * @brief Record a ping in the sequence, the last reading and the ping word.
+ *
+ * @param[in,out] p_fsm Statechart.
+ * @param[in]     cls   Ping class.
+ * @param[in]     dist  Ranged distance in mm.
+ */
+static void record_ping (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist)
+{
+    p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
+    p_fsm->last_class = cls;
+    p_fsm->last_dist  = dist;
+    p_fsm->ping = obstacle_pack_ping(
+        obstacle_pack_get(p_fsm->ping, OBSTACLE_PING_SEQ_SH, OBSTACLE_PING_SEQ_MK) + 1U, cls, dist,
+        p_fsm->look_deci);
+}
+
 static uint16_t ranged_dist (uint8_t cls, uint16_t dist_mm)
 {
     uint16_t dist = 0U;
@@ -761,6 +813,15 @@ static bool is_cause_cleared (obstacle_statechart_t const * p_fsm)
     return (OBSTACLE_CAUSE_INIT_FAIL != p_fsm->cause);
 }
 
+/* Forget the stop: after a RESET this is a no-op for START, which also takes
+ * over a stop that ended by itself and still waits for its faults to clear. */
+static void clear_cause (obstacle_statechart_t * p_fsm)
+{
+    p_fsm->faults = 0U;
+    p_fsm->cause  = OBSTACLE_CAUSE_NONE;
+    p_fsm->reason = 0U;
+}
+
 static void accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms,
                          uint32_t odo_mm, obstacle_statechart_out_t * p_out)
 {
@@ -782,8 +843,23 @@ static void accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms,
     }
 }
 
-static bool check_health (obstacle_statechart_t * p_fsm, uint8_t cls,
-                          uint32_t now_ms, obstacle_statechart_out_t * p_out)
+/* A plan with no way round is final: a rescan of the same obstacle finds
+ * the same plan, so it does not auto-restart. */
+static void reject_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms,
+                         obstacle_statechart_out_t * p_out)
+{
+    if ((OBSTACLE_RESULT_OK == p_fsm->plan.status) || (OBSTACLE_RESULT_CLEAR == p_fsm->plan.status))
+    {
+        enter_stopped(p_fsm, OBSTACLE_CAUSE_PLAN_REJECTED, now_ms, p_out);
+    }
+    else
+    {
+        enter_stopped(p_fsm, OBSTACLE_CAUSE_NO_SAFE_PATH, now_ms, p_out);
+    }
+}
+
+/* Count the run of each failing class and name the fault that holds, if any. */
+static uint8_t health_cause (obstacle_statechart_t * p_fsm, uint8_t cls)
 {
     obstacle_counters_t * const p_cnt = &p_fsm->counts;
     uint8_t                     cause = OBSTACLE_CAUSE_NONE;
@@ -810,12 +886,74 @@ static bool check_health (obstacle_statechart_t * p_fsm, uint8_t cls,
         /* The echo line is healthy enough. */
     }
 
+    return (cause);
+}
+
+static bool check_health (obstacle_statechart_t * p_fsm, uint8_t cls,
+                          uint32_t now_ms, obstacle_statechart_out_t * p_out)
+{
+    uint8_t const cause = health_cause(p_fsm, cls);
+
     if (OBSTACLE_CAUSE_NONE != cause)
     {
         enter_stopped(p_fsm, cause, now_ms, p_out);
     }
 
     return (OBSTACLE_CAUSE_NONE != cause);
+}
+
+/* The health checks of a pilot-driven car. An echo fault stops the car once,
+ * and ends when its own run count falls below its limit; only a stop that an
+ * echo fault caused ends with it, so the operator stop and a boot or start-up
+ * stop stay latched. */
+static void follow_health (obstacle_statechart_t * p_fsm, uint8_t cls,
+                           uint32_t now_ms, obstacle_statechart_out_t * p_out)
+{
+    uint8_t const cause = health_cause(p_fsm, cls);
+
+    if (OBSTACLE_STATE_STOPPED != p_fsm->state)
+    {
+        if (OBSTACLE_CAUSE_NONE != cause)
+        {
+            /* The run counts must keep counting through the stop, or they
+             * would read as cleared at the next ping. */
+            obstacle_counters_t const held = p_fsm->counts;
+
+            enter_stopped(p_fsm, cause, now_ms, p_out);
+            p_fsm->counts = held;
+            /* This stop ends by itself. The operator stop clears the mark. */
+            p_fsm->b_reset_ok = true;
+        }
+    }
+    else
+    {
+        obstacle_counters_t const * const p_cnt = &p_fsm->counts;
+        bool const b_health_stop = p_fsm->b_reset_ok &&
+                                   ((OBSTACLE_CAUSE_NO_ECHO == p_fsm->cause) ||
+                                    (OBSTACLE_CAUSE_ECHO_STUCK == p_fsm->cause) ||
+                                    (OBSTACLE_CAUSE_ECHO_NOISE == p_fsm->cause));
+
+        if (p_cnt->no_echo < OBSTACLE_NO_ECHO_COUNT)
+        {
+            p_fsm->faults &= (uint16_t)~OBSTACLE_FAULT_NO_ECHO;
+        }
+        if (p_cnt->stuck < OBSTACLE_STUCK_COUNT)
+        {
+            p_fsm->faults &= (uint16_t)~OBSTACLE_FAULT_ECHO_STUCK;
+        }
+        if ((p_cnt->glitch < OBSTACLE_GLITCH_COUNT) && (p_cnt->fail < OBSTACLE_FAIL_COUNT))
+        {
+            p_fsm->faults &= (uint16_t)~OBSTACLE_FAULT_ECHO_NOISE;
+        }
+
+        if (b_health_stop && (0U == p_fsm->faults))
+        {
+            p_fsm->cause      = OBSTACLE_CAUSE_NONE;
+            p_fsm->reason     = 0U;
+            p_fsm->b_reset_ok = false;
+            enter(p_fsm, OBSTACLE_STATE_MONITOR, now_ms);
+        }
+    }
 }
 
 static bool check_collision (obstacle_statechart_t * p_fsm, uint16_t dist_mm,

@@ -39,14 +39,22 @@ void barcode_task_run (void);
  * feedback snapshot.
  *
  * @param interval_us Duration of element pulse in microseconds.
+ * @param end_us      Timestamp of the edge that ends the element.
  * @param p_feedback Pointer to motion feedback snapshot.
  * @param p_width_um Output pointer for element width in micrometers.
  *
- * @return true on success, false if snapshot is stale, invalid, or speed is non-positive.
+ * @return true on success, false if snapshot is stale, invalid, or speed is
+ *         non-positive, or the speed was sampled more than
+ *         BARCODE_SPEED_SLACK_US outside the element.
  */
 bool barcode_width_um (uint32_t                interval_us,
+                       uint32_t                end_us,
                        motion_feedback_t const * p_feedback,
                        uint16_t                * p_width_um);
+
+/** How far outside an element the speed sample may be: two 10 ms motion
+ *  control periods. A guess until measured on the car. */
+#define BARCODE_SPEED_SLACK_US (20000U)
 
 /** Longest black element that can be a Code 39 bar: a wide bar is 2 to 3
  *  narrow ones, and a narrow one is at most 16.4 mm. */

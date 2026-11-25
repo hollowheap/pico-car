@@ -1,8 +1,9 @@
-# Ground station: MQTT broker, bridge and dashboard. Start it with
-# deploy/ground-station.sh, which also puts the bridge and the dashboard on the
-# tailnet. The broker publishes 1883 on every interface so the car reaches it
-# on the Wi-Fi; the bridge and the dashboard listen on the loopback only and
-# reach the tailnet through `tailscale serve`.
+# Ground station: MQTT broker, bridge and dashboard.
+#
+#   podman-compose -f deploy/compose.yaml up -d --build
+#
+# The broker publishes 1883 on every interface so the car reaches it on the
+# Wi-Fi; the bridge and the dashboard listen on the loopback only.
 name: pico-car
 
 services:
@@ -33,9 +34,8 @@ services:
       context: ..
       dockerfile: deploy/dashboard.Dockerfile
       args:
-        # ground-station.sh sets the tailnet URLs; the defaults serve a local run.
-        EXPO_PUBLIC_LINK_URL: ${DASHBOARD_LINK_URL:-ws://127.0.0.1:5280}
-        EXPO_PUBLIC_SERVICE_URL: ${DASHBOARD_SERVICE_URL:-http://127.0.0.1:5280}
+        EXPO_PUBLIC_LINK_URL: ws://127.0.0.1:${BRIDGE_LOCAL_PORT:-5280}
+        EXPO_PUBLIC_SERVICE_URL: http://127.0.0.1:${BRIDGE_LOCAL_PORT:-5280}
     ports:
       - "127.0.0.1:${DASHBOARD_LOCAL_PORT:-5281}:80"
     depends_on:

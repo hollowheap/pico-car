@@ -9,7 +9,6 @@ This page describes the code.
 
 Other Buddy 5 docs:
 
-- [Obstacle contract: commands, events, states, faults, retry policy](obstacle_contract.md)
 - [File guide: which file does what](obstacle_file_guide.md)
 - [Hardware test checklist](obstacle_hardware_checklist.md)
 
@@ -119,7 +118,7 @@ block at the end of the team `CMakeLists.txt`. The
 
 | Item | Value |
 |---|---|
-| Obstacle task (`ctsk_obstacle`) | priority 4, `TP_PRC1` (Core 0), 4096 B stack |
+| Obstacle task (`g_ctsk_obstacle` in `src/main.c`) | priority 4, `TP_PRC1` (Core 0), 2048 B stack |
 | Echo ISR | 1 slot in the shared `src/platform/isr` dispatcher |
 | Kernel objects created | **1 event flag**; no message buffer, cyclic handler or mutex |
 | PWM | slice 6 channel A (GP12), 125 MHz / 125 = 1 MHz, TOP 19999 = 50 Hz |
@@ -133,20 +132,30 @@ block at the end of the team `CMakeLists.txt`. The
    `width | RISE | DONE` in one store and sets the flag bit.
 4. The task waits at most 40 ms, then `scan_algo_classify` gives the class:
    VALID, OPEN, TOO_CLOSE, NO_ECHO, GLITCH or STUCK. The table, and what
-   each class does, is in the [contract](obstacle_contract.md#echo-classes).
+   each class does, is in `src/navigation/obstacle/scan_algo.c`.
 
-A missing echo is **never** OPEN. There is no UNKNOWN class (D97).
+A missing echo is **never** OPEN. There is no UNKNOWN class.
 
 ### Statechart
 
-The states, the time limits and the fault causes are in the
-[contract](obstacle_contract.md#states). Rules that apply in every state:
+The states, the time limits and the fault causes are in
+`src/navigation/obstacle/statechart.c` and `obstacle_config.h`. Rules that
+apply in every state:
 
 - **STOP command or any fault** gives STOPPED, plus a FAULT event.
 - **A fault with a bit** also calls the emergency-stop link.
 - **Detect** is 2 hits among the last 3 pings. The **collision guard** is
   2 close pings (at most 80 mm, or TOO_CLOSE) among the last 3. Both use the
-  same hit definition (D150).
+  same hit definition.
+- **Guard pings.** A ping is a guard ping when the body turns at the start
+  or at the end of its echo wait. Only the health checks and the collision
+  guard use it. It does not change the class, distance or seq of the status
+  word, or the ping word. So the face follow never reads a guard ping as a
+  face ping.
+- **Ping word.** Every face ping updates the ping word: class, distance, a
+  6-bit seq and the servo angle the ping was taken at
+  (`obstacle_comms_ping()`). The face follow takes a ping only when its seq is
+  new and its servo angle is the look angle that the follow asked for.
 
 ### Scan
 
@@ -154,7 +163,7 @@ The states, the time limits and the fault causes are in the
   Slot 18 is straight ahead.
 - **Servo:** never beyond +-15 degrees (the board has about 10 mm of room
   behind it). The scan reaches the rest of the grid by turning the car body in
-  30 degree steps up to 75 degrees (D166).
+  30 degree steps up to 75 degrees.
 - **Coarse:** every 2nd slot (10 degrees) in the centre window.
 - **Region:** the closest hit within 600 mm, plus coarse neighbours within
   closest + 250 mm. The closest reading is looked for inside the car's path
@@ -172,7 +181,169 @@ The states, the time limits and the fault causes are in the
 - **Warning flags:** P1 (`echo_noisy`) and P5 (`scan_noisy`) are computed
   while the scan runs. They never stop the car.
 
+### Hug (pilot path)
+
+With `PICO_CAR_PILOT=ON` the pilot drives round an obstacle with the hug, not
+the planner below.
+
+- **Looks.** The car stops and looks with the servo and with body pivots. The
+  first look of a hit is coarse: 19 rays, 5 degrees apart within 35 degrees of
+  the heading of the hit and farther apart beyond it (`HUG_CONTACT_RAYS`).
+  The rays beyond 35 degrees only measure the room beside the face. The pivot
+  before a look goes straight to the first body step, and the sweep of a look
+  after a leg ends on the side the next leg goes to.
+- **Face fit and edge test.** Echoes on a face are fitted to a line. A hit is
+  trusted up to 25 degrees off the face normal. The edge test applies the
+  9.5 degree beam correction described under the planner.
+- **Back-off.** The hug reverses only on the first contact of a hug, and only
+  when the body is nearer than the 120 mm wrap gap (the axle under 239 mm from
+  the face), or on a wheel stall, which counts as face range 0. The car turns
+  back to the contact heading, backs straight off by the 250 mm standoff minus
+  the face range (the range is from the sonar, 70 mm ahead of the axle), and
+  looks again before it picks a side. The wire state is `backoff`. It does not
+  measure width, and it has the usual move timeout. On a normal approach the
+  face shows at the standoff, so there is no back-off. Past it the hug never
+  reverses; only the pilot's own stall back-off does. The car looks from where
+  it stands, so a face wider than the look
+  trusts (about 70 mm each side of the car at 250 mm) shows no edge and the
+  width is 0 until a look sees both. A first look with no usable face lets go
+  of the wheels: the hit is gone.
+- **Side.** The side with the nearer edge. A single edge seen means that side.
+  A tie (within 30 mm) goes left, as does a narrow face whose second edge is
+  lost. With no edge the side with more open room in the wide rays wins by 500
+  mm of reading, else left. A side with less than 340 mm between the edge and
+  a wall beside it is passed over. A box 300 mm wide and about 35 mm off the
+  line shows neither edge from the hit, so it can go the farther way round.
+- **Gap.** The car keeps 120 mm between its body and the face
+  (`HUG_BODY_GAP_MM`), so the axle runs 239 mm off it. The first approach
+  drives along the normal to that. After each look the next leg leans toward
+  or away from the face (at most 30 degrees) to end there. A leg that ends
+  past a corner ends a body radius and the gap past it.
+- **Stall.** A wheel stall while the follower drives is a contact: the hug
+  starts from the pose after the pilot's back-off (40 mm short of the stall),
+  looks, backs straight off by the 250 mm standoff (a stall is a face at range
+  0) and looks again. When that look has no usable face (the fit fails or
+  fewer than four valid rays), the hug ends: the block went away, or the face
+  is one the sonar cannot see, and the follower goes on. The hug keeps a note
+  of that stall. A second stall is the same place, and wraps an assumed face,
+  while the note stands: the car has not gone 150 mm (`HUG_STALL_PAST_MM`)
+  along the heading of the first hit, counted from the pose where the first
+  hug began, and no more than 15 s (`HUG_NOTE_MS`) have passed since that hug
+  ended. The pose is tracked by the wheels while the hug is idle. Releases
+  are counted too, and once two (`HUG_RELEASES_MAX`) have passed, any stall
+  takes the assumed face, note or not, until the tape, 15 s with no hug, or
+  a hug the sonar starts clears the count. The count is not tied to place on
+  purpose: wheel slip counts as travel, so a count tied to travel would be
+  cleared by slip, and recurring slip against a box would loop without
+  bound. A wrap that was not needed costs only time. So slip that keeps
+  ending in a stall costs at most two looks and releases before the wrap.
+  Both numbers are guesses. In the hug that wraps the car backs off at once,
+  without the look at the stall pose, and when the look after the back-off
+  again has no usable face, the car takes a face across its heading, one body
+  radius (`HUG_BODY_MM`) ahead of the stall pose. That face has no edges, so
+  it gives no width or breadth; the car drives the short no-edge leg along it
+  and looks again. A face found by the look after a stall is approached no
+  nearer than the body gap to the stall point. A hug that ends at the tape
+  clears the note and the count. Wheel slip against a face counts as travel
+  and can clear the note by distance; the wheels turn and the encoders count,
+  so these sensors cannot tell slip from travel, and a car run must check it.
+  Slip that goes on with no stall is not seen at all: the simulation reports
+  it and asserts only a slip that ends in a stall, at every contact.
+  A leg that ends in a stall with no face ahead in the look takes the same
+  assumed face and turns the other way round, since the way on its side is
+  blocked by a face the sonar cannot see.
+- **Legs.** It drives legs round the faces of the obstacle, looking at each
+  corner. Every corner is turned, as many as there are: 90, 180 and 270
+  degrees round, or a full turn and more. A look that loses the face first
+  drives on a body radius and the gap, then turns, since the corner may be
+  just behind the car.
+- **Rejoin.** Tape under a line sensor during a drive ends the hug, unless the
+  car is on the line it came on (axle within 150 mm along the hit heading
+  and 250 mm across it). The line may run at any angle there, and may turn
+  under the obstacle. The car drives 130 mm so the axle is over the tape and
+  turns away from the obstacle, 90 degrees from its heading, until a sensor
+  sees the tape; then the follower takes the wheels. Tape that a sensor
+  crossed in a pivot or look, within reach of the axle, ends the hug in the
+  same way: a turn out of the way where the car stands would leave the sensors
+  off the tape when the car had not yet reached it. The width, breadth and face
+  fields clear when the hug ends.
+- **Walls.** A wall is followed for ever. The hug stops only for a sensor fault,
+  STOP or a move timeout.
+- **Move timeout.** Each hug pivot or drive must end within three times its
+  planned time, and never sooner than the 1 s stuck window. A move that takes
+  longer ends the hug and stops the car with reason HUG_TIMEOUT, which latches
+  until an accepted RESET.
+- **Safety stop.** A SAFETY stop sets the wheels to 0 at once; it skips the
+  drive acceleration limit that smooths normal speed changes.
+- **Pings.** Each 10 ms tick the line task reads the latest ping word with
+  `obstacle_ping_read()` and gives the pilot its distance, servo angle, echo
+  class, sequence and reply flag. NO_ECHO, GLITCH and STUCK give no reading
+  (`LOOK_ECHO_NONE`); they are never OPEN. A STUCK, NO_ECHO or ECHO_NOISE
+  fault of the sonar task stops the pilot with reason SONAR. The fault's bit
+  clears at the first ping that no longer fits it, and the statechart goes back
+  to MONITOR when no fault is left. If the stop lasts no longer than
+  PILOT_SONAR_RESUME_MS (1 s, a guess to be measured on the car), the pilot
+  drives on by itself. A longer stop latches: the reason then reads
+  SONAR_LATCHED (wire 9), or STALE_LATCHED (wire 10) when no sonar fault was
+  present at the moment of the latch, and keeps that reason until released.
+  START (pilot_release_sonar) releases it, and RESET (pilot_clear_latches)
+  clears it too, but RESET leaves the wheels held, so START must follow. The
+  same rule applies to stale feedback, which means the wheel feedback is older
+  than PILOT_STALE_MS (100 ms) and says nothing about the sonar. While a hold
+  is on, a STALE_LATCHED shows as HELD; a SONAR_LATCHED does not. An operator
+  STOP holds the car until START; RESET does not release it.
+  A sonar that leaves two requests of the hug in a row without a reply
+  (`HUG_LOST_REPLIES`, 800 ms each) also stops the pilot with reason SONAR. The
+  hug keeps asking and goes on at the next reply; that stop is not a latch.
+- **Ping requests.** When the pilot asks for a ping, the line task calls
+  `obstacle_ping_request()` once for each new (sequence, angle) pair, not
+  every tick. A refused request is logged once with `LOG_WARN` and tried again.
+- **Line events.** The line task raises `line_lost`, `line_found` and the
+  line-lost fault only while the follower has the wheels. While the hug drives,
+  the line is off the sensors and that is not a lost line; a lost state that
+  is open when the hug takes over ends without a `line_found`. For 250 ms after
+  a barcode edge the follower drives straight at cruise speed, under the sonar
+  speed cap, and its search state does not change. The straight is only for a
+  follower that follows or bridges a gap: a searching follower, whose retry
+  reverses, ignores the barcode flag.
+- **Lost line.** With no sensor hit the follower holds its heading for
+  `LINE_GAP_MM` (150 mm; `LINE_HUMP_GAP_MM`, 400 mm, while the physics reports
+  a hump, because the sensors lift off the floor at the crest). Then it turns
+  on the spot toward the side that saw the line last, and back the other way.
+  A failed search is retried up to `LINE_RETRY_COUNT` (3) times: the car turns
+  back to the heading it had when the search began, reverses `LINE_REVERSE_MM`
+  (150 mm) straight and searches again. A reverse in which the slower wheel
+  backs up less than `LINE_REVERSE_STEP_MM` (10 mm) in `LINE_REVERSE_STALL_MS`
+  (1.5 s) is blocked (a jam of one wheel counts): it ends as a failed retry,
+  and the car searches again. The pilot's stuck check does not back off after
+  a reverse (the blockage is behind the car) and does not tell the hug of a
+  contact ahead. A sensor hit at any time ends the recovery. After the last
+  retry fails the car stops until a sensor sees the line. Each retry sends a
+  `line_lost` event with p2 = `0x8000 | retry`. The retry count clears once a
+  sensor hit comes past the point where the line was lost. The constants are
+  guesses, not measured on the car.
+- **Hug fields of the frame.** The line task packs the hug state, side, face
+  distance, width and breadth, and the servo angle of the latest ping, into
+  two words under one spinlock (`telemetry/hug_word.h`). The telemetry task
+  reads both words together, so one frame never mixes two ticks. Idle shows
+  side none. With the pilot on, `servo_deci` is the servo of the latest ping
+  and `body_deci` is the body heading from the heading at the hit, in
+  deci-degrees, left positive; it is packed into word 1 with an offset of 1800.
+  `face_mm` is the last measured axle-to-face distance while the hug is
+  active, not the drive distance the hug plans from it. An idle hug shows 0
+  for both `face_mm` and `body_deci`.
+
+The telemetry obstacle frame is schema 3, 24 bytes, big-endian: state, cause,
+faults (u16), echo class, flags, dist_mm (u16), closest_mm (u16), seq,
+hug_state (idle, contact, backoff, align, leg, look, turn, inner, exit),
+hug_side (left, right, none), hug_seq (the low two bits of the hug publish count; a changed value is a new hug sample), width_mm,
+breadth_mm, face_mm (all u16, 0 until seen), servo_deci and body_deci (i16).
+Faults bits 12 to 14 are not set on the wire. The `bypass_start` event gives
+the side in p1; `bypass_end` gives the width in p1 and the breadth in p2.
+
 ### Plan and bypass
+
+This is the old path, used when `PICO_CAR_PILOT=OFF`. The telemetry frame no longer carries its plan fields.
 
 **Beam-cone correction.** With h = last hit angle, m = first miss angle and
 β = half-cone (9.5 degrees), the planner places an edge between h - β and
@@ -185,9 +356,12 @@ simulation does not follow it.
 side falls in the swept band. The smaller offset wins; on a tie, left. An
 edge that is not bounded, or lies beyond `OBSTACLE_EDGE_TRUST_DECI` (30
 degrees), plans a wall pass on the left. With no usable side the plan is
-NO_SAFE_PATH and the car holds.
+NO_SAFE_PATH and the car holds. The navigation answers a NO_SAFE_PATH or
+FAILED plan with REJECT. Buddy 5 then stops with cause NO_SAFE_PATH and its
+fault bit, and waits for RESET and START. It does not rescan the same
+obstacle.
 
-**Out pivot (D98).** One pivot away from the obstacle at the smallest of 45,
+**Out pivot.** One pivot away from the obstacle at the smallest of 45,
 60, 75 or 90 degrees that clears the front corner by half the car width plus
 `OBSTACLE_PLAN_MARGIN_MM`. The car never reverses.
 
@@ -213,18 +387,18 @@ lane, so the strip is accepted and not covered by extra pings.
 
 ### Interfaces
 
-The commands, events, snapshots and their limits are in the
-[contract](obstacle_contract.md). The calls are in
+The commands, events, snapshots and their limits are in
+`include/navigation/obstacle_cmd.h`, `include/navigation/obstacle_flags.h` and
+`src/navigation/obstacle/obstacle_config.h`. The calls are in
 `include/navigation/obstacle.h`.
 
 ```c
 obstacle_links_t links = { h_nav_mbf, p_stop, p_get_distance_mm };  /* 0/NULL allowed */
 obstacle_init(&links);              /* after gpio_irq_init() */
 obstacle_post_cmd(obstacle_pack_cmd(OBSTACLE_CMD_SCAN_REQ, req_id));
-obstacle_get_event(&evt, tmout);    /* own 4-slot outbox while h_nav_mbf == 0 */
-obstacle_snapshot(&status);         /* state, cause, faults, echo class, flags */
+obstacle_snapshot(&status);         /* state, cause, faults, stop reason, echo class, flags */
 obstacle_copy_profile(profile);     /* 37 slots: E_BUSY, never waits */
-obstacle_copy_plan(&plan);          /* plan of the last finished scan */
+obstacle_copy_plan(&plan);          /* plan of the last finished scan, with its req_id */
 obstacle_echo_counts(counts);       /* pings per echo class since boot */
 ```
 
@@ -242,15 +416,16 @@ obstacle_echo_counts(counts);       /* pings per echo class since boot */
 | | last class | 6 | 3 | bits 7-9 |
 | | last dist_mm | 0-4095 | 12 | bits 10-21 |
 | | scan_req_id | 0-31 | 5 | bits 22-26 |
-| | seq (liveness) | 0-31 wrap | 5 | bits 27-31 |
+| | seq (liveness) | 0-31 wrap, face pings only | 5 | bits 27-31 |
 | Fault word `u16` | 9 fault flags | - | 9 | single writer (obstacle task) |
+| | bypass give-up reason | 0-7 | 3 | bits 12-14; the snapshot gives it as `stop_reason`; not sent on the wire |
 | Command `u8` | type, id | 8 types, 0-31 | 3 + 5 | one byte |
 | Event `u32` | type, id | 4 types, 0-31 | 2 + 5 | bits 0-6 |
 | | OBSTACLE: dist | 0-4095 | 12 | bits 7-18 |
 | | SCAN_RESULT: status, side, width, angle, wall | 4, 2, 0-1023 mm, 0-127 deg, flag | 2 + 1 + 10 + 7 + 1 | bits 7-27 |
 | | FAULT: cause, faults | 15, 9 bits | 4 + 9 | bits 7-19 |
 | | STEER: action, seq | 4, 0-63 | 2 + 6 | bits 7-14 |
-| Ping `u32` (one store) | seq, class, dist_mm, servo | 0-63, 6, 0-4095, -30..+30 deg | 6 + 3 + 12 + 6 | bits 0-26 |
+| Ping `u32` (one store) | seq, class, dist_mm, servo | 0-63, 6, 0-4095, -30..+30 deg | 6 + 3 + 12 + 6 | bits 0-26; face pings only |
 | Counters (task-private) | `obstacle_counters_t`: seven `uint8_t` | runs and 3-bit histories | 56 | no packed word |
 
 Compile-time checks in `obstacle_config.h` stop the build if a field can't hold
@@ -345,7 +520,7 @@ Search `obstacle_config.h` for **FILL**. Status:
 | Bypass speed `OBSTACLE_BYPASS_SPEED_MM_S` | 40 mm/s, matches `main.c` (40.8 mm/s) |
 | Beam half-angle `OBSTACLE_BEAM_HALF_DECI` | **Done:** 9.5° (95). Power bank at 300 mm dropped out with its near edge 50 mm left / 65 mm right of centre (9.5° / 12.2°); the smaller value gives more room. The left/right difference comes from the two transducers sitting either side of the centre. |
 | Wheel diameter | **Done:** 65 mm (already in the motion service scale) |
-| Wheel track `OBSTACLE_WHEEL_TRACK_MM` | **Done:** 107 mm (measured) |
+| Wheel track `CHASSIS_WHEEL_TRACK_MM` | **Done:** 107 mm (measured) |
 | Servo→tail `OBSTACLE_SERVO_TO_REAR_MM` | Pending (170 mm); sets when the car turns back |
 | Servo→front | Pending (optional) |
 | Servo centre / scale | Looks right by eye; protractor check optional |
@@ -366,7 +541,7 @@ only prepare resources and expose their task body.
 | Link | Wired to | Why |
 |---|---|---|
 | `p_stop` | `motion_service_set_hold(MOTION_HOLD_OBSTACLE, true)` | Stops the car without the reboot latch of `motion_service_request_stop()`, so RESET + START can recover. |
-| `p_get_distance_mm` | Mean forward `displacement_um` of both wheels from `motion_service_read_status()`, in mm | Real odometer for the plan-derived bypass limit. It keeps the last good value if a sample is invalid. |
+| `p_get_distance_mm` | Mean wheel travel from `motion_feedback_snapshot()`, as forward and backward mm since boot (`obstacle_travel_t`) | The bypass limit counts all travel. The P2 range check uses the net forward travel. The link returns E_OBJ when the feedback is stale. Buddy 5 then keeps the last good travel and skips the P2 check. It never estimates travel from time. |
 | `h_nav_mbf` | 0 | Events go to Buddy 5's own outbox; the line task polls it. |
 
 If `obstacle_line_init()` fails, it prints the error and line following runs
@@ -379,7 +554,7 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 | Buddy 5 state | What the glue does | Line follower |
 |---|---|---|
 | MONITOR | releases the obstacle hold, unless the latest ping is a hit: VALID within 250 mm, or TOO_CLOSE (so a retry never creeps into the obstacle) | drives as before |
-| WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id) | paused |
+| WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id); on NO_SAFE_PATH/FAILED sends REJECT(id) | paused |
 | BYPASS | releases the hold; pivots away (STEER word) until Buddy 5 sees the way ahead is clear | paused |
 | REACQUIRE | TURN (pivot to the start angle) and OUT (straight to the side offset) from the wheel odometry, then HUG: a proportional controller holds a 300 mm look-ray target by slowing the wheel next to the obstacle by up to 80% of the outer wheel. One ping under 250 mm forces a turn away, clamped at 60° from the line. OUT drives straight. IR gate: armed when the offset is reached, opens once both IR sensors have been off the line; the next line contact sends LINE_FOUND(id) (at most every 100 ms) | paused |
 | STOPPED (fault) | holds the car. Sends RESET + START every 3 s only after BOOT or a transient cause (`obstacle_pack_cause_may_auto_restart`). After a collision, NO_SAFE_PATH, a sensor fault or a STOP it waits for an explicit RESET and START | paused |
@@ -394,14 +569,27 @@ servo swing while a motor drives can disturb the wheel encoders.
 | OUT, ALONG, BACK | 40 000 / 40 000 µm/s | 40 000 / 60 000 µm/s |
 
 NOTE: The inside wheel never runs between 0 and 40 mm/s. The motors only
-get up to 25 % duty, and a driven wheel that makes no encoder edges for 2 s
-latches the motion service's NO_EDGES fault, which only a reboot clears.
+get up to 25 % duty. A driven wheel that makes no encoder edges no longer
+faults the motion service. The pilot checks instead: after 1 s with both
+wheels still it backs off and tries again, and a wheel that stays still
+while the other moves stops the car with reason ENCODER until an accepted
+RESET. RESET (pilot_clear_latches) clears the ENCODER, HUG_TIMEOUT,
+SONAR_LATCHED and STALE_LATCHED latches and starts the follower afresh, keeping
+the recorded side of the line; the emergency stop stays until reboot. The hug's
+own lost-replies SONAR stop is not latched: it ends at the next reply. A RESET
+of a running car also holds the wheels like a STOP, so a cleared latch does not
+set the car going again: START releases the hold and, through
+pilot_release_sonar(), the SONAR_LATCHED and STALE_LATCHED latches. A RESET of a
+car held by a lift keeps the lift hold. RESET is refused while the car is
+overturned and not upright, where upright means calibrated with roll within 60
+deg. The car holds the wheels after boot, a watchdog reset, a lapsed motion
+permit and every lift until an operator START, however long it stands level.
 If the motors cannot reach 60 mm/s, the outside wheel runs at its top
 speed, which still curves the car.
 
 **Dead reckoning.** Heading = `(right − left wheel distance) /
-OBSTACLE_WHEEL_TRACK_MM` (from the totals, so it does not drift); position is
-summed along that heading every pass. `OBSTACLE_WHEEL_TRACK_MM` is 107 mm
+CHASSIS_WHEEL_TRACK_MM` (from the totals, so it does not drift); position is
+summed along that heading every pass. `CHASSIS_WHEEL_TRACK_MM` is 107 mm
 (measured). The wheel diameter
 (65 mm) is already in the motion service's scale (204.2 mm per turn).
 
@@ -414,7 +602,7 @@ bypass takes about 20–30 s at these speeds.
 
 The glue logs `[INFO](line:nav) state N cause N`, `plan: ...`, `phase N: ...`,
 `steer N: ...`, `escape turned N deg`, motion changes and every `SCAN_RESULT`
-(see [debugging](debugging.md) for the format), and writes all of it to the
+and writes all of it to the
 flight recorder.
 
 ### Flight recorder (`flight_log.c`)
@@ -487,7 +675,7 @@ Known points for the team:
   the motion service changes state, so silent motor faults show up.
 - If the ultrasonic sensor is unplugged, Buddy 5 faults with NO_ECHO after 3 pings and
   holds the car, so line following stops too. This is deliberate, and the car
-  does not restart by itself (D151).
+  does not restart by itself.
 - GP21 is the motion stop button in `main.uf2` and the "send" button in
   `obstacle_bench.uf2`.
 - `gpio_irq_init()` enables the IRQ only on the core that calls it.

@@ -29,7 +29,7 @@ type Filter = 'all' | 'attention' | 'drive' | 'commands';
 
 const FILTERS: { key: Filter; label: string; kinds: EventKind[] | null }[] = [
   { key: 'all', label: 'All', kinds: null },
-  { key: 'attention', label: 'Attention', kinds: ['fault', 'attitude', 'obstacle', 'link'] },
+  { key: 'attention', label: 'Alerts', kinds: ['fault', 'attitude', 'obstacle', 'link'] },
   { key: 'drive', label: 'Drive', kinds: ['barcode', 'turn', 'line', 'hump'] },
   { key: 'commands', label: 'Commands', kinds: ['command', 'system'] },
 ];
@@ -111,8 +111,8 @@ export function EventTimeline({ events, limit = 60, maxHeight, title = 'Events',
 }
 
 const styles = StyleSheet.create({
-  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  row: { borderTopWidth: 1, gap: 2, paddingVertical: 8 },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  row: { borderTopWidth: 1, gap: 2, paddingBottom: 8, paddingTop: 16 },
   rowHead: { alignItems: 'center', flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
   titleRow: { alignItems: 'center', flexDirection: 'row', gap: 8 },
 });

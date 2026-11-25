@@ -7,6 +7,8 @@
 
 #include "telemetry/assemble.h"
 
+#include "telemetry/hug_word.h"
+
 /* No <stddef.h> here: the kernel headers define NULL and their own size_t. */
 
 #define UM_PER_MM          1000
@@ -298,10 +300,33 @@ telemetry_assemble_physics (telemetry_physics_t * p_out,
     }
 }
 
+static void
+fill_hug (telemetry_obstacle_t * p_out, const uint32_t * p_hug)
+{
+    if ((p_hug != 0) && hug_word_is_valid(p_hug))
+    {
+        uint32_t const state = hug_word_get(p_hug[0], HUG_WORD_STATE_SH, HUG_WORD_STATE_MK);
+
+        p_out->hug_state  = (uint8_t)state;
+        p_out->hug_seq    = (uint8_t)hug_word_get(p_hug[0], HUG_WORD_SEQ_SH, HUG_WORD_SEQ_MK);
+        p_out->hug_side   = (state == TELEMETRY_HUG_STATE_IDLE)
+                                ? (uint8_t)TELEMETRY_HUG_SIDE_NONE
+                                : (uint8_t)hug_word_get(p_hug[0], HUG_WORD_SIDE_SH,
+                                                        HUG_WORD_SIDE_MK);
+        p_out->width_mm   = (uint16_t)hug_word_get(p_hug[0], HUG_WORD_WIDTH_SH, HUG_WORD_WIDTH_MK);
+        p_out->breadth_mm = (uint16_t)hug_word_get(p_hug[0], HUG_WORD_BREADTH_SH,
+                                                   HUG_WORD_BREADTH_MK);
+        p_out->face_mm    = (uint16_t)hug_word_get(p_hug[1], HUG_WORD_FACE_SH, HUG_WORD_FACE_MK);
+        p_out->servo_deci = hug_word_servo_deci(p_hug);
+        p_out->body_deci  = hug_word_heading_deci(p_hug);
+    }
+}
+
 void
 telemetry_assemble_obstacle (telemetry_obstacle_t * p_out,
                              const obstacle_status_t * p_obstacle,
-                             const obstacle_plan_summary_t * p_plan)
+                             const obstacle_plan_summary_t * p_plan,
+                             const uint32_t * p_hug)
 {
     if (p_out == 0)
     {
@@ -310,8 +335,9 @@ telemetry_assemble_obstacle (telemetry_obstacle_t * p_out,
     p_out->faults         = 0u;
     p_out->dist_mm        = 0u;
     p_out->closest_mm     = 0u;
-    p_out->plan_width_mm  = 0u;
-    p_out->plan_need_mm   = 0u;
+    p_out->width_mm       = 0u;
+    p_out->breadth_mm     = 0u;
+    p_out->face_mm        = 0u;
     p_out->servo_deci     = 0;
     p_out->body_deci      = 0;
     p_out->state          = 0u;
@@ -319,14 +345,13 @@ telemetry_assemble_obstacle (telemetry_obstacle_t * p_out,
     p_out->echo_class     = 0u;
     p_out->flags          = 0u;
     p_out->seq            = 0u;
-    p_out->req_id         = 0u;
-    p_out->plan_status    = 0u;
-    p_out->plan_side      = 0u;
-    p_out->plan_start_deg = 0u;
-    p_out->rescans        = 0u;
+    p_out->hug_state      = TELEMETRY_HUG_STATE_IDLE;
+    p_out->hug_side       = TELEMETRY_HUG_SIDE_NONE;
+    p_out->hug_seq        = 0u;
 
     if (p_obstacle == 0)
     {
+        fill_hug(p_out, p_hug);
         return;
     }
     p_out->state      = p_obstacle->state;
@@ -335,18 +360,29 @@ telemetry_assemble_obstacle (telemetry_obstacle_t * p_out,
     p_out->echo_class = p_obstacle->echo_class;
     p_out->dist_mm    = p_obstacle->distance_mm;
     p_out->seq        = p_obstacle->seq;
-    p_out->req_id     = p_obstacle->req_id;
     p_out->servo_deci = p_obstacle->servo_deci;
     p_out->body_deci  = p_obstacle->body_deci;
     p_out->flags      = p_obstacle->flags;
 
     if (p_plan != 0)
     {
-        p_out->closest_mm     = p_plan->closest_mm;
-        p_out->plan_width_mm  = p_plan->width_mm;
-        p_out->plan_need_mm   = p_plan->need_mm;
-        p_out->plan_status    = p_plan->status;
-        p_out->plan_side      = p_plan->side;
-        p_out->plan_start_deg = p_plan->start_deg;
+        p_out->closest_mm = p_plan->closest_mm;
     }
+    fill_hug(p_out, p_hug);
+}
+
+void
+telemetry_assemble_profile (telemetry_profile_t * p_out,
+                            const obstacle_plan_summary_t * p_plan)
+{
+    if ((p_out == 0) || (p_plan == 0))
+    {
+        return;
+    }
+    p_out->req_id     = p_plan->req_id;
+    p_out->status     = p_plan->status;
+    p_out->side       = p_plan->side;
+    p_out->flags      = p_plan->b_wall ? (uint8_t)(1u << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL) : 0u;
+    p_out->closest_mm = p_plan->closest_mm;
+    p_out->width_mm   = p_plan->width_mm;
 }

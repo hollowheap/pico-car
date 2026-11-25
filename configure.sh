@@ -32,13 +32,42 @@ if [ -z "${PICO_CAR_WIFI_SSID:-}" ] && command -v nmcli >/dev/null 2>&1; then
         [ "$freq_mhz" -ge 2500 ] 2>/dev/null; then
         echo "configure: Wi-Fi '$ssid' is $freq; the Pico W CYW43439 is 2.4 GHz only" >&2
         networks=$(nmcli -t -f SSID,FREQ dev wifi 2>/dev/null |
-                   awk -F: '$2+0 > 0 && $2+0 < 2500 {print $1}' |
-                   sort -u | paste -sd, - || true)
-        if [ -n "$networks" ]; then
-            echo "configure: 2.4 GHz SSIDs in range: $networks" >&2
+                   awk -F: '$2+0 > 0 && $2+0 < 2500 {print $1}' | sort -u || true)
+        # The same router often broadcasts its 2.4 GHz band under the SSID
+        # with a suffix (MyWifi -> MyWifi_6G). Give the car that
+        # band, with the same password, so the host can stay on 5 GHz.
+        # Skip a Wi-Fi 7 multi-link (MLO) SSID: the CYW43439 does not find
+        # it (join reports CYW43_LINK_NONET).
+        base=${ssid%_MLO}
+        base=${base%_5G}
+        alt_ssid=$(printf '%s\n' "$networks" |
+                   awk -v want="$base" 'index($0, want) == 1 && !/MLO/ {print; exit}' || true)
+        if [ -z "$alt_ssid" ]; then
+            # A weak 2.4 GHz beacon can miss one scan. Then take a saved
+            # profile of the same router that the scan does not show on 5 GHz.
+            high=$(nmcli -t -f SSID,FREQ dev wifi 2>/dev/null |
+                   awk -F: '$2+0 >= 2500 {print $1}' | sort -u || true)
+            alt_ssid=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null |
+                       awk -F: '$2=="802-11-wireless"{print $1}' |
+                       while IFS= read -r name; do
+                           nmcli -g 802-11-wireless.ssid connection show "$name" 2>/dev/null || true
+                       done |
+                       awk -v want="$base" 'index($0, want) == 1 && !/MLO/' |
+                       grep -vxF -e "$ssid" -e "$base" | grep -vxF -f <(printf '%s\n' "$high") |
+                       head -n1 || true)
         fi
-        echo "configure: Wi-Fi join stays off; connect to a 2.4 GHz SSID or pass -D flags" >&2
-    elif [ -n "$ssid" ]; then
+        if [ -n "$alt_ssid" ]; then
+            ssid=$alt_ssid
+            echo "configure: the car uses '$ssid', the 2.4 GHz band of the same router"
+        else
+            if [ -n "$networks" ]; then
+                echo "configure: 2.4 GHz SSIDs in range: $(printf '%s\n' "$networks" | paste -sd, -)" >&2
+            fi
+            echo "configure: Wi-Fi join stays off; connect to a 2.4 GHz SSID or pass -D flags" >&2
+            ssid=""
+        fi
+    fi
+    if [ -n "$ssid" ]; then
         case "$keymgmt" in
             wpa-psk|"")
                 psk=$(nmcli -s -g 802-11-wireless-security.psk connection show "$conn" 2>/dev/null || true)

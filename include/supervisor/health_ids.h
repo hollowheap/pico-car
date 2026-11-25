@@ -1,6 +1,6 @@
 /*
  *	health_ids.h
- *	Liveness bit numbers (D160). A task includes this to kick its own bit
+ *	Liveness bit numbers. A task includes this to kick its own bit
  *	with liveness_kick() from platform/liveness.h.
  */
 

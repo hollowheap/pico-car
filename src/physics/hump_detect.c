@@ -28,19 +28,38 @@
 #define MEDIAN_MID_DIV     (2U)       /* Index n / 2 is the median.       */
 #define ODD_MOD            (2U)       /* Window length must be odd.       */
 
-/* hump_default_config values; all are placeholders until tuned. */
+/* hump_default_config values. None is measured on the car; each comment says
+ * what sets its scale. */
+/* A 5-sample (100 ms) median drops one-sample spikes; the EMA keeps three
+ * quarters of each new value, so it adds well under a sample of lag. */
 #define DEFAULT_MEDIAN_LEN         (5U)
 #define DEFAULT_ALPHA              (0.75f)
+/* The car replaces the enter and exit angles with 4 and 2 degrees from logged
+ * humps (physics_car_config); 3 samples (60 ms) to enter, 10 (200 ms) of
+ * level ground to leave. */
 #define DEFAULT_ENTER_DEG          (6.0f)
 #define DEFAULT_EXIT_BAND_DEG      (2.5f)
 #define DEFAULT_ENTER_SAMPLES      (3U)
 #define DEFAULT_EXIT_SAMPLES       (10U)
+/* 10 s at 50 Hz: a "hump" still open after that is a sloped floor. */
 #define DEFAULT_MAX_HUMP_SAMPLES   (500U)
+/* At 80 mm/s a 10 ms motion period holds about 10 encoder edges, so the
+ * speed is good to about 10 %. */
 #define DEFAULT_MIN_SPEED_MPS      (0.08f)
+/* The motion sample is stamped on the same 1 MHz timer as this cycle. 25 ms is
+ * two and a half 10 ms motion periods: one missed motion sample still passes,
+ * and an older speed, dv/dt or travel is never paired with this reading. */
 #define DEFAULT_MAX_MOTION_AGE_S   (0.025f)
+/* 1 s at rest: |a| within 0.05 g of 1 g and a pitch spread under 2 degrees
+ * mean the car stands still. The board lies flat on the car, so the rest
+ * pose also has z up and within 10 degrees of vertical [Default]: a tilt past
+ * that, or an upside-down car, does not set the reference. A slope under the
+ * limit does not stop calibration. */
 #define DEFAULT_CAL_SAMPLES        (50U)
 #define DEFAULT_CAL_MAX_DEV_G      (0.05f)
 #define DEFAULT_CAL_MAX_SPREAD_DEG (2.0f)
+#define DEFAULT_CAL_MAX_TILT_DEG   (10.0f)
+#define RIGHT_ANGLE_DEG            (90.0f)
 
 static bool is_finite (float value)
 {
@@ -178,16 +197,41 @@ static void cal_restart (hump_ctx_t * p_ctx)
     p_ctx->cal_max_deg = 0.0f;
 }
 
+/* The up axis reads positive, and the angle between it and the gravity
+ * direction is within the limit. */
+static bool upright_at_rest (const hump_config_t * p_cfg,
+                             const float axes[HUMP_AXIS_COUNT])
+{
+    float const up = axis_value (axes, p_cfg->up_axis);
+    float side_sq = 0.0f;
+    float tilt_deg = 0.0f;
+    uint8_t axis = 0U;
+
+    for (axis = HUMP_AXIS_X; axis <= HUMP_AXIS_Z; axis++)
+    {
+        if (axis != p_cfg->up_axis)
+        {
+            float const value = axis_value (axes, axis);
+            side_sq += value * value;
+        }
+    }
+    tilt_deg = atan2f (sqrtf (side_sq), up) * RAD_TO_DEG;
+
+    return (up > 0.0f) && (tilt_deg <= p_cfg->cal_max_tilt_deg);
+}
+
 /* Add one sample to calibration. Returns true on the sample that completes
- * it. A sample that is not at rest restarts the count; if it still passes
- * the per-sample checks it becomes the first sample of the new window. */
+ * it. A sample that is not at rest or not upright restarts the count; if it
+ * still passes the per-sample checks it becomes the first sample of the new
+ * window. */
 static bool cal_add (hump_ctx_t * p_ctx, const float axes[HUMP_AXIS_COUNT],
                      float raw_deg,
                      float magnitude_g, bool moving)
 {
     const hump_config_t * p_cfg = &p_ctx->cfg;
     bool sample_ok = !moving
-                     && (fabsf (magnitude_g - 1.0f) <= p_cfg->cal_max_dev_g);
+                     && (fabsf (magnitude_g - 1.0f) <= p_cfg->cal_max_dev_g)
+                     && upright_at_rest (p_cfg, axes);
     bool done = false;
 
     if (!sample_ok)
@@ -243,6 +287,7 @@ void hump_default_config (hump_config_t * p_cfg)
     {
         p_cfg->fwd_axis = HUMP_AXIS_X;
         p_cfg->fwd_sign = 1;
+        p_cfg->up_axis = HUMP_AXIS_Z;
         p_cfg->median_len = DEFAULT_MEDIAN_LEN;
         p_cfg->alpha = DEFAULT_ALPHA;
         p_cfg->enter_deg = DEFAULT_ENTER_DEG;
@@ -255,6 +300,7 @@ void hump_default_config (hump_config_t * p_cfg)
         p_cfg->cal_samples = DEFAULT_CAL_SAMPLES;
         p_cfg->cal_max_dev_g = DEFAULT_CAL_MAX_DEV_G;
         p_cfg->cal_max_spread_deg = DEFAULT_CAL_MAX_SPREAD_DEG;
+        p_cfg->cal_max_tilt_deg = DEFAULT_CAL_MAX_TILT_DEG;
     }
 }
 
@@ -265,6 +311,8 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg)
     if (ok)
     {
         ok = (p_cfg->fwd_axis <= HUMP_AXIS_Z)
+             && (p_cfg->up_axis <= HUMP_AXIS_Z)
+             && (p_cfg->up_axis != p_cfg->fwd_axis)
              && ((1 == p_cfg->fwd_sign) || (-1 == p_cfg->fwd_sign))
              && (p_cfg->median_len >= 1U)
              && (p_cfg->median_len <= HUMP_MEDIAN_MAX)
@@ -284,7 +332,10 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg)
              && is_finite (p_cfg->cal_max_dev_g)
              && (p_cfg->cal_max_dev_g > 0.0f)
              && is_finite (p_cfg->cal_max_spread_deg)
-             && (p_cfg->cal_max_spread_deg > 0.0f);
+             && (p_cfg->cal_max_spread_deg > 0.0f)
+             && is_finite (p_cfg->cal_max_tilt_deg)
+             && (p_cfg->cal_max_tilt_deg > 0.0f)
+             && (p_cfg->cal_max_tilt_deg < RIGHT_ANGLE_DEG);
     }
 
     if (ok)
@@ -585,6 +636,7 @@ bool hump_update (hump_ctx_t * p_ctx,
     p_out->height_valid = p_ctx->height_valid;
     p_out->complete = complete;
     p_out->motion_stale = !motion_fresh;
+    p_out->speed_ok = speed_ok;
 
     if (finished)
     {

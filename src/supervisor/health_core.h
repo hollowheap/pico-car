@@ -13,9 +13,11 @@
 #ifndef SUPERVISOR_HEALTH_CORE_H
 #define SUPERVISOR_HEALTH_CORE_H
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/static_assert.h"
 #include "supervisor/health_ids.h"
 
 /* A task that misses this many checks in a row is stalled. A check runs every
@@ -30,6 +32,11 @@
    board). The others only raise the fault. */
 #define LIVENESS_CRITICAL_MASK \
     ((1U << LIVE_MOTION) | (1U << LIVE_LINE) | (1U << LIVE_OBSTACLE))
+
+/* The 16-bit liveness masks hold all LIVE_TASKS bits, and the critical tasks
+   are among them. */
+STATIC_ASSERT(LIVE_TASKS <= (sizeof(uint16_t) * CHAR_BIT), live_ids_fit_the_mask);
+STATIC_ASSERT(LIVENESS_CRITICAL_MASK < (1UL << LIVE_TASKS), critical_ids_are_live_tasks);
 
 typedef struct
 {
@@ -148,10 +155,10 @@ typedef struct
     bool     b_free;
 } drive_t;
 
-void drive_init (drive_t * p_drive);
+void health_drive_init (drive_t * p_drive);
 
 /* One check every dt_ms. Returns true once, when b_crossed turns on. */
-bool drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms);
+bool health_drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms);
 
 /* Encoder probe. The bench drives one wheel alone and reads how far each
  * encoder moved, in mm with the car-forward sign. The verdict says whether the
@@ -172,12 +179,13 @@ typedef enum
 #define DRIVE_PROBE_DEAD_DIV (3)
 #define DRIVE_PROBE_RATIO    (4)
 
-drive_probe_t drive_probe_verdict (int32_t driven_mm, int32_t other_mm);
+drive_probe_t health_drive_probe_verdict (int32_t driven_mm, int32_t other_mm);
 
 /* Calibration hold. The car stays still while the IMU takes its rest
  * reference: at boot, after START on level ground, and after RECAL. A started
  * request first waits for physics to drop the old reference, then for the new
- * one. A timeout releases the car and reports it. One step per supervisor pass. */
+ * one. A timeout is reported once, and the car stays held until the reference
+ * comes. One step per supervisor pass. */
 #define CALHOLD_DROP_PASSES (10U)   /* 200 ms for physics to start over        */
 #define CALHOLD_MAX_PASSES  (250U)  /* 5 s: the car never came to rest          */
 
@@ -193,6 +201,7 @@ typedef struct
     uint8_t  phase;   /* calhold_phase_t */
     uint16_t passes;
     bool     b_timed_out;
+    bool     b_timeout_seen;
 } calhold_t;
 
 /* b_wait_drop is false at boot, when no reference exists yet. */
@@ -200,5 +209,9 @@ void calhold_start (calhold_t * p_hold, bool b_wait_drop);
 
 /* One pass. Returns true while the car must stay held. */
 bool calhold_update (calhold_t * p_hold, bool b_calibrated);
+
+/* True on the first pass of an attempt that sees its timeout. Call it once per
+ * pass, after calhold_update. */
+bool calhold_timeout_edge (calhold_t * p_hold);
 
 #endif /* SUPERVISOR_HEALTH_CORE_H */

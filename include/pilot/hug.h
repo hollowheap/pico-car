@@ -1,0 +1,283 @@
+/** @file hug.h
+ * @brief Hug: go round an obstacle on the line, keeping it at one side.
+ *
+ * Pure C99, integer only, no kernel and no driver calls. The pilot calls
+ * hug_step() every tick. While the hug is idle it only watches the free-running
+ * forward pings. After two of the last three are hits at or below the standoff
+ * it takes the wheels and the sonar, looks at the face, goes up to it until
+ * the body is HUG_BODY_GAP_MM off, and goes round the obstacle: along the face
+ * to its corner and past it, along the next face, and so on, round every
+ * corner however many there are, until the line sensors see tape outside the
+ * line the car came on. The car then drives onto it, turns away from the
+ * obstacle and gives the wheels back to the line follower. The hug never
+ * backs up.
+ *
+ * The hug keeps its own dead-reckoned pose in the look frame of look.h: the
+ * origin is the axle at the hit and x runs along the heading of the hit. The
+ * car turns in place only (speed 0, turn rate only), and the sonar looks
+ * while the car stands still.
+ *
+ * A wheel stall in a leg is the pilot's: its safety back-off backs the car up
+ * (pilot.c), and when that ends the hug gets b_stall and starts a look from the
+ * stalled pose. The hug itself does not back up for a stall.
+ *
+ * Trigonometry comes from src/navigation/obstacle/geometry.c, which must be
+ * linked next to hug.c and look.c (include path src/navigation/obstacle).
+ *
+ * Every tunable below is a guess until it is measured on the car.
+ */
+
+#ifndef PILOT_HUG_H
+#define PILOT_HUG_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "pilot/look.h"
+#include "platform/static_assert.h"
+
+/** Trigger: this many of the last three forward pings are hits at or below
+ *  the standoff (mm from the sonar). */
+#define HUG_TRIGGER_HITS      (2U)
+#define HUG_STANDOFF_MM       (250)
+
+/** A free-running forward ping at or below this during a leg means a face
+ *  ahead (mm from the sonar). */
+#define HUG_GUARD_MM          (300)
+
+/** Look: rays this far apart (deci-degrees) within HUG_NEAR_ZONE_DECI of the
+ *  face normal. A face farther than HUG_FAR_MM from the sonar gets the finer
+ *  looks below. */
+#define HUG_NEAR_STEP_DECI    (50)
+#define HUG_NEAR_ZONE_DECI    (350)
+#define HUG_FAR_MM            (350)
+
+/** The first look is coarser than the later ones: rays at these offsets
+ *  (deci-degrees from the heading of the hit), in this order. Rays within
+ *  HUG_CONTACT_NEAR_DECI are the face; the ones beyond it only measure the room
+ *  beside it, from the two body steps at +-750. Not measured on the car. */
+#define HUG_CONTACT_RAYS \
+    -800, -650, -350, -300, -250, -200, -150, -100, -50, 0, 50, 100, 150, \
+    200, 250, 300, 350, 650, 800
+#define HUG_CONTACT_NEAR_DECI (350)
+
+/** Once both edges are in trust each is looked at again: rays this far apart
+ *  within this of the window centre (the FAR pair for a face farther than
+ *  HUG_FAR_MM from the sonar, with as many rays), which lies this far outside
+ *  the edge (the beam half-angle), so the window holds the last ray on the
+ *  face and the first one past it. A finer edge that is farther than HUG_REFINE_TOL_MM from
+ *  the first one is not believed. */
+#define HUG_REFINE_STEP_DECI  (18)
+#define HUG_REFINE_ZONE_DECI  (90)
+#define HUG_REFINE_FAR_STEP_DECI (12)
+#define HUG_REFINE_FAR_ZONE_DECI (60)
+#define HUG_REFINE_OUT_DECI   (95)
+#define HUG_REFINE_TOL_MM     (45)
+
+/** The servo reaches this far from the body; the body pivots in steps. */
+#define HUG_SERVO_MAX_DECI    (125)
+#define HUG_PIVOT_STEP_DECI   (250)
+
+/** Car body: radius about the axle. The car keeps HUG_BODY_GAP_MM between its
+ *  body and the face it goes along, so the axle runs HUG_AXLE_OFF_MM off it.
+ *  The first approach goes up to that, and every leg after a look leans toward
+ *  or away from the face (at most HUG_TRIM_MAX_DECI) to bring it back there.
+ *  A leg ends HUG_BODY_MM + HUG_BODY_GAP_MM past a corner, so the body clears
+ *  the next face by the same gap. An approach shorter than HUG_APPROACH_MIN_MM
+ *  is not driven. */
+#define HUG_BODY_MM           (119)
+#define HUG_BODY_GAP_MM       (120)
+#define HUG_AXLE_OFF_MM       (HUG_BODY_MM + HUG_BODY_GAP_MM)
+#define HUG_TRIM_MAX_DECI     (300)
+#define HUG_APPROACH_MIN_MM   (20)
+#define HUG_TURN_FWD_MM       (100)
+
+/** A hop along a face with no edge in trust is the face distance from the sonar
+ *  times the tan of this angle, the incidence an edge is trusted at. */
+#define HUG_HOP_ANGLE_DECI    (250)
+#define HUG_LEG_MIN_MM        (60)
+#define HUG_LEG_MAX_MM        (1500)
+
+/** The approach zone: the line the car came on, in the frame of the hug (origin
+ *  at the hit, x along its heading). The axle is in it up to HUG_EXIT_PAST_MM
+ *  along x and HUG_LINE_WINDOW_MM across. Tape seen anywhere else during a
+ *  drive is the way on, at any angle, and ends the hug. */
+#define HUG_LINE_WINDOW_MM    (250)
+#define HUG_EXIT_PAST_MM      (150)
+
+/** Side choice: edges within this of each other are a tie, a gap beside an
+ *  edge narrower than this is blocked, and an OPEN ray counts as this much
+ *  open space. With no edge the side with more open space wins when it has
+ *  HUG_OPEN_TIE_MM more, summed over the wide rays of the first look; else
+ *  the car goes left. */
+#define HUG_TIE_MM            (30)
+#define HUG_GAP_MM            (340)
+#define HUG_OPEN_MM           (1500)
+#define HUG_OPEN_TIE_MM       (500)
+
+/** A reading this much farther than the nearest one of a look is behind the
+ *  face, not on it. */
+#define HUG_BEHIND_MM         (150)
+
+/** A look finds the face again when its normal is within this of the
+ *  expected one and its distance within HUG_FACE_TOL_MM of the last; after a
+ *  corner the next face may be up to HUG_FACE_TOL_MM beyond the gap. A face
+ *  with fewer than HUG_FACE_RAYS_MIN rays is not found. One with fewer than
+ *  HUG_NORMAL_RAYS_MIN rays is narrow: its edges are too poor for a width, a
+ *  tie between them, or a trim of the leg. */
+#define HUG_FACE_ANGLE_DECI   (150)
+#define HUG_FACE_RAYS_MIN     (4U)
+#define HUG_NORMAL_RAYS_MIN   (7U)
+#define HUG_FACE_TOL_MM       (200)
+#define HUG_INNER_ANGLE_DECI  (600)
+
+/** Motion. A pivot is done within HUG_HEAD_TOL_DECI; the car then stands
+ *  HUG_SETTLE_MS before it looks or drives. */
+#define HUG_PIVOT_MIN_DECI_S  (500)
+#define HUG_PIVOT_MAX_DECI_S  (1000)
+#define HUG_PIVOT_GAIN        (4)
+#define HUG_HEAD_TOL_DECI     (20)
+#define HUG_SETTLE_MS         (200U)
+#define HUG_LEG_MM_S          (100)
+#define HUG_SHORT_MM_S        (80)
+#define HUG_HOLD_GAIN         (3)
+#define HUG_HOLD_MAX_DECI_S   (300)
+#define HUG_REPLY_TIMEOUT_MS  (800U)
+
+/** A pivot or a drive that runs longer than HUG_MOVE_TIMES times its planned
+ *  time ends the hug, and the pilot stops with reason HUG_TIMEOUT. The plan
+ *  is the angle at HUG_PIVOT_MIN_DECI_S, of which the body turns
+ *  HUG_PIVOT_PCT, or the length at the drive speed, and never less than
+ *  HUG_MOVE_FLOOR_MS: the stuck window of the pilot (PILOT_STUCK_MS), so a
+ *  move that stalls is backed off by the pilot before it times out, and the
+ *  start from rest fits. The clock of a move starts at its first tick, and
+ *  again after a tick that another behaviour owns. */
+#define HUG_MOVE_TIMES        (3U)
+#define HUG_MOVE_FLOOR_MS     (1000U)
+
+/** A hug that began with a stall keeps a note of it. A look from the backed-off
+ *  pose that sees no face ends the hug (a release): the block went away. A
+ *  second stall while the note stands is the same place: the hug backs off at
+ *  once and goes round the face it assumes there. The note clears when the car
+ *  has gone HUG_STALL_PAST_MM along the heading of the first hit, from the pose
+ *  where the hug began (the pilot's back-off short of the stall), when
+ *  HUG_NOTE_MS have passed since the hug ended, and when a hug ends at the
+ *  tape. Wheel slip against the face counts as travel and clears it, so the
+ *  releases are counted as well: from HUG_RELEASES_MAX of them a stall with no
+ *  face seen takes the assumed face, note or not. The count clears with the
+ *  note's time, at the tape, and when the sonar starts a hug. All three are
+ *  guesses, not measured. */
+#define HUG_STALL_PAST_MM     (150)
+#define HUG_NOTE_MS           (15000U)
+#define HUG_RELEASES_MAX      (2U)
+
+/** This many requests in a row without a reply (a guess) make the sonar dead:
+ *  the hug stands with b_stop set, keeps asking, and goes on at the next reply. */
+#define HUG_LOST_REPLIES      (2U)
+
+/** Share of a pivot the wheel travel shows up as turning of the body; the
+ *  wheels slip. Used for the heading of the pose. */
+#define HUG_PIVOT_PCT         (80)
+
+/** The two sides of a face, as LOOK_SIDE_LEFT and LOOK_SIDE_RIGHT. */
+#define HUG_SIDES             (2U)
+
+/** What hug_step() needs from one pilot tick. */
+typedef struct
+{
+    int64_t  left_um;
+    int64_t  right_um;
+    uint32_t now_ms;
+    uint16_t ping_mm;
+    int16_t  ping_servo_deci;
+    uint8_t  ping_echo;
+    uint8_t  ping_seq;
+    bool     b_ping_reply;
+    bool     b_line_left;
+    bool     b_line_right;
+    bool     b_stall;  /* a back-off after a stall has just ended              */
+    bool     b_other;  /* another behaviour owns the wheels: track the pose only */
+} hug_in_t;
+
+/** What the hug asks for: one motion command and one ping request. */
+typedef struct
+{
+    int16_t speed_mm_s;
+    int16_t turn_deci_s;
+    int16_t servo_deci;
+    uint8_t seq;       /* 6 bits */
+    uint8_t b_req;
+    uint8_t b_stop;    /* the sonar is dead: the pilot stands with reason SONAR */
+    uint8_t b_timeout; /* a move ran out of time and the hug has ended          */
+} hug_out_t;
+
+STATIC_ASSERT(sizeof(hug_out_t) == 10U, "hug_out_t size");
+
+typedef struct
+{
+    int32_t  x_um;          /* axle, look frame; kept idle with b_note   */
+    int32_t  y_um;
+    int32_t  diff_um;       /* right minus left travel, slip corrected           */
+    uint32_t last_left_um;  /* low 32 bits of the last wheel travel              */
+    uint32_t last_right_um;
+    uint32_t t_ms;          /* start of the settle or request; end of a move     */
+    int32_t  x0_mm;         /* drive start, as wide as the pose                  */
+    int32_t  y0_mm;
+    int16_t  goal_head;     /* pivot target, and the heading held in a drive     */
+    int16_t  trav_head;     /* heading of the last leg                           */
+    int16_t  center;        /* the scan is centred on this heading               */
+    int16_t  face_p_mm;     /* axle to face line                                 */
+    int16_t  goal_len_mm;   /* drive length, negative backward                   */
+    int16_t  u_head;        /* heading along the face, to the chosen side        */
+    int16_t  leg_mm;
+    int16_t  app_mm;
+    int16_t  keep_x_mm[HUG_SIDES];  /* edges of the near look, kept while the finer look runs */
+    int16_t  keep_y_mm[HUG_SIDES];
+    int16_t  keep_normal;
+    int16_t  keep_dist_mm;
+    int16_t  look_head;     /* the look after the leg is centred on this         */
+    uint16_t open_mm[HUG_SIDES];    /* sum of the readings on each side, LOOK_SIDE_*     */
+    uint16_t wall_mm[HUG_SIDES];    /* nearest side reading from the face axis, 0 none   */
+    uint16_t width_mm;      /* front face from both edges, 0 unknown             */
+    uint16_t breadth_mm;    /* the next face along the hug, 0 unknown            */
+    uint8_t  state;
+    uint8_t  sub;
+    uint8_t  then;
+    uint8_t  purpose;
+    uint8_t  idx;           /* ray of the scan                                   */
+    uint8_t  body;          /* body step of the ray, in HUG_PIVOT_STEP_DECI      */
+    uint8_t  hist;          /* last three forward pings, one bit each            */
+    uint8_t  last_seq;      /* of the last forward ping seen                     */
+    uint8_t  req_seq;
+    int8_t   side;          /* +1 goes left, -1 goes right                       */
+    uint8_t  lost;          /* requests in a row that got no reply               */
+    uint16_t flags;
+    int16_t  seen_mm;       /* axle to face line as measured, for the frame      */
+    uint8_t  b_note;        /* last hug began with a stall; HUG_STALL_PAST_MM */
+    uint8_t  n_rel;         /* releases since the last tape or HUG_NOTE_MS    */
+} hug_t;
+
+STATIC_ASSERT(sizeof(hug_t) == 92U, "hug_t size");
+
+/** Idle, no memory of a face. */
+void hug_init(hug_t * p_hug);
+
+/** True while the hug has taken the wheels. */
+bool hug_active(hug_t const * p_hug);
+
+/** Body heading from the heading at the hit, deci-degrees, left positive. */
+int16_t hug_heading_deci(hug_t const * p_hug);
+
+/**
+ * One hug tick.
+ *
+ * @param[in,out] p_hug  State.
+ * @param[in,out] p_look The look: written during a scan, read for its face.
+ * @param[in]     p_in   The tick.
+ * @param[out]    p_out  The command and the ping request; zero when the hug
+ *                       is idle or the tick is not its own.
+ * @return true when the hug has taken control and filled p_out.
+ */
+bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out);
+
+#endif /* PILOT_HUG_H */

@@ -25,7 +25,8 @@ add_library(physics_core STATIC EXCLUDE_FROM_ALL
     ${PHYSICS_SRC}/lsm303.c
     ${PHYSICS_SRC}/motion_adapter.c
     ${PHYSICS_SRC}/pipeline.c)
-target_include_directories(physics_core PUBLIC ${PHYSICS_SRC})
+target_include_directories(physics_core PUBLIC ${PHYSICS_SRC}
+    PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(physics_core PRIVATE
     -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal
     ${FIRMWARE_WARNINGS})

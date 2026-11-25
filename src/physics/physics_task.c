@@ -24,6 +24,11 @@
 #include "platform/log.h"
 
 #define INIT_RETRY_CYCLES  (50U)    /* Retry a missing sensor every 1 s. */
+/* Attempts per transaction for a re-init and its readback. On a dead bus each
+ * failed attempt takes about 6 ms, so two keep the re-init inside the 20 ms
+ * cycle. */
+#define REINIT_ATTEMPTS    (2U)
+#define CONFIG_CHECK_CYCLES (100U)  /* Configuration readback every 2 s. */
 #define SLEEP_TIMEOUT_MS   (200)    /* Wake-up missing for 10 periods.   */
 #define SCALE_LIMIT        (2.0e9f) /* Keeps the int32_t cast defined.   */
 #define SCALE_DECI         (10.0f)
@@ -56,10 +61,13 @@ static bool             g_started = false;
 static T_SPLOCK         g_stats_lock;
 static physics_task_stats_t  g_stats;
 
-/* Requests from other tasks: single-word flags, set elsewhere, cleared here. */
-static volatile bool    g_req_new_run = false;
+/* Requests from other tasks: bits set atomically elsewhere and taken here
+ * with one exchange, so a request set at any time is served once. */
+#define REQ_NEW_RUN     (1UL << 0U)
+#define REQ_CLEAR_FAULT (1UL << 1U)
+static UW               g_requests = 0U;
+/* A level, not a request: the owner sets it every pass; the last value wins. */
 static volatile bool    g_wheels_free = false;
-static volatile bool    g_req_clear_fault = false;
 
 static void cyclic_wakeup (void * p_exinf)
 {
@@ -159,10 +167,19 @@ static void wait_cycle (physics_task_stats_t * p_local)
     }
 }
 
-/* Bring the sensor up if it was missing or failed to configure. */
+/* Bring the sensor up if it was missing, lost or failed to configure. Every
+ * CONFIG_CHECK_CYCLES the configuration is read back: a power dip resets the
+ * sensor while the bus keeps answering, and only the readback sees that. */
 static void retry_sensor_init (physics_task_stats_t * p_local,
                                uint32_t * p_retry_count)
 {
+    if (pipeline_config_readback (&g_pipe, &g_imu, p_local->cycles,
+                                  CONFIG_CHECK_CYCLES, REINIT_ATTEMPTS))
+    {
+        LOG_WARN (LOG_TASK_PHYSICS, LOG_MOD_IMU,
+                  "IMU configuration does not match, re-initialising");
+        *p_retry_count = INIT_RETRY_CYCLES;
+    }
     if (!g_imu.ready)
     {
         (*p_retry_count)++;
@@ -170,9 +187,30 @@ static void retry_sensor_init (physics_task_stats_t * p_local,
         {
             *p_retry_count = 0U;
             p_local->sensor_inits++;
-            p_local->last_init = lsm303_init (&g_imu, &g_bus,
-                                              g_cfg.i2c_attempts);
+            p_local->last_init = lsm303_init (&g_imu, &g_bus, REINIT_ATTEMPTS);
+            if (LSM303_OK == p_local->last_init)
+            {
+                LOG_INFO (LOG_TASK_PHYSICS, LOG_MOD_IMU, "IMU initialised");
+            }
         }
+    }
+}
+
+/* Log the lost edges. Losing the IMU takes the sensor down, so
+ * retry_sensor_init runs the init again on the next cycle. */
+static void track_lost (const pipeline_step_t * p_step,
+                        uint32_t * p_retry_count)
+{
+    if (p_step->imu_lost_started)
+    {
+        LOG_WARN (LOG_TASK_PHYSICS, LOG_MOD_IMU,
+                  "IMU lost: no accelerometer data, re-initialising");
+        g_imu.ready = false;
+        *p_retry_count = INIT_RETRY_CYCLES;
+    }
+    if (p_step->imu_recovered)
+    {
+        LOG_INFO (LOG_TASK_PHYSICS, LOG_MOD_IMU, "IMU data back");
     }
 }
 
@@ -181,15 +219,11 @@ static void read_sensors (const physics_task_stats_t * p_local,
                           lsm303_vec_t * p_acc, lsm303_vec_t * p_mag,
                           bool * p_acc_ok, bool * p_mag_ok)
 {
-    if (g_imu.ready)
-    {
-        *p_acc_ok = (LSM303_OK == lsm303_read_accel (&g_imu, p_acc));
-        if ((0U == (p_local->cycles % g_cfg.mag_every))
-            && g_cfg.motion.mag_enabled)
-        {
-            *p_mag_ok = (LSM303_OK == lsm303_read_mag (&g_imu, p_mag));
-        }
-    }
+    bool const b_mag_due = (0U == (p_local->cycles % g_cfg.mag_every))
+                           && g_cfg.motion.mag_enabled;
+
+    pipeline_read (&g_pipe, &g_imu, g_cfg.i2c_attempts, b_mag_due, p_acc, p_mag,
+                   p_acc_ok, p_mag_ok);
 }
 
 /* Clamp a scaled value into int16_t for the snapshot. */
@@ -209,13 +243,13 @@ static int16_t clamp_i16 (int32_t value)
 }
 
 /* Heading, yaw rate and forward residual for the stats. The heading is in
- * deci-degrees wrapped into 0..3599, so it fits the wire field (D110); the
- * old whole-degree byte wrapped at 256. */
+ * deci-degrees wrapped into 0..3599, so it fits a 16-bit field; the old
+ * whole-degree byte wrapped at 256. */
 static void update_heading (physics_task_stats_t * p_local,
                             const pipeline_step_t * p_step)
 {
     p_local->heading_valid = p_step->sensors_ok && p_step->motion.heading_valid;
-    p_local->calibrated = p_step->hump.calibrated;
+    p_local->calibrated = p_step->calibrated;
     p_local->yaw_rate_cdps = p_step->sensors_ok
         ? clamp_i16 (scaled (p_step->motion.yaw_rate_dps, SCALE_CENTI))
         : 0;
@@ -240,11 +274,14 @@ static void update_heading (physics_task_stats_t * p_local,
 }
 
 /* Roll, vertical acceleration and the attitude state for the stats, and the
- * lifted and overturned bits of the shared fault word (bits 11 and 12). A
- * failed read keeps the last attitude state. */
+ * lifted and overturned bits of the shared fault word (bits 11 and 12). Only
+ * a known attitude is published: while the IMU is lost or has no rest
+ * reference, the last known state stays, so a sensor fault neither releases
+ * a lift hold nor reads as a level pose, and attitude_unknown says so. */
 static void update_attitude (physics_task_stats_t * p_local, const pipeline_step_t * p_step)
 {
-    if (p_step->sensors_ok)
+    p_local->attitude_unknown = p_step->attitude_unknown;
+    if (pipeline_attitude_known (p_step))
     {
         uint16_t active = 0U;
 
@@ -265,13 +302,14 @@ static void update_attitude (physics_task_stats_t * p_local, const pipeline_step
         {
             active = 0U;
         }
-        system_fault_assign ((uint16_t) (FAULT_LIFTED_BIT | FAULT_OVERTURNED_BIT), active);
+        system_fault_assign (FAULT_OWNER_PHYSICS,
+                             FAULT_LIFTED_BIT | FAULT_OVERTURNED_BIT, active);
     }
 }
 
 /* Report the physics fault bits (I2C, stale, tilt) as shared bits 5 to 7. The
  * detail is read through physics_snapshot(); nothing receives it by message
- * buffer (D110). */
+ * buffer. */
 static void dispatch_step (const pipeline_step_t * p_step,
                            uint8_t * p_last_faults)
 {
@@ -280,7 +318,7 @@ static void dispatch_step (const pipeline_step_t * p_step,
     (void)hump_unpack (p_step->word, &fields);
     if (fields.faults != *p_last_faults)
     {
-        system_fault_assign (PHYSICS_SHARED_FAULT_MASK,
+        system_fault_assign (FAULT_OWNER_PHYSICS, PHYSICS_SHARED_FAULT_MASK,
                              (uint16_t) ((uint16_t) fields.faults
                                          << PHYSICS_SHARED_FAULT_SHIFT));
     }
@@ -316,6 +354,7 @@ void physics_task_run (void)
         bool mag_ok = false;
         uint32_t now_us = 0U;
         uint32_t work_us = 0U;
+        UW requests = 0U;
         float dt_s = 0.0f;
 
         wait_cycle (&local);
@@ -329,14 +368,13 @@ void physics_task_run (void)
             dt_s = (float)g_cfg.period_ms * MS_TO_S;
         }
 
-        if (g_req_clear_fault)
+        requests = atomic_xchg (&g_requests, 0U);
+        if (0U != (requests & REQ_CLEAR_FAULT))
         {
-            g_req_clear_fault = false;
             lsm303_clear_fault (&g_imu);
         }
-        if (g_req_new_run)
+        if (0U != (requests & REQ_NEW_RUN))
         {
-            g_req_new_run = false;
             pipeline_new_run (&g_pipe);
         }
 
@@ -355,6 +393,18 @@ void physics_task_run (void)
                                 mag_ok ? mag.value : NULL, &motion, dt_s,
                                 g_imu.fault || !g_imu.ready, &step);
 
+        track_lost (&step, &retry_count);
+
+        if (step.hump_rejected)
+        {
+            int const pitch_cdeg = (int)scaled (step.hump.peak_pitch_deg,
+                                                SCALE_CENTI);
+            int const height_mm = (int)scaled (step.hump.peak_m, SCALE_MILLI);
+
+            LOG_WARN (LOG_TASK_PHYSICS, LOG_MOD_HUMP,
+                      "hump rejected: pitch %d cdeg, height %d mm",
+                      pitch_cdeg, height_mm);
+        }
         update_heading (&local, &step);
         update_attitude (&local, &step);
         dispatch_step (&step, &last_faults);
@@ -475,12 +525,12 @@ void physics_task_set_wheels_free (bool b_free)
 
 void physics_task_request_new_run (void)
 {
-    g_req_new_run = true;
+    (void)atomic_bitset (&g_requests, REQ_NEW_RUN);
 }
 
 void physics_task_request_clear_fault (void)
 {
-    g_req_clear_fault = true;
+    (void)atomic_bitset (&g_requests, REQ_CLEAR_FAULT);
 }
 
 /*** end of file ***/

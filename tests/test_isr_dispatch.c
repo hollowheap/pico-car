@@ -38,6 +38,7 @@
 #define PIN_B1 29U
 #define PIN_C0 20U
 #define PIN_NONE 15U
+#define PIN_STALE 12U
 
 #define MASK_A ((1U << PIN_A0) | (1U << PIN_A1))
 #define MASK_B ((1U << PIN_B0) | (1U << PIN_B1))
@@ -465,6 +466,23 @@ static void test_refused_pin_keeps_irq_enabled(void)
     g_inte[1][word] = 0U;
 }
 
+/* A latched edge from before the pin was enabled must not fire the new
+ * handler. This adds the last handler slot, the all-pins one. */
+static void test_stale_edge_cleared_on_add(void)
+{
+    uint32_t const word  = PIN_STALE / PINS_PER_WORD;
+    uint32_t const shift = (PIN_STALE % PINS_PER_WORD) * NIBBLE_BITS;
+
+    reset_hw();
+    raise_rise(PIN_STALE);
+    raise_fall(PIN_STALE);
+    CHECK(gpio_irq_add_handler(TP_PRC1, MASK_ALL, handler_d) == E_OK);
+    CHECK((g_ints[0][word] & ((EDGE_HIGH_BIT | EDGE_LOW_BIT) << shift)) == 0U);
+    CHECK(g_callbacks_started == 0U);
+    run_isr();
+    CHECK(g_callbacks_started == 0U);
+}
+
 int main (void)
 {
     CHECK(gpio_irq_init() == E_OK);
@@ -491,7 +509,7 @@ int main (void)
     test_other_core_handler_is_refused();
 
     /* From here on an all-pins handler observes every snapshot. */
-    CHECK(gpio_irq_add_handler(TP_PRC1, MASK_ALL, handler_d) == E_OK);
+    test_stale_edge_cleared_on_add();
     test_every_pin_maps_to_its_bit();
     test_core1_status_is_used_on_core1();
 
