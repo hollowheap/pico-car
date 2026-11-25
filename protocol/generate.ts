@@ -28,6 +28,7 @@ interface Schema {
   topics: Record<string, string>;
   packets: Record<string, Packet>;
   commands: Record<string, number>;
+  reserved_commands?: Record<string, number>;
   events: Record<string, number>;
   fault_bits: { name: string; bit: number }[];
   enums?: Record<string, EnumDefinition>;
@@ -102,6 +103,26 @@ for (const [name, definition] of Object.entries(enums)) {
   if (new Set(codes).size !== codes.length) throw new Error(`enum ${name}: duplicate code`);
 }
 
+const reservedCommands = schema.reserved_commands ?? {};
+const commandCodes = Object.values(schema.commands);
+if (new Set(commandCodes).size !== commandCodes.length) throw new Error('duplicate command code');
+if (commandCodes.some((code) => !Number.isInteger(code) || code < 0 || code > 255)) {
+  throw new Error('command code outside 0..255');
+}
+const reservedCommandCodes = Object.values(reservedCommands);
+if (new Set(reservedCommandCodes).size !== reservedCommandCodes.length) {
+  throw new Error('duplicate reserved command code');
+}
+if (reservedCommandCodes.some((code) => !Number.isInteger(code) || code < 0 || code > 255)) {
+  throw new Error('reserved command code outside 0..255');
+}
+const reservedCommandCodeSet = new Set(reservedCommandCodes);
+for (const [name, code] of Object.entries(schema.commands)) {
+  if (Object.hasOwn(reservedCommands, name) || reservedCommandCodeSet.has(code)) {
+    throw new Error(`command ${name} reuses reserved opcode ${code}`);
+  }
+}
+
 const bits = schema.fault_bits.map((fault) => fault.bit);
 if (new Set(bits).size !== bits.length) throw new Error('duplicate fault bit');
 if (bits.some((bit) => bit < 0 || bit > 15)) throw new Error('fault bit outside 0..15');
@@ -129,6 +150,10 @@ const packetLines = Object.entries(schema.packets)
 const commands = Object.entries(schema.commands)
   .map(([name, value]) => `  ${name}: ${value},`)
   .join('\n');
+const reservedCommandEntries = Object.entries(reservedCommands)
+  .map(([name, value]) => `  ${name}: ${value},`)
+  .join('\n');
+const reservedCommandsBlock = reservedCommandEntries === '' ? '{}' : `{\n${reservedCommandEntries}\n}`;
 const topics = Object.entries(schema.topics)
   .map(([name, value]) => `  ${name}: '${value}',`)
   .join('\n');
@@ -177,6 +202,8 @@ ${packetLines}
 export const COMMANDS = {
 ${commands}
 } as const;
+
+export const RESERVED_COMMANDS = ${reservedCommandsBlock} as const;
 
 export const EVENTS = {
 ${events}

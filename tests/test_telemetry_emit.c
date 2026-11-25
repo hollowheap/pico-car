@@ -36,6 +36,7 @@ static void setup (void)
 {
     mbf_fake_reset();
     telemetry_queue_test_reset();
+    telemetry_emit_test_reset();
     CHECK(telemetry_queue_create() == E_OK);
 }
 
@@ -175,6 +176,190 @@ static void test_try_event_preserves_full_queue (void)
     CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
 }
 
+static void test_cmd_ack_handoff_fifo_and_wrap (void)
+{
+    uint8_t  frame[TELEMETRY_FRAME_MAX];
+    uint16_t first = 0U;
+
+    setup();
+    CHECK(telemetry_cmd_ack_overflow_count() == 0U);
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_LINE_LOST, 0, 1U, 0U) == E_PAR);
+    CHECK(telemetry_cmd_ack_overflow_count() == 0U);
+
+    first = telemetry_event_count();
+    for (uint16_t i = 0U; i < (uint16_t)(TELEMETRY_ACK_RING_CAPACITY + 5U); i++)
+    {
+        uint8_t const type = ((i % 2U) == 0U)
+                                 ? (uint8_t)TELEMETRY_EVT_CMD_ACCEPT
+                                 : (uint8_t)TELEMETRY_EVT_CMD_REJECT;
+        int16_t const p1   = (int16_t)((((i % 2U) == 0U) ? 0x0100 : -0x2000) + (int16_t)i);
+
+        CHECK(telemetry_post_cmd_ack(type, p1, (uint16_t)(100U + i), 500U + i) == E_OK);
+        if ((i == 5U) || (i == (uint16_t)(TELEMETRY_ACK_RING_CAPACITY + 4U)))
+        {
+            uint32_t const want = (i == 5U) ? 6U : (uint32_t)(TELEMETRY_ACK_RING_CAPACITY - 1U);
+            CHECK(telemetry_drain_cmd_acks() == want);
+            uint16_t const base = (i == 5U) ? 0U : 6U;
+            for (uint16_t k = 0U; k < want; k++)
+            {
+                uint16_t const idx = (uint16_t)(base + k);
+                uint8_t const  exp_type = ((idx % 2U) == 0U)
+                                              ? (uint8_t)TELEMETRY_EVT_CMD_ACCEPT
+                                              : (uint8_t)TELEMETRY_EVT_CMD_REJECT;
+                int16_t const  exp_p1   = (int16_t)((((idx % 2U) == 0U) ? 0x0100 : -0x2000) + (int16_t)idx);
+
+                CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+                CHECK(frame[0] == (uint8_t)TELEMETRY_TOPIC_EVENT);
+                CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_EVENT_ID]) == (uint16_t)(first + idx));
+                CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == exp_type);
+                CHECK(frame[1U + TELEMETRY_EVENT_OFF_SOURCE] == TELEMETRY_EVENT_SOURCE_SUPERVISOR);
+                CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P1]) == (uint16_t)exp_p1);
+                CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == (uint16_t)(100U + idx));
+                CHECK(be32(&frame[1U + TELEMETRY_EVENT_OFF_ODOMETER_MM]) == (uint32_t)(500U + idx));
+            }
+            CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
+        }
+    }
+    CHECK(telemetry_cmd_ack_overflow_count() == 0U);
+}
+
+static void test_cmd_ack_drain_under_contention_and_full_queue (void)
+{
+    uint8_t  frame[TELEMETRY_FRAME_MAX];
+    uint8_t  status[TELEMETRY_STATUS_PIVOT_WIRE_SIZE] = {0};
+    UW       drops = 0U;
+    uint16_t first = 0U;
+
+    /* Post before queue exists: handoff never touches queue or mutex. */
+    mbf_fake_reset();
+    telemetry_queue_test_reset();
+    telemetry_emit_test_reset();
+    first = telemetry_event_count();
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_ACCEPT, 0x0106, 9U, 100U) == E_OK);
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_REJECT, 0x2101, 10U, 101U) == E_OK);
+    CHECK(g_mbf_fake.mtx_lock_calls == 0U);
+    CHECK(g_mbf_fake.send_calls == 0U);
+    CHECK(g_mbf_fake.recv_calls == 0U);
+    CHECK(telemetry_drain_cmd_acks() == 0U);
+    CHECK(telemetry_queue_create() == E_OK);
+    drops = telemetry_queue_drop_count();
+
+    /* Contended producer mutex: drain defers without dropping or burning IDs. */
+    g_mbf_fake.mtx_lock_error = E_TMOUT;
+    CHECK(telemetry_drain_cmd_acks() == 0U);
+    CHECK(g_mbf_fake.mtx_wait_forever == 0U);
+    CHECK(telemetry_queue_drop_count() == drops);
+    CHECK(telemetry_event_count() == (uint16_t)(first + 1U));
+
+    /* Full queue of QoS 0 status frames: drain defers without evicting or dropping. */
+    while (telemetry_queue_push_packet((uint8_t)TELEMETRY_TOPIC_STATUS, status,
+                                       TELEMETRY_STATUS_PIVOT_WIRE_SIZE, 0U) == E_OK)
+    {
+        if (g_mbf_fake.send_calls > 100U)
+        {
+            break;
+        }
+    }
+    drops = telemetry_queue_drop_count();
+    unsigned const recv_before = g_mbf_fake.recv_calls;
+    CHECK(telemetry_drain_cmd_acks() == 0U);
+    CHECK(telemetry_drain_cmd_acks() == 0U);
+    CHECK(g_mbf_fake.recv_calls == recv_before);
+    CHECK(telemetry_queue_drop_count() == drops);
+    CHECK(telemetry_event_count() == (uint16_t)(first + 1U));
+
+    /* Consumer frees queue space: all buffered ACKs drain in FIFO order with contiguous IDs. */
+    while (telemetry_queue_pop(frame, TMO_POL) > 0)
+    {
+    }
+    /* Partial drain: fill queue with events, free space for 1 event only, and
+       verify slot 0 drains with held id `first` while slot 1 holds a single new
+       id across a subsequent full-queue retry. */
+    while (telemetry_try_emit_event(TELEMETRY_EVENT_SOURCE_LINE,
+                                    TELEMETRY_EVT_LINE_LOST, 0, 0U, 0U) == E_OK)
+    {
+    }
+    uint16_t const second_id = telemetry_event_count();
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+    CHECK(telemetry_drain_cmd_acks() == 1U);
+    CHECK(telemetry_event_count() == (uint16_t)(second_id + 1U));
+    CHECK(telemetry_drain_cmd_acks() == 0U);
+    CHECK(telemetry_event_count() == (uint16_t)(second_id + 1U));
+    {
+        unsigned seen_accept = 0U;
+
+        while (telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE)
+        {
+            if (frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_CMD_ACCEPT)
+            {
+                CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_EVENT_ID]) == first);
+                CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P1]) == 0x0106U);
+                CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == 9U);
+                CHECK(be32(&frame[1U + TELEMETRY_EVENT_OFF_ODOMETER_MM]) == 100U);
+                seen_accept++;
+            }
+        }
+        CHECK(seen_accept == 1U);
+    }
+
+    CHECK(telemetry_drain_cmd_acks() == 1U);
+    CHECK(telemetry_event_count() == (uint16_t)(second_id + 1U));
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+    CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_EVENT_ID]) == second_id);
+    CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_CMD_REJECT);
+    CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P1]) == 0x2101U);
+    CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == 10U);
+    CHECK(be32(&frame[1U + TELEMETRY_EVENT_OFF_ODOMETER_MM]) == 101U);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
+}
+
+static void test_cmd_ack_overflow_visibility (void)
+{
+    uint8_t frame[TELEMETRY_FRAME_MAX];
+    UW      drops = 0U;
+
+    setup();
+    drops = telemetry_queue_drop_count();
+    for (uint16_t i = 0U; i < (uint16_t)TELEMETRY_ACK_RING_CAPACITY; i++)
+    {
+        CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_ACCEPT, 0x0100,
+                                     (uint16_t)(200U + i), 1000U + i) == E_OK);
+    }
+    CHECK(telemetry_cmd_ack_overflow_count() == 0U);
+    CHECK(telemetry_queue_drop_count() == drops);
+    CHECK(g_mbf_fake.mtx_lock_calls == 0U);
+
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_ACCEPT, 0x0106, 900U, 2000U) == E_TMOUT);
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_REJECT, 0x2101, 901U, 2001U) == E_TMOUT);
+    CHECK(telemetry_cmd_ack_overflow_count() == 2U);
+    CHECK(telemetry_queue_drop_count() == drops + 2U);
+    CHECK(g_mbf_fake.mtx_lock_calls == 0U);
+
+    CHECK(telemetry_drain_cmd_acks() == TELEMETRY_ACK_RING_CAPACITY);
+    for (uint16_t i = 0U; i < (uint16_t)TELEMETRY_ACK_RING_CAPACITY; i++)
+    {
+        CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+        CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_CMD_ACCEPT);
+        CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == (uint16_t)(200U + i));
+        CHECK(be32(&frame[1U + TELEMETRY_EVENT_OFF_ODOMETER_MM]) == (uint32_t)(1000U + i));
+    }
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
+    CHECK(telemetry_cmd_ack_overflow_count() == 2U);
+
+    /* Post-overflow recovery: ring accepts wrapped ACCEPT and REJECT cleanly. */
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_REJECT, 0x2101, 910U, 3000U) == E_OK);
+    CHECK(telemetry_post_cmd_ack(TELEMETRY_EVT_CMD_ACCEPT, 0x0106, 911U, 3001U) == E_OK);
+    CHECK(telemetry_drain_cmd_acks() == 2U);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+    CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_CMD_REJECT);
+    CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == 910U);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+    CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_CMD_ACCEPT);
+    CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == 911U);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
+    CHECK(telemetry_cmd_ack_overflow_count() == 2U);
+}
+
 int main (void)
 {
     setup();
@@ -197,6 +382,9 @@ int main (void)
     test_event_is_qos1();
     test_try_event_on_contended_queue();
     test_try_event_preserves_full_queue();
+    test_cmd_ack_handoff_fifo_and_wrap();
+    test_cmd_ack_drain_under_contention_and_full_queue();
+    test_cmd_ack_overflow_visibility();
     if (g_fail != 0U)
     {
         (void)printf("%u check(s) failed\n", g_fail);

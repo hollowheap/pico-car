@@ -46,7 +46,7 @@ export function useCommand(
   const latestRequest = useRef(0);
 
   const send = (action: CommandAction) => {
-    const label = action === 'start_stationary' ? 'Stop-at-obstacles start' : action.replaceAll('_', ' ');
+    const label = action.replaceAll('_', ' ');
     const request = ++latestRequest.current;
     const showReply = (text: string, error: boolean, cmdId?: number) => {
       if (request === latestRequest.current) setReply({ action, label, text, error, resetAt, cmdId });

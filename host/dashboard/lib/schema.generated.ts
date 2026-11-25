@@ -230,6 +230,9 @@ export const COMMANDS = {
   straight: 7,
   recalibrate: 8,
   start_continuous_floor: 9,
+} as const;
+
+export const RESERVED_COMMANDS = {
   start_stationary: 10,
 } as const;
 

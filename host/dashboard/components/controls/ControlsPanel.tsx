@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ComponentRef, type ReactNode } from 'react';
-import { Animated, BackHandler, Easing, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View, type ViewStyle } from 'react-native';
+import { Animated, BackHandler, Easing, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 
 import { focusElement } from '../../lib/focus';
 import { useTheme } from '../../lib/theme-provider';
@@ -7,14 +7,14 @@ import { useReducedMotion } from '../../lib/useReducedMotion';
 import { Button } from '../ui/button';
 import { needsConfirm, type ControlAction } from './controls';
 
-type ConsoleAction = Exclude<ControlAction, 'recalibrate' | 'start_continuous_floor' | 'start_stationary'>;
+type ConsoleAction = Exclude<ControlAction, 'recalibrate' | 'start_continuous_floor'>;
 type FocusTrigger = () => boolean;
 type Confirmation = { action: ConsoleAction; focusTrigger: FocusTrigger };
 
 type ProviderProps = {
   children: ReactNode;
   emergencyLatched: boolean;
-  onAction: (action: ConsoleAction | 'start_stationary') => void;
+  onAction: (action: ConsoleAction) => void;
   disabled: boolean;
   missionAvailable: boolean;
   safetyAvailable: boolean;
@@ -27,7 +27,7 @@ type ControlSession = {
   request: (action: ConsoleAction, focusTrigger: FocusTrigger) => void;
   popup: Confirmation | null;
   cancel: () => void;
-  confirm: (stopAtObstacles: boolean) => void;
+  confirm: () => void;
   toolbar: { current: ComponentRef<typeof View> | null };
   feedback: string | null;
   feedbackError: boolean;
@@ -83,9 +83,9 @@ export function ControlsProvider({ children, emergencyLatched, onAction, disable
     }
     setPopup({ action, focusTrigger });
   };
-  const confirm = (stopAtObstacles: boolean) => {
+  const confirm = () => {
     if (active === null || !canRequest(active.action)) return;
-    onAction(active.action === 'start' && stopAtObstacles ? 'start_stationary' : active.action);
+    onAction(active.action);
     cancel();
   };
 
@@ -193,7 +193,6 @@ export function CommandWorkspace({ children }: { children: ReactNode }) {
 function CommandDialog({ popup }: { popup: Confirmation }) {
   const theme = useTheme();
   const { cancel, confirm } = useControls();
-  const [stopAtObstacles, setStopAtObstacles] = useState(false);
   const cancelButton = useRef<ComponentRef<typeof View>>(null);
   const reduced = useReducedMotion();
   const progress = useRef(new Animated.Value(reduced ? 1 : 0)).current;
@@ -239,24 +238,14 @@ function CommandDialog({ popup }: { popup: Confirmation }) {
         {popup.action === 'reset' && <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
           Reset stops the car and clears its route. The dashboard starts a new trace when the car accepts. Press Start to drive again.
         </Text>}
-        {popup.action === 'start' ? (
-          <>
-            <Text style={[theme.typography.body, { color: theme.colors.muted }]}>Start clears resolved faults and calibrates the IMU on level ground. The car can then move.</Text>
-            <View style={styles.floorChoice}>
-              <Pressable accessible={false} focusable={false} tabIndex={-1} style={styles.floorText}
-                onPress={() => setStopAtObstacles((selected) => !selected)}>
-                <Text style={[theme.typography.label, { color: theme.colors.text }]}>Stop at obstacles</Text>
-                <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>{stopAtObstacles
-                    ? 'On. The car stops and surveys the obstacle. Select this if the floor may have drop-offs.'
-                    : 'Off. The car drives around obstacles on continuous floor.'}</Text>
-              </Pressable>
-              <Switch accessibilityLabel="Stop at obstacles" value={stopAtObstacles} onValueChange={setStopAtObstacles} />
-            </View>
-          </>
-        ) : null}
+        {popup.action === 'start' && (
+          <Text style={[theme.typography.body, { color: theme.colors.muted }]}>
+            Start clears resolved faults and calibrates the IMU on level ground. Verify continuous floor support before starting; the car drives around obstacles.
+          </Text>
+        )}
         <View style={styles.buttons}>
           <Button compact onPress={cancel} ref={cancelButton} variant="secondary"><Button.Text>Cancel</Button.Text></Button>
-          <Button compact onPress={() => confirm(stopAtObstacles)}><Button.Text>Confirm</Button.Text></Button>
+          <Button compact onPress={confirm}><Button.Text>Confirm</Button.Text></Button>
         </View>
       </ScrollView>
     </Animated.View>
@@ -270,8 +259,6 @@ const styles = StyleSheet.create({
   cardRow: { flexDirection: 'row', gap: 5 },
   gridButton: { flex: 1, minWidth: 0, paddingHorizontal: 6, minHeight: 32 },
   narrowButton: { paddingHorizontal: 12 },
-  floorChoice: { alignItems: 'center', flexDirection: 'row', gap: 12 },
-  floorText: { flex: 1, gap: 2 },
   buttons: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   workspace: { flex: 1, minHeight: 0 },
   overlay: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', padding: 12, zIndex: 1000 },

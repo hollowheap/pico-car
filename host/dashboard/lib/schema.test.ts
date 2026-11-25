@@ -6,6 +6,7 @@ import {
   heartbeatAgeMs,
   type PacketName,
 } from './schema';
+import { COMMANDS, RESERVED_COMMANDS } from './schema.generated';
 import vectors from '../../../protocol/vectors.json';
 
 const hexBytes = (hex: string) =>
@@ -86,5 +87,13 @@ describe('wire schema', () => {
     expect(enumLabel('obstacleCause', 15)).toBe('BYPASS GAVE UP');
     expect(enumLabel('hugState', 4)).toBe('LEG');
     expect(enumLabel('hugSide', 2)).toBe('NONE');
+  });
+
+  it('keeps opcode 10 reserved out of active commands', () => {
+    expect(COMMANDS.start).toBe(1);
+    expect(COMMANDS.start_continuous_floor).toBe(9);
+    expect('start_stationary' in COMMANDS).toBe(false);
+    expect(Object.values(COMMANDS)).not.toContain(10);
+    expect(RESERVED_COMMANDS.start_stationary).toBe(10);
   });
 });

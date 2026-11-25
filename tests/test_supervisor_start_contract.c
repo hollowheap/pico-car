@@ -76,6 +76,19 @@ static unsigned g_stop_timing_events;
 static int16_t g_stop_timing_p1;
 static uint16_t g_stop_timing_p2;
 static bool g_telemetry_consumer_blocked;
+static bool g_ack_handoff_full;
+static unsigned g_blocking_emit_calls;
+static unsigned g_ack_handoff_calls;
+static unsigned g_ack_handoff_overflows;
+typedef struct
+{
+    uint32_t odometer_mm;
+    int16_t  p1;
+    uint16_t p2;
+    uint8_t  type;
+} pending_ack_t;
+static pending_ack_t g_pending_acks[TELEMETRY_ACK_RING_CAPACITY];
+static unsigned g_pending_ack_count;
 static uint8_t g_recovery_source;
 static int16_t g_recovery_p1;
 static uint16_t g_recovery_p2;
@@ -102,11 +115,17 @@ ER tk_get_otm (SYSTIM * p_time)
     return E_OK;
 }
 
+static void drain_pending_acks (void);
+
 static void one_pass (void)
 {
     if (0 == setjmp (g_pass_complete))
     {
         supervisor_run ();
+    }
+    if (!g_telemetry_consumer_blocked)
+    {
+        drain_pending_acks ();
     }
 }
 
@@ -374,6 +393,7 @@ static ER record_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, u
 
 ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
 {
+    g_blocking_emit_calls++;
     if (g_telemetry_consumer_blocked)
     {
         g_now_ms += 2U * SUPERVISOR_PASS_MS;
@@ -383,7 +403,42 @@ ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, 
 
 ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
 {
+    CHECK ((TELEMETRY_EVT_CMD_ACCEPT != type) && (TELEMETRY_EVT_CMD_REJECT != type));
     return record_event (source, type, p1, p2, odometer_mm);
+}
+
+static void drain_pending_acks (void)
+{
+    unsigned const count = g_pending_ack_count;
+    g_pending_ack_count = 0U;
+    for (unsigned idx = 0U; idx < count; idx++)
+    {
+        (void)record_event ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR,
+                            g_pending_acks[idx].type,
+                            g_pending_acks[idx].p1,
+                            g_pending_acks[idx].p2,
+                            g_pending_acks[idx].odometer_mm);
+    }
+}
+
+ER telemetry_post_cmd_ack (uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
+{
+    g_ack_handoff_calls++;
+    if (g_ack_handoff_full || (g_pending_ack_count >= TELEMETRY_ACK_RING_CAPACITY))
+    {
+        g_ack_handoff_overflows++;
+        return E_TMOUT;
+    }
+    if (g_telemetry_consumer_blocked)
+    {
+        g_pending_acks[g_pending_ack_count].odometer_mm = odometer_mm;
+        g_pending_acks[g_pending_ack_count].p1 = p1;
+        g_pending_acks[g_pending_ack_count].p2 = p2;
+        g_pending_acks[g_pending_ack_count].type = type;
+        g_pending_ack_count++;
+        return E_OK;
+    }
+    return record_event ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, type, p1, p2, odometer_mm);
 }
 
 static void set_sonar_connection_fault (uint16_t fault)
@@ -1329,10 +1384,46 @@ static void check_stop_with_slow_telemetry_consumer (void)
     timed_passes (1U);
     CHECK (g_motion_stop_requested);
     CHECK (g_now_ms - start_ms == SUPERVISOR_PASS_MS);
+    CHECK (g_accept_count == accepted_before);
+    CHECK (1U == g_pending_ack_count);
     g_telemetry_consumer_blocked = false;
     timed_passes (2U);
+    CHECK (0U == g_pending_ack_count);
     CHECK (g_accept_count == accepted_before + 1U);
     CHECK (g_accepted_ids[accepted_before] == 9U);
+}
+
+static void check_saturated_ack_handoff_stop (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+
+    uint32_t const start_ms = g_now_ms;
+    unsigned const handoffs_before = g_ack_handoff_calls;
+
+    g_telemetry_consumer_blocked = true;
+    g_ack_handoff_full = true;
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY, 10U, 1U));
+    timed_passes (1U);
+    CHECK (g_motion_stop_requested);
+    CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
+    CHECK (g_now_ms - start_ms == SUPERVISOR_PASS_MS);
+    CHECK (g_ack_handoff_calls == handoffs_before + 2U);
+    CHECK (2U == g_ack_handoff_overflows);
+    CHECK (0U == g_blocking_emit_calls);
+
+    g_ack_handoff_full = false;
+    g_telemetry_consumer_blocked = false;
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 11U, 1U));
+    timed_passes (1U);
+    CHECK (11U == g_reply_id && TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
 }
 
 static void check_stationary_start_is_refused (void)
@@ -1998,6 +2089,10 @@ int main (int argc, char ** argv)
     {
         check_stop_with_slow_telemetry_consumer ();
     }
+    else if (0 == strcmp (argv[1], "saturated-ack-handoff-stop"))
+    {
+        check_saturated_ack_handoff_stop ();
+    }
     else if (0 == strcmp (argv[1], "stationary-start-is-refused"))
     {
         check_stationary_start_is_refused ();
@@ -2063,5 +2158,6 @@ int main (int argc, char ** argv)
         (void)fprintf (stderr, "Unknown case: %s\n", argv[1]);
         return 2;
     }
+    CHECK (0U == g_blocking_emit_calls);
     return (0U == g_fails) ? 0 : 1;
 }

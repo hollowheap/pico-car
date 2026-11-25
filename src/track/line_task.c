@@ -205,9 +205,9 @@ static void line_update_fault (bool b_lost)
         system_fault_assign(FAULT_OWNER_LINE, FAULT_LINE_LOST_BIT, FAULT_LINE_LOST_BIT);
         g_line_lost_count++;
         g_line_lost_at_um = g_line_travel_um;
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_LOST,
-                                   (int16_t)line_follower()->side, 0U, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_LINE_LOST,
+                                       (int16_t)line_follower()->side, 0U, odometer_mm());
     }
     else if (!b_lost && g_line_lost)
     {
@@ -216,10 +216,10 @@ static void line_update_fault (bool b_lost)
         uint16_t const driven_u16 = (driven_mm > UINT16_MAX) ? UINT16_MAX : (uint16_t)driven_mm;
 
         system_fault_assign(FAULT_OWNER_LINE, FAULT_LINE_LOST_BIT, 0U);
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_FOUND,
-                                   (int16_t)line_follower()->side, driven_u16,
-                                   odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_LINE_FOUND,
+                                       (int16_t)line_follower()->side, driven_u16,
+                                       odometer_mm());
     }
     else
     {
@@ -265,11 +265,11 @@ static void line_note_retry (void)
 
     if ((retry != s_retry_seen) && (0U != retry))
     {
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_LOST,
-                                   (int16_t)line_follower()->side,
-                                   (uint16_t)(LINE_RETRY_EVENT | (uint16_t)retry),
-                                   odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_LINE_LOST,
+                                       (int16_t)line_follower()->side,
+                                       (uint16_t)(LINE_RETRY_EVENT | (uint16_t)retry),
+                                       odometer_mm());
     }
     s_retry_seen = retry;
 }
@@ -296,10 +296,10 @@ static void line_finish_turn (line_turn_kind_t turn, line_turn_state_t const * p
 {
     g_turning = false;
     supervisor_set_turning(false);
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                               (uint8_t)((LINE_TURN_DONE == status) ? TELEMETRY_EVT_TURN_DONE
-                                                                    : TELEMETRY_EVT_TURN_ABORT),
-                               (int16_t)turn, (uint16_t)elapsed_ms, odometer_mm());
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                   (uint8_t)((LINE_TURN_DONE == status) ? TELEMETRY_EVT_TURN_DONE
+                                                                        : TELEMETRY_EVT_TURN_ABORT),
+                                   (int16_t)turn, (uint16_t)elapsed_ms, odometer_mm());
 
     if (LINE_TURN_DONE == status)
     {
@@ -345,8 +345,10 @@ static void line_report_stripe (void)
     uint8_t const stripe = line_follow_take_stripe(line_follower());
     if (0U != stripe)
     {
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE, (uint8_t)TELEMETRY_EVT_JUNCTION,
-                                   (int16_t)TELEMETRY_JUNCTION_KIND_STRIPE, (uint16_t)stripe, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_JUNCTION,
+                                       (int16_t)TELEMETRY_JUNCTION_KIND_STRIPE, (uint16_t)stripe,
+                                       odometer_mm());
     }
 }
 
@@ -366,9 +368,11 @@ static void line_report_probe (line_turn_kind_t turn, line_turn_status_t status)
     {
         /* Aborted. */
     }
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE, (uint8_t)TELEMETRY_EVT_JUNCTION,
-                               (int16_t)TELEMETRY_JUNCTION_KIND_PROBE,
-                               (uint16_t)(((uint32_t)turn * LINE_EVENT_HIGH_BYTE) + outcome), odometer_mm());
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                   (uint8_t)TELEMETRY_EVT_JUNCTION,
+                                   (int16_t)TELEMETRY_JUNCTION_KIND_PROBE,
+                                   (uint16_t)(((uint32_t)turn * LINE_EVENT_HIGH_BYTE) + outcome),
+                                   odometer_mm());
 }
 
 /* The follower can take an available exit with the requested direction pending. */
@@ -400,8 +404,9 @@ static void line_report_turn_start (line_turn_event_t * p_event, line_turn_kind_
 {
     p_event->start_ms = line_now_ms();
     p_event->started = true;
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                               (uint8_t)TELEMETRY_EVT_TURN_START, (int16_t)turn, 0U, odometer_mm());
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                   (uint8_t)TELEMETRY_EVT_TURN_START, (int16_t)turn, 0U,
+                                   odometer_mm());
 }
 
 /* A deferred route can be canceled by the supervisor while the sensors scan. */
@@ -641,17 +646,17 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
     if (0U != p_cmd->contact_mm)
     {
         LOG_INFO(LOG_TASK_LINE, LOG_MOD_NONE, "pilot: obstacle detected at %u mm", (unsigned)p_cmd->contact_mm);
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_OBSTACLE_SEEN,
-                                   (int16_t)p_cmd->contact_mm, 0U, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_OBSTACLE_SEEN,
+                                       (int16_t)p_cmd->contact_mm, 0U, odometer_mm());
     }
     if (0U != p_cmd->course_scan_samples)
     {
         LOG_INFO(LOG_TASK_LINE, LOG_MOD_NONE, "pilot: stationary scan captured %u usable rays; course clearance unverified",
                  (unsigned)(p_cmd->course_scan_samples - 1U));
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_SCAN_DONE,
-                                   PILOT_SCAN_CLEARANCE_UNVERIFIED, 0U, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_SCAN_DONE,
+                                       PILOT_SCAN_CLEARANCE_UNVERIFIED, 0U, odometer_mm());
         line_pilot_profile(&g_pilot.avoidance.look, g_pilot.avoidance.course_scan_seq,
                            g_pilot.avoidance.course_side, 0U, 0, INT16_MAX);
     }
@@ -661,10 +666,11 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
     {
         LOG_INFO(LOG_TASK_LINE, LOG_MOD_NONE, "pilot: recovery %u of %u from reason %u", (unsigned)attempt,
                  (unsigned)PILOT_RECOVERIES_MAX, (unsigned)g_pilot_log.reason);
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE, (uint8_t)TELEMETRY_EVT_RECOVERY,
-                                   (int16_t)g_pilot_log.reason,
-                                   (uint16_t)((PILOT_RECOVERIES_MAX * LINE_EVENT_HIGH_BYTE) + attempt),
-                                   odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_RECOVERY,
+                                       (int16_t)g_pilot_log.reason,
+                                       (uint16_t)((PILOT_RECOVERIES_MAX * LINE_EVENT_HIGH_BYTE) + attempt),
+                                       odometer_mm());
     }
     if (pilot_log_note(&g_pilot_log, p_cmd))
     {
@@ -678,12 +684,12 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
                      (int)p_cmd->behaviour, (int)p_cmd->reason, (int)p_cmd->speed_mm_s,
                      (int)p_cmd->turn_deci_s);
         }
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_PILOT_DECISION,
-                                   p_cmd->speed_mm_s,
-                                   (uint16_t)((p_cmd->behaviour * LINE_EVENT_HIGH_BYTE) +
-                                              p_cmd->reason),
-                                   odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_PILOT_DECISION,
+                                       p_cmd->speed_mm_s,
+                                       (uint16_t)((p_cmd->behaviour * LINE_EVENT_HIGH_BYTE) +
+                                                  p_cmd->reason),
+                                       odometer_mm());
     }
     if (!hug_active(&g_pilot.avoidance.hug))
     {
@@ -697,21 +703,23 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
          * The wheel frames establish whether the car actually travelled. */
         int16_t const side = (g_pilot.avoidance.hug.side > 0) ? (int16_t)TELEMETRY_HUG_SIDE_LEFT :
                                                       (int16_t)TELEMETRY_HUG_SIDE_RIGHT;
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_BYPASS_START, side, 0U, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_BYPASS_START, side, 0U,
+                                       odometer_mm());
         g_hug_leg_reported = true;
     }
     if (p_cmd->b_rejoined)
     {
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_BYPASS_END, (int16_t)g_pilot.avoidance.exit_width_mm,
-                                   g_pilot.avoidance.exit_breadth_mm, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_BYPASS_END,
+                                       (int16_t)g_pilot.avoidance.exit_width_mm,
+                                       g_pilot.avoidance.exit_breadth_mm, odometer_mm());
     }
     if (p_cmd->b_rejoin_check)
     {
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_REJOIN, p_cmd->rejoin_head_deci,
-                                   (uint16_t)p_cmd->rejoin_y_mm, odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_REJOIN, p_cmd->rejoin_head_deci,
+                                       (uint16_t)p_cmd->rejoin_y_mm, odometer_mm());
     }
 }
 
@@ -819,10 +827,11 @@ static void line_pilot_watch (pilot_cmd_t const * p_cmd, int64_t left_um, int64_
     if (0U != (bits & LINE_WATCH_STOP))
     {
         /* A second line_lost event, with the search turn in p2, marks the stop. */
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_LINE_LOST,
-                                   (int16_t)g_pilot.follow.side,
-                                   (uint16_t)(LINE_SEARCH_SWEEP_DECI / DECI_PER_DEG), odometer_mm());
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
+                                       (uint8_t)TELEMETRY_EVT_LINE_LOST,
+                                       (int16_t)g_pilot.follow.side,
+                                       (uint16_t)(LINE_SEARCH_SWEEP_DECI / DECI_PER_DEG),
+                                       odometer_mm());
     }
 }
 

@@ -1,4 +1,4 @@
-import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated';
+import { BIT_FIELDS, COMMANDS, ENUMS, RESERVED_COMMANDS } from './schema.generated';
 import { FAULT_META } from './faults';
 import { barcodePhaseLabel } from './line-signals';
 import { bitLabels, enumLabel } from './schema';
@@ -80,14 +80,15 @@ export const barcodeActionLabel = (action: number | undefined) => action === und
 const eventKey = Object.fromEntries(
   Object.entries(ENUMS.eventType).map(([name, code]) => [code, name]),
 ) as Record<number, string>;
+const COMMAND_LABELS = [...Object.entries(COMMANDS), ...Object.entries(RESERVED_COMMANDS)];
 const commandName = (opcode: number) => {
-  const found = Object.entries(COMMANDS).find(([, code]) => code === opcode);
+  const found = COMMAND_LABELS.find(([, code]) => code === opcode);
   return found === undefined ? `command ${opcode}` : found[0].replaceAll('_', ' ');
 };
 const commandSource = (p1: number) => (p1 >> 8) & 0xf;
 export function isCurrentStartAttitudeRefusal(type: number, p1: number, commandId: number, lastReceivedId?: number) {
   const opcode = p1 & 0xff;
-  if (type !== ENUMS.eventType.cmdReject || (opcode !== COMMANDS.start && opcode !== COMMANDS.start_continuous_floor && opcode !== COMMANDS.start_stationary) || ((p1 >> 12) & 0xf) !== REJECT_NO_ATTITUDE) return false;
+  if (type !== ENUMS.eventType.cmdReject || (opcode !== COMMANDS.start && opcode !== COMMANDS.start_continuous_floor && opcode !== RESERVED_COMMANDS.start_stationary) || ((p1 >> 12) & 0xf) !== REJECT_NO_ATTITUDE) return false;
   if (commandSource(p1) !== TELEMETRY_SOURCE || lastReceivedId === undefined) return true;
   // A new START may be calibrating before the supervisor reports its outcome.
   const ahead = (lastReceivedId - commandId) & 0xffff;

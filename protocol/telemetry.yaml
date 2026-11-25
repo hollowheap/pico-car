@@ -284,6 +284,10 @@ commands:
   straight: 0x07
   recalibrate: 0x08
   start_continuous_floor: 0x09
+
+# Withdrawn command opcodes. Keep these wire numbers reserved so new commands
+# never reuse them and historical event logs can still decode them.
+reserved_commands:
   start_stationary: 0x0A
 
 # Event types. The `p1` and `p2` layouts:

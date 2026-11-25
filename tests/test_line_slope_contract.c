@@ -1012,6 +1012,18 @@ ER telemetry_queue_try_push(const uint8_t * p_frame, uint16_t len)
 ER telemetry_emit_event(uint8_t source, uint8_t type, int16_t p1,
                         uint16_t p2, uint32_t odometer_mm)
 {
+    (void)source;
+    (void)type;
+    (void)p1;
+    (void)p2;
+    (void)odometer_mm;
+    assert(false && "line_task must not call blocking telemetry_emit_event");
+    return E_TMOUT;
+}
+
+ER telemetry_try_emit_event(uint8_t source, uint8_t type, int16_t p1,
+                            uint16_t p2, uint32_t odometer_mm)
+{
     if (g_route_sim.active &&
         (type == TELEMETRY_EVT_TURN_START || type == TELEMETRY_EVT_TURN_DONE ||
          type == TELEMETRY_EVT_TURN_ABORT))

@@ -48,6 +48,27 @@ export function publishWithTimeout(
   });
 }
 
+function resolveCommandOpcode(
+  schema: ProtocolSchema,
+  action: unknown,
+): number | null {
+  if (typeof action !== 'string' || !Object.hasOwn(schema.commands, action)) {
+    return null;
+  }
+  const reserved = schema.reserved_commands;
+  if (reserved !== undefined && Object.hasOwn(reserved, action)) {
+    return null;
+  }
+  const opcode = schema.commands[action];
+  if (typeof opcode !== 'number') {
+    return null;
+  }
+  if (reserved !== undefined && Object.values(reserved).includes(opcode)) {
+    return null;
+  }
+  return opcode;
+}
+
 export function parseCommandRequest(
   input: unknown,
   schema: ProtocolSchema,
@@ -56,10 +77,10 @@ export function parseCommandRequest(
     throw new Error('command body must be an object');
   }
   const action = (input as Record<string, unknown>).action;
-  if (typeof action !== 'string' || !Object.hasOwn(schema.commands, action)) {
+  if (resolveCommandOpcode(schema, action) === null) {
     throw new Error('unknown command action');
   }
-  return { action };
+  return { action: action as string };
 }
 
 /** The 9-byte frame, big-endian: cmd_id u16, run_id u16, opcode u8, uptime_s u32. */
@@ -70,11 +91,8 @@ export function encodeCommand(
   runId: number,
   uptimeS: number,
 ): Buffer {
-  if (!Object.hasOwn(schema.commands, action)) {
-    throw new Error('unknown command action');
-  }
-  const opcode = schema.commands[action];
-  if (typeof opcode !== 'number') {
+  const opcode = resolveCommandOpcode(schema, action);
+  if (opcode === null) {
     throw new Error('unknown command action');
   }
   const frame = Buffer.alloc(9);

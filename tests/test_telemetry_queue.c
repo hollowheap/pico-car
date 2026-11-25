@@ -1204,6 +1204,33 @@ static void test_mixed_traffic_fuzz (void)
     pass("mixed_traffic_fuzz", before);
 }
 
+static void test_try_push_no_drop_and_note_drop (void)
+{
+    uint8_t  frame[FRAME_MAX];
+    unsigned drops;
+    unsigned before = g_fail;
+
+    setup();
+    make_frame(frame, (uint8_t)'e', 0x41U);
+    drops = telemetry_queue_drop_count();
+
+    g_mbf_fake.mtx_lock_error = E_TMOUT;
+    CHECK(telemetry_queue_try_push_no_drop(frame, FRAME_EVENT) == E_TMOUT);
+    CHECK(g_mbf_fake.mtx_wait_forever == 0U);
+    CHECK(telemetry_queue_drop_count() == drops);
+
+    CHECK(fill_with((uint8_t)'s', CAP_STATUS) == CAP_STATUS);
+    drops = telemetry_queue_drop_count();
+    CHECK(telemetry_queue_try_push_no_drop(frame, FRAME_EVENT) == E_TMOUT);
+    CHECK(g_mbf_fake.recv_calls == 0U);
+    CHECK(g_mbf_fake.ref_calls == 0U);
+    CHECK(telemetry_queue_drop_count() == drops);
+
+    telemetry_queue_note_drop();
+    CHECK(telemetry_queue_drop_count() == drops + 1U);
+    pass("try_push_no_drop_and_note_drop", before);
+}
+
 int main (void)
 {
     test_fake_matches_kernel();
@@ -1229,6 +1256,7 @@ int main (void)
     test_kernel_errors_pass_through();
     test_consumer_races_ahead();
     test_producer_mutex();
+    test_try_push_no_drop_and_note_drop();
     test_mixed_traffic_fuzz();
 
     (void)printf("%u checks, %u failed\n", g_checks, g_fail);

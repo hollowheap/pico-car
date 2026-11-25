@@ -45,6 +45,16 @@ ER telemetry_queue_push(const uint8_t *frame, uint16_t len, uint8_t qos);
    Call from a task outside interrupt handlers and other locks. */
 ER telemetry_queue_try_push(const uint8_t *frame, uint16_t len);
 
+/* Non-blocking, non-evicting push used when the caller retains the frame in a
+   bounded handoff ring on E_TMOUT and retries later. Does not increment the
+   queue drop counter on E_TMOUT. */
+ER telemetry_queue_try_push_no_drop(const uint8_t *frame, uint16_t len);
+
+/* Record one dropped frame from an upstream bounded handoff ring so diag and
+   heartbeat drop counters reflect handoff overflow without changing the wire
+   schema. */
+void telemetry_queue_note_drop(void);
+
 /* Push a wire packet under `topic`: builds topic || packet and calls
    telemetry_queue_push. packet_len is the packet's TELEMETRY_<NAME>_WIRE_SIZE.
    Returns E_PAR for a NULL packet or a length above TELEMETRY_WIRE_MAX. */

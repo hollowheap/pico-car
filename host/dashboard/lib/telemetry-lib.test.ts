@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildCourse, orientCourse, placeContact } from './course';
-import { describeEvent, eventName } from './events';
+import { describeEvent, eventName, isCurrentStartAttitudeRefusal } from './events';
 import { FAULT_META, faultTiles, summarizeFaults } from './faults';
 import type { LinkPacket } from './link';
 import { longestLineRecovery, summarizeRun } from './run-summary';
@@ -381,6 +381,21 @@ describe('events', () => {
   it('decodes an accepted command; a barcode command has no id', () => {
     expect(describeEvent(0x04, (1 << 8) | 1, 5).detail).toBe('start from telemetry (command 5)');
     expect(describeEvent(0x04, (2 << 8) | 3, 0).detail).toBe('left from barcode');
+  });
+
+  it('preserves historical event decoding for reserved wire opcode 10', () => {
+    expect(describeEvent(0x04, (1 << 8) | 10, 12)).toEqual({
+      kind: 'command',
+      title: 'Command accepted',
+      detail: 'start stationary from telemetry (command 12)',
+    });
+    expect(describeEvent(0x05, (6 << 12) | (1 << 8) | 10, 13)).toEqual({
+      kind: 'command',
+      title: 'Command refused',
+      detail: 'start stationary from telemetry: unknown command (command 13)',
+    });
+    expect(isCurrentStartAttitudeRefusal(0x05, (9 << 12) | (1 << 8) | 10, 14, 14)).toBe(true);
+    expect(isCurrentStartAttitudeRefusal(0x05, (9 << 12) | (1 << 8) | 10, 14, 15)).toBe(false);
   });
 
   it('tells a line search start, a retry and a stop apart', () => {
