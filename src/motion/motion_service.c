@@ -91,18 +91,24 @@ static void motion_cyclic_wakeup (void * p_exinf)
 }
 
 /* The inbox and the published drive inhibit change under the same lock. */
-static void latch_stop_locked (void)
+static void latch_stop_locked (uint32_t stamp_us)
 {
+    if (!g_inbox.stopped)
+    {
+        g_published.stop_stamp_us = stamp_us;
+    }
     motion_inbox_stop(&g_inbox);
     g_published.ready          = false;
     g_published.stop_requested = true;
 }
 
+static ER request_stop (uint32_t stamp_us);
+
 static void stop_pin_edge (const gpio_edge_snapshot_t * p_edges)
 {
     if (0U != (p_edges->fall_mask & STOP_PIN_MASK))
     {
-        (void)motion_service_request_stop();
+        (void)request_stop(p_edges->timestamp_us);
     }
 }
 
@@ -129,7 +135,7 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
     (void)ISpinLock(&g_service_lock, &saved);
     if (g_inbox.stopped || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL)
     {
-        latch_stop_locked();
+        latch_stop_locked(in_w(TIMER_TIMERAWL));
         (void)ISpinUnlock(&g_service_lock, saved);
         return MOTION_STOP_PENDING;
     }
@@ -272,10 +278,10 @@ static void service_first_status (void)
     (void)ISpinLock(&g_service_lock, &saved);
     if (initial_stop)
     {
-        latch_stop_locked();
+        latch_stop_locked(in_w(TIMER_TIMERAWL));
     }
     g_published.stop_requested = g_inbox.stopped;
-    g_published.hold_mask      = g_inbox.hold_mask;
+    g_published.hold_mask      = (uint8_t)g_inbox.hold_mask;
     g_published.ready =
         !g_inbox.stopped && (g_controller.status.state != MOTION_STOPPED) &&
         (g_controller.status.state != MOTION_FAULT);
@@ -309,9 +315,16 @@ static uint64_t permit_time_us (void)
     return ((uint64_t)high << TIMER_WORD_BITS) | low;
 }
 
+#define MOTION_PERMIT_MAX_MS (5000U)
+
 ER motion_service_renew_permit (uint32_t lease_ms)
 {
     UINT          saved = 0U;
+
+    if ((0U == lease_ms) || (lease_ms > MOTION_PERMIT_MAX_MS))
+    {
+        return E_PAR;
+    }
 
     (void)ISpinLock(&g_service_lock, &saved);
     g_permit_renewed_us = permit_time_us();
@@ -381,6 +394,21 @@ static ER wait_motion_cycle (void)
     return er;
 }
 
+static bool measured_movement (const controller_status_t * p_control,
+                              uint32_t released_us, uint32_t now_us)
+{
+    motion_sample_t const * const p_sample = &p_control->sample;
+    uint32_t const age_us = now_us - p_sample->timestamp_us;
+    uint32_t const release_age_us = now_us - released_us;
+
+    return p_control->sample_available && age_us <= MOTION_FEEDBACK_MAX_AGE_US &&
+           age_us < release_age_us && p_sample->elapsed_us <= (release_age_us - age_us) &&
+           p_sample->wheel[ENCODER_LEFT].speed_valid &&
+           p_sample->wheel[ENCODER_RIGHT].speed_valid &&
+           (0 != p_sample->wheel[ENCODER_LEFT].velocity_um_s ||
+            0 != p_sample->wheel[ENCODER_RIGHT].velocity_um_s);
+}
+
 /* One control cycle: STOP handling, capture, command intake, the controller
  * tick, and publication of the result. */
 static void service_cycle (motion_input_t * p_input)
@@ -398,8 +426,11 @@ static void service_cycle (motion_input_t * p_input)
     stop = stop_requested();
     if (stop)
     {
-        /* Do not wait for capture or perform conversion before STOP. */
-        controller_tick(&g_controller, NULL, in_w(TIMER_TIMERAWL), NULL,
+        /* Brake on the urgent wake. Later releases still measure coasting. */
+        captured = (MOTION_STOPPED == g_controller.status.state) &&
+                   (E_OK == wake) && capture_input(p_input);
+        controller_tick(&g_controller, captured ? p_input : NULL,
+                            in_w(TIMER_TIMERAWL), NULL,
                             true);
     }
     else if (E_TMOUT == wake)
@@ -438,14 +469,19 @@ static void service_cycle (motion_input_t * p_input)
     /* An output fault can prevent braking, but the observed stop still latches. */
     if (stop)
     {
-        latch_stop_locked();
+        latch_stop_locked(in_w(TIMER_TIMERAWL));
     }
     g_published.control        = g_controller.status;
     g_published.stop_requested = g_inbox.stopped;
-    g_published.hold_mask      = g_inbox.hold_mask;
+    g_published.hold_mask      = (uint8_t)g_inbox.hold_mask;
     g_published.ready = !g_inbox.stopped &&
                         (g_controller.status.state != MOTION_STOPPED) &&
                         (g_controller.status.state != MOTION_FAULT);
+    if (g_published.ready && (0U == g_published.hold_mask) &&
+        measured_movement(&g_controller.status, g_inbox.released_us, in_w(TIMER_TIMERAWL)))
+    {
+        g_published.movement_sequence++;
+    }
     fault = g_controller.status.fault;
     stop  = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
@@ -640,10 +676,10 @@ ER motion_service_set_hold (uint32_t reason, bool held)
         return E_OBJ;
     }
     (void)ISpinLock(&g_service_lock, &saved);
-    /* A pickup or STOP hold during encoder recovery must survive its automatic clear. */
+    /* A pickup or STOP hold during a clearing fault must survive its automatic clear. */
     if (g_inbox.stopped ||
         ((MOTION_FAULT == g_published.control.state) &&
-         (!held || (MOTION_FAULT_FEEDBACK != g_published.control.fault))))
+         (!held || !controller_fault_clears_in_place(g_published.control.fault))))
     {
         result = E_OBJ;
     }
@@ -652,26 +688,22 @@ ER motion_service_set_hold (uint32_t reason, bool held)
         result = motion_inbox_hold(&g_inbox, reason, held, in_w(TIMER_TIMERAWL))
                      ? E_OK
                      : E_PAR;
-        g_published.hold_mask = g_inbox.hold_mask;
+        g_published.hold_mask = (uint8_t)g_inbox.hold_mask;
     }
     (void)ISpinUnlock(&g_service_lock, saved);
     return result;
 }
 
-ER motion_service_request_stop (void)
+static ER request_stop (uint32_t stamp_us)
 {
     UINT saved = 0U;
     bool first = false;
 
-    if (!g_start_called)
-    {
-        return E_OBJ;
-    }
     (void)ISpinLock(&g_service_lock, &saved);
     first = !g_inbox.stopped;
     if (first)
     {
-        latch_stop_locked();
+        latch_stop_locked(stamp_us);
     }
     (void)ISpinUnlock(&g_service_lock, saved);
     if (first)
@@ -679,6 +711,11 @@ ER motion_service_request_stop (void)
         (void)tk_wup_tsk(g_motion_task_id);
     }
     return E_OK;
+}
+
+ER motion_service_request_stop (void)
+{
+    return g_start_called ? request_stop(in_w(TIMER_TIMERAWL)) : E_OBJ;
 }
 
 ER motion_service_read_status (motion_service_status_t * p_status)
@@ -726,7 +763,8 @@ static void fill_feedback (const motion_service_status_t * p_status,
         p_status->control.sample.wheel[ENCODER_LEFT].invalid_samples;
     p_feedback->invalid_samples[ENCODER_RIGHT] =
         p_status->control.sample.wheel[ENCODER_RIGHT].invalid_samples;
-    p_feedback->fresh = p_status->ready && p_status->control.sample_available &&
+    p_feedback->fresh = (p_status->ready || (MOTION_STOPPED == p_status->control.state)) &&
+                        p_status->control.sample_available &&
                         (age_us <= MOTION_FEEDBACK_MAX_AGE_US);
 }
 
@@ -739,6 +777,10 @@ static void fill_status (const motion_service_status_t * p_service,
     p_status->stop_requested = p_service->stop_requested;
     p_status->hold_mask      = p_service->hold_mask;
     p_status->init_error     = p_service->init_error;
+    p_status->stop_age_ms    = p_service->stop_requested
+                                  ? (in_w(TIMER_TIMERAWL) - p_service->stop_stamp_us) / US_PER_MS
+                                  : 0U;
+    p_status->movement_sequence = p_service->movement_sequence;
 }
 
 static void fill_diag (const motion_service_status_t * p_status, uint32_t overruns,

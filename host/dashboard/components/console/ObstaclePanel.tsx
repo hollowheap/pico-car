@@ -1,102 +1,143 @@
-import { useContext } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
+import type { Course } from '../../lib/course';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import { scanPoints } from '../../lib/scan';
-import { bitLabels, enumLabel } from '../../lib/schema';
+import type { RunSummary } from '../../lib/run-summary';
+import { isRecentSonarPing } from '../../lib/scan';
+import { enumLabel } from '../../lib/schema';
+import { BIT_FIELDS, ENUMS } from '../../lib/schema.generated';
 import { useTheme } from '../../lib/theme-provider';
 import { formatTime, sizeMm } from './format';
-import { Panel, PanelFill, useDense } from './Panel';
+import { EventCounts } from './EventCounts';
+import { MetricCell } from './MetricCell';
+import { Panel, useDense } from './Panel';
+import { ScanReadings } from './ScanReadings';
 import { StatusPill } from './StatusPill';
-import { ScanPlot } from './ScanPlot';
 
 type Props = {
+  summary?: RunSummary;
+  course: Course;
   obstacle: LinkPacket | undefined;
+  ping: LinkPacket | undefined;
   profile: LinkPacket | undefined;
+  nowMs: number;
   status?: PanelStatus;
   style?: StyleProp<ViewStyle>;
+  summaryOnly?: boolean;
 };
 
-/** OBSTACLE_BEAM_HALF_DECI and OBSTACLE_DETECT_MM of obstacle_config.h. */
-const BEAM_HALF_DEG = 9.5;
-const DETECT_MM = 250;
 const DECI = 10;
 
-/** Whole degrees without a minus sign on zero. */
-const degrees = (deci: number) => `${Math.round(deci / DECI) || 0}°`;
+const degrees = (deci: number) => `${deci / DECI}°`;
+const hugDistance = (mm: number | undefined) =>
+  mm !== undefined && Number.isFinite(mm) && mm > 0 ? `${mm} mm` : null;
 
-/**
- * Sonar state, the latest scan as a polar plot, and the hug card (state, side, face
- * distance, width, breadth). The scan keeps showing after the car drives on.
- */
-export function ObstaclePanel({ obstacle, profile, status, style }: Props) {
+export function ObstaclePanel({ obstacle, ping, profile, nowMs, status, style, summary, summaryOnly = false }: Props) {
   const theme = useTheme();
+  const counts = summary && <EventCounts testID="obstacle-events" scope={summary.scope}
+    counts={[[summary.obstacles, 'obstacle'], [summary.bypasses, 'bypass', 'bypasses']]} />;
   const o = obstacle?.values;
-  const servoDeci = o?.servo_deci;
-  const bodyDeci = o?.body_deci;
-  const faults = o === undefined ? [] : bitLabels('obstacleFaults', o.faults);
-  const cause = o === undefined ? '--' : enumLabel('obstacleCause', o.cause);
+  const ready = status?.kind === 'ready';
+  const measurement = ready && isRecentSonarPing(ping, nowMs) ? ping.values : undefined;
+  const servoDeci = measurement?.servo_deci;
+  const range = measurement?.dist_mm;
+  const bodyDeci = ready ? o?.body_deci : undefined;
   const stopped = o !== undefined && o.state === 0 && o.cause !== 0;
+  const hasEventCounts = summary !== undefined && (summary.obstacles > 0 || summary.bypasses > 0);
   const dense = useDense();
-  const fill = useContext(PanelFill);
+  const profileStatus = profile?.values.status;
+  const sparse = profileStatus === ENUMS.profileStatus.pilotSparse;
+  const probeSide = sparse && ((profile?.values.flags ?? 0) & (1 << BIT_FIELDS.profileFlags.probeSideValid))
+    ? profile?.values.side : undefined;
+  const scanName = probeSide === ENUMS.hugSide.left ? 'Left edge probe' : probeSide === ENUMS.hugSide.right
+    ? 'Right edge probe' : sparse ? 'Pilot sweep' : 'Scan';
+  const scanTime = profile ? `${scanName} at ${formatTime(profile.timestamp)}. ` : '';
   const text = dense ? theme.typography.caption : theme.typography.body;
+  const hugPhase = o?.hug_state === undefined ? 'no data' :
+    ((o.flags ?? 0) & (1 << BIT_FIELDS.obstacleFlags.wall)) && o.hug_state !== ENUMS.hugState.idle
+      ? 'Following wall' : enumLabel('hugState', o.hug_state).toLowerCase();
+  const hug = o?.hug_state === undefined || o.hug_state === ENUMS.hugState.idle ? undefined : o;
+  const hugSide = hug?.hug_side;
+  const hugMetrics = [
+    ['Side', hugSide === ENUMS.hugSide.left || hugSide === ENUMS.hugSide.right ? enumLabel('hugSide', hugSide).toLowerCase() : null],
+    ['Front', hugDistance(hug?.face_mm)],
+    ['Width', hugDistance(hug?.width_mm)],
+    ['Depth', hugDistance(hug?.breadth_mm)],
+  ] as const;
+
+  const hugInPill = hug !== undefined && o?.state === ENUMS.obstacleState.monitor;
 
   return (
     <Panel
+      fill
+      empty={!summaryOnly && obstacle === undefined && ping === undefined && profile === undefined}
+      icon="obstacle"
       right={
-        <StatusPill
-          label={o === undefined ? 'NO DATA' : `${enumLabel('obstacleState', o.state)}${stopped ? ` · ${enumLabel('obstacleCause', o.cause)}` : ''}`}
-          tone={o === undefined ? 'muted' : stopped ? 'danger' : o.state === 1 ? 'neutral' : 'active'}
-        />
+        hugInPill ? (
+          <StatusPill accessibilityLabel={`Hug phase ${hugPhase}`} label={hugPhase.toUpperCase()} tone="warning" />
+        ) : (
+          <StatusPill label={o === undefined ? 'NO DATA' : enumLabel('obstacleState', o.state)}
+            tone={o === undefined ? 'muted' : stopped ? 'danger' : o.state === ENUMS.obstacleState.monitor ? 'success' : 'warning'} />
+        )
       }
-      icon="sonar"
-      stretch
-      status={status}
+      status={summaryOnly || status?.kind === 'stale' ? status : undefined}
       style={style}
       testID="obstacle-panel"
       title="Obstacle"
     >
-      <View style={fill ? styles.plotFill : null}>
-        <ScanPlot
-          beamHalfDeg={BEAM_HALF_DEG}
-          detectMm={DETECT_MM}
-          height={fill ? '100%' : dense ? 200 : undefined}
-          points={profile === undefined ? [] : scanPoints(profile.values)}
-          servoDeg={servoDeci === undefined ? null : servoDeci / DECI}
-        />
-      </View>
-      <Text style={[theme.typography.caption, dense ? styles.hidden : null, { color: theme.colors.muted }]}>
-        Slots every 5°, rings every 100 mm, dashed ring at {DETECT_MM} mm. Dot: echo. Ring on the edge: open space. Cross: bad echo.
-      </Text>
-      <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-        {profile === undefined ? 'No scan yet.' : `Scan from ${formatTime(profile.timestamp)}: closest ${profile.values.closest_mm} mm, width ${profile.values.width_mm} mm.`}
-      </Text>
-      <Text style={[text, { color: theme.colors.text }]}>
-        Range {o?.dist_mm ?? '--'} mm · echo {o === undefined ? '--' : enumLabel('echoClass', o.echo_class).toLowerCase()} · servo{' '}
-        {servoDeci === undefined ? '--' : degrees(servoDeci)} · body {bodyDeci === undefined ? '--' : degrees(bodyDeci)}
-      </Text>
-      <View style={[styles.plan, { borderColor: theme.colors.border }]}>
-        <Text style={[theme.typography.label, { color: theme.colors.muted }]}>HUG</Text>
-        <Text style={[text, { color: theme.colors.text }]}>
-          {o === undefined
-            ? '--'
-            : `${enumLabel('hugState', o.hug_state).toLowerCase()}, ${enumLabel('hugSide', o.hug_side).toLowerCase()} side, face ${sizeMm(o.face_mm)}, width ${sizeMm(o.width_mm)}, breadth ${sizeMm(o.breadth_mm)}`}
-        </Text>
-      </View>
-      {stopped ? (
-        // The pill has one line; a long cause goes here, where the text wraps.
-        <Text style={[text, { color: theme.colors.danger }]}>Stop cause: {cause.toLowerCase()}</Text>
-      ) : null}
-      <Text style={[theme.typography.caption, { color: faults.length > 0 ? theme.colors.danger : theme.colors.muted }]}>
-        Sonar faults: {faults.length === 0 ? 'none' : faults.join(', ').toLowerCase()}
-      </Text>
+      {summaryOnly ? (
+        <View testID="hug-status" style={styles.sonarHug}>
+          <Text accessibilityLabel={`Hug phase ${hugPhase}`} style={[text, { color: theme.colors.text }]}>Hug {hugPhase}</Text>
+          {hugMetrics.filter(([, value]) => value !== null).map(([label, value]) => (
+            <Text key={label} style={[theme.typography.caption, styles.hugValue, { color: theme.colors.muted }]}>
+              {label} <Text style={{ color: theme.colors.text }}>{value}</Text>
+            </Text>
+          ))}
+          {hasEventCounts ? counts : null}
+        </View>
+      ) : (
+        <View style={styles.scan}>
+          <ScanReadings key={`${profile?.timestamp}/${profile?.values.req_id}`} profile={profile} live={measurement} hugging={hug !== undefined}>
+            <View style={styles.info}>
+              <View accessibilityLabel="Range and bearings" style={styles.grid}>
+                {[
+                  ['Range', range !== undefined && range > 0 ? `${range} mm` : '--'],
+                  ['Echo', measurement === undefined ? '--' : enumLabel('echoClass', measurement.echo_class).toLowerCase()],
+                  ['Servo', servoDeci === undefined ? '--' : degrees(servoDeci)],
+                  ['Body', bodyDeci === undefined ? '--' : degrees(bodyDeci)],
+                ].map(([label, value]) => <MetricCell key={label} label={label!} value={value!} style={styles.cell} />)}
+              </View>
+              {hug !== undefined ? (
+                <View style={[styles.grid, styles.hugGrid, { borderTopColor: theme.colors.border }]} testID="hug-status">
+                  {hugInPill ? null : <MetricCell label="Phase" value={hugPhase} tone="warning" style={styles.cell} />}
+                  {hugMetrics.filter(([, value]) => value !== null).map(([label, value]) => (
+                    <MetricCell key={label} label={label} value={value!} style={styles.cell} />
+                  ))}
+                </View>
+              ) : null}
+              {profile ? (
+                <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+                  {scanTime + ((profile?.values.closest_mm ?? 0) > 0 ? `Closest return ${sizeMm(profile?.values.closest_mm)}.` : '')}
+                </Text>
+              ) : null}
+              {hasEventCounts ? counts : null}
+            </View>
+          </ScanReadings>
+        </View>
+      )}
+      {!summaryOnly && status?.kind === 'error' ? <Text accessibilityLiveRegion="polite"
+        style={[text, { color: theme.colors.danger }]}>{status.message}</Text> : null}
     </Panel>
   );
 }
 
 const styles = StyleSheet.create({
-  plan: { borderTopWidth: 1, gap: 2, paddingTop: 16 },
-  hidden: { display: 'none' },
-  plotFill: { flex: 1, minHeight: 90 },
+  sonarHug: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 8, rowGap: 2 },
+  hugValue: { fontVariant: ['tabular-nums'] },
+  scan: { flex: 1, gap: 6, minHeight: 0, position: 'relative' },
+  info: { gap: 8 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 10, rowGap: 6 },
+  hugGrid: { borderTopWidth: 1, paddingTop: 6 },
+  cell: { flexBasis: '42%' },
 });

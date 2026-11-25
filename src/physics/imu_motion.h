@@ -11,6 +11,13 @@
  *     Optional cross-check and fallback, because motor current can disturb
  *     the field. A sample is rejected when |m| is outside the expected
  *     Earth-field band.
+ *   - The hard-iron offset is learnt on the car: while it pivots on the spot
+ *     on level ground (a line search), the horizontal field samples lie on a
+ *     circle round the offset. A least-squares circle fit over a sweep of at
+ *     least mag_learn_span_deg of encoder yaw replaces the offset of the two
+ *     horizontal board axes, if the radius is a plausible horizontal field.
+ *     The offset includes the motor field at pivot duty; at other duty it
+ *     is only approximate.
  *   - When both are valid and disagree for several samples, yaw_disagree is
  *     set (wheel slip, or magnetic interference). It does not say which;
  *     the encoder rate stays the yaw source and heading_valid is cleared.
@@ -60,6 +67,10 @@ typedef enum
 #define IMU_AXIS_Z     (2U)
 #define IMU_AXIS_COUNT (3U)
 
+/* Sums of the pivot circle fit, and the horizontal axes it fits. */
+#define IMU_FIT_SUMS   (9U)
+#define IMU_FIT_AXES   (2U)
+
 typedef enum
 {
     IMU_YAW_NONE = 0,
@@ -91,6 +102,16 @@ typedef struct
     float    mag_timeout_s;      /* No new mag sample this long: invalid.  */
     float    disagree_dps;       /* Encoder vs mag yaw difference limit.   */
     uint16_t disagree_samples;   /* Consecutive samples over the limit.    */
+
+    /* Hard-iron learning from pivots on the spot. */
+    float    mag_learn_turn_dps; /* |encoder yaw| at least this.           */
+    float    mag_learn_speed_mps; /* |mean wheel speed| at most this.       */
+    float    mag_learn_span_deg; /* Encoder yaw range a fit needs.         */
+    float    mag_learn_min_gauss; /* Fitted radius at least this.          */
+
+    /* Pivot witness: share of the encoder yaw the field shows. */
+    float    witness_settle_s;   /* Steady one-way pivot before reporting. */
+    float    witness_min_scale;  /* Lowest reported share, in (0, 1).      */
 } imu_motion_config_t;
 
 /* Per-sample inputs not already in hump_sample_t. */
@@ -120,6 +141,10 @@ typedef struct
     float heading_deg;
     bool  heading_valid;
     bool  yaw_disagree;
+    bool  mag_offset_learnt;     /* A pivot fit has set the offset.        */
+    bool  heading_gated;         /* Offset learnt, field in band and rates agree. */
+    float pivot_scale;           /* Body over encoder yaw in a steady pivot,
+                                    witness_min_scale..1; 0 for none.      */
 } imu_motion_output_t;
 
 typedef struct
@@ -136,6 +161,16 @@ typedef struct
     bool        mag_rate_valid;
     float       mag_rate_dps;
     uint16_t    disagree_count;
+    /* Circle fit of the horizontal field during one pivot. */
+    float       fit_sum[IMU_FIT_SUMS]; /* see learn_offset()             */
+    uint16_t    fit_n;
+    uint8_t     fit_axis[IMU_FIT_AXES]; /* The horizontal board axes.    */
+    float       fit_yaw_deg;     /* Encoder yaw since the pivot began.     */
+    float       fit_yaw_lo;
+    float       fit_yaw_hi;
+    bool        offset_learnt;
+    float       witness_s;       /* Time in the current one-way pivot.     */
+    int8_t      witness_dir;     /* Its direction, 0 when not pivoting.    */
 } imu_motion_ctx_t;
 
 /* Fill cfg with the unmeasured defaults and the chassis track width. */

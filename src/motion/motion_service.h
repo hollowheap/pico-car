@@ -19,9 +19,10 @@ typedef struct
 typedef struct
 {
     controller_status_t control;
-    uint32_t
-        hold_mask; /* Independent normal sensor holds; not emergency stop. */
     ER   init_error;
+    uint32_t stop_stamp_us;
+    uint32_t movement_sequence;
+    uint8_t hold_mask; /* Independent normal sensor holds; not emergency stop. */
     bool ready;
     bool stop_requested;
 } motion_service_status_t;

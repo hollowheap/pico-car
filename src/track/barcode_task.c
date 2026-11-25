@@ -80,6 +80,22 @@ uint8_t barcode_status_bits (void)
     return g_status_bits;
 }
 
+typedef struct
+{
+    barcode_parser_t before;
+    uint8_t          progress_count;
+    uint16_t         width_um;
+    bool             is_space;
+    bool             b_fed;
+    bool             b_glitch;
+} barcode_merge_t;
+
+static bool phase_reported (uint8_t phase)
+{
+    return ((uint32_t)g_status_bits & STATUS_PHASE_MASK) ==
+           ((uint32_t)phase << TELEMETRY_LINE_BITS_BIT_BARCODE_PHASE_LSB);
+}
+
 static void record_element (uint8_t element)
 {
     uint32_t const bits = ((uint32_t)g_status_bits & ~STATUS_ELEMENT_MASK) |
@@ -244,7 +260,9 @@ static void feed_element (barcode_parser_t * p_parser, bool is_space, uint16_t w
     {
         report_phase(TELEMETRY_BARCODE_PHASE_START, info.is_reverse, BARCODE_REJECT_NONE, odo_mm);
     }
-    else if ((char_index == 1U) && (elem_index == 0U) && (p_parser->elem_index == 1U))
+    /* A rolled-back element that began this character has already reported decoding. */
+    else if ((char_index == 1U) && (elem_index == 0U) && (p_parser->elem_index == 1U) &&
+             !phase_reported(TELEMETRY_BARCODE_PHASE_DECODING))
     {
         report_phase(TELEMETRY_BARCODE_PHASE_DECODING, info.is_reverse, BARCODE_REJECT_NONE, odo_mm);
     }
@@ -254,8 +272,53 @@ static void feed_element (barcode_parser_t * p_parser, bool is_space, uint16_t w
     }
 }
 
-static void read_stripe (barcode_parser_t * p_parser, bool is_space, uint16_t width_um,
-                         uint32_t odo_mm)
+static bool is_in_progress (barcode_parser_t const * p_parser)
+{
+    return (p_parser->char_index != 0U) || (p_parser->elem_index != 0U);
+}
+
+static uint16_t sum_width (uint16_t a_um, uint16_t b_um)
+{
+    uint32_t const sum = (uint32_t)a_um + (uint32_t)b_um;
+    return (uint16_t)((sum > UINT16_MAX) ? UINT16_MAX : sum);
+}
+
+/* Rolling back restores the learnt widths and progress count that the split part contributed. */
+static void read_merged (barcode_parser_t * p_parser, barcode_merge_t * p_merge,
+                         bool is_space, uint16_t width_um, uint32_t odo_mm)
+{
+    bool const b_in_progress = is_in_progress(p_parser);
+
+    if (p_merge->b_glitch && b_in_progress)
+    {
+        width_um = sum_width(p_merge->width_um, width_um);
+        is_space = p_merge->is_space;
+        p_merge->b_glitch = false;
+    }
+    else if (p_merge->b_fed && b_in_progress &&
+             barcode_parser_is_glitch(&p_merge->before, width_um))
+    {
+        *p_parser = p_merge->before;
+        g_progress_count = p_merge->progress_count;
+        p_merge->width_um = sum_width(p_merge->width_um, width_um);
+        p_merge->b_glitch = true;
+        p_merge->b_fed = false;
+        return;
+    }
+    else
+    {
+        p_merge->before = *p_parser;
+        p_merge->progress_count = g_progress_count;
+        p_merge->b_glitch = false;
+    }
+    feed_element(p_parser, is_space, width_um, odo_mm);
+    p_merge->width_um = width_um;
+    p_merge->is_space = is_space;
+    p_merge->b_fed = (p_merge->before.char_index != 0U) && is_in_progress(p_parser);
+}
+
+static void read_stripe (barcode_parser_t * p_parser, barcode_merge_t * p_merge, bool is_space,
+                         uint16_t width_um, uint32_t odo_mm)
 {
     if (barcode_element_is_block(is_space, width_um))
     {
@@ -269,7 +332,7 @@ static void read_stripe (barcode_parser_t * p_parser, bool is_space, uint16_t wi
         {
             record_element(is_space ? TELEMETRY_BARCODE_ELEMENT_SPACE : TELEMETRY_BARCODE_ELEMENT_BAR);
         }
-        feed_element(p_parser, is_space, width_um, odo_mm);
+        read_merged(p_parser, p_merge, is_space, width_um, odo_mm);
     }
 }
 
@@ -304,6 +367,7 @@ void barcode_task_run (void)
     bool             have_previous = false;
     uint32_t         idle_waits = 0U;
     uint8_t          sample_seq = 0U;
+    barcode_merge_t  merge = {0};
 
     g_start_prefix_um = 0U;
     barcode_gate_init(&g_gate);
@@ -374,7 +438,7 @@ void barcode_task_run (void)
                     bool const is_space = (0U != BARCODE_LEVEL_SPACE)
                                               ? previous_level
                                               : !previous_level;
-                    read_stripe(&parser, is_space, sample.width_um, edge_odo_mm);
+                    read_stripe(&parser, &merge, is_space, sample.width_um, edge_odo_mm);
                 }
             }
             /* The edge remains a boundary for the next stripe even when

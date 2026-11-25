@@ -16,35 +16,43 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "platform/static_assert.h"
+
 /* The most events one call can return. */
 #define EDGE_EVENTS_MAX (3U)
 
 typedef struct
 {
-    uint8_t  type;  /* TELEMETRY_EVT_*              */
     int16_t  p1;
     uint16_t p2;
+    uint8_t  type;  /* TELEMETRY_EVT_*              */
 } edge_event_t;
+
+STATIC_ASSERT(sizeof(edge_event_t) == 6U, "edge_event_t size");
 
 typedef struct
 {
     uint8_t obstacle_state;
-    bool    b_plan_reported;
-    bool    b_running;
-    bool    b_started;       /* the first call only records the state */
+    bool    b_plan_reported : 1;
+    bool    b_running : 1;
+    bool    b_started : 1;   /* the first call only records the state */
 } edge_watch_t;
+
+STATIC_ASSERT(sizeof(edge_watch_t) == 2U, "edge_watch_t size");
 
 typedef struct
 {
+    uint16_t distance_mm;
+    uint16_t plan_width_mm;
     uint8_t  state;          /* obstacle state of the wire schema   */
     uint8_t  cause;
     uint8_t  echo_class;
-    uint16_t distance_mm;
     uint8_t  plan_status;
     uint8_t  plan_side;
     uint8_t  plan_start_deg;
-    uint16_t plan_width_mm;
 } edge_obstacle_in_t;
+
+STATIC_ASSERT(sizeof(edge_obstacle_in_t) == 10U, "edge_obstacle_in_t size");
 
 void edge_init (edge_watch_t * p_watch);
 

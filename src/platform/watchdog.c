@@ -11,11 +11,18 @@
 
 #include "platform/watchdog.h"
 
-#define WDT_BASE   (0x40058000U)
-#define WDT_CTRL   (WDT_BASE + 0x00U)
-#define WDT_LOAD   (WDT_BASE + 0x04U)
-#define WDT_REASON (WDT_BASE + 0x08U)
-#define WDT_TICK   (WDT_BASE + 0x2CU)
+#define WDT_BASE     (0x40058000U)
+#define WDT_CTRL     (WDT_BASE + 0x00U)
+#define WDT_LOAD     (WDT_BASE + 0x04U)
+#define WDT_REASON   (WDT_BASE + 0x08U)
+#define WDT_SCRATCH0 (WDT_BASE + 0x0CU)
+#define WDT_SCRATCH1 (WDT_BASE + 0x10U)
+#define WDT_SCRATCH2 (WDT_BASE + 0x14U)
+#define WDT_TICK     (WDT_BASE + 0x2CU)
+
+#define RUN_TOKEN_MAGIC         (0x52554E31UL)
+#define RUN_TOKEN_RESUMES_SHIFT (8U)
+#define RUN_TOKEN_BYTE_MASK     (0xFFU)
 
 #define WDT_CTRL_ENABLE     (1UL << 30U)
 #define WDT_CTRL_PAUSE_JTAG (1UL << 24U)
@@ -107,4 +114,28 @@ void platform_wdt_feed (void)
 bool platform_wdt_running (void)
 {
     return g_running;
+}
+
+void platform_run_token_write (uint8_t flags, uint8_t resumes)
+{
+    uint32_t const word = (uint32_t) flags | ((uint32_t) resumes << RUN_TOKEN_RESUMES_SHIFT);
+
+    out_w (WDT_SCRATCH0, RUN_TOKEN_MAGIC);
+    out_w (WDT_SCRATCH1, word);
+    out_w (WDT_SCRATCH2, ~word);
+}
+
+bool platform_run_token_read (uint8_t * p_flags, uint8_t * p_resumes)
+{
+    uint32_t const word     = in_w (WDT_SCRATCH1);
+    bool const     b_intact = (RUN_TOKEN_MAGIC == in_w (WDT_SCRATCH0)) &&
+                              (~word == in_w (WDT_SCRATCH2));
+
+    if (b_intact)
+    {
+        *p_flags   = (uint8_t) (word & RUN_TOKEN_BYTE_MASK);
+        *p_resumes = (uint8_t) ((word >> RUN_TOKEN_RESUMES_SHIFT) & RUN_TOKEN_BYTE_MASK);
+    }
+
+    return b_intact;
 }

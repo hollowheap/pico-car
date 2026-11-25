@@ -17,6 +17,7 @@
 #include "platform/chassis.h"
 
 #define UM_PER_MM    (1000)
+#define PERCENT      (100)
 /* Deci-degrees per radian, 1800 / pi rounded. */
 #define DECI_PER_RAD (573)
 

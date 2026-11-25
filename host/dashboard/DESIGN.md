@@ -60,10 +60,9 @@ typography:
 
 rounded:
   nav: "2px"
-  input: "8px"
+  control: "8px"
   card: "16px"
   image: "24px"
-  button: "59px"
 
 spacing:
   xs: "4px"
@@ -79,14 +78,14 @@ components:
     backgroundColor: "{colors.signal-blue}"
     textColor: "{colors.on-accent}"
     typography: "{typography.body}"
-    rounded: "{rounded.button}"
+    rounded: "{rounded.control}"
     padding: "0 20px"
   button-secondary:
     backgroundColor: "transparent"
     textColor: "{colors.dark-text}"
     borderColor: "{colors.dark-border}"
     typography: "{typography.body}"
-    rounded: "{rounded.button}"
+    rounded: "{rounded.control}"
     padding: "0 20px"
   card:
     backgroundColor: "{colors.dark-card}"
@@ -98,7 +97,7 @@ components:
     backgroundColor: "{colors.dark-elevated}"
     textColor: "{colors.dark-text}"
     typography: "{typography.label}"
-    rounded: "{rounded.button}"
+    rounded: "{rounded.control}"
     padding: "4px 12px"
 ---
 
@@ -118,8 +117,8 @@ not a marketing site.
 - Surfaces are flat. A 1px inset border defines card edges. No drop shadows.
 - Data is literal. Labels, units, and states are always visible. No decorative
   proof numbers.
-- Motion is reserved for changing data. No decorative pulse, marquee, bounce,
-  or gradient.
+- Screen changes use a brief fade. The system reduced-motion preference
+  disables transitions. Telemetry updates and safety controls appear immediately.
 
 ## 2. Themes
 
@@ -189,25 +188,97 @@ Base unit: 4px.
 | xxl | 24px |
 | section | 80px |
 
-- One page.
-- Desktop: 1440x900 reference. From 1360 px of width the console uses a grid of
-  three columns of unequal width (5 : 4 : 3). It fits one screen at 1920x1080;
-  a shorter window scrolls the page.
-  - Header row: brand, status rail with the notice as plain text at its right
-    end, theme toggle. Then all the commands in one row, at the left.
-  - Column 1: motion beside attitude; then line and link beside obstacle.
-    Column 2: course trace, run summary, tasks. Column 3: faults, events.
-  - A panel takes the height of its content. A plot keeps its shape and is not
-    stretched. Only the event list takes the height that is left.
-  - Panels use the dense form: smaller type, no explanation captions.
-  - In each column one panel takes the height that is left. The scan plot and
-    the course trace scale to it. Only the event list scrolls, inside its panel.
-- A smaller window gets the scrolling page: rail, banner, commands, then every
-  panel in one column.
-- Mobile: 375x812 reference. The scrolling page. The banner sits inside the
-  rail.
-- A stale panel shows STALE in its heading and keeps its values, dimmed.
-- Page padding: 24px on mobile, 32px to 40px on desktop.
+- On desktop and phone, the navbar displays Signal in dBm, Car uptime and
+  Missed ticks as plain text. Fresh zero counters share a single 0. A missed
+  tick identifies its task, and unavailable readings show a dash. The status
+  rail shows the vehicle mode, a distinct run state and active holds. A
+  waiting, stale or offline connection is visible when it needs attention.
+- Start, Left, Straight, Right, U-turn, Reset, Stop and E-stop are directly accessible
+  in the navbar. The last-reported safety condition and recovery action align
+  to the right of the command row on a laptop. Start acknowledges recoverable
+  faults and begins IMU calibration. E-stop sends immediately when enabled.
+  Stop cancels movement and keeps the dashboard history. Reset opens a confirmation
+  popup. An accepted onboard Reset clears route state and starts a new dashboard
+  session, including the trace, frames, events and wheel plots. Vehicle uptime and
+  bridge recordings survive. A rejected or unconfirmed request preserves the session.
+  Normal Start uses continuous floor. The **Stop at obstacles** switch selects a stationary survey for that run.
+  Either the floor label or the switch changes the selection. After a stationary
+  obstacle profile, the rail explains how to select a continuous-floor detour.
+  The calibration hold tells the operator to keep the car level and still.
+  A recorded START refusal for unavailable attitude appears with that hold.
+  Physics reports unknown attitude until the car has a calibrated reference.
+- The controls require a connected command service and fresh vehicle status.
+  Stale or offline telemetry disables every command and dismisses pending
+  confirmations. The send handler checks status age again when pressed.
+  The navbar distinguishes an initial wait from expired readings and clears
+  the current mode when stale. An emergency latch requires a vehicle reboot.
+- At 1280 × 800, Course trace and Activity share the first column, Line and
+  Obstacle the middle column, and Motion, Physics and Faults the right column.
+  Orientation controls sit at the end of the course header. The Course card
+  is 372 px tall with a 216 px plot throughout the three-column layout.
+  The map fits the recorded route within that plot. Activity is 280 px tall
+  on three-column screens. Events and Frames scroll inside the card.
+  Below 1120 px the instruments share one column. Below 760 px the cards
+  form one column.
+- Course shows measured speed in mm/s alongside distance, elapsed sample
+  time and average speed. A measured stop reads “Speed 0 mm/s”, an expired
+  sample reads “Last speed” and an unavailable speed reads “Speed --”.
+  Travel totals cover “This run” after a recorded START, or “Recorded” when
+  the retained history starts mid-run.
+- Activity holds Events and Frames. Event rows show the title, timestamp
+  and distance. A pickup and its applied motion hold can share a row. Selecting
+  it opens the individual records. Separate commands and concurrent holds keep
+  their own rows. Select a row for the event source and full detail. A course
+  marker selects the same event. Nonzero event counts appear in their
+  instrument cards. Motion shows turns and stops, Line shows barcode and
+  search activity, Obstacle shows encounters and bypasses, Physics shows
+  humps and lifts, and Faults shows recorded fault events.
+- The Line card owns live IR, decoder state and firmware counters. The
+  Junction cell leads with the direction or maneuver. Activity owns the
+  timestamped barcode event history. Obstacle places the sonar fan beside
+  its legend, current measurements and recorded bearings. Below 560 px the
+  readings stack under the fan. The scan distinguishes a live ping from an
+  earlier measured sweep.
+- Activity tab Frames shows the newest 5,000 retained bridge receipts across
+  firmware runs. Pages follow the live stream until an older page or a frame is
+  selected. Live receipts use the full width of Activity. Selecting a physics
+  receipt opens its timestamped fields in the Physics card. Return to live
+  restores the current gauges and keyboard focus to the selected receipt.
+  Other packet types open their fields alongside the receipt list. The list
+  and fields scroll within Activity while the pager stays visible.
+- Each web tab list supports arrows, Home and End and has one tab in the keyboard
+  order. Native tabs announce the selected state. Existing Course links open
+  the trace. The legacy Systems URL opens the console with its inline readings,
+  and specific drive or fault links open the corresponding card. Map and event
+  inspection share the selection.
+- One trace follows the car from the first observed pose through faults,
+  stops and restarts of motion. A gap holds the last plotted location. The
+  current-position arrow returns when measurements support another step.
+- Line and barcode shows the latest decoded letter, “None” for an explicit
+  empty firmware value, or “Unknown” before any decoder evidence. Read issues
+  and dropped edges are separate counters.
+- Edges places a dot at the car's estimated axle. Its short heading line turns
+  with the car. A located survey or hug stays fixed in course coordinates as the
+  car passes it. The dashed connector measures from the axle to the nearest
+  supported edge. With both hug dimensions the view draws an estimated rectangle
+  centered on the approach heading. With width alone it shows the near face.
+  Ticks on a surveyed contour mark observed bounds. A survey without a known
+  course pose shows the car at its scan-time origin, labelled “At scan.”
+- Sonar plots the sweep on a polar grid with a 600 mm minimum range and six
+  distance rings. Short strokes mark valid ranges. Rim marks retain each
+  open or unusable bearing. The recorded sweep keeps its starting heading.
+  A separate live servo beam shows the current aim while the reading is fresh.
+- The moving bypass reports its stationary front fan. Edges joins contiguous
+  measured returns and leaves unknown bearings open. When a later scan has no
+  supported face, the card dates the last mapped one. Wall-follow mode appears
+  in the hug status while active.
+- A scan with a supported pose contributes its observed faces to the course
+  trace. They persist across later sweeps, holds, faults and same-boot tab
+  reloads. The latest located hug estimate also survives an idle reload after
+  the heartbeat confirms the same boot. A confirmed reboot clears both with
+  the trace. The last near return appears as a distance.
+- The navbar reports stale telemetry once. Cards retain their last readings.
+- The compact shell and main scroll view use 12px horizontal padding.
 - Group related items at 8px to 12px. Separate sections at 32px or 80px.
 - Do not use the same gap everywhere.
 - Do not let body text touch the viewport edge.
@@ -216,7 +287,7 @@ Base unit: 4px.
 
 ### Button
 
-- Primary: Signal Blue fill, white text, 59px pill radius, 44px minimum
+- Primary buttons use Signal Blue fill, white text, 8px corners and a 44px minimum
   height, 20px horizontal padding.
 - Secondary: transparent fill, 1px border, text color, same radius and target.
 - Danger is a semantic state, not a separate brand color. Use the danger token
@@ -233,10 +304,10 @@ Base unit: 4px.
 
 ### Status pill
 
-- Short label, 12px 600, with a 6px dot. No fill and no border: a filled pill
-  inside a panel is a card inside a card.
-- Always pair the color with text: `HEALTHY`, `FAULT`, `STALE`, `OFFLINE`,
-  `READY`, `RUNNING`, `STOPPED`.
+- Short text label, 12px 600. The state word carries the meaning.
+- Pair status colors with meaningful text such as `STALE`, `OFFLINE`,
+  `READY`, `RUNNING` or `STOPPED`. Fresh routine operation needs only the
+  vehicle's reported state.
 - Do not use color alone. Do not add a decorative pulsing dot.
 
 ### Metric row
@@ -246,21 +317,36 @@ Base unit: 4px.
 - Do not use the hero-metric template: huge number, tiny label, supporting
   stats, gradient accent.
 
-### Fault tile
+### Wheel history
 
-- Sixteen tiles in bit order, four by four. Each shows the bit, the name and a
-  state word: `OK`, `SET`, `WAS SET` (set since the last RESET) or `NO DATA`.
-- A set fault adds its severity word (`CRITICAL` or `WARN`). Only a critical set
-  fault uses the danger colour.
-- Under the grid: what to do for each set fault. Empty state: `No active faults`.
-- Do not show a fault bit as an unlabeled number.
+Motion gives each wheel its own signed speed graph. Both use the same speed scale,
+zero baseline and ten-second time window. Sequence gaps, invalid samples and
+reboots break each wheel's trace.
+Each wheel also shows the latest measured speed, target, and applied duty.
+An idle controller with a zero target and nonzero wheel speed reads “Zero target”.
+
+### Fault list
+
+- The header shows the active count, past count, clear state or stop cause.
+  Keep the marker beside the Matrix and Health tabs. The detail slot
+  stays in place and shows the hovered, focused or selected fault, then the
+  sonar flags or a default message.
+- Activity’s Frames view preserves the original bit masks.
 
 ### Panel states
 
 - Every panel has four states besides its data: loading (waiting for the first
   packet), empty (no data and the link is down), stale (the packet is older than
-  its limit; the values stay, dimmed) and error. Never show zeros for a packet
+  its limit and its readings remain visible) and error. Never show zeros for a packet
   that has not arrived.
+- Sensor rates use the difference between two cumulative diagnostic samples
+  divided by elapsed device time. The first sample after a boot establishes the
+  baseline. A delayed sample within the rate window leaves the latest sample
+  and baseline in place. A receipt gap long enough for the device timer to
+  cycle fully starts a new baseline without deriving a rate for the gap. The
+  longest recorded line recovery comes from retained line-found events.
+  Recordings made with the legacy diagnostic layout still show their reported
+  sensor rates.
 
 ### Event row
 
@@ -274,61 +360,64 @@ Base unit: 4px.
   only accent in it. The arc beside the car shows the turn rate.
 - Level gauges: a side view for pitch and a rear view for roll, with ticks at
   the lift envelope.
-- Scan plot: a half disc, rings every 100 mm. A filled dot is an echo, a ring on
-  the edge is open space, a cross on the edge is a bad echo.
-- Course trace: dead-reckoned from the odometer and the heading, north up. It
-  says that it drifts and that it is not a map. A reverse draws backward along
-  the heading. The odometer falls in a reverse, so it can name two places: the
-  box is drawn at the newest trail point with its stamp's timestamp (status
-  frames of one bridge burst can share a timestamp), and a mark at the trail
+- The edge drawing uses the same odometry and contact pose as Course. Open,
+  missing and unusable samples leave a gap in a surveyed contour.
+- Course trace: dead-reckoned from the odometer and the heading. Course has
+  North up and Car up views. Car up rotates the trace, events and obstacle
+  together in the dashboard and shows north relative to the car's heading.
+  A square metric grid shares the course origin and rotates with those features.
+  Each square spans the distance on the scale bar as the map fits the run.
+  Travel segments are colored by recorded speed. Dashed segments mark unknown
+  speed where the vehicle position is known.
+  Without a current heading the view uses North up. A reverse draws backward along
+  the heading. The odometer falls in a reverse, so it can name two places.
+  A registered scan keeps its sampled trail point even when status frames
+  from one bridge burst share a timestamp. A mark is drawn at the trail
   segment nearest its packet time in trail order that spans its odometer. An event older than
   the trail lands on the first segment that spans its odometer, the first pass;
   a mark whose odometer no segment spans is not drawn. The
   obstacle a hug found is a box ahead of the car's pose where the hug first
   read the face, on the heading of the contact; a side with no measured size is
-  dashed. The pose is the newest status point at or before the obstacle frame
-  (up to 200 ms old). There is no box until the face is read. It stays after
-  the hug ends, and is dropped, not moved to another pass, when its stamp's
-  point leaves the capped trail. The trail and the box restart on a boot event,
-  an odometer jump up of more than 5000 mm or drop of more than 500 mm (the
-  longest reverse is the 250 mm hug back-off), and a heartbeat with a new
-  `run_id` or a smaller `uptime_s` (not when an odometer restart since the last
-  heartbeat already began the new trail); the events stay unless the boot event
-  came.
-  A restart sets the trail start time, and no mark is drawn for an event before
-  it, so the events of the run before do not land on the new trail by odometer.
-  Known limits: new-run status frames whose odometer drops 500 mm or less
-  before the next heartbeat join the old trail until the heartbeat restart
-  wipes them. The cut is by packet time with `<`, so an old-run event with the
-  same millisecond as the restart packet keeps its mark, and a new-run event
-  that arrives before the packet that detects the restart loses it. The
-  heartbeat skip checks when an odometer restart happened, not why: any restart
-  after the previous heartbeat (a drop over 500 mm that is not a reboot, a jump
-  glitch, or a second reboot) hides a real reboot the heartbeat would have
-  caught, for longer than 1 s when heartbeats are lost, and the old-run points
-  stay on the trail until the next restart. The longest reverse is 250 mm, so a
-  normal reverse never triggers it. If both the IDLE and the CONTACT frame
-  between two hugs are lost, they merge into one box.
+  dashed. The contact and first face each use the newest available status point
+  at or before their obstacle frame (up to 200 ms old). Without either pose the box
+  stays off the map for that hug. An anchored box stays at its recorded pose.
+  The trace starts over on a firmware boot event or heartbeat evidence of
+  reboot (a changed boot ID or an uptime rollback inconsistent with timer
+  wraparound). Queued boot evidence for the same startup counts once. Pre-boot events stay off the new map.
+  Faults, STOP/START, missing samples and odometer discontinuities keep the
+  original coordinate frame. Unsupported travel contributes no displacement.
+  Older samples are simplified once the trail reaches 6,000 points. The start,
+  current pose and receipt-linked obstacle and event anchors stay in that frame.
+  A web tab saves its observed trail on page exit. On reload, a fresh
+  heartbeat confirming the same car boot allows the tab to merge that trail
+  with bridge history. Current instruments and commands use the new connection.
+  A new tab can reconstruct the travel covered by retained bridge telemetry.
 - SVG text uses the page font and stays at or above 12 px after scaling.
 
 ### Banner
 
-- Persistent for offline, stale, emergency latch, and command failure.
+- Persistent for offline, emergency latch, and command failure. If telemetry
+  goes stale, a reported safety condition keeps its notice marked last reported.
 - Text label and a clear recovery action.
 - Do not use a toast for a safety condition.
 
 ### Confirmation dialog
 
-- Action, target, consequence, Cancel, Confirm.
-- Confirm is the single primary button.
-- Cancel is secondary.
-- Use only for destructive commands. Do not use a modal for navigation or
-  information.
+- Center the confirmation over the instruments and dim that area. Keep the
+  command toolbar available above it. Name the command and explain the
+  consequence of Start. Give Cancel initial focus and return focus to the
+  trigger on dismissal. Escape, native Back and a tap on the backdrop dismiss
+  the popup.
+- The confirmation contains Cancel and Confirm. E-stop has one persistent
+  control in the navbar. A fresh E-stop sends immediately and dismisses the
+  pending command.
 
 ## 6. Motion
 
 - Use exponential ease-out only.
 - Animate transform and opacity only.
+- Ease the course viewport and current pose between live updates. Snapshot
+  safety states, lost pose, and reduced-motion mode update immediately.
 - No bounce, elastic, marquee, blinking cursor, or width/height animation.
 - Pulse only when it represents genuinely changing live data.
 - No image hover transforms.
@@ -377,3 +466,19 @@ Base unit: 4px.
 The negative prompt covers all 62 Impeccable detector rules: 31 slop and 31
 quality. This file defines the positive system. The negative prompt defines
 what not to do. Both apply.
+
+## 10. Android preview
+
+The `preview` profile builds a standalone, internally distributed APK for
+`com.picocar.dashboard`. Link the dashboard to its Expo project and configure
+Android signing credentials before building. In that project's EAS `preview`
+environment, set `EXPO_PUBLIC_SERVICE_URL` to the bridge's HTTPS base URL and
+`EXPO_PUBLIC_LINK_URL` to its WSS endpoint. Both URLs are bundled as public
+configuration. Use a LAN hostname the test phone can resolve and a certificate
+it trusts. The preview profile keeps the insecure LAN opt-in disabled.
+[Expo APK profiles](https://docs.expo.dev/build-reference/apk/) · [Build environment variables](https://docs.expo.dev/eas/environment-variables/usage/)
+
+Run `eas build --platform android --profile preview` from `host/dashboard` to
+produce the signed APK. Verify the local Android bundle export before building.
+The physical smoke test uses the signed APK, ADB and a synthetic TLS bridge
+with Metro stopped.

@@ -19,6 +19,14 @@
 #define SETTLE_RUNS 200
 #define TURN_90_DPS 900
 
+/* Wheel speeds of the rise test: a car driving, a one-shot turn at its fast
+ * and slow pivot speeds, and a reversed search pivot. */
+#define RISE_DRIVE_UM_S   (150 * UM_PER_MM)
+#define RISE_REVERSE_UM_S LINE_SEARCH_UM_S
+#define RISE_PASSES_MAX   (100)
+#define RISE_HOLD_PASSES  (30)
+#define TURN_SETTLE_PASSES (20)
+
 static void step(drive_state_t * p_d, int16_t speed, int16_t turn, uint32_t dt,
                  int32_t * p_l, int32_t * p_r)
 {
@@ -276,7 +284,8 @@ static void test_follow_skips_slew(void)
 
 /* The follower asks for cruise as it starts: at boot, after a hug, after a
  * back-off and after a hold. The forward speed rises at the slew limit, so the
- * wheels do not spin; the turn of a spot search still comes at once. */
+ * wheels do not spin. The turn of a spot search rises the same way from the
+ * start speed, and slows at once. */
 static void test_follow_start_ramps(void)
 {
     drive_state_t d;
@@ -299,7 +308,52 @@ static void test_follow_start_ramps(void)
 
     drive_init(&d);
     drive_follow(&d, 0, TURN_90_DPS, STEP_MS, &l, &r);
+    assert(l == -DRIVE_START_MM_S * UM_PER_MM && r == DRIVE_START_MM_S * UM_PER_MM);
+    drive_follow(&d, 0, TURN_90_DPS, STEP_MS, &l, &r);
+    assert(r == (DRIVE_START_MM_S * UM_PER_MM) + rise && l == -r);
+    for (int i = 0; i < TURN_SETTLE_PASSES; i++)
+    {
+        drive_follow(&d, 0, TURN_90_DPS, STEP_MS, &l, &r);
+    }
     assert(l < -80 * UM_PER_MM && r > 80 * UM_PER_MM && l == -r);
+    int32_t const full = r;
+    drive_follow(&d, 0, TURN_90_DPS / 2, STEP_MS, &l, &r);
+    assert(r <= (full / 2) + 1 && r >= (full / 2) - 1 && l == -r);
+}
+
+/* Turn targets speed up at the slew limit and slow at once, so a pivot does
+ * not spin the wheels on paper and still stops on the tape. A pivot entered
+ * while driving stays mirrored; a reversed turn starts again from the start
+ * speed. */
+static void test_rise_targets(void)
+{
+    drive_state_t d = {RISE_DRIVE_UM_S, RISE_DRIVE_UM_S};
+    int32_t const rise = DRIVE_ACCEL_MM_S2 * (int32_t)STEP_MS;
+    int32_t const start = DRIVE_START_MM_S * UM_PER_MM;
+    int32_t l;
+    int32_t r;
+    int32_t last_r = 0;
+    int i;
+
+    drive_rise(&d, -LINE_TURN_FAST_UM_S, LINE_TURN_FAST_UM_S, STEP_MS, &l, &r);
+    assert(l == -start && r == start);
+    for (i = 0; (i < RISE_PASSES_MAX) && (r < LINE_TURN_FAST_UM_S); i++)
+    {
+        last_r = r;
+        drive_rise(&d, -LINE_TURN_FAST_UM_S, LINE_TURN_FAST_UM_S, STEP_MS, &l, &r);
+        assert(r - last_r <= rise && l == -r);
+    }
+    for (i = 0; i < RISE_HOLD_PASSES; i++)
+    {
+        drive_rise(&d, -LINE_TURN_FAST_UM_S, LINE_TURN_FAST_UM_S, STEP_MS, &l, &r);
+    }
+    assert(l == -LINE_TURN_FAST_UM_S && r == LINE_TURN_FAST_UM_S);
+    drive_rise(&d, -LINE_TURN_SLOW_UM_S, LINE_TURN_SLOW_UM_S, STEP_MS, &l, &r);
+    assert(l == -LINE_TURN_SLOW_UM_S && r == LINE_TURN_SLOW_UM_S);
+    drive_rise(&d, RISE_REVERSE_UM_S, -RISE_REVERSE_UM_S, STEP_MS, &l, &r);
+    assert(l == start && r == -start);
+    drive_rise(&d, 0, 0, STEP_MS, &l, &r);
+    assert(l == 0 && r == 0 && d.left_um_s == 0 && d.right_um_s == 0);
 }
 
 /* Both mirrored searches can pick up the opposite sensor while the encoders
@@ -425,9 +479,10 @@ int main(int argc, char * argv[])
     test_safety_stop_skips_slew();
     test_follow_skips_slew();
     test_follow_start_ramps();
+    test_rise_targets();
     test_follow_acquisition_after_pivot();
     test_pilot_stationary_targets();
     test_pilot_backoff_from_rest();
-    puts("test_pilot_drive: 16 tests passed");
+    puts("test_pilot_drive: 17 tests passed");
     return 0;
 }

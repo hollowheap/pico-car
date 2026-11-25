@@ -230,6 +230,21 @@
         "capture_loss": 164
       },
       "hex": "0e0ccbf9f7ab850424884c93e03855bbb5a4"
+    },
+    "status_pivot": {
+      "values": {
+        "speed_mms": 13760,
+        "odometer_mm": 1746502956,
+        "heading_ddeg": 45590,
+        "state": 65,
+        "mode": 117,
+        "faults": 9828,
+        "seq": 42579,
+        "line_bits": 56,
+        "hold_mask": 92,
+        "pivot_scale_pct": 139
+      },
+      "hex": "35c06819852cb21641752664a653385c8b"
     }
   }
 }

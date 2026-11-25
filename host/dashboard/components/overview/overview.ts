@@ -1,4 +1,4 @@
-import type { LinkSnapshot, LinkStatus } from '../../lib/link';
+import { snapshotClockOffset, type LinkSnapshot, type LinkStatus } from '../../lib/link';
 import { FAULT_BITS as GENERATED_FAULT_BITS } from '../../lib/schema.generated';
 import { headingDegrees } from '../../lib/schema';
 
@@ -32,8 +32,8 @@ export function buildOverview(
   staleAfterMs = 1500,
 ): Overview {
   const lastStatus = snapshot.lastStatus ?? null;
-  const age =
-    lastStatus === null ? null : Math.max(0, nowMs - lastStatus.timestamp);
+  const age = lastStatus === null ? null :
+    Math.max(0, nowMs + snapshotClockOffset(snapshot, lastStatus) - lastStatus.timestamp);
   const statusPacket = lastStatus?.values ?? null;
   const faults = statusPacket === null ? [] : faultNames(statusPacket.faults ?? 0);
 

@@ -5,6 +5,7 @@
 
 #include "health_core.h"
 #include "motion/motion.h"
+#include "platform/units.h"
 #include "telemetry/wire_schema.h"
 
 void liveness_init (liveness_t * p_live, uint16_t required_mask)
@@ -81,6 +82,42 @@ bool health_motion_timing_fault (uint8_t state, uint8_t fault)
            ((TELEMETRY_MOTION_FAULT_EXPIRED == fault) || (TELEMETRY_MOTION_FAULT_GAP == fault));
 }
 
+void timing_watch_init (timing_watch_t * p_watch)
+{
+    p_watch->fault_ms   = 0U;
+    p_watch->faults     = 0U;
+    p_watch->b_fault    = false;
+    p_watch->b_terminal = false;
+}
+
+bool timing_watch_update (timing_watch_t * p_watch, bool b_fault, uint32_t dt_ms)
+{
+    if (b_fault && !p_watch->b_fault)
+    {
+        p_watch->fault_ms = dt_ms;
+        if (p_watch->faults < UINT8_MAX)
+        {
+            p_watch->faults++;
+        }
+    }
+    else if (b_fault && (p_watch->fault_ms <= MOTION_TIMING_RECOVERY_MS))
+    {
+        p_watch->fault_ms += dt_ms;
+    }
+    else
+    {
+        /* No open fault, or the open one is already past its window. */
+    }
+    p_watch->b_fault = b_fault;
+    if (b_fault && ((p_watch->faults > MOTION_TIMING_FAULTS_MAX) ||
+                    (p_watch->fault_ms > MOTION_TIMING_RECOVERY_MS)))
+    {
+        p_watch->b_terminal = true;
+    }
+
+    return p_watch->b_terminal;
+}
+
 void progress_init (progress_t * p_prog)
 {
     p_prog->last_mm   = 0U;
@@ -142,7 +179,6 @@ bool stuck_update (stuck_t * p_stuck, bool b_active, uint32_t edges, uint32_t tr
     return b_new;
 }
 
-#define DRIVE_PERCENT_BASE (100)
 #define DRIVE_RATIO_SCALE  (1000000)
 
 static int32_t abs32 (int32_t value)
@@ -172,16 +208,19 @@ void health_drive_init (drive_t * p_drive)
     p_drive->base_ms     = 0U;
     p_drive->free_run    = 0U;
     p_drive->busy_run    = 0U;
+    p_drive->load_run    = 0U;
     p_drive->b_crossed   = false;
     p_drive->b_free      = false;
+    p_drive->b_loaded    = false;
 }
 
 /* The faster-commanded wheel must turn faster. */
 static void drive_vote (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms)
 {
-    int32_t const gap_t = abs32 (p_in->target_um_s[0]) - abs32 (p_in->target_um_s[1]);
-    int32_t const gap_s = abs32 (p_in->speed_um_s[0]) - abs32 (p_in->speed_um_s[1]);
-    uint32_t      idx   = 0U;
+    int32_t const gap_t       = abs32 (p_in->target_um_s[0]) - abs32 (p_in->target_um_s[1]);
+    int32_t const gap_s       = abs32 (p_in->speed_um_s[0]) - abs32 (p_in->speed_um_s[1]);
+    uint32_t      idx         = 0U;
+    bool          b_disagreed = false;
 
     if ((abs32 (gap_t) >= DRIVE_TARGET_GAP_UM_S) && (abs32 (gap_s) >= DRIVE_SPEED_GAP_UM_S))
     {
@@ -191,7 +230,7 @@ static void drive_vote (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_
         }
         else
         {
-            p_drive->disagree_ms = add_ms (p_drive->disagree_ms, dt_ms);
+            b_disagreed = true;
         }
     }
     /* A wheel that turns against its command also disagrees. */
@@ -201,8 +240,12 @@ static void drive_vote (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_
             (abs32 (p_in->speed_um_s[idx]) >= DRIVE_SPEED_GAP_UM_S) &&
             (sign3 (p_in->target_um_s[idx]) != sign3 (p_in->speed_um_s[idx])))
         {
-            p_drive->disagree_ms = add_ms (p_drive->disagree_ms, dt_ms);
+            b_disagreed = true;
         }
+    }
+    if (b_disagreed)
+    {
+        p_drive->disagree_ms = add_ms (p_drive->disagree_ms, dt_ms);
     }
 }
 
@@ -213,7 +256,7 @@ static bool wheel_on_target (const drive_in_t * p_in, uint32_t idx)
     int32_t const err    = abs32 (p_in->speed_um_s[idx] - target);
 
     return (abs32 (target) >= DRIVE_TARGET_MIN_UM_S) && (sign3 (target) == sign3 (p_in->speed_um_s[idx])) &&
-           ((err * DRIVE_PERCENT_BASE) <= (abs32 (target) * DRIVE_TRACK_PERCENT));
+           ((err * PERCENT) <= (abs32 (target) * DRIVE_TRACK_PERCENT));
 }
 
 /* Duty permille per m/s. */
@@ -289,6 +332,29 @@ static void drive_free (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_
     }
 }
 
+static bool wheel_loaded (const drive_t * p_drive, const drive_in_t * p_in, uint32_t idx)
+{
+    int32_t const target = p_in->target_um_s[idx];
+    uint64_t const duty_scaled = (uint64_t) (uint32_t) abs32 (p_in->duty_pm[idx]) * (uint64_t) DRIVE_RATIO_SCALE;
+    uint64_t const need_scaled = (uint64_t) p_drive->base[idx] * (uint64_t) (uint32_t) abs32 (target);
+
+    return (target >= DRIVE_LOAD_TARGET_MIN_UM_S) && (p_in->duty_pm[idx] > 0) &&
+           ((p_in->speed_um_s[idx] * PERCENT) < (target * DRIVE_LOAD_SPEED_PERCENT)) &&
+           (duty_scaled >= ((uint64_t) DRIVE_LOAD_DUTY_TIMES * need_scaled));
+}
+
+/* The baseline must be learnt before a heavy wheel means contact. */
+static void drive_load (drive_t * p_drive, const drive_in_t * p_in)
+{
+    bool const b_heavy = p_in->b_judge && (p_drive->base_ms >= DRIVE_BASE_MS) &&
+                         (wheel_loaded (p_drive, p_in, 0U) || wheel_loaded (p_drive, p_in, 1U));
+
+    p_drive->load_run = b_heavy ? (uint8_t) ((p_drive->load_run < UINT8_MAX) ? (p_drive->load_run + 1U)
+                                                                                : UINT8_MAX)
+                                : 0U;
+    p_drive->b_loaded = (p_drive->load_run >= DRIVE_LOAD_CHECKS);
+}
+
 bool health_drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t dt_ms)
 {
     bool b_new = false;
@@ -315,6 +381,7 @@ bool health_drive_update (drive_t * p_drive, const drive_in_t * p_in, uint32_t d
         p_drive->disagree_ms = 0U;
         p_drive->window_ms   = 0U;
     }
+    drive_load (p_drive, p_in);
     drive_free (p_drive, p_in, dt_ms);
 
     return b_new;

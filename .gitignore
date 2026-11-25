@@ -21,5 +21,8 @@ __pycache__/
 # local dev-stack logs
 logs/
 
+# Local ground station deployment settings
+/deploy/.env
+
 # host test build
 build-tests/

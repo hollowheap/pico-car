@@ -51,6 +51,23 @@ static uint16_t tracking_limit (const pid_config_t * p_config, int32_t target_um
     return limit;
 }
 
+static bool feedforward_term (const pid_config_t * p_config, int32_t target_um_s,
+                              int64_t * p_result)
+{
+    int64_t friction = 0;
+
+    if (target_um_s > 0)
+    {
+        friction = (int64_t)p_config->ks_permille * PID_Q16;
+    }
+    else if (target_um_s < 0)
+    {
+        friction = -(int64_t)p_config->ks_permille * PID_Q16;
+    }
+    return multiply((int64_t)target_um_s, p_config->kv_q16, p_result) &&
+           add(*p_result, friction, p_result);
+}
+
 bool pid_init (pid_t * p_pid, const pid_config_t * p_config)
 {
     if ((p_pid == NULL) || (p_config == NULL) ||
@@ -97,6 +114,7 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     int64_t                       derivative     = 0;
     int64_t                       limit          = 0;
     int64_t                       sum            = 0;
+    int64_t                       feedforward    = 0;
 
     if (p_duty != NULL)
     {
@@ -124,7 +142,8 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     error = (int64_t)target_um_s - (int64_t)p_feedback->velocity_um_s;
     if (!multiply(error, next.config.kp_q16, &proportional) ||
         !multiply(error, next.config.ki_q16, &integral_delta) ||
-        !multiply(integral_delta, interval, &integral_delta))
+        !multiply(integral_delta, interval, &integral_delta) ||
+        !feedforward_term(&next.config, target_um_s, &feedforward))
     {
         return false;
     }
@@ -154,9 +173,9 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
             return false;
         }
     }
-    /* Derivative on measurement: P + I - D. Refuse INT64_MIN before negate. */
+    /* Derivative on measurement: P + I - D + feed-forward. Refuse INT64_MIN before negate. */
     if ((derivative == INT64_MIN) || !add(proportional, -derivative, &sum) ||
-        !add(sum, integral, &sum))
+        !add(sum, integral, &sum) || !add(sum, feedforward, &sum))
     {
         return false;
     }
@@ -164,7 +183,8 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     {
         /* Reject integration pushing further into saturation. */
         integral = clamp(next.integral_q16, limit);
-        if (!add(proportional, -derivative, &sum) || !add(sum, integral, &sum))
+        if (!add(proportional, -derivative, &sum) || !add(sum, integral, &sum) ||
+            !add(sum, feedforward, &sum))
         {
             return false;
         }

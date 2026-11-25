@@ -1,9 +1,13 @@
+import { fileURLToPath } from "node:url";
+
 export type BridgeConfig = {
   mqttUrl: string;
   username?: string;
   password?: string;
   topicPrefix: string;
   httpPort: number;
+  httpHost: string;
+  dashboardPath: string;
   schemaPath: string;
   historyPath: string;
   historyMaxRecords: number;
@@ -16,9 +20,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     username: env.MQTT_USERNAME,
     password: env.MQTT_PASSWORD,
     topicPrefix: env.MQTT_TOPIC_PREFIX ?? "car/PICO-CAR",
-    httpPort: Number(env.BRIDGE_HTTP_PORT ?? "8080"),
-    schemaPath: env.PROTOCOL_SCHEMA ?? "../../protocol/telemetry.yaml",
-    historyPath: env.BRIDGE_HISTORY_PATH ?? "history.jsonl",
+    httpPort: Number(env.BRIDGE_HTTP_PORT ?? "5281"),
+    httpHost: env.BRIDGE_HTTP_HOST ?? "127.0.0.1",
+    dashboardPath: fileURLToPath(new URL("../../dashboard/dist/", import.meta.url)),
+    schemaPath: env.PROTOCOL_SCHEMA ?? fileURLToPath(new URL("../../../protocol/telemetry.yaml", import.meta.url)),
+    historyPath: env.BRIDGE_HISTORY_PATH ?? fileURLToPath(new URL("../history.jsonl", import.meta.url)),
     historyMaxRecords: Number(env.BRIDGE_HISTORY_MAX_RECORDS ?? "10000"),
     historyMaxEvents: Number(env.BRIDGE_HISTORY_MAX_EVENTS ?? "2000"),
   };

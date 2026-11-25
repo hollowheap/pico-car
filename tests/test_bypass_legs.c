@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "pilot/hug.h"
 
 typedef struct
@@ -168,15 +169,17 @@ static void read_far_end(fixture_t * f, int side)
     wait_motion(f, LOOK_ECHO_OPEN, 0, 0, -side);
     turn_encoder(f, -side * 450);
     unsigned hits = 0;
+    unsigned pings = 0;
     for (unsigned i = 0; i < 50U && f->hug.breadth_mm == 0U; i++)
     {
         int const gaze = side * f->out.servo_deci;
         bool const hit = f->out.b_req && gaze >= -200 && gaze <= -100;
+        if (f->out.b_req) ++pings;
         tick(f, hit ? (int)LOOK_ECHO_VALID : (int)LOOK_ECHO_OPEN, hit ? 110 + (gaze + 200) / 10 : 0);
         if (hit) ++hits;
         assert(!f->out.speed_mm_s);
     }
-    assert(hits == 3 && f->hug.breadth_mm > 0);
+    assert(hits == 3 && pings <= 5U && f->hug.breadth_mm > 0);
     assert(f->hug.side_end_x_mm == f->hug.bypass.contact_x_mm + f->hug.breadth_mm);
     assert(side * (f->hug.bypass.last_hit_deci - f->hug.bypass.requested_head) == -100);
     wait_motion(f, LOOK_ECHO_OPEN, 0, 0, side);
@@ -538,9 +541,423 @@ static void guided_departure(int side)
     assert(!"no usable parallel heading inside the tape corridor");
 }
 
-int main(void)
+static void look_back_after_coast(int side)
 {
+    fixture_t f = {0};
+    contact(&f, side, false);
+    translate(&f, 82);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, side);
+    turn_encoder(&f, side * 900);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    translate(&f, 88);
+    tick(&f, LOOK_ECHO_OPEN, 0);
+    assert(f.hug.bypass.phase == BYPASS_LOOK_BACK);
+
+    /* The bridge logged a stopped heading 1.9–2.0 degrees short of sideways. */
+    turn_encoder(&f, -side * 20);
+    f.in.b_stationary = false;
+    tick(&f, LOOK_ECHO_VALID, 1993);
+    f.in.b_stationary = true;
+    f.forward_seq--;
+    tick(&f, LOOK_ECHO_VALID, 1993);
+    assert(!f.out.turn_deci_s && !f.out.speed_mm_s);
+    tick(&f, LOOK_ECHO_VALID, 70);
+    assert(!f.out.turn_deci_s && !f.out.speed_mm_s);
+    tick(&f, LOOK_ECHO_VALID, 1993);
+    assert(f.hug.bypass.phase == BYPASS_LOOK_BACK && f.out.turn_deci_s * side < 0);
+}
+
+static void off_center_guided_post(int side)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    f.in.b_line_left = true;
+    tick(&f, LOOK_ECHO_VALID, 210);
+    tick(&f, LOOK_ECHO_VALID, 210);
+    for (unsigned i = 0; i < 60U && !f.out.speed_mm_s; ++i)
+    {
+        int const bearing = side * f.out.servo_deci;
+        bool const hit = f.out.b_req && bearing <= -100;
+        tick(&f, LOOK_ECHO_VALID, hit ? 193 : 3700);
+    }
+    assert(f.out.speed_mm_s > 0 && f.hug.side == side);
+    f.in.b_line_left = false;
+    translate(&f, 72);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, side);
+    turn_encoder(&f, side * 900);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    /* Model both first looks missing the post and reaching the tape limit. */
+    translate(&f, 142);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -side);
+    turn_encoder(&f, -side * 900);
+    fixture_t missing_forward = f;
+    for (unsigned i = 0; i < 100U && hug_active(&missing_forward.hug); ++i)
+    {
+        tick(&missing_forward, LOOK_ECHO_NONE, 0);
+        assert(missing_forward.out.speed_mm_s == 0 && missing_forward.out.turn_deci_s == 0);
+        assert(missing_forward.hug.side == side);
+    }
+    assert(missing_forward.out.b_no_exit && !hug_active(&missing_forward.hug));
+    wait_motion(&f, LOOK_ECHO_VALID, 3500, 1, 0);
+    assert(f.hug.bypass.phase == BYPASS_SIDE_STEP);
+    translate(&f, 50);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -side);
+    turn_encoder(&f, -side * 450);
+    /* A distant return beyond the post supplies the clearance transition. */
+    for (unsigned i = 0; i < 40U && f.hug.bypass.phase == BYPASS_SIDE_FAN; ++i)
+    {
+        int const gaze = side * f.out.servo_deci;
+        int const range = gaze == -150 ? 146 : gaze == -100 ? 150 : gaze == -50 ? 165 : 1400;
+        tick(&f, LOOK_ECHO_VALID, range);
+        assert(f.out.speed_mm_s == 0 && f.hug.side == side);
+    }
+    assert(f.hug.bypass.phase == BYPASS_LEVEL && f.hug.breadth_mm > 0U);
+}
+
+static void side_fan_holds_through_aim_jitter(void)
+{
+    fixture_t f = {0};
+    contact(&f, 1, false);
+    translate(&f, 82);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, 1);
+    turn_encoder(&f, 900);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    translate(&f, 240);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -1);
+    turn_encoder(&f, -900);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    translate(&f, 120);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -1);
+    turn_encoder(&f, -450);
+    /* Settle on the first ray, then bounce 17 deci-deg (past AIM_TOL=15). */
+    tick(&f, LOOK_ECHO_OPEN, 0);
+    assert(f.out.b_req && f.out.turn_deci_s == 0);
+    tick(&f, LOOK_ECHO_VALID, 110);
+    assert(f.look.count == 1U);
+    turn_encoder(&f, -22);
+    tick(&f, LOOK_ECHO_VALID, 115);
+    assert(f.out.turn_deci_s == 0 && f.look.count >= 1U);
+}
+
+static void round_obstacle_look_back_without_reverse(void)
+{
+    fixture_t f = {0};
+    contact(&f, 1, false);
+    translate(&f, 82);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, 1);
+    turn_encoder(&f, 900);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    translate(&f, 240);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -1);
+    turn_encoder(&f, -900);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    translate(&f, 120);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -1);
+    turn_encoder(&f, -450);
+    /* First station sees the curved side of a round obstacle (all rays hit, no far end yet). */
+    for (unsigned i = 0; i < 40U && f.hug.bypass.phase == BYPASS_SIDE_FAN; i++)
+    {
+        int const gaze = f.out.servo_deci;
+        tick(&f, LOOK_ECHO_VALID, 120 + (gaze + 200) / 8);
+    }
+    assert(f.hug.bypass.phase == BYPASS_SIDE_STEP && f.hug.bypass.b_saw_side);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, 1);
+    turn_encoder(&f, 450);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    translate(&f, 70);
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -1);
+    turn_encoder(&f, -450);
+    /* Second station: forward-inward 45 deg fan is now all OPEN past the round obstacle. */
+    for (unsigned i = 0; i < 60U && f.hug.goal_head == -450; i++)
+    {
+        tick(&f, LOOK_ECHO_OPEN, 0);
+        assert(f.out.speed_mm_s >= 0);
+        if (f.out.turn_deci_s != 0) turn_encoder(&f, f.out.turn_deci_s > 0 ? 15 : -15);
+    }
+    /* Must pivot further inward (look-back to -90 deg), never reverse. */
+    assert(f.hug.goal_head == -900);
+    fixture_t missing = f;
+    for (unsigned i = 0; i < 150U && hug_active(&missing.hug); i++)
+    {
+        tick(&missing, LOOK_ECHO_NONE, 0);
+        assert(missing.out.speed_mm_s == 0 && missing.hug.breadth_mm == 0U);
+        if (missing.out.turn_deci_s != 0) turn_encoder(&missing, missing.out.turn_deci_s > 0 ? 15 : -15);
+    }
+    assert(missing.out.b_no_exit && !hug_active(&missing.hug));
+
+    fixture_t silent = f;
+    silent.drop_replies = true;
+    for (unsigned i = 0; i < 150U && hug_active(&silent.hug); i++)
+    {
+        tick(&silent, LOOK_ECHO_OPEN, 0);
+        assert(!silent.out.speed_mm_s);
+        if (silent.out.turn_deci_s != 0) turn_encoder(&silent, silent.out.turn_deci_s > 0 ? 15 : -15);
+    }
+    assert(silent.out.b_no_exit && !hug_active(&silent.hug));
+
+    for (unsigned i = 0; i < 80U && f.hug.bypass.phase != BYPASS_LEVEL; i++)
+    {
+        tick(&f, LOOK_ECHO_OPEN, 0);
+        assert(f.out.speed_mm_s >= 0);
+        if (f.out.turn_deci_s != 0) turn_encoder(&f, f.out.turn_deci_s > 0 ? 15 : -15);
+    }
+    assert(f.hug.bypass.phase == BYPASS_LEVEL && f.hug.breadth_mm == 0U);
+
+    fixture_t no_clear = f;
+    wait_motion(&no_clear, LOOK_ECHO_NONE, 0, 0, 1);
+    turn_encoder(&no_clear, 900);
+    for (unsigned i = 0; i < 100U && hug_active(&no_clear.hug); i++)
+    {
+        tick(&no_clear, LOOK_ECHO_NONE, 0);
+        assert(!no_clear.out.speed_mm_s && !no_clear.out.turn_deci_s);
+    }
+    assert(no_clear.out.b_no_exit && !hug_active(&no_clear.hug));
+
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, 1);
+    turn_encoder(&f, 900);
+    /* Clearance returns before the last measured turn's movement deadline. */
+    for (unsigned i = 0; i < 20U; i++)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        assert(f.hug.bypass.phase == BYPASS_LEVEL && !f.out.speed_mm_s && !f.out.b_no_exit);
+    }
+    wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
+    // Hold the wheel totals fixed until recovery asks for a sonar probe.
+    for (unsigned i = 0; i < 100U && !f.hug.bypass.b_probe; i++)
+    {
+        tick(&f, LOOK_ECHO_OPEN, 0);
+    }
+    assert(f.hug.bypass.b_probe);
+    f.drop_replies = true;
+    tick(&f, LOOK_ECHO_NONE, 0);
+    assert(f.out.b_req);
+    for (unsigned i = 0; i < 100U && hug_active(&f.hug); i++)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        assert(!f.out.speed_mm_s && !f.out.turn_deci_s);
+    }
+    assert(f.out.b_timeout && !hug_active(&f.hug));
+}
+
+static void test_frozen_leg_ends_at_deadline(void)
+{
+    fixture_t f = {0};
+    contact(&f, 1, false);
+    translate(&f, 2);
+    tick(&f, LOOK_ECHO_OPEN, 0);
+    assert(f.out.speed_mm_s > 0 && f.out.turn_deci_s == 0);
+    uint32_t const last_progress = f.in.now_ms;
+
+    f.in.b_stationary = false;
+    do
+    {
+        tick(&f, LOOK_ECHO_OPEN, 0);
+    } while (f.in.now_ms - last_progress < 1000U && f.out.speed_mm_s > 0);
+
+    assert(f.out.speed_mm_s <= 0 && "the frozen leg must relinquish its forward demand by 1000 ms");
+}
+
+static void test_clearance_wait_keeps_deadline(void)
+{
+    fixture_t f = {0};
+    contact(&f, 1, false);
+    translate(&f, 2);
+    tick(&f, LOOK_ECHO_OPEN, 0);
+    assert(f.out.speed_mm_s > 0);
+    uint32_t const progress_ms = f.in.now_ms;
+    while (f.in.now_ms - progress_ms < 840U)
+    {
+        tick(&f, LOOK_ECHO_OPEN, 0);
+        assert(f.out.speed_mm_s > 0);
+    }
+    f.in.b_stationary = true;
+    while (f.in.now_ms - progress_ms < 1160U)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        assert(!f.out.speed_mm_s && !f.out.b_req && f.out.b_stop);
+    }
+    tick(&f, LOOK_ECHO_OPEN, 0);
+    assert(f.out.speed_mm_s <= 0 && "a clearance wait cannot extend a frozen leg");
+}
+
+static void test_bypass_handoff_deadline(bool b_independent_hold, bool b_retreat)
+{
+    for (int side = -1; side <= 1; side += 2)
+    {
+        fixture_t f = {0};
+        contact(&f, side, false);
+        translate(&f, 2);
+        tick(&f, LOOK_ECHO_OPEN, 0);
+        assert(f.out.speed_mm_s > 0);
+        uint32_t const progress_ms = f.in.now_ms;
+        while (f.in.now_ms - progress_ms < 840U)
+        {
+            tick(&f, LOOK_ECHO_OPEN, 0);
+            assert(f.out.speed_mm_s > 0);
+        }
+        f.in.b_stationary = true;
+        f.in.b_other = true;
+        f.in.b_contact_backoff = !b_independent_hold;
+        f.in.b_independent_hold = b_independent_hold;
+        tick(&f, LOOK_ECHO_OPEN, 0);
+        while (f.in.now_ms - progress_ms < 1160U)
+        {
+            if (b_retreat && f.in.now_ms - progress_ms == 920U)
+            {
+                f.in.b_stationary = false;
+                translate(&f, -2);
+            }
+            tick(&f, LOOK_ECHO_OPEN, 0);
+            f.in.b_stationary = true;
+            assert(!f.out.speed_mm_s && !f.out.turn_deci_s);
+        }
+        f.in.b_other = false;
+        f.in.b_contact_backoff = false;
+        f.in.b_independent_hold = false;
+        for (unsigned i = 0U; i < 4U && !f.out.speed_mm_s; i++)
+        {
+            tick(&f, LOOK_ECHO_OPEN, 0);
+        }
+        assert((f.out.speed_mm_s > 0) == (b_independent_hold || b_retreat) &&
+               "only a real hold or measured retreat preserves the forward leg");
+    }
+}
+
+static void test_same_pose_cannot_repeat_fan(void)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    assert(f.out.b_req);
+    uint32_t const start = f.in.now_ms;
+    bool seen[(2 * OBSTACLE_SERVO_LIMIT_DECI / 50) + 1] = {false};
+    unsigned distinct = 0U;
+    unsigned repeats = 0U;
+    int last_request = -1;
+
+    while (f.in.now_ms - start < 1000U)
+    {
+        if (f.out.b_req && f.out.seq != last_request)
+        {
+            int const slot = (f.out.servo_deci + OBSTACLE_SERVO_LIMIT_DECI) / 50;
+            assert(f.out.servo_deci % 50 == 0 && slot >= 0 &&
+                   (unsigned)slot < sizeof(seen) / sizeof(seen[0]));
+            last_request = f.out.seq;
+            if (seen[slot])
+            {
+                ++repeats;
+            }
+            else
+            {
+                ++distinct;
+            }
+            seen[slot] = true;
+        }
+        tick(&f, LOOK_ECHO_NONE, 0);
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+    }
+    assert(repeats <= 1U && "a fixed pose permits at most one repeat of a fine-fan bearing");
+    assert(distinct <= 9U && "the fine-fan budget is independent of servo travel");
+}
+
+static void test_contact_fan_uses_measured_edge(int side, int open_from, int outer_bearing)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+
+    bool observed_outer_edge = false;
+    bool observed_open = false;
+    bool departed = false;
+    unsigned requests = 0U;
+    for (unsigned pass = 0U; pass < 30U; ++pass)
+    {
+        bool const requested = f.out.b_req != 0;
+        int const bearing = requested ? side * f.out.servo_deci : 0;
+        if (requested)
+        {
+            assert(!observed_outer_edge && "a measured edge must end the fine fan on either side");
+            ++requests;
+        }
+        bool const open = (bearing >= open_from);
+        bool const unknown = (bearing < 0);
+        tick(&f, open ? LOOK_ECHO_OPEN : unknown ? LOOK_ECHO_NONE : LOOK_ECHO_VALID,
+             open || unknown ? 0 : 205);
+        observed_open = observed_open || (requested && open);
+        observed_outer_edge = observed_outer_edge || (requested && bearing == outer_bearing);
+        if (f.out.speed_mm_s > 0)
+        {
+            departed = true;
+            break;
+        }
+        assert(!f.out.b_rejoined);
+    }
+    assert(observed_open && departed && requests <= 9U && "use the supported edge within the fixed fan budget");
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc == 2 && strcmp(argv[1], "frozen-leg-ends-at-deadline") == 0)
+    {
+        test_frozen_leg_ends_at_deadline();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "clearance-wait-keeps-deadline") == 0)
+    {
+        test_clearance_wait_keeps_deadline();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "contact-handoff-keeps-deadline") == 0)
+    {
+        test_bypass_handoff_deadline(false, false);
+        test_bypass_handoff_deadline(false, true);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "independent-hold-pauses-deadline") == 0)
+    {
+        test_bypass_handoff_deadline(true, false);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "same-pose-cannot-repeat-fan") == 0)
+    {
+        test_same_pose_cannot_repeat_fan();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "contact-fan-uses-measured-edge") == 0)
+    {
+        test_contact_fan_uses_measured_edge(1, 150, 200);
+        test_contact_fan_uses_measured_edge(-1, 150, 200);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "qualified-fan-reaches-outer-edge") == 0)
+    {
+        assert(OBSTACLE_SERVO_LIMIT_DECI >= 300 && "run this case with the qualified 30-degree cap");
+        test_contact_fan_uses_measured_edge(1, 250, 300);
+        test_contact_fan_uses_measured_edge(-1, 250, 300);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "contact-fan-preserves-unknown") == 0)
+    {
+        fixture_t f = {0};
+        contact(&f, 1, true);
+        memset(&f, 0, sizeof(f));
+        contact(&f, -1, true);
+        return EXIT_SUCCESS;
+    }
+    if (argc != 1)
+    {
+        return EXIT_FAILURE;
+    }
     no_unseen_corner();
+    test_clearance_wait_keeps_deadline();
+    test_bypass_handoff_deadline(false, false);
+    test_bypass_handoff_deadline(false, true);
+    test_bypass_handoff_deadline(true, false);
     /* On the right bend the protruding left reader sweeps into this echo.
      * The mirrored left bend clears it on the ordinary tire side. */
     for (unsigned left = 0U; left <= 1U; left++)
@@ -556,6 +973,8 @@ int main(void)
     }
     for (int side = -1; side <= 1; side += 2)
     {
+        look_back_after_coast(side);
+        off_center_guided_post(side);
         guided_departure(side);
         fixture_t unknown = {0};
         contact(&unknown, side, true);
@@ -574,5 +993,7 @@ int main(void)
     vanished_inside_nose(LOOK_ECHO_OPEN);
     vanished_inside_nose(LOOK_ECHO_NONE);
     blocked_departure();
+    side_fan_holds_through_aim_jitter();
+    round_obstacle_look_back_without_reverse();
     return 0;
 }

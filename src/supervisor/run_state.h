@@ -21,8 +21,8 @@ typedef enum
 {
     RUN_STATE_BOOT = 0,
     RUN_STATE_RUNNING,
-    RUN_STATE_STOPPED, /* boot, or an operator STOP, holds the car            */
-    RUN_STATE_HELD,    /* a barcode stop or a lift holds the car            */
+    RUN_STATE_STOPPED, /* boot, an operator STOP, or pickup awaiting START */
+    RUN_STATE_HELD,    /* barcode stop or acknowledged overturn */
     RUN_STATE_LATCHED  /* emergency stop, or overturn awaiting recovery */
 } run_state_t;
 
@@ -56,6 +56,7 @@ typedef struct
     bool b_operator; /* boot, or STOP from the dashboard or a button   */
     bool b_barcode;  /* STOP from a barcode                            */
     bool b_lift;     /* lifted or overturned: the lift hold is on      */
+    bool b_pickup;   /* confirmed pickup awaiting an operator START   */
     bool b_overturn; /* overturn awaiting operator recovery */
     bool b_righted_overturn; /* previous attitude latch awaiting physics recalibration */
     bool b_continuous_floor; /* floor selected by the last accepted START */

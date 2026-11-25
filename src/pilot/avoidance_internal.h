@@ -42,7 +42,7 @@ bool avoidance_backing_off(avoidance_t const * p_state);
 bool avoidance_recover(avoidance_t * p_state, avoidance_progress_t const * p_progress,
                        pilot_meas_t const * p_meas, pilot_cmd_t * p_cmd);
 avoidance_result_t avoidance_step(avoidance_t * p_state, pilot_meas_t const * p_meas,
-                                  uint16_t bend_radius_mm, bool b_inhibited,
+                                  uint16_t bend_radius_mm, int16_t drift_corr_um, bool b_inhibited,
                                   bool b_fresh_forward, bool b_backoff_done, pilot_cmd_t * p_cmd);
 
 #endif /* PILOT_AVOIDANCE_INTERNAL_H */

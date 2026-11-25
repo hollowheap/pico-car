@@ -6,8 +6,9 @@
 
 #include "platform/static_assert.h"
 
-#define MQTT_TX_BUFFER_SIZE 256u
-#define MQTT_RX_BUFFER_SIZE 128u
+/* Largest TX (profile PUBLISH or CONNECT) and RX (QoS 1 command) plus a quarter. */
+#define MQTT_TX_BUFFER_SIZE 160u
+#define MQTT_RX_BUFFER_SIZE 64u
 #define MQTT_DEFAULT_KEEPALIVE_S 30u
 
 /* Reply timeout and reconnect backoff. */
@@ -89,10 +90,10 @@ typedef struct
     uint8_t           tx_buffer[MQTT_TX_BUFFER_SIZE];
 } mqtt_client_t;
 
-/* 416 bytes beside nine pointers and the padded keepalive word, rounded up
+/* 256 bytes beside nine pointers and the padded keepalive word, rounded up
    to the pointer alignment. */
 STATIC_ASSERT (sizeof(mqtt_client_t) ==
-                   (((416U + (10U * sizeof(void *))) + (sizeof(void *) - 1U)) &
+                   (((256U + (10U * sizeof(void *))) + (sizeof(void *) - 1U)) &
                     ~(sizeof(void *) - 1U)),
                "mqtt_client_t size");
 

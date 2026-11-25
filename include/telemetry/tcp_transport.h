@@ -7,8 +7,9 @@
 #include "platform/static_assert.h"
 
 #define TCP_TRANSPORT_HOST_MAX      64u
-#define TCP_TRANSPORT_RX_CAPACITY  512u
-#define TCP_TRANSPORT_TX_CAPACITY  512u
+/* Power-of-two rings sized for one connection poll burst plus a quarter. */
+#define TCP_TRANSPORT_RX_CAPACITY  256u
+#define TCP_TRANSPORT_TX_CAPACITY  256u
 
 typedef enum
 {

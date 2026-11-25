@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "hump_detect.h"
 #include "imu_motion.h"
@@ -56,6 +57,31 @@
  * 5 samples (100 ms) always include a new magnetometer sample. */
 #define DEFAULT_DISAGREE_DPS     (15.0f)
 #define DEFAULT_DISAGREE_SAMPLES (5U)
+/* A line search pivots at 90 mm/s per wheel (about 96 deg/s) and sweeps 135
+ * degrees each way: 270 degrees of yaw range. A horizontal field under 0.05 G
+ * is not the Earth's. Guesses until measured on the car. */
+#define DEFAULT_LEARN_TURN_DPS   (30.0f)
+#define DEFAULT_LEARN_SPEED_MPS  (0.03f)
+#define DEFAULT_LEARN_SPAN_DEG   (240.0f)
+#define DEFAULT_LEARN_MIN_GAUSS  (0.05f)
+/* The field rate is an EMA, so it lags a new spin. Below half the encoder
+ * yaw the field is more likely disturbed than the wheels slipping that
+ * much. Guesses until measured on the car. */
+#define DEFAULT_WITNESS_SETTLE_S  (0.3f)
+#define DEFAULT_WITNESS_MIN_SCALE (0.5f)
+/* The pivot is level when the vertical board axis carries this share of g. */
+#define LEARN_LEVEL_SHARE        (0.95f)
+#define FIT_MIN_SAMPLES          (20U)
+/* fit_sum[]: x, y, xx, yy, xy, z, xz, yz, count, with z = xx + yy. */
+#define FIT_X   (0U)
+#define FIT_Y   (1U)
+#define FIT_XX  (2U)
+#define FIT_YY  (3U)
+#define FIT_XY  (4U)
+#define FIT_Z   (5U)
+#define FIT_XZ  (6U)
+#define FIT_YZ  (7U)
+#define FIT_N   (8U)
 
 static bool is_pos (float value)
 {
@@ -167,6 +193,129 @@ static bool compute_heading (const imu_motion_ctx_t * p_ctx,
     return true;
 }
 
+static float det3 (float a, float b, float c, float d, float e, float f,
+                   float g, float h, float i)
+{
+    return (a * ((e * i) - (f * h))) - (b * ((d * i) - (f * g))) + (c * ((d * h) - (e * g)));
+}
+
+/* Least-squares circle x^2 + y^2 = A x + B y + C through the pivot samples:
+ * the centre (A/2, B/2) is the hard-iron offset of the horizontal axes. */
+static void learn_offset (imu_motion_ctx_t * p_ctx)
+{
+    imu_motion_config_t * p_cfg = &p_ctx->cfg;
+    float const * s = p_ctx->fit_sum;
+    float const det = det3 (s[FIT_XX], s[FIT_XY], s[FIT_X], s[FIT_XY], s[FIT_YY], s[FIT_Y],
+                            s[FIT_X], s[FIT_Y], s[FIT_N]);
+
+    if (fabsf (det) > 0.0f)
+    {
+        float const a = det3 (s[FIT_XZ], s[FIT_XY], s[FIT_X], s[FIT_YZ], s[FIT_YY], s[FIT_Y],
+                              s[FIT_Z], s[FIT_Y], s[FIT_N]) / det;
+        float const b = det3 (s[FIT_XX], s[FIT_XZ], s[FIT_X], s[FIT_XY], s[FIT_YZ], s[FIT_Y],
+                              s[FIT_X], s[FIT_Z], s[FIT_N]) / det;
+        float const k = det3 (s[FIT_XX], s[FIT_XY], s[FIT_XZ], s[FIT_XY], s[FIT_YY], s[FIT_YZ],
+                              s[FIT_X], s[FIT_Y], s[FIT_Z]) / det;
+        float const cx = 0.5f * a;
+        float const cy = 0.5f * b;
+        float const r2 = k + (cx * cx) + (cy * cy);
+
+        if ((r2 >= (p_cfg->mag_learn_min_gauss * p_cfg->mag_learn_min_gauss)) &&
+            (r2 <= (p_cfg->mag_max_gauss * p_cfg->mag_max_gauss)))
+        {
+            p_cfg->mag_offset_g[p_ctx->fit_axis[0]] = cx;
+            p_cfg->mag_offset_g[p_ctx->fit_axis[1]] = cy;
+            p_ctx->offset_learnt = true;
+            /* Restart heading rate from the calibrated frame, not across the offset step. */
+            p_ctx->have_heading = false;
+            p_ctx->mag_rate_valid = false;
+            p_ctx->mag_rate_dps = 0.0f;
+            p_ctx->disagree_count = 0U;
+        }
+    }
+}
+
+/* Collect the horizontal field while the car pivots on level ground. */
+/* The encoders count a turn on the spot: fast yaw, little forward speed. */
+static bool on_spot_pivot (const imu_motion_config_t * p_cfg, const imu_motion_input_t * p_in,
+                           bool enc_valid, float enc_yaw)
+{
+    float const speed = 0.5f * (p_in->v_left_mps + p_in->v_right_mps);
+
+    return enc_valid && (fabsf (enc_yaw) >= p_cfg->mag_learn_turn_dps) &&
+           (fabsf (speed) <= p_cfg->mag_learn_speed_mps);
+}
+
+static void learn_pivot (imu_motion_ctx_t * p_ctx,
+                         const float p_acc[IMU_AXIS_COUNT],
+                         const imu_motion_input_t * p_in,
+                         bool enc_valid, float enc_yaw)
+{
+    const imu_motion_config_t * p_cfg = &p_ctx->cfg;
+    float const acc_norm = norm (p_acc);
+    uint8_t vertical = (uint8_t)IMU_AXIS_X;
+    uint8_t i = 0U;
+
+    for (i = 1U; i < IMU_AXIS_COUNT; i++)
+    {
+        if (fabsf (p_acc[i]) > fabsf (p_acc[vertical]))
+        {
+            vertical = i;
+        }
+    }
+    if (!p_cfg->mag_enabled || !on_spot_pivot (p_cfg, p_in, enc_valid, enc_yaw) ||
+        (fabsf (acc_norm - 1.0f) > p_cfg->heading_dev_g) ||
+        (fabsf (p_acc[vertical]) < (LEARN_LEVEL_SHARE * acc_norm)))
+    {
+        (void)memset (p_ctx->fit_sum, 0, sizeof (p_ctx->fit_sum));
+        p_ctx->fit_n = 0U;
+        p_ctx->fit_yaw_deg = 0.0f;
+        p_ctx->fit_yaw_lo = 0.0f;
+        p_ctx->fit_yaw_hi = 0.0f;
+        return;
+    }
+    if (0U == p_ctx->fit_n)
+    {
+        p_ctx->fit_axis[0] = (uint8_t)((vertical + 1U) % IMU_AXIS_COUNT);
+        p_ctx->fit_axis[1] = (uint8_t)((vertical + IMU_FIT_AXES) % IMU_AXIS_COUNT);
+    }
+    p_ctx->fit_yaw_deg += enc_yaw * p_in->dt_s;
+    p_ctx->fit_yaw_lo = fminf (p_ctx->fit_yaw_lo, p_ctx->fit_yaw_deg);
+    p_ctx->fit_yaw_hi = fmaxf (p_ctx->fit_yaw_hi, p_ctx->fit_yaw_deg);
+    if (p_in->mag_new)
+    {
+        float const raw[IMU_AXIS_COUNT] = { p_in->mx_g, p_in->my_g, p_in->mz_g };
+        float const x = raw[p_ctx->fit_axis[0]];
+        float const y = raw[p_ctx->fit_axis[1]];
+        float const z = (x * x) + (y * y);
+        float * sum = p_ctx->fit_sum;
+
+        sum[FIT_X] += x;
+        sum[FIT_Y] += y;
+        sum[FIT_XX] += x * x;
+        sum[FIT_YY] += y * y;
+        sum[FIT_XY] += x * y;
+        sum[FIT_Z] += z;
+        sum[FIT_XZ] += x * z;
+        sum[FIT_YZ] += y * z;
+        sum[FIT_N] += 1.0f;
+        if (p_ctx->fit_n < UINT16_MAX)
+        {
+            p_ctx->fit_n++;
+        }
+    }
+    if ((p_ctx->fit_n >= FIT_MIN_SAMPLES) &&
+        ((p_ctx->fit_yaw_hi - p_ctx->fit_yaw_lo) >= p_cfg->mag_learn_span_deg))
+    {
+        learn_offset (p_ctx);
+        (void)memset (p_ctx->fit_sum, 0, sizeof (p_ctx->fit_sum));
+        p_ctx->fit_n = 0U;
+        p_ctx->fit_yaw_deg = 0.0f;
+        p_ctx->fit_yaw_lo = 0.0f;
+        p_ctx->fit_yaw_hi = 0.0f;
+    }
+}
+
 static void update_mag (imu_motion_ctx_t * p_ctx,
                         const float p_acc[IMU_AXIS_COUNT],
                         const imu_motion_input_t * p_in)
@@ -239,6 +388,12 @@ void imu_motion_default_config (imu_motion_config_t * p_cfg)
         p_cfg->mag_timeout_s = DEFAULT_MAG_TIMEOUT_S;
         p_cfg->disagree_dps = DEFAULT_DISAGREE_DPS;
         p_cfg->disagree_samples = DEFAULT_DISAGREE_SAMPLES;
+        p_cfg->mag_learn_turn_dps = DEFAULT_LEARN_TURN_DPS;
+        p_cfg->mag_learn_speed_mps = DEFAULT_LEARN_SPEED_MPS;
+        p_cfg->mag_learn_span_deg = DEFAULT_LEARN_SPAN_DEG;
+        p_cfg->mag_learn_min_gauss = DEFAULT_LEARN_MIN_GAUSS;
+        p_cfg->witness_settle_s = DEFAULT_WITNESS_SETTLE_S;
+        p_cfg->witness_min_scale = DEFAULT_WITNESS_MIN_SCALE;
     }
 }
 
@@ -265,6 +420,10 @@ bool imu_motion_init (imu_motion_ctx_t * p_ctx,
              && is_pos (p_cfg->mag_alpha) && (p_cfg->mag_alpha <= 1.0f)
              && is_pos (p_cfg->mag_timeout_s) && is_pos (p_cfg->disagree_dps)
              && (p_cfg->disagree_samples >= 1U)
+             && is_pos (p_cfg->mag_learn_turn_dps) && is_pos (p_cfg->mag_learn_speed_mps)
+             && is_pos (p_cfg->mag_learn_span_deg) && is_pos (p_cfg->mag_learn_min_gauss)
+             && is_pos (p_cfg->witness_settle_s) && is_pos (p_cfg->witness_min_scale)
+             && (p_cfg->witness_min_scale < 1.0f)
              && (p_hump_cfg->fwd_axis <= HUMP_AXIS_Z)
              && ((1 == p_hump_cfg->fwd_sign) || (-1 == p_hump_cfg->fwd_sign));
     }
@@ -283,6 +442,16 @@ bool imu_motion_init (imu_motion_ctx_t * p_ctx,
         p_ctx->mag_rate_valid = false;
         p_ctx->mag_rate_dps = 0.0f;
         p_ctx->disagree_count = 0U;
+        (void)memset (p_ctx->fit_sum, 0, sizeof (p_ctx->fit_sum));
+        p_ctx->fit_n = 0U;
+        p_ctx->fit_axis[0] = (uint8_t)IMU_AXIS_X;
+        p_ctx->fit_axis[1] = (uint8_t)IMU_AXIS_Y;
+        p_ctx->fit_yaw_deg = 0.0f;
+        p_ctx->fit_yaw_lo = 0.0f;
+        p_ctx->fit_yaw_hi = 0.0f;
+        p_ctx->offset_learnt = false;
+        p_ctx->witness_s = 0.0f;
+        p_ctx->witness_dir = 0;
     }
 
     return ok;
@@ -351,6 +520,9 @@ static void fill_yaw_output (const imu_motion_ctx_t * p_ctx,
     p_out->mag_yaw_valid = p_ctx->mag_rate_valid;
     p_out->yaw_disagree = (p_ctx->disagree_count >= p_cfg->disagree_samples);
     p_out->heading_valid = p_ctx->have_heading && !p_out->yaw_disagree;
+    p_out->mag_offset_learnt = p_ctx->offset_learnt;
+    p_out->heading_gated = p_ctx->offset_learnt && p_out->heading_valid &&
+                           p_ctx->mag_rate_valid && enc_valid;
     p_out->heading_deg = p_out->heading_valid ? p_ctx->last_heading_deg : 0.0f;
     if (enc_valid)
     {
@@ -366,6 +538,35 @@ static void fill_yaw_output (const imu_motion_ctx_t * p_ctx,
     {
         p_out->yaw_rate_dps = 0.0f;
         p_out->yaw_src = IMU_YAW_NONE;
+    }
+}
+
+/* With the offset learnt, the field shows how far a pivot on the spot
+ * turned the body. Less than the encoders count is wheel slip. */
+static void witness_pivot (imu_motion_ctx_t * p_ctx, const imu_motion_input_t * p_in,
+                           imu_motion_output_t * p_out, bool enc_valid, float enc_yaw)
+{
+    const imu_motion_config_t * p_cfg = &p_ctx->cfg;
+    int8_t const dir = (enc_yaw > 0.0f) ? (int8_t)1 : (int8_t)-1;
+    float share = 0.0f;
+
+    p_out->pivot_scale = 0.0f;
+    if (!p_ctx->offset_learnt || !p_ctx->mag_rate_valid || !on_spot_pivot (p_cfg, p_in, enc_valid, enc_yaw))
+    {
+        p_ctx->witness_s = 0.0f;
+        p_ctx->witness_dir = 0;
+        return;
+    }
+    if (dir != p_ctx->witness_dir)
+    {
+        p_ctx->witness_s = 0.0f;
+        p_ctx->witness_dir = dir;
+    }
+    p_ctx->witness_s += p_in->dt_s;
+    share = p_ctx->mag_rate_dps / enc_yaw;
+    if ((p_ctx->witness_s >= p_cfg->witness_settle_s) && (share > 0.0f))
+    {
+        p_out->pivot_scale = fminf (fmaxf (share, p_cfg->witness_min_scale), 1.0f);
     }
 }
 
@@ -518,10 +719,12 @@ bool imu_motion_update (imu_motion_ctx_t * p_ctx,
         enc_yaw = ((p_in->v_right_mps - p_in->v_left_mps) / p_cfg->track_width_m)
                   * RAD_TO_DEG;
     }
+    learn_pivot (p_ctx, acc, p_in, enc_valid, enc_yaw);
     update_mag (p_ctx, acc, p_in);
 
     update_disagree (p_ctx, enc_valid, enc_yaw);
     fill_yaw_output (p_ctx, p_out, enc_valid, enc_yaw);
+    witness_pivot (p_ctx, p_in, p_out, enc_valid, enc_yaw);
 
     classify (p_ctx, p_sample, p_hump, p_in, p_out, acc_norm, fresh,
               wheels_ok);

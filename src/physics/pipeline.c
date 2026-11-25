@@ -364,6 +364,23 @@ static void pack_result (pipeline_t * p_pipe, pipeline_step_t * p_out,
     }
 }
 
+static void handle_imu_lost (pipeline_t * p_pipe)
+{
+    hump_recalibrate (&p_pipe->hump);
+    if ((ATTITUDE_LIFTED != p_pipe->attitude.state) &&
+        (ATTITUDE_OVERTURNED != p_pipe->attitude.state))
+    {
+        attitude_reset (&p_pipe->attitude);
+    }
+    else
+    {
+        attitude_interrupt_evidence (&p_pipe->attitude);
+    }
+    p_pipe->hump_travel_m = 0.0f;
+    p_pipe->hump_rejected = false;
+    p_pipe->last_motion = MOTION_CLASS_UNKNOWN;
+}
+
 bool pipeline_step (pipeline_t * p_pipe,
                        const float * p_acc_g,
                        const float * p_mag_g,
@@ -430,11 +447,7 @@ bool pipeline_step (pipeline_t * p_pipe,
         p_out->imu_lost = true;
         if (PIPELINE_LOST_CYCLES == p_pipe->failed_cycles)
         {
-            hump_recalibrate (&p_pipe->hump);
-            attitude_reset (&p_pipe->attitude);
-            p_pipe->hump_travel_m = 0.0f;
-            p_pipe->hump_rejected = false;
-            p_pipe->last_motion = MOTION_CLASS_UNKNOWN;
+            handle_imu_lost (p_pipe);
             event = true;
         }
         word = lost_word (p_pipe);

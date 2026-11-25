@@ -12,6 +12,8 @@
 #define MOTOR_PID_KP_Q16             (256U)
 #define MOTOR_PID_KI_Q16             (256U)
 #define MOTOR_PID_KD_Q16             (2U)
+#define MOTOR_PID_KS_PERMILLE        (0U)
+#define MOTOR_PID_KV_Q16             (0U)
 #define MOTOR_PID_INTERVAL_US        (100000U)
 #define MOTOR_PID_SAMPLE_AGE_US      (600000U)
 #define MOTOR_PID_BASE_DUTY_PERMILLE (400U)
@@ -46,6 +48,8 @@ ER motion_setup (ID motion_tid)
             .max_sample_age_us = MOTOR_PID_SAMPLE_AGE_US,
             .max_duty_permille = MOTOR_PID_DUTY_PERMILLE,
             .base_duty_permille = MOTOR_PID_BASE_DUTY_PERMILLE,
+            .ks_permille       = MOTOR_PID_KS_PERMILLE,
+            .kv_q16            = MOTOR_PID_KV_Q16,
         };
     }
     config.control.max_command_ttl_us  = MOTOR_COMMAND_TTL_US;

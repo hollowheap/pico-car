@@ -71,14 +71,14 @@ static void test_event_fields_and_ids (void)
    full queue of events refuses the next one. */
 static void test_event_is_qos1 (void)
 {
-    uint8_t  status[TELEMETRY_STATUS_WIRE_SIZE] = {0};
+    uint8_t  status[TELEMETRY_STATUS_PIVOT_WIRE_SIZE] = {0};
     uint8_t  frame[TELEMETRY_FRAME_MAX];
     unsigned stored = 0U;
     unsigned events = 0U;
 
     setup();
     while (telemetry_queue_push_packet((uint8_t)TELEMETRY_TOPIC_STATUS, status,
-                                       TELEMETRY_STATUS_WIRE_SIZE, 0U) == E_OK)
+                                       TELEMETRY_STATUS_PIVOT_WIRE_SIZE, 0U) == E_OK)
     {
         stored++;
         if (stored > 200U)
@@ -99,7 +99,7 @@ static void test_event_is_qos1 (void)
     for (unsigned i = 0U; i < stored + 5U; i++)
     {
         (void)telemetry_queue_push_packet((uint8_t)TELEMETRY_TOPIC_STATUS, status,
-                                          TELEMETRY_STATUS_WIRE_SIZE, 0U);
+                                          TELEMETRY_STATUS_PIVOT_WIRE_SIZE, 0U);
     }
     {
         unsigned seen = 0U;
@@ -142,7 +142,7 @@ static void test_try_event_on_contended_queue (void)
 static void test_try_event_preserves_full_queue (void)
 {
     /* Message buffer cost is 20 bytes including its header and padding. */
-    const uint16_t capacity = 51U;
+    const uint16_t capacity = (uint16_t)(TELEMETRY_QUEUE_BYTES / 20U);
     uint8_t        frame[TELEMETRY_FRAME_MAX];
     uint16_t       first = 0U;
     UW             drops = 0U;

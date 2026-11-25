@@ -1,0 +1,5 @@
+{"kind":"header","version":1,"build":"abc123","fixture":"servo","trial":"center-return"}
+{"kind":"servo","seq":0,"timeUs":100,"cue":"zero","pwmUs":1494,"requestedDeci":0,"effectiveDeci":0}
+{"kind":"servo","seq":1,"timeUs":200,"cue":"wing","pwmUs":1382,"requestedDeci":200,"effectiveDeci":200}
+{"kind":"reference","trial":"center-return","cue":"zero","source":"angle gauge","angleDeci":7}
+{"kind":"end","dropped":0}

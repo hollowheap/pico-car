@@ -77,6 +77,10 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
 uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
                                    uint16_t elem_width_um, barcode_info_t * p_info);
 
+/** Whether an element is too short to be a real element of a barcode whose
+ *  narrow width is held by `state`. */
+bool barcode_parser_is_glitch (barcode_parser_t const * state, uint16_t elem_width_um);
+
 #endif /* BARCODE_PARSER_H */
 
 /*** end of file ***/

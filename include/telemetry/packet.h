@@ -43,9 +43,10 @@ typedef struct
     uint8_t  mode;
     uint8_t  line_bits;
     uint8_t  hold_mask;
+    uint8_t  pivot_scale_pct; /* Measured body yaw relative to encoder yaw. 0 if unavailable. */
 } telemetry_status_t;
 
-STATIC_ASSERT (sizeof(telemetry_status_t) == 16U, "telemetry_status_t size");
+STATIC_ASSERT (sizeof(telemetry_status_t) == 20U, "telemetry_status_t size");
 
 /* 5 Hz. Wheels and the motion controller. */
 typedef struct

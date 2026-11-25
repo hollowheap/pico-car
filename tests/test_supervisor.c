@@ -463,11 +463,11 @@ static void test_lift_and_overturn (void)
 
     start_running (&ctx, &in);
 
-    /* Lifted: the lift hold goes on at once. */
+    /* A pickup immediately stops the run and holds both wheels. */
     in.b_lifted = true;
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
-    CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+    CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_rejected && (RUN_REJECT_LIFTED == out.reason));
@@ -478,7 +478,7 @@ static void test_lift_and_overturn (void)
     /* A lingering hump state cannot skip a level set-down calibration. */
     in.b_on_hump = true;
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_accepted && out.b_physics_recal && (0U == out.hold_mask));
@@ -496,8 +496,8 @@ static void test_lift_and_overturn (void)
         for (pass = 0U; pass < LONG_LEVEL_PASSES; pass++)
         {
             run_state_tick (&ctx, &in, &out);
-            CHECK (RUN_STATE_HELD == run_state_of (&ctx));
-            CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+            CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+            CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
             CHECK (!out.b_physics_recal);
         }
         run_state_command (&ctx,
@@ -634,7 +634,7 @@ static void test_reset_in_a_lift_waits_for_start (void)
     /* Lifted while running, set down, RESET, then level: held until START. */
     in.b_lifted = true;
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
     in.b_lifted = false;
     run_state_tick (&ctx, &in, &out);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_RESET, VEHICLE_SRC_TELEMETRY),
@@ -643,8 +643,8 @@ static void test_reset_in_a_lift_waits_for_start (void)
     for (pass = 0U; pass < (2U * LONG_LEVEL_PASSES); pass++)
     {
         run_state_tick (&ctx, &in, &out);
-        CHECK (RUN_STATE_HELD == run_state_of (&ctx));
-        CHECK (0U != out.hold_mask);
+        CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+        CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
     }
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
@@ -658,14 +658,14 @@ static void test_reset_in_a_lift_waits_for_start (void)
     {
         run_state_tick (&ctx, &in, &out);
     }
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_accepted && (RUN_STATE_RUNNING == run_state_of (&ctx)));
 }
 
-/* A critical task stalls: the motion permit lapses and the wheels stop. When
-   the task runs again the car does not drive on; START releases it. */
+/* A critical task stalls: motion brakes while the permit is lapsed,
+   cancels any active turn, and resumes in place when the permit renews. */
 static void test_stall_holds_until_start (void)
 {
     run_ctx_t    ctx;
@@ -675,18 +675,14 @@ static void test_stall_holds_until_start (void)
     start_running (&ctx, &in);
     in.b_permit_lapsed = true;
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
-    CHECK (MOTION_HOLD_OPERATOR == out.hold_mask);
-    CHECK (out.b_cancel_turn && out.b_obstacle_stop);
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+    CHECK (0U == out.hold_mask);
+    CHECK (out.b_cancel_turn);
 
     in.b_permit_lapsed = false;
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
-    CHECK (MOTION_HOLD_OPERATOR == out.hold_mask);
-
-    run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
-                       &in, &out);
-    CHECK (out.b_accepted && (RUN_STATE_RUNNING == run_state_of (&ctx)));
+    CHECK (RUN_STATE_RUNNING == run_state_of (&ctx));
+    CHECK (0U == out.hold_mask);
 }
 
 /* Nothing holds a running car by time: run_state has no link input, so a long
@@ -762,8 +758,8 @@ static void test_lift_reading_holds_on_first_tick (void)
     start_running (&ctx, &in);
     run_state_read_physics (&in, &phys);
     run_state_tick (&ctx, &in, &out);
-    CHECK (MOTION_HOLD_LIFT == out.hold_mask);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
+    CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
 }
 
 /* RESET reads the overturn now, not only the latch: a car that turned over
@@ -829,8 +825,8 @@ static void test_attitude_unknown_keeps_lift_hold (void)
     in.b_lifted           = false;
     in.b_attitude_unknown = true;
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
-    CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+    CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
 }
 
 /* A stall that lapses the motion permit: START waits until the permit is
@@ -1333,6 +1329,73 @@ static void test_drive_crossed (void)
     CHECK (1U == fired);
 }
 
+/* A wheel held well under its forward target with much more duty than the
+   grounded baseline asks pushes against something. */
+/* A crawl target above DRIVE_LOAD_TARGET_MIN_UM_S, a wheel at a quarter of
+ * it, and duties against a baseline learnt at BASE_UM_S with BASE_DUTY. The
+ * push duty is over DRIVE_LOAD_DUTY_TIMES the baseline need at the crawl. */
+#define LOAD_TARGET_UM_S (80000)
+#define LOAD_SLOW_UM_S   (LOAD_TARGET_UM_S / 4)
+#define LOAD_BASE_UM_S   (200000)
+#define LOAD_BASE_DUTY   (400)
+#define LOAD_BASE_PASSES (30U)
+#define LOAD_FREE_PASSES (5U)
+#define LOAD_FREE_DUTY   (180)
+#define LOAD_RISE_DUTY   (200)
+#define LOAD_PUSH_DUTY   (500)
+
+static void test_drive_loaded (void)
+{
+    drive_t  drive;
+    unsigned idx = 0U;
+
+    health_drive_init (&drive);
+    /* No baseline yet: a slow wheel with high duty is no contact. */
+    for (idx = 0U; idx < DRIVE_LOAD_CHECKS; idx++)
+    {
+        (void) drive_step (&drive, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_SLOW_UM_S, LOAD_SLOW_UM_S,
+                           LOAD_PUSH_DUTY, LOAD_PUSH_DUTY);
+    }
+    CHECK (!drive.b_loaded);
+    for (idx = 0U; idx < LOAD_BASE_PASSES; idx++)
+    {
+        (void) drive_step (&drive, LOAD_BASE_UM_S, LOAD_BASE_UM_S, LOAD_BASE_UM_S, LOAD_BASE_UM_S,
+                           LOAD_BASE_DUTY, LOAD_BASE_DUTY);
+    }
+    /* On target at the crawl: no contact. */
+    for (idx = 0U; idx < LOAD_FREE_PASSES; idx++)
+    {
+        (void) drive_step (&drive, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S,
+                           LOAD_FREE_DUTY, LOAD_FREE_DUTY);
+    }
+    CHECK (!drive.b_loaded);
+    /* Slow but with low duty (still speeding up): no contact. */
+    for (idx = 0U; idx < DRIVE_LOAD_CHECKS; idx++)
+    {
+        (void) drive_step (&drive, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_SLOW_UM_S, LOAD_SLOW_UM_S,
+                           LOAD_RISE_DUTY, LOAD_RISE_DUTY);
+    }
+    CHECK (!drive.b_loaded);
+    /* One wheel pushes for DRIVE_LOAD_CHECKS checks. */
+    (void) drive_step (&drive, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_SLOW_UM_S, LOAD_TARGET_UM_S,
+                       LOAD_PUSH_DUTY, LOAD_FREE_DUTY);
+    CHECK (!drive.b_loaded);
+    (void) drive_step (&drive, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_SLOW_UM_S, LOAD_TARGET_UM_S,
+                       LOAD_PUSH_DUTY, LOAD_FREE_DUTY);
+    CHECK (drive.b_loaded);
+    /* Free again. */
+    (void) drive_step (&drive, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S, LOAD_TARGET_UM_S,
+                       LOAD_FREE_DUTY, LOAD_FREE_DUTY);
+    CHECK (!drive.b_loaded);
+    /* Reverse targets are not judged. */
+    for (idx = 0U; idx < DRIVE_LOAD_CHECKS; idx++)
+    {
+        (void) drive_step (&drive, -LOAD_TARGET_UM_S, -LOAD_TARGET_UM_S, -LOAD_SLOW_UM_S, -LOAD_SLOW_UM_S,
+                           -LOAD_PUSH_DUTY, -LOAD_PUSH_DUTY);
+    }
+    CHECK (!drive.b_loaded);
+}
+
 /* The vote and window counts stop at UINT16_MAX instead of wrapping. */
 static void test_drive_counts_saturate (void)
 {
@@ -1528,6 +1591,8 @@ static void test_recalibrate (void)
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_accepted && out.b_physics_recal);
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY),
+                       &in, &out);
     in.b_on_hump = true;
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
@@ -1558,13 +1623,13 @@ static void test_recalibrate (void)
                        &in, &out);
     CHECK (out.b_rejected && (RUN_REJECT_LIFTED == out.reason));
     run_state_tick (&ctx, &in, &out);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
     in.b_lifted = false;
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     CHECK (out.b_accepted && out.b_physics_recal);
-    CHECK (RUN_STATE_HELD == run_state_of (&ctx));
-    CHECK (MOTION_HOLD_LIFT == out.hold_mask);
+    CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+    CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY),
                        &in, &out);
     run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_TELEMETRY),
@@ -1669,6 +1734,36 @@ static void test_motion_timing_fault (void)
     CHECK (!health_motion_timing_fault (MOTION_STATE_RUNNING, TELEMETRY_MOTION_FAULT_GAP));
 }
 
+#define TIMING_PASS_MS (20U)
+
+/* A timing fault that clears inside its window costs no reboot, until too
+   many have come since boot. One that stays past the window reboots. */
+static void test_motion_timing_watch (void)
+{
+    timing_watch_t watch;
+    uint32_t       elapsed = 0U;
+
+    timing_watch_init (&watch);
+    for (unsigned episode = 0U; episode < MOTION_TIMING_FAULTS_MAX; episode++)
+    {
+        for (elapsed = 0U; elapsed < MOTION_TIMING_RECOVERY_MS; elapsed += TIMING_PASS_MS)
+        {
+            CHECK (!timing_watch_update (&watch, true, TIMING_PASS_MS));
+        }
+        CHECK (!timing_watch_update (&watch, false, TIMING_PASS_MS));
+    }
+    CHECK (timing_watch_update (&watch, true, TIMING_PASS_MS));
+    CHECK (timing_watch_update (&watch, false, TIMING_PASS_MS));
+
+    timing_watch_init (&watch);
+    for (elapsed = 0U; elapsed < MOTION_TIMING_RECOVERY_MS; elapsed += TIMING_PASS_MS)
+    {
+        CHECK (!timing_watch_update (&watch, true, TIMING_PASS_MS));
+    }
+    CHECK (timing_watch_update (&watch, true, TIMING_PASS_MS));
+    CHECK (timing_watch_update (&watch, false, TIMING_PASS_MS));
+}
+
 typedef struct
 {
     const char * name;
@@ -1706,12 +1801,14 @@ static const test_case_t cases[] = {
     CASE(unknown_opcode),
     CASE(liveness),
     CASE(motion_timing_fault),
+    CASE(motion_timing_watch),
     CASE(liveness_boot_allowance),
     CASE(liveness_kick_range),
     CASE(liveness_wait_fits_budget),
     CASE(progress),
     CASE(stuck_sensor),
     CASE(drive_crossed),
+    CASE(drive_loaded),
     CASE(drive_counts_saturate),
     CASE(drive_free_wheels),
     CASE(drive_probe),

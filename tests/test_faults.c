@@ -84,9 +84,10 @@ static void test_level_word (void)
 
     system_fault_assign(FAULT_OWNER_LINE, FAULT_LINE_LOST_BIT, FAULT_LINE_LOST_BIT);
     CHECK(system_fault_get() == FAULT_LINE_LOST_BIT);
-    system_fault_assign(FAULT_OWNER_PHYSICS, FAULT_LIFTED_BIT, FAULT_LIFTED_BIT);
+    system_fault_assign(FAULT_OWNER_SUPERVISOR, FAULT_LIFTED_BIT, FAULT_LIFTED_BIT);
     system_fault_assign(FAULT_OWNER_SUPERVISOR, FAULT_ABNORMAL_RESET_BIT,
                         FAULT_ABNORMAL_RESET_BIT);
+    system_fault_assign(FAULT_OWNER_PHYSICS, FAULT_LIFTED_BIT, 0U);
     CHECK(system_fault_get() ==
           (FAULT_LINE_LOST_BIT | FAULT_LIFTED_BIT | FAULT_ABNORMAL_RESET_BIT));
 
@@ -159,7 +160,7 @@ static void test_undefined_bits_ignored (void)
 {
     reset_words();
     system_fault_assign(FAULT_OWNER_SUPERVISOR, 0xFFFFFFFFU, 0xFFFFFFFFU);
-    CHECK(system_fault_get() == (FAULT_TASK_STALLED_BIT | FAULT_ABNORMAL_RESET_BIT));
+    CHECK(system_fault_get() == (FAULT_LIFTED_BIT | FAULT_TASK_STALLED_BIT | FAULT_ABNORMAL_RESET_BIT));
     CHECK(0U == (system_fault_sticky_get() & ~FAULT_ALL_MASK));
     reset_words();
 }

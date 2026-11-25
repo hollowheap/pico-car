@@ -16,9 +16,9 @@
 #undef PBUF_POOL_SIZE
 #define PBUF_POOL_SIZE 4
 /* The heap holds copied TCP segments (TCP_SND_BUF, 1072 B, plus headers),
- * DHCP and DNS packets: under 2 KiB. */
+ * DHCP and DNS packets: under 2 KiB, plus a quarter margin. */
 #undef MEM_SIZE
-#define MEM_SIZE (4 * 1024)
+#define MEM_SIZE (3 * 1024)
 /* The live connection and the one in TIME_WAIT after a reconnect. */
 #define MEMP_NUM_TCP_PCB 2
 /* One name to resolve: the broker. */

@@ -1015,7 +1015,7 @@ static void test_config_readback_budget (void)
 
     calls = chip.calls;
     CHECK (!pipeline_config_readback (&pipe, &dev, 100U, 100U, 2U));
-    CHECK (1U == (chip.calls - calls));
+    CHECK (2U == (chip.calls - calls));
 
     chip.fail_kind = I2C_BUS_TIMEOUT;
     chip.fail_next = 1000U;

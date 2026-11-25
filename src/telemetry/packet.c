@@ -82,17 +82,18 @@ telemetry_pack_status (uint8_t * dst, const telemetry_status_t * p_src)
     {
         return 0u;
     }
-    put_i16 (dst, TELEMETRY_STATUS_OFF_SPEED_MMS, p_src->speed_mms);
-    put_u32 (dst, TELEMETRY_STATUS_OFF_ODOMETER_MM, p_src->odometer_mm);
-    put_u16 (dst, TELEMETRY_STATUS_OFF_HEADING_DDEG, p_src->heading_ddeg);
-    put_u8 (dst, TELEMETRY_STATUS_OFF_STATE, p_src->state);
-    put_u8 (dst, TELEMETRY_STATUS_OFF_MODE, p_src->mode);
-    put_u16 (dst, TELEMETRY_STATUS_OFF_FAULTS, p_src->faults);
-    put_u16 (dst, TELEMETRY_STATUS_OFF_SEQ, p_src->seq);
-    put_u8 (dst, TELEMETRY_STATUS_OFF_LINE_BITS, p_src->line_bits);
-    put_u8 (dst, TELEMETRY_STATUS_OFF_HOLD_MASK, p_src->hold_mask);
+    put_i16 (dst, TELEMETRY_STATUS_PIVOT_OFF_SPEED_MMS, p_src->speed_mms);
+    put_u32 (dst, TELEMETRY_STATUS_PIVOT_OFF_ODOMETER_MM, p_src->odometer_mm);
+    put_u16 (dst, TELEMETRY_STATUS_PIVOT_OFF_HEADING_DDEG, p_src->heading_ddeg);
+    put_u8 (dst, TELEMETRY_STATUS_PIVOT_OFF_STATE, p_src->state);
+    put_u8 (dst, TELEMETRY_STATUS_PIVOT_OFF_MODE, p_src->mode);
+    put_u16 (dst, TELEMETRY_STATUS_PIVOT_OFF_FAULTS, p_src->faults);
+    put_u16 (dst, TELEMETRY_STATUS_PIVOT_OFF_SEQ, p_src->seq);
+    put_u8 (dst, TELEMETRY_STATUS_PIVOT_OFF_LINE_BITS, p_src->line_bits);
+    put_u8 (dst, TELEMETRY_STATUS_PIVOT_OFF_HOLD_MASK, p_src->hold_mask);
+    put_u8 (dst, TELEMETRY_STATUS_PIVOT_OFF_PIVOT_SCALE_PCT, p_src->pivot_scale_pct);
 
-    return TELEMETRY_STATUS_WIRE_SIZE;
+    return TELEMETRY_STATUS_PIVOT_WIRE_SIZE;
 }
 
 uint16_t

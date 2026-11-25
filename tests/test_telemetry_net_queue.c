@@ -21,11 +21,11 @@
 #include <tk/mbf_fake.h>
 #include "telemetry/net_queue.h"
 
-#define BUFFER_BYTES 1024U
+#define BUFFER_BYTES TELEMETRY_NET_QUEUE_BYTES
 #define MSG_MAX      83U
-#define CAP_17       11U /* messages of MSG_MAX bytes (88 B each) */
-#define CAP_9        64U /* 9 B costs 16 B */
-#define CAP_2        128U /* 1 B costs 8 B */
+#define CAP_17       (BUFFER_BYTES / 88U) /* messages of MSG_MAX bytes (88 B each) */
+#define CAP_9        (BUFFER_BYTES / 16U) /* 9 B costs 16 B */
+#define CAP_2        (BUFFER_BYTES / 8U)  /* 1 B costs 8 B */
 #define FUZZ_STEPS   3000U
 #define MODEL_MAX    160U
 #define LCG_MUL      1103515245U

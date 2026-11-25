@@ -51,6 +51,8 @@ typedef struct
     uint32_t back_mm;
 } obstacle_travel_t;
 
+STATIC_ASSERT(sizeof(obstacle_travel_t) == 8U, "obstacle_travel_t size");
+
 /* Wheel travel supplied by the motion subsystem. E_OK only with fresh wheel
  * feedback; any other result leaves *p_travel unchanged. */
 typedef ER (*obstacle_distance_fn_t)(obstacle_travel_t * p_travel);
@@ -125,6 +127,9 @@ typedef struct
     uint8_t  echo_class;
     uint8_t  stop_reason;
 } obstacle_legacy_transition_t;
+
+STATIC_ASSERT(sizeof(obstacle_legacy_transition_t) == ((sizeof(const uint16_t *) == 4U) ? 24U : 32U),
+              "obstacle_legacy_transition_t size");
 
 /* Bind before starting the legacy scanner. The task calls the observer after
  * publishing a transition and before notifying navigation. The profile is

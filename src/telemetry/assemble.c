@@ -173,6 +173,7 @@ telemetry_assemble_status (telemetry_status_t * p_out,
     p_out->odometer_mm  = telemetry_odometer_mm (p_feedback);
     p_out->heading_ddeg = TELEMETRY_HEADING_INVALID;
     p_out->hold_mask    = 0u;
+    p_out->pivot_scale_pct = ((p_physics != 0) && p_physics->ready) ? p_physics->pivot_scale_pct : 0u;
 
     if ((p_feedback != 0) && p_feedback->fresh)
     {

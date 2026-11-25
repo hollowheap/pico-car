@@ -68,9 +68,9 @@ if (NOT EXISTS "${MTK3SMP_PATH}/include/tk/tkernel.h")
 endif()
 
 configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mtk3smp_config.h.in
+    ${MTK3SMP_PATH}/config/config.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/config.h
-    @ONLY
+    COPYONLY
 )
 
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
@@ -165,7 +165,7 @@ set(PICO_SDK_INCLUDES
 )
 
 set(PICO_CAR_BOARD_INCLUDES
-    # The project config supplies the object budget to the kernel and its callers.
+    # The pinned kernel configuration is shared by the port and its callers.
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${MTK3SMP_PATH}/include
     ${MTK3SMP_PATH}/config
@@ -376,6 +376,29 @@ if(PICO_CAR_WATCHDOG)
     target_compile_definitions(supervisor PRIVATE PICO_CAR_WATCHDOG)
 endif()
 
+# The boot events name the build: a 28-bit git short hash and whether tracked
+# files differ from it. Without git the firmware reports an unknown build.
+execute_process(COMMAND git rev-parse --short=7 HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+    OUTPUT_VARIABLE PICO_CAR_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE PICO_CAR_GIT_HASH_RESULT)
+if(PICO_CAR_GIT_HASH_RESULT EQUAL 0)
+    string(SUBSTRING "${PICO_CAR_GIT_HASH}" 0 7 PICO_CAR_GIT_HASH)
+    execute_process(COMMAND git diff --quiet HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
+        RESULT_VARIABLE PICO_CAR_GIT_CLEAN_RESULT
+        ERROR_QUIET OUTPUT_QUIET)
+    if(PICO_CAR_GIT_CLEAN_RESULT EQUAL 0)
+        set(PICO_CAR_BUILD_DIRTY 0)
+    else()
+        set(PICO_CAR_BUILD_DIRTY 1)
+    endif()
+    target_compile_definitions(supervisor PRIVATE
+        PICO_CAR_BUILD_HASH=0x${PICO_CAR_GIT_HASH}U PICO_CAR_BUILD_DIRTY=${PICO_CAR_BUILD_DIRTY})
+endif()
+
 add_library(motion_core STATIC
     src/motion/controller.c
     src/motion/pid.c
@@ -418,6 +441,7 @@ add_library(track STATIC
     src/track/barcode_width.c
     src/track/line_filter.c
     src/track/line_task.c
+    src/track/start_check.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(track PUBLIC line_control platform barcode motion_service telemetry supervisor obstacle_motion mtk3smp)
@@ -484,19 +508,14 @@ foreach(app_target IN ITEMS main)
 endforeach()
 
 # ---------------------------------------------------------------------------
-# Buddy 5: obstacle detection and avoidance (src/navigation/obstacle)
-#   obstacle        library: sensor, servo, scan, planner, statechart
-#   obstacle_motion wheel travel adapter, plus navigation and flight recorder in legacy builds
-#   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
-#                   Buddy 5 + a pretend Navigation; the motors are never driven.
+# Buddy 5: sonar service and geometry (src/navigation/obstacle)
+#   obstacle        library: geometry, sonar driver, echo classifier, health, comms
+#   obstacle_motion wheel travel adapter for the sonar service
 # ---------------------------------------------------------------------------
 add_library(obstacle STATIC
     src/navigation/obstacle/geometry.c
     src/navigation/obstacle/scan_algo.c
-    src/navigation/obstacle/planner.c
-    src/navigation/obstacle/follow.c
-    src/navigation/obstacle/nav_core.c
-    src/navigation/obstacle/statechart.c
+    src/navigation/obstacle/sonar_health.c
     src/navigation/obstacle/comms.c
     src/navigation/obstacle/scan_hw.c
     src/navigation/obstacle/scan_task.c
@@ -508,52 +527,26 @@ target_link_libraries(obstacle PUBLIC platform mtk3smp)
 target_compile_options(obstacle PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 
-add_executable(obstacle_bench
-    src/navigation/obstacle/bench_main.c
-)
-target_include_directories(obstacle_bench PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(obstacle_bench PRIVATE obstacle platform mtk3smp)
-target_compile_options(obstacle_bench PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
-target_link_options(obstacle_bench PRIVATE
-    -nostartfiles
-    -Wl,--gc-sections
-    -Wl,--undefined=boot2
-    -T "${MTK3SMP_PATH}/etc/linker/pico_rp2040/tkernel_map.ld"
-)
-pico_add_extra_outputs(obstacle_bench)
-
-# The sonar service uses wheel travel in both builds. Only the legacy build
-# links its navigation state and USB flight recorder.
 add_library(obstacle_motion STATIC src/navigation/obstacle/motion_link.c)
 target_include_directories(obstacle_motion PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(obstacle_motion PUBLIC obstacle motion_service platform mtk3smp)
 target_compile_options(obstacle_motion PRIVATE
     -ffreestanding -ffunction-sections -fdata-sections ${FIRMWARE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_motion supervisor)
-
-option(PICO_CAR_PILOT "Drive with the pilot instead of the old obstacle navigation" ON)
-if(PICO_CAR_PILOT)
-    set(PICO_CAR_PILOT_VALUE 1)
-    target_link_libraries(track PUBLIC pilot)
-else()
-    set(PICO_CAR_PILOT_VALUE 0)
-    target_sources(obstacle_motion PRIVATE
-        src/navigation/obstacle/obstacle_nav.c
-        src/navigation/obstacle/flight_log.c)
-endif()
-target_compile_definitions(track PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
-target_compile_definitions(obstacle PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
-target_compile_definitions(obstacle_motion PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
-target_compile_definitions(main PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
-target_compile_definitions(supervisor PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_link_libraries(track PUBLIC pilot)
 
 # Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
 # part of main.uf2.
-add_executable(car_bench src/bench/car_bench.c)
+add_executable(car_bench src/bench/car_bench.c src/bench/trace.c)
 target_include_directories(car_bench PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(car_bench PRIVATE track motion_service platform supervisor mtk3smp)
+if(PICO_CAR_GIT_HASH_RESULT EQUAL 0)
+    set(CAR_BENCH_BUILD "${PICO_CAR_GIT_HASH}")
+    if(PICO_CAR_BUILD_DIRTY)
+        string(APPEND CAR_BENCH_BUILD "+dirty")
+    endif()
+    target_compile_definitions(car_bench PRIVATE PICO_CAR_BENCH_BUILD="${CAR_BENCH_BUILD}")
+endif()
 add_executable(wdt_check src/bench/wdt_check.c)
 target_include_directories(wdt_check PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(wdt_check PRIVATE platform mtk3smp)

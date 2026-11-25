@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
@@ -190,8 +191,48 @@ static void test_decode_range_and_seq(void)
     CHECK(obstacle_pack_ping_seq(open) == 6U);
 }
 
-int main(void)
+static void test_qualified_limits(void)
 {
+    for (int32_t side = -1; side <= 1; side += 2)
+    {
+        CHECK(obstacle_pack_servo_clamp(side * 300) == side * 300);
+        CHECK(obstacle_pack_servo_clamp(side * 310) == side * 300);
+        uint32_t const reply = obstacle_pack_ping_reply(63U, OBSTACLE_CLASS_VALID, 321U, side * 300);
+        CHECK(obstacle_pack_ping_servo(reply) == side * 300);
+        CHECK(obstacle_pack_ping_answers(reply, 63U));
+    }
+}
+
+static void test_candidate_reply_angles(void)
+{
+    for (int32_t side = -1; side <= 1; side += 2)
+    {
+        int32_t const angle = side * 350;
+        uint32_t const reply = obstacle_pack_ping_reply(63U, OBSTACLE_CLASS_VALID, 400U, angle);
+        CHECK(obstacle_pack_ping_answers(reply, 63U));
+        CHECK(obstacle_pack_ping_servo(reply) == angle);
+        CHECK(obstacle_pack_ping_mm(reply) == 400U);
+        CHECK(!obstacle_ping_reply_matches(true, 63U, (int16_t)obstacle_pack_ping_servo(reply),
+                                           63U, -angle, OBSTACLE_PING_MAX_QUANTIZATION_DECI));
+    }
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "qualified-limits") == 0)
+    {
+        test_qualified_limits();
+        return g_failures != 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "candidate-reply-angles") == 0)
+    {
+        test_candidate_reply_angles();
+        return g_failures != 0;
+    }
+    if (argc != 1)
+    {
+        return 1;
+    }
     test_decode_echo_class();
     test_decode_range_and_seq();
     test_request_round_trip();

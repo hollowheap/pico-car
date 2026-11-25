@@ -8,10 +8,12 @@
 #include "pilot/pilot.h"
 
 #include "avoidance_internal.h"
+#include "hug_internal.h"
 #include "pilot_internal.h"
 
 #include <stddef.h>
 
+#include "geometry.h"
 #include "navigation/obstacle_ping.h"
 #include "platform/chassis.h"
 #include "platform/units.h"
@@ -20,6 +22,20 @@
 #define REAPPROACH_CAP_UM_S  (70 * UM_PER_MM)
 
 #define DATA_RECOVERY_PINGS   (3U)
+
+/* Use the cruise stop-distance target as reserve, pending physical verification.
+ * Budget full reverse demand across feedback age and command expiry as well. */
+#define BLIND_BRAKE_RESERVE_UM (25000)
+#define BLIND_REVERSE_RESERVE_UM (BLIND_BRAKE_RESERVE_UM + \
+    PILOT_BACKOFF_MM_S * (int32_t)(PILOT_STALE_MS + PILOT_COMMAND_LEASE_MS))
+
+/* pilot_state_t.blind_phase */
+#define BLIND_OFF             (0U)
+#define BLIND_REST            (1U)
+#define BLIND_CRAWL           (2U)
+#define BLIND_BACKOFF         (3U)
+#define BLIND_RETRY           (4U)
+#define BLIND_BLOCKED         (5U)
 
 STATIC_ASSERT(OBSTACLE_CONSIST_TRAVEL_MM > (OBSTACLE_CONSIST_TOL_MM + OBSTACLE_AGREE_MM),
               "a stable range must disagree with travel by more than the sonar tolerance");
@@ -237,8 +253,11 @@ static pilot_reason_t data_stop(pilot_state_t * p_state,
     /* The unsigned difference is right across the wrap of the clock. */
     bool const b_forward_stale = forward_ping_stale(p_state, p_meas, b_fresh_forward);
     bool const b_sonar = p_meas->b_sonar_fault || b_forward_stale;
+    bool const b_recovering = b_sonar || flag_get(p_state, FLAG_SONAR_LATCH) ||
+        hug_active(&p_state->avoidance.hug) || avoidance_backing_off(&p_state->avoidance);
     bool const b_stale = !p_meas->b_held &&
-                         ((p_meas->now_ms - p_meas->stamp_ms) > PILOT_STALE_MS);
+                         ((b_recovering && p_meas->b_wheel_invalid) ||
+                          ((p_meas->now_ms - p_meas->stamp_ms) > PILOT_STALE_MS));
     bool const b_bad = b_sonar || b_stale;
     pilot_reason_t reason = PILOT_REASON_NONE;
 
@@ -303,12 +322,58 @@ static pilot_reason_t data_stop(pilot_state_t * p_state,
     return reason;
 }
 
+/* An ENCODER, HUG_TIMEOUT or COURSE_CLEARANCE stop ends after a rest while
+ * motion releases the wheels, a bounded number of times. */
+static void recover_latch(pilot_state_t * p_state, pilot_meas_t const * p_meas,
+                          pilot_reason_t data)
+{
+    uint32_t const travel = (uint32_t)((p_meas->left_um + p_meas->right_um) / HALF_DIVISOR);
+    bool const b_latched = (0U != p_state->b_encoder) || (0U != p_state->b_timeout) ||
+                           p_state->avoidance.b_course_stuck;
+
+    if ((0U != p_state->recoveries) &&
+        ((int32_t)(travel - p_state->recover_um) >= (PILOT_RECOVER_CLEAR_MM * UM_PER_MM)))
+    {
+        p_state->recoveries = 0U;
+    }
+    if (!b_latched || p_meas->b_held || (0U != p_state->b_estop) || (PILOT_REASON_NONE != data))
+    {
+        p_state->b_latch_rest = false;
+    }
+    else if (!p_state->b_latch_rest)
+    {
+        p_state->b_latch_rest = true;
+        p_state->latch_ms = p_meas->now_ms;
+    }
+    else if ((p_meas->now_ms - p_state->latch_ms) >= PILOT_RECOVER_MS)
+    {
+        p_state->b_encoder = 0U;
+        p_state->b_timeout = 0U;
+        p_state->b_check_left = false;
+        p_state->b_check_right = false;
+        avoidance_restart_stalled(&p_state->avoidance);
+        pilot_recover_pose(p_state, false, p_meas->now_ms);
+        if (p_state->recoveries < UINT8_MAX)
+        {
+            p_state->recoveries++;
+        }
+        p_state->recover_um = travel;
+        p_state->b_latch_rest = false;
+    }
+    else
+    {
+        /* Still resting, or the attempts are used: START or RESET. */
+    }
+}
+
 static bool behaviour_safety(pilot_state_t * p_state,
                              pilot_meas_t const * p_meas, bool b_fresh_forward,
                              pilot_cmd_t * p_cmd)
 {
     pilot_reason_t const data = data_stop(p_state, p_meas, b_fresh_forward);
     bool b_takes = false;
+
+    recover_latch(p_state, p_meas, data);
 
     if (0U != p_state->b_estop)
     {
@@ -354,6 +419,51 @@ static bool behaviour_safety(pilot_state_t * p_state,
     return b_takes;
 }
 
+/* Scale the encoder yaw of a slipping pivot to the share the magnetometer
+ * shows, or slowly pull encoder heading drift toward a gated magnetometer
+ * heading. Returns the incremental wheel-difference drift correction in um. */
+static int16_t witness_step(pilot_state_t * p_state, pilot_meas_t const * p_meas)
+{
+    int32_t const enc = line_heading_deci(p_meas->left_um, p_meas->right_um);
+    int32_t const pct = (int32_t)p_meas->pivot_scale_pct;
+    bool const b_slip = p_state->b_witness_seen && (pct >= (int32_t)PILOT_WITNESS_MIN_PCT) &&
+                        (pct < (int32_t)PILOT_WITNESS_SLIP_PCT);
+    int32_t drift_um = 0;
+
+    if (b_slip)
+    {
+        p_state->witness_corr += (enc - p_state->witness_enc_deci) * (pct - PERCENT);
+    }
+    else if (p_meas->b_mag_heading)
+    {
+        int32_t const mag_ccw = -(int32_t)p_meas->mag_heading_ddeg;
+        int32_t const est_deci = enc + (p_state->witness_corr / PERCENT);
+
+        if (0U == p_state->b_mag_anchor)
+        {
+            p_state->mag_offset_deci = (int16_t)geom_wrap_deci(est_deci - mag_ccw);
+            p_state->b_mag_anchor = 1U;
+        }
+        else
+        {
+            uint16_t dt = (uint16_t)(p_meas->now_ms - p_state->mag_last_ms);
+            if (dt > (uint16_t)PILOT_MAG_BLEND_DT_MAX_MS)
+            {
+                dt = (uint16_t)PILOT_MAG_BLEND_DT_MAX_MS;
+            }
+            int32_t const err_deci = geom_wrap_deci((mag_ccw + (int32_t)p_state->mag_offset_deci) - est_deci);
+            int32_t const delta_cdeg = (err_deci * PERCENT * (int32_t)dt) / (int32_t)PILOT_MAG_BLEND_TAU_MS;
+
+            p_state->witness_corr += delta_cdeg;
+            drift_um = (delta_cdeg * CHASSIS_WHEEL_TRACK_MM * UM_PER_MM) / (DECI_PER_RAD * PERCENT);
+        }
+        p_state->mag_last_ms = (uint16_t)p_meas->now_ms;
+    }
+    p_state->witness_enc_deci = enc;
+    p_state->b_witness_seen = true;
+    return (int16_t)clamp_i32(drift_um, INT16_MIN, INT16_MAX);
+}
+
 static void behaviour_follow_line(pilot_state_t * p_state,
                                   pilot_meas_t const * p_meas,
                                   pilot_cmd_t * p_cmd)
@@ -361,7 +471,8 @@ static void behaviour_follow_line(pilot_state_t * p_state,
     line_targets_t targets = {0, 0};
     line_follow_status_t status = (line_follow_status_t)p_state->follow.status;
     int64_t const travel_um = (p_meas->left_um + p_meas->right_um) / HALF_DIVISOR;
-    int32_t const heading = line_heading_deci(p_meas->left_um, p_meas->right_um);
+    int32_t const heading = line_heading_deci(p_meas->left_um, p_meas->right_um) +
+                            (p_state->witness_corr / PERCENT);
     if (!p_meas->b_barcode || !line_follow_marker_sample(&p_state->follow, p_meas->b_line_left,
             p_meas->b_line_right, p_meas->b_marker_progress, p_meas->marker_prefix_mm, heading, travel_um,
             p_meas->now_ms, &targets))
@@ -405,6 +516,7 @@ static void behaviour_follow_line(pilot_state_t * p_state,
 void pilot_init(pilot_state_t * p_state)
 {
     p_state->b_follow_forward = false;
+    p_state->b_rejoin_watch = 0U;
     line_follow_init(&p_state->follow);
     p_state->line_radius_mm = 0;
     p_state->b_estop    = 0U;
@@ -419,11 +531,30 @@ void pilot_init(pilot_state_t * p_state)
     p_state->ref_right_um = 0U;
     p_state->slip_left_um = 0U;
     p_state->slip_right_um = 0U;
+    p_state->b_witness_seen = false;
+    p_state->witness_enc_deci = 0;
+    p_state->witness_corr = 0;
+    p_state->b_mag_anchor = 0U;
+    p_state->mag_offset_deci = 0;
+    p_state->mag_last_ms = 0U;
     p_state->slip_range_mm = 0U;
     p_state->b_slip_forward = false;
     p_state->b_check_left = false;
     p_state->b_check_right = false;
     p_state->data_recovery_pings = 0U;
+    p_state->latch_ms = 0U;
+    p_state->recover_um = 0U;
+    p_state->recoveries = 0U;
+    p_state->b_latch_rest = false;
+    p_state->blind_phase = BLIND_OFF;
+    p_state->blind_ms = 0U;
+    p_state->blind_left_um = 0U;
+    p_state->blind_right_um = 0U;
+    p_state->blind_retreat_mm = 0U;
+    p_state->blind_backoff_ms = 0U;
+    p_state->b_reverse_left = false;
+    p_state->b_reverse_right = false;
+    p_state->b_blind_straight = false;
     avoidance_init(&p_state->avoidance);
 }
 
@@ -437,9 +568,13 @@ static void note_wheels(pilot_state_t * p_state, pilot_cmd_t const * p_cmd)
     int32_t const right = speed + half;
 
     flag_set(p_state, FLAG_LOW_LEFT,
-             (left < PILOT_WHEEL_MIN_MM_S) && (left > -PILOT_WHEEL_MIN_MM_S));
+             p_cmd->b_stop_left ||
+             ((left < PILOT_WHEEL_MIN_MM_S) && (left > -PILOT_WHEEL_MIN_MM_S)));
     flag_set(p_state, FLAG_LOW_RIGHT,
-             (right < PILOT_WHEEL_MIN_MM_S) && (right > -PILOT_WHEEL_MIN_MM_S));
+             p_cmd->b_stop_right ||
+             ((right < PILOT_WHEEL_MIN_MM_S) && (right > -PILOT_WHEEL_MIN_MM_S)));
+    p_state->b_reverse_left = left < 0;
+    p_state->b_reverse_right = right < 0;
 }
 
 static uint16_t traced_radius_mm(pilot_state_t const * p_state, pilot_meas_t const * p_meas)
@@ -518,6 +653,239 @@ static void rejoin_search_tick(pilot_state_t * p_state, pilot_meas_t const * p_m
     }
 }
 
+static void begin_local_search(pilot_state_t * p_state, pilot_cmd_t * p_cmd, pilot_reason_t reason)
+{
+    line_follow_start_local_search(&p_state->follow);
+    pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_REJOIN_SEARCH, reason);
+}
+
+/* The car settles across the tape, so its heading is judged only once the
+ * follower has driven the hold distance. */
+static void rejoin_begin(pilot_state_t * p_state, pilot_meas_t const * p_meas)
+{
+    look_pose_t const pose = hug_axle_pose(&p_state->avoidance.hug);
+
+    p_state->rejoin_left_um = (uint32_t)p_meas->left_um;
+    p_state->rejoin_right_um = (uint32_t)p_meas->right_um;
+    p_state->rejoin_head_deci = (int16_t)pose.head_deci;
+    p_state->rejoin_y_mm = (int16_t)pose.y_mm;
+    p_state->b_rejoin_watch = 1U;
+}
+
+static void rejoin_check(pilot_state_t * p_state, pilot_meas_t const * p_meas, pilot_cmd_t * p_cmd)
+{
+    int32_t const dl = (int32_t)travel_um(p_meas->left_um, p_state->rejoin_left_um);
+    int32_t const dr = (int32_t)travel_um(p_meas->right_um, p_state->rejoin_right_um);
+    int64_t const mean_um = ((int64_t)dl + (int64_t)dr) / HALF_DIVISOR;
+    int32_t const dd = dr - dl;
+
+    if (0U == p_state->b_rejoin_watch)
+    {
+        return;
+    }
+    if (hug_active(&p_state->avoidance.hug) || line_follow_local_search(&p_state->follow))
+    {
+        p_state->b_rejoin_watch = 0U;
+    }
+    else if ((mean_um >= (int64_t)(PILOT_REJOIN_HOLD_MM * UM_PER_MM)) &&
+             ((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE == p_cmd->behaviour) &&
+             ((uint8_t)PILOT_REASON_NONE == p_cmd->reason))
+    {
+        bool const b_opposed = ((dl > 0) && (dr < 0)) || ((dl < 0) && (dr > 0));
+        int32_t const turn_um = b_opposed ? hug_pivot_turn_um(dd, p_meas->pivot_scale_pct) : dd;
+        int32_t const heading =
+            geom_wrap_deci((int32_t)p_state->rejoin_head_deci + (int32_t)wheel_yaw_deci(turn_um));
+
+        p_state->b_rejoin_watch = 0U;
+        if (geom_abs(heading) > PILOT_REJOIN_WRONG_DECI)
+        {
+            begin_local_search(p_state, p_cmd, PILOT_REASON_REJOIN_SEARCH);
+        }
+        p_cmd->b_rejoin_check = true;
+        p_cmd->rejoin_head_deci = (int16_t)heading;
+        p_cmd->rejoin_y_mm = p_state->rejoin_y_mm;
+    }
+    else
+    {
+        /* Wait for the hold distance under the follower. */
+    }
+}
+
+/* Round the outer wheel speed up before scaling the linear and angular targets. */
+static void cap_crawl(pilot_cmd_t * p_cmd)
+{
+    int32_t const track = geom_abs(p_cmd->turn_deci_s) * CHASSIS_WHEEL_TRACK_MM;
+    int32_t const denom = DECI_PER_RAD * HALF_DIVISOR;
+    int32_t const outer = p_cmd->speed_mm_s + (track + denom - 1) / denom;
+    if (outer > PILOT_BLIND_CRAWL_MM_S)
+    {
+        p_cmd->turn_deci_s = (int16_t)(((int32_t)p_cmd->turn_deci_s * PILOT_BLIND_CRAWL_MM_S) / outer);
+        p_cmd->speed_mm_s = (int16_t)(((int32_t)p_cmd->speed_mm_s * PILOT_BLIND_CRAWL_MM_S) / outer);
+    }
+}
+
+static void blind_mark_progress(pilot_state_t * p_state, pilot_meas_t const * p_meas, uint32_t ms)
+{
+    p_state->blind_ms = ms;
+    p_state->ref_left_um = (uint32_t)p_meas->left_um;
+    p_state->ref_right_um = (uint32_t)p_meas->right_um;
+}
+
+static bool blind_progress(pilot_state_t const * p_state, pilot_meas_t const * p_meas)
+{
+    uint32_t dl = travel_um(p_meas->left_um, p_state->ref_left_um);
+    uint32_t dr = travel_um(p_meas->right_um, p_state->ref_right_um);
+    bool const b_left = !flag_get(p_state, FLAG_LOW_LEFT);
+    bool const b_right = !flag_get(p_state, FLAG_LOW_RIGHT);
+
+    dl = p_state->b_reverse_left ? 0U - dl : dl;
+    dr = p_state->b_reverse_right ? 0U - dr : dr;
+    return flag_get(p_state, FLAG_MOVING) && (b_left || b_right) &&
+        ((int32_t)(p_meas->stamp_ms - p_state->blind_ms) > 0) &&
+        (!b_left || (dl >= (uint32_t)PILOT_MOVE_MIN_UM && dl <= WINDOW_MAX_UM)) &&
+        (!b_right || (dr >= (uint32_t)PILOT_MOVE_MIN_UM && dr <= WINDOW_MAX_UM));
+}
+
+static void start_blind_retreat(pilot_state_t * p_state, pilot_meas_t const * p_meas)
+{
+    int32_t const left = (int32_t)travel_um(p_meas->left_um, p_state->blind_left_um);
+    int32_t const right = (int32_t)travel_um(p_meas->right_um, p_state->blind_right_um);
+    int32_t const observed_um = (left < right) ? left : right;
+    int32_t const usable_um = (observed_um > BLIND_REVERSE_RESERVE_UM)
+        ? observed_um - BLIND_REVERSE_RESERVE_UM : 0;
+    int32_t const retreat_um = clamp_i32(usable_um, 0, PILOT_BACKOFF_UM);
+    p_state->blind_phase = (p_state->b_blind_straight && retreat_um >= PILOT_MOVE_MIN_UM)
+        ? BLIND_BACKOFF : BLIND_BLOCKED;
+    p_state->blind_retreat_mm = (uint8_t)(retreat_um / UM_PER_MM);
+    p_state->blind_left_um = (uint32_t)p_meas->left_um;
+    p_state->blind_right_um = (uint32_t)p_meas->right_um;
+    p_state->blind_backoff_ms = p_meas->now_ms;
+    blind_mark_progress(p_state, p_meas, p_state->blind_ms);
+}
+
+/* The sonar outage and initial rest use the same clock. Later motion is
+ * anchored by confirmed wheel travel, even when the command reverses. */
+static void blind_crawl(pilot_state_t * p_state, pilot_meas_t const * p_meas, pilot_cmd_t * p_cmd)
+{
+    uint32_t const travel = (uint32_t)((p_meas->left_um + p_meas->right_um) / HALF_DIVISOR);
+    bool const b_tape = p_meas->b_line_left || p_meas->b_line_right;
+    bool const b_eligible = ((uint8_t)PILOT_REASON_SONAR_LATCHED == p_cmd->reason) &&
+        !p_meas->b_bounded_course && !p_meas->b_held && !p_meas->b_commanded_turn &&
+        !p_meas->b_wheel_invalid &&
+        ((p_meas->now_ms - p_meas->stamp_ms) <= PILOT_STALE_MS) &&
+        !hug_active(&p_state->avoidance.hug) && !p_state->avoidance.b_course_hold &&
+        !line_follow_local_search(&p_state->follow);
+
+    if (!b_eligible)
+    {
+        if (p_state->blind_phase != BLIND_BLOCKED && p_cmd->reason != PILOT_REASON_SONAR_LATCHED)
+        {
+            p_state->blind_phase = BLIND_OFF;
+        }
+        return;
+    }
+    if (BLIND_OFF == p_state->blind_phase)
+    {
+        p_state->blind_phase = BLIND_REST;
+        p_state->blind_ms = p_state->since_ms;
+    }
+    bool const b_start = (BLIND_REST == p_state->blind_phase) &&
+        (p_meas->now_ms - p_state->blind_ms >= PILOT_RECOVER_MS);
+    if ((b_start || (BLIND_RETRY == p_state->blind_phase)) && b_tape && !p_meas->b_loaded)
+    {
+        if (p_state->recoveries < UINT8_MAX)
+        {
+            p_state->recoveries++;
+        }
+        p_state->recover_um = travel;
+        p_state->blind_phase = BLIND_CRAWL;
+        p_state->blind_left_um = (uint32_t)p_meas->left_um;
+        p_state->blind_right_um = (uint32_t)p_meas->right_um;
+        p_state->b_blind_straight = true;
+        blind_mark_progress(p_state, p_meas, p_meas->now_ms);
+    }
+
+    bool const b_progress = blind_progress(p_state, p_meas);
+    if (b_progress)
+    {
+        blind_mark_progress(p_state, p_meas, p_meas->stamp_ms);
+    }
+    if ((BLIND_CRAWL == p_state->blind_phase || BLIND_BACKOFF == p_state->blind_phase) &&
+        (p_meas->now_ms - p_state->blind_ms >= PILOT_STUCK_MS))
+    {
+        p_state->blind_phase = BLIND_BLOCKED;
+    }
+    if (BLIND_CRAWL == p_state->blind_phase)
+    {
+        if (p_meas->b_loaded)
+        {
+            start_blind_retreat(p_state, p_meas);
+        }
+        else if (b_tape)
+        {
+            behaviour_follow_line(p_state, p_meas, p_cmd);
+            if (p_cmd->speed_mm_s > 0)
+            {
+                cap_crawl(p_cmd);
+                /* A straight retreat cannot retrace a steered crawl safely. */
+                p_state->b_blind_straight = p_state->b_blind_straight && (0 == p_cmd->turn_deci_s);
+                p_cmd->reason = (uint8_t)PILOT_REASON_BLIND_CRAWL;
+            }
+            else
+            {
+                pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_SONAR_LATCHED);
+            }
+        }
+    }
+    if (BLIND_BACKOFF == p_state->blind_phase)
+    {
+        int32_t const left = (int32_t)(p_state->blind_left_um - (uint32_t)p_meas->left_um);
+        int32_t const right = (int32_t)(p_state->blind_right_um - (uint32_t)p_meas->right_um);
+        int32_t const limit = (int32_t)p_state->blind_retreat_mm * UM_PER_MM;
+        if (left >= limit || right >= limit)
+        {
+            p_state->blind_phase = BLIND_BLOCKED;
+            if (left >= PILOT_MOVE_MIN_UM && right >= PILOT_MOVE_MIN_UM)
+            {
+                p_state->blind_phase = BLIND_RETRY;
+                p_state->recoveries = 0U;
+            }
+        }
+        else if (p_meas->now_ms - p_state->blind_backoff_ms >= PILOT_BACKOFF_MAX_MS)
+        {
+            p_state->blind_phase = BLIND_BLOCKED;
+        }
+        else
+        {
+            pilot_set_command(p_cmd, -PILOT_BACKOFF_MM_S, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_STUCK);
+        }
+    }
+    if (BLIND_BLOCKED == p_state->blind_phase)
+    {
+        pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_STUCK);
+    }
+}
+
+static bool apply_safety(pilot_state_t * p_state, pilot_meas_t const * p_meas,
+                         bool b_fresh_forward, pilot_cmd_t * p_cmd)
+{
+    bool const b_inhibited = behaviour_safety(p_state, p_meas, b_fresh_forward, p_cmd);
+    if (b_inhibited)
+    {
+        blind_crawl(p_state, p_meas, p_cmd);
+    }
+    else
+    {
+        if ((BLIND_CRAWL == p_state->blind_phase) || (BLIND_BACKOFF == p_state->blind_phase))
+        {
+            /* A new sonar return does not turn the outage into a wheel stall. */
+            p_state->since_ms = p_state->blind_ms;
+        }
+        p_state->blind_phase = BLIND_OFF;
+    }
+    return b_inhibited;
+}
+
 void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_meas,
                              pilot_contour_t * p_contour,
                              pilot_contour_plan_t const * p_offer, pilot_cmd_t * p_cmd)
@@ -527,8 +895,9 @@ void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_mea
     bool b_backoff_done = false;
     bool b_moving = false;
 
+    int16_t const drift_corr_um = witness_step(p_state, p_meas);
     pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_NONE, PILOT_REASON_NONE);
-    b_inhibited = behaviour_safety(p_state, p_meas, b_fresh_forward, p_cmd);
+    b_inhibited = apply_safety(p_state, p_meas, b_fresh_forward, p_cmd);
     if (!b_inhibited && !p_meas->b_commanded_turn && !line_follow_local_search(&p_state->follow))
     {
         b_inhibited = check_wheel_progress(p_state, p_meas, b_fresh_forward, &b_backoff_done, p_cmd);
@@ -553,7 +922,7 @@ void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_mea
     else
     {
         avoidance_result_t const result = avoidance_step(&p_state->avoidance, p_meas,
-            traced_radius_mm(p_state, p_meas), b_inhibited, b_fresh_forward, b_backoff_done, p_cmd);
+            traced_radius_mm(p_state, p_meas), drift_corr_um, b_inhibited, b_fresh_forward, b_backoff_done, p_cmd);
         switch (result)
         {
             case AVOIDANCE_TIMEOUT:
@@ -565,16 +934,15 @@ void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_mea
                 line_follow_init(&p_state->follow);
                 behaviour_follow_line(p_state, p_meas, p_cmd);
                 p_cmd->b_rejoined = true;
+                rejoin_begin(p_state, p_meas);
                 break;
             case AVOIDANCE_FIND_TAPE:
+                begin_local_search(p_state, p_cmd, PILOT_REASON_REJOIN_SEARCH);
+                break;
             case AVOIDANCE_NO_EXIT:
-                line_follow_start_local_search(&p_state->follow);
-                if (AVOIDANCE_NO_EXIT == result)
-                {
-                    line_follow_stop_local_search(&p_state->follow);
-                }
-                pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_REJOIN_SEARCH,
-                        (AVOIDANCE_NO_EXIT == result) ? PILOT_REASON_REJOIN_STOP : PILOT_REASON_REJOIN_SEARCH);
+                p_state->avoidance.recovery_phase = (uint8_t)PILOT_PHASE_BACKOFF;
+                line_follow_start_search(&p_state->follow);
+                pilot_set_command(p_cmd, -PILOT_BACKOFF_MM_S, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_STUCK);
                 break;
             case AVOIDANCE_RELEASE:
             case AVOIDANCE_IDLE:
@@ -591,6 +959,7 @@ void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_mea
                 break;
         }
     }
+    rejoin_check(p_state, p_meas, p_cmd);
     b_moving = (0 != p_cmd->speed_mm_s) || (0 != p_cmd->turn_deci_s);
     if ((PILOT_REASON_NONE == p_cmd->reason) && ((uint8_t)PILOT_PHASE_RETRY == p_state->avoidance.recovery_phase) &&
         b_moving)
@@ -636,6 +1005,9 @@ void pilot_clear_latches(pilot_state_t * p_state)
     p_state->b_check_left = false;
     p_state->b_check_right = false;
     p_state->b_timeout = 0U;
+    p_state->recoveries = 0U;
+    p_state->b_latch_rest = false;
+    p_state->blind_phase = BLIND_OFF;
     /* No motion is recorded: the next tick opens a new stuck window. This
      * clears the sonar and stale latch too. */
     p_state->flags = 0U;
@@ -678,6 +1050,7 @@ static void discard_course_motion(pilot_state_t * p_state)
     p_state->slip_range_mm = 0U;
     p_state->b_slip_forward = false;
     p_state->b_follow_forward = false;
+    p_state->b_rejoin_watch = 0U;
     p_state->line_radius_mm = 0;
 }
 
@@ -686,7 +1059,6 @@ void pilot_change_floor(pilot_state_t * p_state, bool b_continuous_floor)
     discard_course_motion(p_state);
     line_follow_init(&p_state->follow);
     p_state->avoidance.b_course_hold = !b_continuous_floor;
-    p_state->avoidance.b_course_stuck = false;
 }
 
 void pilot_recover_pose(pilot_state_t * p_state, bool clear, uint32_t now_ms)

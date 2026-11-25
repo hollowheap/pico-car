@@ -22,7 +22,8 @@ const BaseButton = createButton({
 });
 
 type Variant = 'primary' | 'secondary' | 'danger';
-type ButtonProps = ComponentProps<typeof BaseButton> & {
+type ButtonProps = Omit<ComponentProps<typeof BaseButton>, 'ref'> & {
+  ref?: ComponentProps<typeof Pressable>['ref'];
   variant?: Variant;
   compact?: boolean;
 };
@@ -36,6 +37,7 @@ function ThemedButton({
   style,
   onFocus,
   onBlur,
+  ref,
   ...props
 }: ButtonProps) {
   const theme = useTheme();
@@ -55,7 +57,7 @@ function ThemedButton({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: compact ? theme.spacing.lg : theme.spacing.xl,
-    borderRadius: theme.radii.button,
+    borderRadius: theme.radii.control,
     borderWidth: variant === 'primary' ? 0 : 1,
     borderColor: variant === 'danger' && !props.disabled ? theme.colors.danger : theme.colors.border,
     backgroundColor: props.disabled
@@ -70,6 +72,8 @@ function ThemedButton({
       <DisabledContext.Provider value={Boolean(props.disabled)}>
         <BaseButton
           {...props}
+          // Gluestack forwards the ref to Pressable but declares the props as its target.
+          ref={ref as ComponentProps<typeof BaseButton>['ref']}
           onFocus={(event) => {
             setFocused(true);
             onFocus?.(event);
@@ -81,6 +85,8 @@ function ThemedButton({
           style={[
             base,
             props.disabled ? styles.disabled : null,
+            // The browser otherwise assigns its own colour to a disabled button root.
+            Platform.OS === 'web' && props.disabled ? ({ color: theme.colors.muted } as ViewStyle) : null,
             focused && focusRing,
             style as StyleProp<ViewStyle>,
           ]}

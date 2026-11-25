@@ -6,6 +6,47 @@ export type CommandRequest = {
 
 /** Three missed 1 Hz heartbeats: the car is gone, or rebooted with a new run ID. */
 export const HEARTBEAT_FRESH_MS = 3000;
+/** Maximum time to wait for an MQTT QoS 1 PUBACK before returning 504. */
+export const PUBACK_TIMEOUT_MS = 5000;
+
+export class CommandTimeoutError extends Error {
+  constructor(message = 'mqtt publish timed out') {
+    super(message);
+    this.name = 'CommandTimeoutError';
+  }
+}
+
+export type PublishClient = {
+  publish: (
+    topic: string,
+    payload: Buffer,
+    options: { qos: 1 },
+    callback: (error?: Error) => void,
+  ) => void;
+};
+
+export function publishWithTimeout(
+  client: PublishClient,
+  topic: string,
+  frame: Buffer,
+  timeoutMs = PUBACK_TIMEOUT_MS,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new CommandTimeoutError());
+    }, timeoutMs);
+    client.publish(topic, frame, { qos: 1 }, (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
 
 export function parseCommandRequest(
   input: unknown,
@@ -15,7 +56,7 @@ export function parseCommandRequest(
     throw new Error('command body must be an object');
   }
   const action = (input as Record<string, unknown>).action;
-  if (typeof action !== 'string' || !(action in schema.commands)) {
+  if (typeof action !== 'string' || !Object.hasOwn(schema.commands, action)) {
     throw new Error('unknown command action');
   }
   return { action };
@@ -29,8 +70,11 @@ export function encodeCommand(
   runId: number,
   uptimeS: number,
 ): Buffer {
+  if (!Object.hasOwn(schema.commands, action)) {
+    throw new Error('unknown command action');
+  }
   const opcode = schema.commands[action];
-  if (opcode === undefined) {
+  if (typeof opcode !== 'number') {
     throw new Error('unknown command action');
   }
   const frame = Buffer.alloc(9);
@@ -64,6 +108,9 @@ export function createCommandSession(firstCmdId: number) {
   return {
     noteHeartbeat(values: Record<string, number>, atMs: number): void {
       if (values.run_id !== undefined && values.uptime_s !== undefined) {
+        if (runId !== null && values.run_id !== runId) {
+          haveDiag = false;
+        }
         runId = values.run_id;
         uptimeS = values.uptime_s;
         seenMs = atMs;

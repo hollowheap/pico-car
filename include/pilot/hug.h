@@ -155,9 +155,9 @@ STATIC_ASSERT((HUG_REFINE_ZONE_DECI <= HUG_SERVO_MAX_DECI) &&
 #define HUG_HOLD_GAIN         (3)
 #define HUG_HOLD_MAX_DECI_S   (300)
 #define HUG_REPLY_TIMEOUT_MS  (800U)
-#define HUG_STATIONARY_LIMIT_MS (3000U)
+#define HUG_STATIONARY_LIMIT_MS (2000U)
 /* Leave one reply window and time to start the next chassis movement. */
-#define HUG_SCAN_BATCH_MS (HUG_STATIONARY_LIMIT_MS - HUG_REPLY_TIMEOUT_MS - HUG_SETTLE_MS - HUG_SETTLE_MS)
+#define HUG_SCAN_BATCH_MS (1800U)
 
 /** A pivot or a drive that runs longer than HUG_MOVE_TIMES times its planned
  *  time ends the hug, and the pilot stops with reason HUG_TIMEOUT. The plan
@@ -191,11 +191,13 @@ STATIC_ASSERT((HUG_REFINE_ZONE_DECI <= HUG_SERVO_MAX_DECI) &&
 #define HUG_LOST_REPLIES      (2U)
 
 /** Share of a pivot the wheel travel shows up as turning of the body; the
- *  wheels slip. Used for the heading of the pose. */
+ *  wheels slip. Used for the heading of the pose while the physics pivot
+ *  witness reports none, and for the planned time of a pivot. */
 #define HUG_PIVOT_PCT         (80)
 
 /** The two sides of a face, as LOOK_SIDE_LEFT and LOOK_SIDE_RIGHT. */
 #define HUG_SIDES             (2U)
+#define HUG_PIVOT_WITNESS_MASK (127U)
 
 /** What hug_step() needs from one pilot tick. */
 typedef struct
@@ -216,6 +218,9 @@ typedef struct
     bool     b_stationary : 1; /* current feedback confirms both wheels have settled */
     bool     b_contact_backoff : 1; /* localized recovery on the same approach */
     bool     b_relook : 1; /* a back-off after a sustained forward range plateau ended */
+    uint8_t  pivot_scale_pct : 7; /* physics pivot witness in percent, 0 for none */
+    bool     b_independent_hold : 1; /* drive authority or wheel feedback unavailable */
+    int16_t  drift_corr_um;   /* incremental wheel-diff correction from gated mag */
 } hug_in_t;
 
 STATIC_ASSERT(sizeof(hug_in_t) == 32U, "hug_in_t size");
@@ -248,12 +253,12 @@ typedef struct
     uint32_t last_right_um;
     uint32_t contact_scan_ms; /* start time of the full survey used for a stationary recheck */
     uint32_t last_motion_ms; /* last measured wheel displacement while the hug owns the chassis */
-    uint32_t t_ms;          /* start of the settle or request; end of a move     */
+    uint32_t t_ms;          /* request, scan, or movement timer as selected by state */
     union
     {
         struct { int32_t x_mm; int32_t y_mm; } drive;
         struct { uint32_t left_um; uint32_t right_um; } survey;
-    } origin; /* Drive displacement or the contact survey's two encoder anchors. */
+    } origin; /* Legacy drive/survey anchors or the measured bypass wheel anchors. */
     int16_t  side_end_x_mm; /* observed far vertex on the chosen side, positive when qualified */
     int16_t  side_end_y_mm;
     int32_t  face_line_mm;  /* full fit's projection on its normal, relative to the hit */
@@ -335,6 +340,10 @@ bool hug_reapproaching(hug_t const * p_hug);
 
 /** Body heading from the heading at the hit, deci-degrees, left positive. */
 int16_t hug_heading_deci(hug_t const * p_hug);
+
+/** Body turn of a pivot's wheel travel difference: the physics witness share
+ *  when one is reported (1 to 100 percent), else HUG_PIVOT_PCT. */
+int32_t hug_pivot_turn_um(int32_t diff_um, uint8_t witness_pct);
 
 /**
  * One hug tick.

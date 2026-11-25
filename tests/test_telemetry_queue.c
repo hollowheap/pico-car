@@ -7,7 +7,7 @@
  * A queued frame is the topic byte plus the wire packet, so a 1024-byte
  * buffer holds:
  *   physics   (25 B frame): 32 bytes each, 32 messages
- *   status    (17 B frame): 24 bytes each, 42 messages
+ *   status    (18 B frame): 24 bytes each, 42 messages
  *   event     (13 B frame): 20 bytes each, 51 messages
  *   heartbeat ( 9 B frame): 16 bytes each, 64 messages
  *   profile   (83 B frame): 88 bytes each, 11 messages
@@ -20,28 +20,28 @@
 #include <tk/mbf_fake.h>
 #include "telemetry/queue.h"
 
-#define BUFFER_BYTES   1024U
+#define BUFFER_BYTES   TELEMETRY_QUEUE_BYTES
 #define MSG_MAX        83U
 #define FRAME_MAX      83U
 #define FRAME_HEARTBEAT 11U
 #define FRAME_EVENT    13U
-#define FRAME_STATUS   17U
+#define FRAME_STATUS   18U
 #define FRAME_MOTION   18U /* same cost as status: both round to 20 B */
 #define FRAME_PHYSICS  25U
 #define FRAME_PROFILE  83U
-#define CAP_PHYSICS    32U
-#define CAP_STATUS     42U
-#define CAP_EVENT      51U
-#define CAP_HEARTBEAT  64U
 #define COST_HEARTBEAT 16U
 #define COST_EVENT     20U
 #define COST_STATUS    24U
 #define COST_PHYSICS   32U
 #define COST_DIAG      80U /* 73 B diag + topic byte = 74, rounded to 76, + 4 */
 #define COST_PROFILE   88U
+#define CAP_PHYSICS    (BUFFER_BYTES / COST_PHYSICS)
+#define CAP_STATUS     (BUFFER_BYTES / COST_STATUS)
+#define CAP_EVENT      (BUFFER_BYTES / COST_EVENT)
+#define CAP_HEARTBEAT  (BUFFER_BYTES / COST_HEARTBEAT)
 #define FILL_LEN       28U /* kernel math only: a 28 B message costs 32 B */
-#define CAP_FILL       32U
-#define EV_FILL_LAST   41U /* last status seed when an event is queued 2nd */
+#define CAP_FILL       (BUFFER_BYTES / 32U)
+#define EV_FILL_LAST   (CAP_STATUS - 1U) /* last status seed when an event is queued 2nd */
 #define MODEL_MAX      80U
 #define GUARD_BYTE     0xCCU
 #define GUARD_LEN      4U
@@ -791,17 +791,18 @@ static void test_qos1_event_is_never_evicted (void)
     pass("qos1_event_is_never_evicted", before);
 }
 
-/* Fill: status seed 0, an event, then statuses seed 2..EV_FILL_LAST. That is
-   24 + 20 + 40 x 24 = 1004 bytes, 20 free. */
+/* Fill: status seed 0, an event, then statuses seed 2..EV_FILL_LAST. */
 static void fill_status_event_statuses (uint8_t event_seed)
 {
+    SZ const expected_free = (SZ)(BUFFER_BYTES - (EV_FILL_LAST * COST_STATUS) - COST_EVENT);
+
     CHECK(push_t((uint8_t)'s', 1U, 0U) == E_OK);
     CHECK(push_t((uint8_t)'e', 1U, event_seed) == E_OK);
     for (unsigned i = 2U; i <= EV_FILL_LAST; i++)
     {
         CHECK(push_t((uint8_t)'s', 1U, (uint8_t)i) == E_OK);
     }
-    CHECK(mbf_fake_free(QUEUE_ID) == 20);
+    CHECK(mbf_fake_free(QUEUE_ID) == expected_free);
 }
 
 /* An event that becomes the oldest during eviction stops it. Frames evicted
@@ -836,7 +837,7 @@ static void test_event_at_head_stops_eviction (void)
     pass("event_at_head_stops_eviction", before);
 }
 
-/* Realistic sizes: status is 17 B as a frame (24 B in the buffer), profile is
+/* Realistic sizes: status is 18 B as a frame (24 B in the buffer), profile is
    83 B (88 B). A full queue of status frames takes a profile frame by
    evicting three status frames; all three are counted. */
 static void test_qos0_evicts_several_to_fit (void)
@@ -844,15 +845,18 @@ static void test_qos0_evicts_several_to_fit (void)
     unsigned drops;
     unsigned before = g_fail;
 
+    unsigned const free0 = BUFFER_BYTES - (CAP_STATUS * COST_STATUS);
+    unsigned const evict = ((COST_PROFILE - free0) + (COST_STATUS - 1U)) / COST_STATUS;
+
     setup();
     CHECK(fill_with((uint8_t)'s', CAP_STATUS) == CAP_STATUS);
     drops = telemetry_queue_drop_count();
 
     CHECK(push_t((uint8_t)'f', 0U, 0x77U) == E_OK);
-    CHECK(telemetry_queue_drop_count() == drops + 3U);
-    CHECK(g_mbf_fake.recv_calls == 3U);
-    CHECK(mbf_fake_free(QUEUE_ID) == 0);
-    for (unsigned i = 3U; i < CAP_STATUS; i++)
+    CHECK(telemetry_queue_drop_count() == drops + evict);
+    CHECK(g_mbf_fake.recv_calls == evict);
+    CHECK(mbf_fake_free(QUEUE_ID) == (SZ)((free0 + (evict * COST_STATUS)) - COST_PROFILE));
+    for (unsigned i = evict; i < CAP_STATUS; i++)
     {
         CHECK(pop_t((uint8_t)'s', (uint8_t)i));
     }
@@ -955,21 +959,28 @@ static void test_consumer_races_ahead (void)
     CHECK(g_mbf_fake.would_block == 0U);
 
     /* Same race with a profile frame (88 B): after the event is sent back the
-       next oldest is a status, which is evicted (counted), and again the next.
+       next oldest is a status, which is evicted (counted), until it fits.
        The loop does not stop at the event it sent back. */
-    setup();
-    fill_status_event_statuses(0xE2U);
-    drops = telemetry_queue_drop_count();
-    g_mbf_fake.recv_hook = consumer_pops_one; /* pops seed 0 */
-    CHECK(push_t((uint8_t)'f', 0U, 0x63U) == E_OK);
-    CHECK(telemetry_queue_drop_count() == drops + 2U); /* seeds 2 and 3 */
-    for (unsigned i = 4U; i <= EV_FILL_LAST; i++)
     {
-        CHECK(pop_t((uint8_t)'s', (uint8_t)i));
+        unsigned const free_after_pop =
+            (BUFFER_BYTES - (EV_FILL_LAST * COST_STATUS) - COST_EVENT) + COST_STATUS;
+        unsigned const evict_race =
+            ((COST_PROFILE - free_after_pop) + (COST_STATUS - 1U)) / COST_STATUS;
+
+        setup();
+        fill_status_event_statuses(0xE2U);
+        drops = telemetry_queue_drop_count();
+        g_mbf_fake.recv_hook = consumer_pops_one; /* pops seed 0 */
+        CHECK(push_t((uint8_t)'f', 0U, 0x63U) == E_OK);
+        CHECK(telemetry_queue_drop_count() == drops + evict_race);
+        for (unsigned i = 2U + evict_race; i <= EV_FILL_LAST; i++)
+        {
+            CHECK(pop_t((uint8_t)'s', (uint8_t)i));
+        }
+        CHECK(pop_t((uint8_t)'e', 0xE2U));
+        CHECK(pop_t((uint8_t)'f', 0x63U));
+        CHECK(queue_empty());
     }
-    CHECK(pop_t((uint8_t)'e', 0xE2U));
-    CHECK(pop_t((uint8_t)'f', 0x63U));
-    CHECK(queue_empty());
 
     /* The consumer's pop frees a slot first: the producer still evicts one
        more (it only learns the size at the next peek) and succeeds. */

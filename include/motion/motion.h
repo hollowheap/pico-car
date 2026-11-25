@@ -64,9 +64,13 @@ typedef struct
     bool     stop_requested; /* Direct emergency latch. */
     uint32_t hold_mask;      /* MOTION_HOLD_* */
     int      init_error; /* an ER code; this header stays kernel-free */
+    uint32_t stop_age_ms; /* Age of the first emergency request, when latched. */
+    /* Advances on each valid moving interval entirely after the last hold
+       release. Remains readable after an emergency stop. */
+    uint32_t movement_sequence;
 } motion_status_t;
 
-STATIC_ASSERT (sizeof(motion_status_t) == 12U, "motion_status_t size");
+STATIC_ASSERT (sizeof(motion_status_t) == 20U, "motion_status_t size");
 
 /* What the controller is doing, for telemetry. Targets are what the last
  * speed command asked for; duty is what the controller applied, signed

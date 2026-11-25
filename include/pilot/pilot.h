@@ -26,6 +26,8 @@
 /** Wheel feedback (stamp_ms) older than this gives a stop with reason STALE
  *  (ms). */
 #define PILOT_STALE_MS            (100U)
+/** Expiry of an outstanding line-pilot wheel demand (ms). */
+#define PILOT_COMMAND_LEASE_MS    (100U)
 /** A free-running forward ping normally arrives every 60 ms. Allow up to
  *  250 ms between observed sequences before stopping with reason SONAR. */
 #define PILOT_FORWARD_PING_STALE_MS (250U)
@@ -51,14 +53,51 @@
  *  (um, the farther wheel) at this speed (mm/s). */
 #define PILOT_BACKOFF_UM          (40000)
 #define PILOT_BACKOFF_MM_S        (60)
-#define PILOT_BACKOFF_MAX_MS      (2000U)
+#define PILOT_BACKOFF_MAX_MS      (1000U)
 
 /* A hug move that stalls is backed off by the stuck check before it times out. */
 STATIC_ASSERT(HUG_MOVE_FLOOR_MS >= PILOT_STUCK_MS, "hug move floor below the stuck window");
 
-/** Why the command is a stop or a back-off. ESTOP, ENCODER and HUG_TIMEOUT
- *  latch until pilot_init(), which runs at boot only, except that
- *  An accepted START or RESET clears ENCODER and HUG_TIMEOUT; the others end
+/** ENCODER, HUG_TIMEOUT and COURSE_CLEARANCE can end after a
+ *  PILOT_RECOVER_MS rest, allowing a new survey from the stationary pose.
+ *  Forward travel of PILOT_RECOVER_CLEAR_MM clears the recovery count. */
+#define PILOT_RECOVER_MS          (1000U)
+#define PILOT_RECOVERIES_MAX      (3U)
+#define PILOT_RECOVER_CLEAR_MM    (1000)
+
+/** On continuous floor, the initial dropout interval also covers the rest
+ *  before the line follower crawls. After contact a measured retreat can
+ *  qualify another crawl. A frozen movement holds for fresh evidence.
+ *  The crawl limit is a guess until measured on the car. */
+#define PILOT_BLIND_CRAWL_MM_S    (80)
+
+/** A bypass that rejoins the line reports the follower's heading once the
+ *  follower has travelled PILOT_REJOIN_HOLD_MM from the exit tape. A heading
+ *  beyond PILOT_REJOIN_WRONG_DECI from the entry heading (a quarter turn)
+ *  means the follower drives the wrong way along the line, and the pilot then
+ *  starts the local line search. Guesses until measured on the car. */
+#define PILOT_REJOIN_HOLD_MM      (100)
+#define PILOT_REJOIN_WRONG_DECI   (900)
+
+/** The physics pivot witness (pilot_meas_t.pivot_scale_pct) is the share of
+ *  the encoder yaw the magnetometer shows in a steady pivot on the spot. A
+ *  share from PILOT_WITNESS_MIN_PCT up to, not including,
+ *  PILOT_WITNESS_SLIP_PCT is wheel slip: the follower's heading advances by
+ *  that share of the encoder yaw, so a search sweep turns on until the body
+ *  has covered it. A higher share is read as no slip. Guesses until measured
+ *  on the car. */
+#define PILOT_WITNESS_MIN_PCT     (50U)
+#define PILOT_WITNESS_SLIP_PCT    (90U)
+
+/** Slow heading drift blend toward the gated magnetometer heading: time
+ *  constant (ms) and per-tick dt cap (ms). Guesses until measured on the car. */
+#define PILOT_MAG_BLEND_TAU_MS    (2000U)
+#define PILOT_MAG_BLEND_DT_MAX_MS (100U)
+
+/** Why the command is a stop or a back-off. ESTOP latches until pilot_init(),
+ *  which runs at boot only. ENCODER and HUG_TIMEOUT end by themselves as
+ *  PILOT_RECOVER_MS describes, and an accepted START or RESET clears them;
+ *  the others end
  *  when the cause clears, except SONAR and STALE below. SONAR is raised while
  *  the sonar task reports a fault or the forward ping sequence stops changing.
  *  STALE is raised while the wheel feedback is older than PILOT_STALE_MS.
@@ -87,7 +126,8 @@ typedef enum
     PILOT_REASON_COURSE_CLEARANCE, /* obstacle recovery lacks verified clearance */
     PILOT_REASON_COURSE_RECOVERY,
     PILOT_REASON_REJOIN_SEARCH,
-    PILOT_REASON_REJOIN_STOP
+    PILOT_REASON_REJOIN_STOP,
+    PILOT_REASON_BLIND_CRAWL /* the line follower crawls with a dead sonar */
 } pilot_reason_t;
 
 STATIC_ASSERT(sizeof(pilot_reason_t) <= 4U, "pilot_reason_t size");
@@ -129,11 +169,16 @@ typedef struct
     bool     b_marker_progress : 1; /* verified barcode stream advanced this pass */
     bool     b_stationary : 1;  /* both wheels report fresh zero speed       */
     bool     b_commanded_turn : 1; /* the turn executor supplies nominal wheel targets */
+    bool     b_loaded : 1;  /* a forward wheel pushes against something (duty against speed) */
+    bool     b_mag_heading : 1; /* mag_heading_ddeg is offset-learnt, in band and rate-agreed */
+    bool     b_wheel_invalid : 1; /* current encoder sample failed or is unavailable */
     uint8_t  marker_prefix_mm; /* measured elements of the current tentative start */
+    uint8_t  pivot_scale_pct; /* physics pivot witness in percent, 0 for none */
     int16_t  wheel_radius_mm; /* measured forward arc, left positive, zero if unavailable or straight */
+    uint16_t mag_heading_ddeg; /* tilt-compensated heading, 0..3599 ddeg clockwise from north */
 } pilot_meas_t;
 
-STATIC_ASSERT(sizeof(pilot_meas_t) == 40U, "pilot_meas_t size");
+STATIC_ASSERT(sizeof(pilot_meas_t) == 48U, "pilot_meas_t size");
 
 /** The command of one tick. behaviour and reason are for the decision log.
  *  During a commanded turn, NONE allows the turn executor to run that tick.
@@ -150,14 +195,17 @@ typedef struct
     uint8_t ping_seq;       /* 6 bits */
     uint8_t b_ping_req;
     uint16_t contact_mm;   /* measured forward range on entry to an obstacle hold or hug */
+    int16_t  rejoin_head_deci; /* follower heading from the entry heading, left positive */
+    int16_t  rejoin_y_mm;      /* lateral offset from the entry line, left positive */
     bool     b_scan_pivot : 1;
     bool     b_stop_left : 1;   /* exact zero from the wheel-space follower */
     bool     b_stop_right : 1;
     bool     b_rejoined : 1; /* IR confirmed the exit tape on this tick */
+    bool     b_rejoin_check : 1; /* the rejoin heading is reported on this tick */
     uint8_t  course_scan_samples; /* at completion: usable rays at this encoder anchor, plus one */
 } pilot_cmd_t;
 
-STATIC_ASSERT(sizeof(pilot_cmd_t) == 14U, "pilot_cmd_t size");
+STATIC_ASSERT(sizeof(pilot_cmd_t) == 18U, "pilot_cmd_t size");
 
 typedef struct
 {
@@ -168,24 +216,48 @@ typedef struct
     uint32_t      forward_ping_ms; /* grace start, last forward observation or requested look */
     uint32_t      slip_left_um;   /* travel at the first stable forward range */
     uint32_t      slip_right_um;
-    uint8_t       b_estop;       /* latched until pilot_init()                     */
-    uint8_t       b_encoder;     /* latched until pilot_init() or pilot_clear_latches() */
+    uint32_t      latch_ms;       /* start of the rest in an ENCODER, HUG_TIMEOUT or COURSE_CLEARANCE stop */
+    uint32_t      recover_um;     /* mean travel at the last automatic recovery, low 32 bits */
+    uint16_t      slip_range_mm;
+    int16_t       line_radius_mm; /* prior forward line-steering request, left positive */
     /* Last command and the open or latched data stop. */
     uint8_t       flags;
-    uint8_t       b_timeout;     /* latched after an expired maneuver */
     uint8_t       forward_ping_seq;
-    uint16_t      slip_range_mm;
-    bool          b_slip_forward : 1;
-    bool          b_check_left : 1;  /* wheel showed no travel through a commanded window */
-    bool          b_check_right : 1;
     uint8_t       data_recovery_pings;
-    bool          b_forward_timer_started;
-    bool          b_follow_forward; /* forward line command during the measured interval */
-    int16_t       line_radius_mm; /* prior forward line-steering request, left positive */
+    uint8_t       recoveries;     /* automatic recoveries since START, RESET or clean travel */
+    uint8_t       blind_phase;    /* dead-sonar crawl: off, rest, crawl or back-off */
+    uint8_t       blind_retreat_mm; /* shorter observed wheel path, capped at the retreat limit */
+    uint8_t       b_estop : 1;    /* latched until pilot_init()                     */
+    uint8_t       b_encoder : 1;  /* latched until a recovery, pilot_init() or pilot_clear_latches() */
+    uint8_t       b_timeout : 1;  /* latched after an expired maneuver */
+    uint8_t       b_latch_rest : 1; /* latch_ms is running */
+    uint8_t       b_slip_forward : 1;
+    uint8_t       b_check_left : 1;  /* wheel showed no travel through a commanded window */
+    uint8_t       b_check_right : 1;
+    uint8_t       b_witness_seen : 1; /* witness_enc_deci holds the previous step */
+    uint8_t       b_forward_timer_started : 1;
+    uint8_t       b_follow_forward : 1; /* forward line command during the measured interval */
+    uint8_t       b_rejoin_watch : 1; /* a rejoin settle awaits its hold distance */
+    uint8_t       b_mag_anchor : 1; /* mag_offset_deci holds the encoder-to-mag frame offset */
+    uint8_t       b_reverse_left : 1; /* last demand's wheel direction */
+    uint8_t       b_reverse_right : 1;
+    uint8_t       b_blind_straight : 1;
+    uint32_t      blind_ms;       /* last verified movement, or first authorized demand */
+    uint32_t      blind_left_um;  /* wheel path at entry to the crawl or retreat, low 32 bits */
+    uint32_t      blind_right_um;
+    uint32_t      blind_backoff_ms; /* absolute cap on commanded retreat duration */
+    uint32_t      rejoin_left_um;  /* wheel travel at the rejoin settle, low 32 bits */
+    uint32_t      rejoin_right_um;
+    int32_t       witness_enc_deci; /* encoder heading of the previous step */
+    int32_t       witness_corr;   /* follower heading correction, 1/100 deci-degree */
+    int16_t       rejoin_head_deci; /* heading at the rejoin settle, from the entry heading */
+    int16_t       rejoin_y_mm;    /* lateral offset at the rejoin settle */
+    int16_t       mag_offset_deci; /* anchored encoder-minus-mag_ccw heading, wrapped */
+    uint16_t      mag_last_ms;    /* low 16 bits of now_ms on the previous gated mag tick */
     avoidance_t   avoidance;
 } pilot_state_t;
 
-STATIC_ASSERT(sizeof(pilot_state_t) == 496U, "pilot_state_t size");
+STATIC_ASSERT(sizeof(pilot_state_t) == 608U, "pilot_state_t size");
 
 /** Clear the state: no latch, follower at its start. The line task calls it
  *  once, at boot. */
@@ -230,6 +302,8 @@ typedef enum
     PILOT_CONTOUR_DONE,
     PILOT_CONTOUR_STOPPED
 } pilot_contour_status_t;
+
+STATIC_ASSERT(sizeof(pilot_contour_status_t) <= 4U, "pilot_contour_status_t size");
 
 /* Caller-owned state, zeroed before first use. Production line-task state
  * need not allocate a contour while it has no verified geometry provider. */

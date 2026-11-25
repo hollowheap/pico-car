@@ -1,9 +1,11 @@
 #include <tk/smp.h>
 
+#include <stdbool.h>
 #include "telemetry/net_queue.h"
 #include "telemetry/queue.h"
 
 #define QUEUE_BUFFER_ALIGN 4
+#define TELEMETRY_EVENT_HEADROOM_BYTES (128U)
 
 static uint8_t g_queue_buffer[TELEMETRY_NET_QUEUE_BYTES]
     __attribute__((aligned(QUEUE_BUFFER_ALIGN)));
@@ -43,14 +45,24 @@ ER telemetry_net_queue_push (const uint8_t * payload, uint16_t len)
     {
         return E_NOEXS;
     }
-    if ((len == (1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE)) &&
-        (payload[0] == (uint8_t)TELEMETRY_TOPIC_BARCODE_SAMPLE))
+    bool const b_barcode = (len == (1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE)) &&
+                           (payload[0] == (uint8_t)TELEMETRY_TOPIC_BARCODE_SAMPLE);
+    bool const b_periodic =
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_STATUS) &&
+         ((len == (1U + TELEMETRY_STATUS_WIRE_SIZE)) || (len == (1U + TELEMETRY_STATUS_PIVOT_WIRE_SIZE)))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_MOTION) && (len == (1U + TELEMETRY_MOTION_WIRE_SIZE))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_PHYSICS) && (len == (1U + TELEMETRY_PHYSICS_WIRE_SIZE))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_OBSTACLE) && (len == (1U + TELEMETRY_OBSTACLE_WIRE_SIZE))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_DIAG) && (len == (1U + TELEMETRY_DIAG_COUNTS_WIRE_SIZE)));
+    if (b_barcode || b_periodic)
     {
-        /* The worker is the sole producer here. Preserve uplink headroom
-         * for regular frames if an IR burst coincides with a slow link. */
+        /* Reserve uplink headroom so events are preserved ahead of periodic frames. */
         T_RMBF info;
         ER const status = tk_ref_mbf(g_mbf_net_tx_id, &info);
-        if ((E_OK != status) || (info.frbufsz < (SZ)(TELEMETRY_NET_QUEUE_BYTES / TELEMETRY_RAW_HEADROOM_DIVISOR)))
+        SZ const reserve = b_barcode
+            ? (SZ)(TELEMETRY_NET_QUEUE_BYTES / TELEMETRY_RAW_HEADROOM_DIVISOR)
+            : (SZ)TELEMETRY_EVENT_HEADROOM_BYTES;
+        if ((E_OK != status) || (info.frbufsz < reserve))
         {
             (void)atomic_inc(&g_drop_count);
             return (E_OK == status) ? E_TMOUT : status;

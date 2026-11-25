@@ -62,6 +62,14 @@ describe('wire schema', () => {
     expect(() => decodePacket('heartbeat', new Uint8Array(9))).toThrow(RangeError);
   });
 
+  it('decodes pivot evidence carried by the current status layout', () => {
+    const legacy = new Uint8Array(16);
+    expect(decodePacket('status', legacy)).not.toHaveProperty('pivot_scale_pct');
+    expect(decodePacket('status', Uint8Array.of(...legacy, 67))).toEqual({
+      ...decodePacket('status', legacy), pivot_scale_pct: 67,
+    });
+  });
+
   it('reports non-negative heartbeat age and rejects clock rollback', () => {
     expect(heartbeatAgeMs(1200, 1000)).toBe(200);
     expect(heartbeatAgeMs(900, 1000)).toBeNull();

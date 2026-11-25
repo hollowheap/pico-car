@@ -21,6 +21,8 @@ typedef struct
     uint32_t max_sample_age_us;
     uint16_t max_duty_permille; /* 1..1000. */
     uint16_t base_duty_permille; /* Zero uses the fixed maximum. */
+    uint16_t ks_permille; /* Static friction, signed with a nonzero target. */
+    uint32_t kv_q16; /* Feed-forward: permille / (um/s), same scale as kp_q16. */
 } pid_config_t;
 
 typedef struct
@@ -42,6 +44,8 @@ void pid_reset (pid_t * p_pid);
  * state is unchanged and *p_duty is set to zero when nonnull. The motor owner
  * must apply brake/latch its fault; do not continue a previous PWM command.
  * Uses derivative on measurement and conditional integration anti-windup.
+ * The feed-forward kv_q16 * target and the signed ks_permille are summed with
+ * P, I and D under the same duty limit.
  * With a base duty limit, grants extra duty in proportion to the speed
  * shortfall while feedback shows travel in the target direction.
  * Output is signed permille. It can request reversal; the owner must enforce

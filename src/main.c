@@ -60,7 +60,7 @@
 STATIC_ASSERT(FAULT_ALL_MASK <= UINT16_MAX, "fault bits fit the wire fields");
 
 /* Kernel objects the firmware creates, against the limits in
-   cmake/mtk3smp_config.h.in. Tasks: the nine below, plus the
+   the pinned kernel config/config.h. Tasks: the nine below, plus the
    kernel's init, USB console and CYW43 tasks. Cyclic handlers: supervisor,
    motion and physics. Past a limit, tk_cre_* fails
    at boot with E_LIMIT. */
@@ -480,59 +480,6 @@ LOCAL void telemetry_fault_changed (uint32_t changed, uint32_t level)
     }
 }
 
-#if !PICO_CAR_PILOT
-static edge_watch_t g_legacy_edges;
-
-LOCAL void telemetry_legacy_profile (const uint16_t * p_slots,
-                                     const obstacle_plan_summary_t * p_plan)
-{
-    uint8_t             packet[TELEMETRY_PROFILE_WIRE_SIZE + 1U];
-    telemetry_profile_t frame;
-
-    for (uint8_t slot = 0U; slot < OBSTACLE_PROFILE_SLOTS; slot++)
-    {
-        frame.slots[slot] = p_slots[slot];
-    }
-    telemetry_assemble_profile(&frame, p_plan);
-    packet[0] = (uint8_t)TELEMETRY_TOPIC_PROFILE;
-    (void)telemetry_pack_profile(&packet[1], &frame);
-    (void)telemetry_queue_try_push(packet, (uint16_t)sizeof(packet));
-}
-
-LOCAL void telemetry_legacy_transition (const obstacle_legacy_transition_t * p_transition)
-{
-    edge_event_t events[EDGE_EVENTS_MAX];
-    edge_obstacle_in_t const input = {
-        .state = p_transition->state,
-        .cause = p_transition->cause,
-        .echo_class = (TELEMETRY_OBSTACLE_CAUSE_BYPASS_GAVE_UP == p_transition->cause)
-                          ? p_transition->stop_reason : p_transition->echo_class,
-        .distance_mm = p_transition->distance_mm,
-        .plan_status = p_transition->plan.status,
-        .plan_side = p_transition->plan.side,
-        .plan_start_deg = p_transition->plan.start_deg,
-        .plan_width_mm = p_transition->plan.width_mm,
-    };
-    uint8_t const count = edge_obstacle(&g_legacy_edges, &input, events);
-
-    if (0U != count)
-    {
-        uint32_t const odometer = current_odometer_mm();
-
-        for (uint8_t index = 0U; index < count; index++)
-        {
-            (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_OBSTACLE,
-                                           events[index].type, events[index].p1,
-                                           events[index].p2, odometer);
-        }
-    }
-    if (NULL != p_transition->p_completed_profile)
-    {
-        telemetry_legacy_profile(p_transition->p_completed_profile, &p_transition->plan);
-    }
-}
-#endif
-
 /*!
  * @brief Forward arriving events and check periodic deadlines between bursts.
  */
@@ -855,6 +802,7 @@ LOCAL bool made (const char * what, ID id)
 
     if (!b_made)
     {
+        system_fault_assign(FAULT_OWNER_SUPERVISOR, FAULT_TASK_STALLED_BIT, FAULT_TASK_STALLED_BIT);
         LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "tk_cre_%s failed, er=%d", what,
                   (int)id);
     }
@@ -869,6 +817,7 @@ LOCAL bool started (const char * what, ID tid)
 
     if (!b_started)
     {
+        system_fault_assign(FAULT_OWNER_SUPERVISOR, FAULT_TASK_STALLED_BIT, FAULT_TASK_STALLED_BIT);
         LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "tk_sta_%s failed, er=%d", what,
                   (int)result);
     }
@@ -908,10 +857,6 @@ LOCAL void init_services (task_set_t * p_tasks)
     if (p_tasks->b_telemetry)
     {
         obstacle_bind_sonar_aim(telemetry_sonar_aim);
-#if !PICO_CAR_PILOT
-        edge_init(&g_legacy_edges);
-        obstacle_bind_legacy_transition(telemetry_legacy_transition);
-#endif
     }
     if (!p_tasks->b_telemetry)
     {

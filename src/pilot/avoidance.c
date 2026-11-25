@@ -6,6 +6,7 @@
 #include "pilot_internal.h"
 #include "geometry.h"
 #include "navigation/obstacle_ping.h"
+#include "platform/units.h"
 
 #define HALF_DIVISOR (2)
 #define COURSE_SCAN_IDLE      (0U)
@@ -139,9 +140,10 @@ static bool course_hug_held(avoidance_t * p_state, pilot_meas_t const * p_meas,
              ((LOOK_ECHO_OPEN == p_meas->ping_echo) ||
               (look_echo_is_point(p_meas->ping_echo) && (0U != p_meas->ping_mm))))
     {
-        /* The centre is answering again. Reacquire the missing side rays
-         * at rest before handing any wheel targets back to navigation. */
-        avoidance_request_survey(p_state, p_meas->now_ms);
+        *p_start_contact = true;
+        p_state->b_course_hold = false;
+        course_forget_survey(p_state);
+        return false;
     }
     return p_state->b_course_hold;
 }
@@ -275,7 +277,8 @@ static void course_scan_tick(avoidance_t * p_state, pilot_meas_t const * p_meas,
 /* The hug watches the forward pings and tracks the pose on every tick; it
  * takes the wheels and the sonar when it has something to go round. */
 static avoidance_result_t step_hug(avoidance_t * p_state, pilot_meas_t const * p_meas,
-                                   uint16_t bend_radius_mm, bool b_other, bool b_stall, bool b_relook, pilot_cmd_t * p_cmd)
+                                   uint16_t bend_radius_mm, int16_t drift_corr_um, bool b_other,
+                                   bool b_stall, bool b_relook, pilot_cmd_t * p_cmd)
 {
     hug_in_t in;
     hug_out_t out;
@@ -296,9 +299,16 @@ static avoidance_result_t step_hug(avoidance_t * p_state, pilot_meas_t const * p
     in.b_line_right = p_meas->b_line_right;
     in.b_stall = b_stall;
     in.b_other = b_other;
-    in.b_contact_backoff = b_other && ((uint8_t)PILOT_REASON_STUCK == p_cmd->reason);
+    in.b_contact_backoff = b_other && (p_cmd->speed_mm_s < 0) &&
+        ((uint8_t)PILOT_REASON_STUCK == p_cmd->reason);
+    in.b_independent_hold = b_other && (p_meas->b_held || p_meas->b_wheel_invalid ||
+        ((uint8_t)PILOT_REASON_ESTOP == p_cmd->reason) ||
+        ((p_meas->now_ms - p_meas->stamp_ms) > PILOT_STALE_MS));
     in.b_stationary = p_meas->b_stationary;
     in.b_relook = b_relook;
+    in.pivot_scale_pct = (p_meas->pivot_scale_pct <= (uint8_t)PERCENT)
+        ? (p_meas->pivot_scale_pct & HUG_PIVOT_WITNESS_MASK) : 0U;
+    in.drift_corr_um = drift_corr_um;
     bool const b_takes = hug_step(&p_state->hug, &p_state->look, &in, &out);
     if (out.b_no_tape || out.b_rejoined)
     {
@@ -337,7 +347,7 @@ static avoidance_result_t step_hug(avoidance_t * p_state, pilot_meas_t const * p
 }
 
 avoidance_result_t avoidance_step(avoidance_t * p_state, pilot_meas_t const * p_meas,
-                                  uint16_t bend_radius_mm, bool b_inhibited,
+                                  uint16_t bend_radius_mm, int16_t drift_corr_um, bool b_inhibited,
                                   bool b_fresh_forward, bool b_backoff_done, pilot_cmd_t * p_cmd)
 {
     bool b_start_contact = false;
@@ -356,7 +366,7 @@ avoidance_result_t avoidance_step(avoidance_t * p_state, pilot_meas_t const * p_
         return behaviour_course_contact(p_state, p_meas, b_inhibited, b_fresh_forward,
                                         b_backoff_done, p_cmd) ? AVOIDANCE_COMMAND : AVOIDANCE_IDLE;
     }
-    return step_hug(p_state, p_meas, bend_radius_mm, b_inhibited, b_backoff_done, b_start_contact, p_cmd);
+    return step_hug(p_state, p_meas, bend_radius_mm, drift_corr_um, b_inhibited, b_backoff_done, b_start_contact, p_cmd);
 }
 
 void avoidance_init(avoidance_t * p_state)

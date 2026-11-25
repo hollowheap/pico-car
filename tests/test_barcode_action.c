@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "barcode/action.h"
 #include "barcode/parser.h"
@@ -227,14 +228,26 @@ static void test_rejects_excess_wide_elements_as_parity (void)
     }
 }
 
-int main (void)
+int main (int argc, char * argv[])
 {
-    test_letter_map ();
-    test_rearm_gate ();
-    test_suppression_window ();
-    test_info_forward_and_reverse ();
-    test_reject_reasons ();
-    test_rejects_excess_wide_elements_as_parity ();
+    if ((2 == argc) && (0 == strcmp (argv[1], "letter-map")))
+    {
+        test_letter_map ();
+    }
+    else if (1 == argc)
+    {
+        test_letter_map ();
+        test_rearm_gate ();
+        test_suppression_window ();
+        test_info_forward_and_reverse ();
+        test_reject_reasons ();
+        test_rejects_excess_wide_elements_as_parity ();
+    }
+    else
+    {
+        (void)fprintf (stderr, "Usage: %s [letter-map]\n", argv[0]);
+        return 2;
+    }
 
     if (g_fail != 0U)
     {

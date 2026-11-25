@@ -252,10 +252,6 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     {
         g_heartbeat_ms = now_ms;
     }
-    else if (MQTT_ERR_BUSY == result)
-    {
-        g_busy_drops++;
-    }
 }
 
 static connection_state_t
@@ -373,7 +369,7 @@ note_mqtt_session (bool b_connected)
 static bool
 service_mqtt (uint32_t now_ms, bool b_mqtt_up)
 {
-    if (!g_mqtt_ready)
+    if (!g_mqtt_ready || !g_transport_started)
     {
         return false;
     }

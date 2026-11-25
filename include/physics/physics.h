@@ -29,9 +29,11 @@ typedef struct
     uint32_t cycles;         /* Task cycles since start.                */
     uint32_t reference_request; /* Latest new-run request applied to this sample. */
     uint32_t overruns;       /* Wake-ups missed while still working.    */
+    uint32_t forward_sample_us; /* Hardware timer of independent accelerometer sample. */
     int16_t  pitch_cdeg;     /* Pitch in centi-degrees.                 */
     int16_t  yaw_rate_cdps;  /* Best available yaw rate, 0.01 deg/s.    */
     int16_t  a_fwd_mg;       /* Forward acceleration residual, mg.      */
+    int16_t  forward_specific_mg; /* Signed forward accelerometer reading, including gravity. */
     int16_t  report_roll_cdeg; /* Smoothed telemetry roll in centidegrees. */
     int16_t  roll_cdeg;      /* Roll, left-down positive, 0.01 deg.     */
     int16_t  az_mg;          /* Board z reading, mg.                    */
@@ -47,12 +49,15 @@ typedef struct
     bool     ready;          /* The task has produced a recent message. */
     bool     calibrated;     /* Hump detector has its rest reference.   */
     bool     heading_valid;  /* heading_ddeg is fresh and usable.       */
+    bool     heading_gated;  /* Offset learnt, field in band and rates agree. */
     bool     hump_active;    /* A hump is in progress.                  */
     bool     finished;       /* The last hump finished.                 */
     bool     height_valid;   /* hump_peak_mm is trustworthy.            */
     bool     level_still;    /* Recent samples settled against the rest gravity vector. */
     bool     collecting_rest; /* Fresh qualifying sample in the gravity or settled-pose window. */
     uint8_t  rest_interruptions; /* Wraps when an ongoing rest window is interrupted. */
+    uint8_t  pivot_scale_pct; /* Body over encoder yaw of a steady pivot on the spot,
+                                 50..100 with the magnetometer offset learnt; 0 for none. */
     bool     attitude_unknown; /* No rest reference: at boot, after a new run
                                   or after an IMU loss. Attitude fields hold
                                   the last known values; do not act on them
@@ -60,7 +65,7 @@ typedef struct
 } physics_status_t;
 
 /* Fixed-size supervisor and telemetry snapshot. */
-STATIC_ASSERT (sizeof(physics_status_t) == 48U, "physics_status_t size");
+STATIC_ASSERT (sizeof(physics_status_t) == 56U, "physics_status_t size");
 
 /* Set up the task's message buffers and cyclic handler. The composition
  * root creates the task named by task_id and calls physics_run() from it,

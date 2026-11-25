@@ -33,7 +33,10 @@ uint8_t supervisor_poll_turn(uint8_t * p_source);
 /* Select or cancel only the route instruction whose opcode still matches. */
 bool supervisor_route_pending(uint8_t expected_opcode, bool b_consume);
 uint8_t supervisor_reset_count(void);
+bool supervisor_wheels_loaded(void);
 uint8_t supervisor_start_snapshot(bool * p_continuous_floor);
+uint8_t supervisor_armed_start(bool * p_armed);
+void supervisor_start_check_failed(uint8_t generation);
 uint8_t supervisor_recovery_snapshot(bool * p_clear);
 void supervisor_set_turning(bool b_turning);
 void supervisor_turn_refused(uint8_t opcode);

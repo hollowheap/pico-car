@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "health_core.h"
+#include "run_state.h"
 #include "motion/motion.h"
 #include "navigation/obstacle.h"
 #include "navigation/obstacle_flags.h"
@@ -24,6 +26,7 @@
 static jmp_buf g_pass_complete;
 static uint32_t g_holds;
 static unsigned g_fails;
+static unsigned g_obstacle_resets;
 static unsigned g_obstacle_starts;
 static unsigned g_obstacle_stops;
 static unsigned g_calibration_requests;
@@ -32,6 +35,8 @@ static unsigned g_watchdog_feeds;
 static unsigned g_supervisor_errors;
 static uint32_t g_holds_at_reply;
 static uint32_t g_holds_at_run_start;
+static int16_t g_stop_state;
+static uint16_t g_stop_reason;
 static uint16_t g_reply_id;
 static uint16_t g_reply_detail;
 static uint8_t g_reply_type;
@@ -40,6 +45,8 @@ static bool g_pickup_at_busy_reply;
 static uint16_t g_accepted_ids[STOP_INBOX_CAPACITY + 1U];
 static unsigned g_accept_count;
 static bool g_motion_stop_requested;
+static uint32_t g_motion_stop_age_ms;
+static uint32_t g_motion_movement_sequence;
 static bool g_motion_stop_at_reply;
 static uint8_t g_motion_fault;
 static bool g_wheel_moved;
@@ -56,6 +63,22 @@ static bool g_start_button_down;
 static unsigned g_start_button_replies;
 static uint8_t g_reset_reason;
 static bool g_reset_was_power_up = true;
+static bool g_token_valid;
+static uint8_t g_token_flags;
+static uint8_t g_token_resumes;
+static unsigned g_recovery_events;
+static unsigned g_boot_events;
+static unsigned g_build_events;
+static bool g_build_after_boot;
+static int16_t g_build_p1;
+static uint16_t g_build_p2;
+static unsigned g_stop_timing_events;
+static int16_t g_stop_timing_p1;
+static uint16_t g_stop_timing_p2;
+static bool g_telemetry_consumer_blocked;
+static uint8_t g_recovery_source;
+static int16_t g_recovery_p1;
+static uint16_t g_recovery_p2;
 
 #define CHECK(cond)                                                       \
     do                                                                    \
@@ -154,6 +177,10 @@ void obstacle_echo_counts (uint32_t * p_counts)
 
 ER obstacle_post_cmd (uint8_t cmd)
 {
+    if (OBSTACLE_CMD_RESET == cmd)
+    {
+        g_obstacle_resets++;
+    }
     if (OBSTACLE_CMD_START == cmd)
     {
         g_obstacle_starts++;
@@ -178,6 +205,8 @@ int motion_status (motion_status_t * p_status)
     *p_status = (motion_status_t){
         .ready = (MOTION_STATE_IDLE == state) && !g_motion_stop_requested,
         .stop_requested = g_motion_stop_requested,
+        .stop_age_ms = g_motion_stop_age_ms,
+        .movement_sequence = g_motion_movement_sequence,
         .hold_mask = g_holds,
         .state = g_motion_stop_requested ? MOTION_STATE_STOPPED : state,
         .fault = g_motion_fault,
@@ -222,7 +251,7 @@ int motion_renew_permit (uint32_t lease_ms)
 
 uint32_t motion_permit_age_ms (void)
 {
-    return 0U;
+    return (0U == g_permit_renewals) ? UINT32_MAX : 0U;
 }
 
 int motion_request_stop (void)
@@ -251,6 +280,20 @@ void platform_wdt_feed (void)
     g_watchdog_feeds++;
 }
 
+void platform_run_token_write (uint8_t flags, uint8_t resumes)
+{
+    g_token_valid = true;
+    g_token_flags = flags;
+    g_token_resumes = resumes;
+}
+
+bool platform_run_token_read (uint8_t * p_flags, uint8_t * p_resumes)
+{
+    *p_flags = g_token_flags;
+    *p_resumes = g_token_resumes;
+    return g_token_valid;
+}
+
 void log_write (log_sev_t severity, log_task_t task, log_mod_t module, const char * p_format, ...)
 {
     (void)module;
@@ -261,9 +304,8 @@ void log_write (log_sev_t severity, log_task_t task, log_mod_t module, const cha
     }
 }
 
-ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
+static ER record_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
 {
-    (void)source;
     (void)odometer_mm;
     if ((TELEMETRY_EVT_CMD_ACCEPT == type) || (TELEMETRY_EVT_CMD_REJECT == type))
     {
@@ -286,6 +328,35 @@ ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, 
     {
         g_holds_at_run_start = g_holds;
     }
+    if (TELEMETRY_EVT_BOOT == type)
+    {
+        g_boot_events++;
+    }
+    if (TELEMETRY_EVT_BUILD == type)
+    {
+        g_build_events++;
+        g_build_after_boot = (0U != g_boot_events);
+        g_build_p1 = p1;
+        g_build_p2 = p2;
+    }
+    if (TELEMETRY_EVT_STOP_TIMING == type)
+    {
+        g_stop_timing_events++;
+        g_stop_timing_p1 = p1;
+        g_stop_timing_p2 = p2;
+    }
+    if (TELEMETRY_EVT_RECOVERY == type)
+    {
+        g_recovery_events++;
+        g_recovery_source = source;
+        g_recovery_p1 = p1;
+        g_recovery_p2 = p2;
+    }
+    if (TELEMETRY_EVT_RUN_STOP == type)
+    {
+        g_stop_state = p1;
+        g_stop_reason = p2;
+    }
     if (TELEMETRY_EVT_CMD_ACCEPT == type)
     {
         if ((SUPERVISOR_NO_TURN != g_probe_at_u_reply) && (VEHICLE_CMD_UTURN == ((unsigned)p1 & 0xffU)))
@@ -299,6 +370,20 @@ ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, 
         g_accept_count++;
     }
     return E_OK;
+}
+
+ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
+{
+    if (g_telemetry_consumer_blocked)
+    {
+        g_now_ms += 2U * SUPERVISOR_PASS_MS;
+    }
+    return record_event (source, type, p1, p2, odometer_mm);
+}
+
+ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2, uint32_t odometer_mm)
+{
+    return record_event (source, type, p1, p2, odometer_mm);
 }
 
 static void set_sonar_connection_fault (uint16_t fault)
@@ -325,6 +410,37 @@ static void remote_start (uint16_t cmd_id)
                                              cmd_id, 1U));
     one_pass ();
     CHECK (cmd_id == g_reply_id);
+}
+
+static void test_unverified_start_stays_stopped (void)
+{
+    bool armed = false;
+    remote_start (1U);
+    uint8_t const generation = supervisor_armed_start (&armed);
+    CHECK (armed);
+    supervisor_start_check_failed ((uint8_t)(generation - 1U));
+    one_pass ();
+    CHECK (generation == supervisor_armed_start (&armed) && armed);
+
+    supervisor_start_check_failed (generation);
+    one_pass ();
+    CHECK (generation == supervisor_armed_start (&armed) && !armed);
+    CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
+    CHECK (RUN_STATE_STOPPED == g_stop_state);
+    CHECK (TELEMETRY_RUN_STOP_REASON_STARTUP_UNVERIFIED == g_stop_reason);
+    CHECK (0U == (system_fault_get () & FAULT_LIFTED_BIT));
+    CHECK (0U == (g_token_flags & PLATFORM_RUN_ARMED));
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    one_pass ();
+    CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
+    CHECK (generation == supervisor_armed_start (&armed) && !armed);
+
+    remote_start (2U);
+    CHECK ((uint8_t)(generation + 1U) == supervisor_armed_start (&armed) && armed);
+    supervisor_start_check_failed (generation);
+    one_pass ();
+    CHECK ((uint8_t)(generation + 1U) == supervisor_armed_start (&armed) && armed);
 }
 
 static void check_calibrating_start (const char * scenario)
@@ -451,17 +567,24 @@ static void check_connection_refuses_start (void)
 
 static void test_start_after_sonar_recovers (void)
 {
+    CHECK (0U == g_obstacle_resets && 0U == g_obstacle_starts);
+    g_mqtt_seen = true;
     set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
     check_connection_refuses_start ();
+    CHECK (0U == g_obstacle_resets);
     set_sonar_connection_fault (0U);
+    g_now_ms = 10000U;
+    one_pass ();
+    g_now_ms += SUPERVISOR_PASS_MS;
+    g_obstacle.seq++;
     one_pass ();
     CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
     CHECK (0U == supervisor_start_count ());
-    CHECK (0U == g_obstacle_starts);
+    CHECK (0U == g_obstacle_resets && 0U == g_obstacle_starts);
     remote_start (2U);
     CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
     CHECK (1U == supervisor_start_count ());
-    CHECK (1U == g_obstacle_starts);
+    CHECK (1U == g_obstacle_resets && 1U == g_obstacle_starts);
     CHECK (0U == (g_holds & MOTION_HOLD_OPERATOR));
 }
 
@@ -586,6 +709,7 @@ static void test_pending_barcode_route (void)
 
 static void test_pickup_during_run (void)
 {
+    uint32_t const pickup_holds = MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT;
     remote_start (1U);
     g_physics.calibrated = true;
     g_physics.attitude_unknown = false;
@@ -595,30 +719,42 @@ static void test_pickup_during_run (void)
     g_obstacle.state = TELEMETRY_OBSTACLE_STATE_BYPASS;
     g_physics.attitude_state = TELEMETRY_ATTITUDE_STATE_LIFTED;
     one_pass ();
-    CHECK (MOTION_HOLD_LIFT == g_holds);
+    CHECK (pickup_holds == g_holds);
+    CHECK (RUN_STATE_STOPPED == g_stop_state);
+    CHECK (0U != (system_fault_get () & FAULT_LIFTED_BIT));
     CHECK (1U == g_obstacle_stops);
     remote_start (2U);
     CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type);
-    CHECK (MOTION_HOLD_LIFT == g_holds);
+    CHECK (pickup_holds == g_holds);
 
     g_physics.attitude_state = TELEMETRY_ATTITUDE_STATE_OK;
     for (unsigned pass = 0U; pass < 10000U / SUPERVISOR_PASS_MS; pass++)
     {
         g_now_ms += SUPERVISOR_PASS_MS;
         one_pass ();
-        CHECK (MOTION_HOLD_LIFT == g_holds);
+        CHECK (pickup_holds == g_holds);
+        CHECK (0U != (system_fault_get () & FAULT_LIFTED_BIT));
     }
     CHECK (1U == supervisor_start_count ());
     CHECK (1U == g_obstacle_stops);
     CHECK (1U == g_obstacle_starts);
 
-    remote_start (3U);
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_RESET, VEHICLE_SRC_TELEMETRY, 3U, 1U));
+    one_pass ();
+    CHECK (3U == g_reply_id && TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    CHECK (pickup_holds == g_holds);
+    CHECK (0U != (system_fault_get () & FAULT_LIFTED_BIT));
+    CHECK (0U != (system_fault_sticky_get () & FAULT_LIFTED_BIT));
+
+    remote_start (4U);
     CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
     CHECK (MOTION_HOLD_CALIBRATE == g_holds);
     g_physics.calibrated = true;
     g_physics.attitude_unknown = false;
     one_pass ();
     CHECK (0U == g_holds);
+    CHECK (0U == (system_fault_get () & FAULT_LIFTED_BIT));
+    CHECK (0U == (system_fault_sticky_get () & FAULT_LIFTED_BIT));
     CHECK (2U == supervisor_start_count ());
 }
 
@@ -768,6 +904,454 @@ static bool telemetry_seen (void)
     return g_mqtt_seen;
 }
 
+/* Parked, level passes with a fresh clear centred ping each, as the offline
+ * start needs. A watchdog resume waits for no telemetry timeout. */
+#define RESUME_PASSES   (5U)
+#define RESUME_PASS_MS  (50U)
+
+static void parked_passes (unsigned passes)
+{
+    while (passes > 0U)
+    {
+        g_now_ms += RESUME_PASS_MS;
+        g_obstacle.seq++;
+        one_pass ();
+        passes--;
+    }
+}
+
+static uint16_t resume_attempt (uint8_t attempt)
+{
+    return (uint16_t)(((uint32_t)SUPERVISOR_WATCHDOG_RESUMES << 8U) | attempt);
+}
+
+/* The run token says the car was running when the watchdog reset it. */
+static void check_watchdog_resume (bool b_continuous, uint8_t resumes)
+{
+    bool floor = !b_continuous;
+
+    parked_passes (RESUME_PASSES);
+    CHECK (1U == supervisor_start_snapshot (&floor));
+    CHECK (b_continuous == floor);
+    CHECK (0U == (g_holds & MOTION_HOLD_OPERATOR));
+    CHECK (1U == g_recovery_events);
+    CHECK ((uint8_t)TELEMETRY_EVENT_SOURCE_SUPERVISOR == g_recovery_source);
+    CHECK ((int16_t)TELEMETRY_RESET_REASON_WATCHDOG == g_recovery_p1);
+    CHECK (resume_attempt ((uint8_t)(resumes + 1U)) == g_recovery_p2);
+    CHECK (g_token_valid && (0U != (g_token_flags & PLATFORM_RUN_ARMED)));
+    CHECK ((uint8_t)(resumes + 1U) == g_token_resumes);
+
+    CHECK (E_OK == vehicle_command_post (VEHICLE_CMD_STOP, VEHICLE_SRC_BUTTON));
+    one_pass ();
+    CHECK (0U == (g_token_flags & PLATFORM_RUN_ARMED));
+}
+
+/* No resume: the car keeps its operator hold through the same passes, and a
+ * telemetry timeout cannot start it either. */
+static void check_no_watchdog_resume (void)
+{
+    g_now_ms = 20000U;
+    parked_passes (RESUME_PASSES);
+    CHECK (0U == supervisor_start_count ());
+    CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
+    CHECK (0U == g_recovery_events);
+}
+
+/* The test target is built with this hash, a dirty tree and the pilot. */
+#define BUILD_HASH        (0x1234ABCU)
+#define BUILD_HASH_HIGH   (12U)
+#define BUILD_FLAGS_SHIFT (12U)
+#define BUILD_SELFTEST_PASSES (120U)
+
+static void check_build_identity (void)
+{
+    uint32_t const flags = TELEMETRY_BUILD_FLAG_DIRTY | TELEMETRY_BUILD_FLAG_PILOT;
+    uint32_t const high = (BUILD_HASH >> 16U) & ((1U << BUILD_HASH_HIGH) - 1U);
+
+    for (unsigned i = 0U; i < BUILD_SELFTEST_PASSES; i++)
+    {
+        g_now_ms += SUPERVISOR_PASS_MS;
+        one_pass ();
+    }
+    CHECK (1U == g_boot_events);
+    CHECK (1U == g_build_events);
+    CHECK (g_build_after_boot);
+    CHECK ((int16_t)((flags << BUILD_FLAGS_SHIFT) | high) == g_build_p1);
+    CHECK ((uint16_t)(BUILD_HASH & 0xFFFFU) == g_build_p2);
+}
+
+/* A STOP is accepted while both wheels drive. The duty reaches 0 after
+ * STOP_DUTY_PASSES passes and the wheels rest after STOP_REST_PASSES. */
+#define STOP_DUTY_PASSES (2U)
+#define STOP_REST_PASSES (5U)
+#define STOP_SPEED_UM_S  (150000)
+#define STOP_DUTY_PM     (300)
+
+static void timed_passes (unsigned passes)
+{
+    while (passes > 0U)
+    {
+        g_now_ms += SUPERVISOR_PASS_MS;
+        one_pass ();
+        passes--;
+    }
+}
+
+static void check_stop_timing (uint8_t opcode)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_feedback.left_speed_um_s = STOP_SPEED_UM_S;
+    g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = STOP_DUTY_PM;
+    g_diag.right_duty_permille = STOP_DUTY_PM;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+
+    CHECK (E_OK == vehicle_command_post (opcode, VEHICLE_SRC_TELEMETRY));
+    timed_passes (1U);
+    timed_passes (STOP_DUTY_PASSES - 1U);
+    g_diag.left_duty_permille = 0;
+    g_diag.right_duty_permille = 0;
+    timed_passes (STOP_REST_PASSES - STOP_DUTY_PASSES - 1U);
+    CHECK (0U == g_stop_timing_events);
+    g_feedback.left_speed_um_s = 0;
+    g_feedback.right_speed_um_s = 0;
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    timed_passes (STOP_REST_PASSES);
+    CHECK (1U == g_stop_timing_events);
+    CHECK ((int16_t)(STOP_DUTY_PASSES * SUPERVISOR_PASS_MS) == g_stop_timing_p1);
+    CHECK ((uint16_t)(STOP_REST_PASSES * SUPERVISOR_PASS_MS) == g_stop_timing_p2);
+}
+
+static void check_overlapping_stop_timing (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    unsigned const accepted_before = g_accept_count;
+
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY, 10U, 1U));
+    timed_passes (1U);
+    CHECK (g_accept_count == accepted_before + 2U);
+    CHECK (9U == g_accepted_ids[accepted_before]);
+    CHECK (10U == g_accepted_ids[accepted_before + 1U]);
+
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    timed_passes (1U);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = 0;
+    for (unsigned pass = 0U; pass < 3U; ++pass)
+    {
+        g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+        timed_passes (1U);
+    }
+    CHECK (g_stop_timing_events == 1U);
+    CHECK (g_stop_timing_p1 == (int16_t)(2U * SUPERVISOR_PASS_MS));
+}
+
+static void check_stale_rest_is_ignored (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    CHECK (E_OK == vehicle_command_post (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY));
+    timed_passes (1U);
+
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = 0;
+    g_feedback.fresh = false;
+    timed_passes (3U);
+    CHECK (g_stop_timing_events == 0U);
+    g_feedback.fresh = true;
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (2U);
+    CHECK (g_stop_timing_events == 0U);
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (g_stop_timing_events == 1U);
+}
+
+static void check_gp21_stop_timing (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_motion_stop_requested = true;
+    g_motion_stop_age_ms = 3U * SUPERVISOR_PASS_MS;
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    CHECK (9U == g_reply_id && TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    CHECK (0U == g_stop_timing_events);
+
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = 0;
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (1U == g_stop_timing_events);
+    CHECK ((int16_t)(3U * SUPERVISOR_PASS_MS) == g_stop_timing_p1);
+    CHECK ((uint16_t)(5U * SUPERVISOR_PASS_MS) == g_stop_timing_p2);
+}
+
+static void check_stop_timing_without_brake_evidence (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    g_motion_fault = TELEMETRY_MOTION_FAULT_OUTPUT;
+    g_feedback.fresh = false;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = 0;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+
+    g_now_ms += UINT16_MAX;
+    one_pass ();
+    CHECK (1U == g_stop_timing_events);
+    CHECK (INT16_MAX == g_stop_timing_p1 && UINT16_MAX == g_stop_timing_p2);
+}
+
+static void complete_stop_with_fresh_samples (void)
+{
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = 0;
+    for (unsigned i = 0; i < 3U; i++)
+    {
+        g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+        timed_passes (1U);
+    }
+}
+
+static void check_stop_episode_rearms_after_motion (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_motion_movement_sequence++;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    timed_passes (1U);
+
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    complete_stop_with_fresh_samples ();
+    CHECK (g_stop_timing_events == 1U);
+
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 10U, 1U));
+    timed_passes (1U);
+    complete_stop_with_fresh_samples ();
+    CHECK (g_reply_id == 10U && g_reply_type == TELEMETRY_EVT_CMD_ACCEPT);
+    CHECK (g_stop_timing_events == 1U);
+
+    remote_start (11U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_feedback.left_displacement_um += 10000;
+    g_feedback.right_displacement_um += 10000;
+    g_motion_movement_sequence++;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    g_feedback.timestamp_us = (g_now_ms + SUPERVISOR_PASS_MS) * 1000U;
+    timed_passes (1U);
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 12U, 1U));
+    timed_passes (1U);
+    complete_stop_with_fresh_samples ();
+    CHECK (g_stop_timing_events == 2U);
+}
+
+static void check_stop_timing_after_duty_returns (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    timed_passes (1U);
+
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = 0;
+    g_feedback.timestamp_us = (g_now_ms + SUPERVISOR_PASS_MS) * 1000U;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+
+    remote_start (10U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    g_feedback.timestamp_us += 2U * SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (0U == g_stop_timing_events);
+    g_feedback.timestamp_us += SUPERVISOR_PASS_MS * 1000U;
+    timed_passes (1U);
+    CHECK (1U == g_stop_timing_events);
+    CHECK ((int16_t) SUPERVISOR_PASS_MS == g_stop_timing_p1);
+}
+
+static void check_no_rearm_from_pre_release_motion (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_motion_movement_sequence++;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    timed_passes (1U);
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    CHECK (0U != g_holds);
+    g_diag.left_duty_permille = g_diag.right_duty_permille = 0;
+    g_feedback.fresh = false;
+    g_now_ms += UINT16_MAX;
+    one_pass ();
+    CHECK (1U == g_stop_timing_events && UINT16_MAX == g_stop_timing_p2);
+
+    remote_start (10U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    CHECK (0U != g_holds);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    g_feedback.fresh = true;
+    g_feedback.timestamp_us = (g_now_ms + SUPERVISOR_PASS_MS) * 1000U - 1000U;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 11U, 1U));
+    timed_passes (1U);
+    CHECK (21U == g_now_ms - g_feedback.timestamp_us / 1000U);
+    CHECK (11U == g_reply_id && TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    complete_stop_with_fresh_samples ();
+    CHECK (1U == g_stop_timing_events);
+}
+
+static void check_estop_between_passes (bool b_moved)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_motion_movement_sequence++;
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    timed_passes (1U);
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    complete_stop_with_fresh_samples ();
+    CHECK (1U == g_stop_timing_events);
+
+    remote_start (10U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    g_physics.calibrated = true;
+    g_physics.attitude_unknown = false;
+    timed_passes (1U);
+    CHECK (0U == g_holds);
+    g_now_ms += 15U;
+    g_feedback.timestamp_us = g_now_ms * 1000U;
+    if (b_moved)
+    {
+        g_motion_movement_sequence++;
+        g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+        g_feedback.left_displacement_um += STOP_SPEED_UM_S / 100;
+        g_feedback.right_displacement_um += STOP_SPEED_UM_S / 100;
+    }
+
+    /* GP21 latches after the encoder interval and before the supervisor wakes. */
+    g_motion_stop_requested = true;
+    g_now_ms += 5U;
+    g_motion_stop_age_ms = 5U;
+    one_pass ();
+    complete_stop_with_fresh_samples ();
+    CHECK ((b_moved ? 2U : 1U) == g_stop_timing_events);
+    if (b_moved)
+    {
+        CHECK (5 == g_stop_timing_p1);
+        CHECK ((uint16_t)(5U + 2U * SUPERVISOR_PASS_MS) == g_stop_timing_p2);
+    }
+}
+
+static void check_stop_with_slow_telemetry_consumer (void)
+{
+    g_mqtt_seen = true;
+    remote_start (8U);
+    g_feedback.left_speed_um_s = g_feedback.right_speed_um_s = STOP_SPEED_UM_S;
+    g_diag.left_duty_permille = g_diag.right_duty_permille = STOP_DUTY_PM;
+    uint32_t const start_ms = g_now_ms;
+    unsigned const accepted_before = g_accept_count;
+
+    g_telemetry_consumer_blocked = true;
+    CHECK (E_OK == vehicle_command_post_ids (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY, 9U, 1U));
+    timed_passes (1U);
+    CHECK (g_motion_stop_requested);
+    CHECK (g_now_ms - start_ms == SUPERVISOR_PASS_MS);
+    g_telemetry_consumer_blocked = false;
+    timed_passes (2U);
+    CHECK (g_accept_count == accepted_before + 1U);
+    CHECK (g_accepted_ids[accepted_before] == 9U);
+}
+
+static void check_stationary_start_is_refused (void)
+{
+    g_mqtt_seen = true;
+    CHECK (E_OK == vehicle_command_post_ids (10U, VEHICLE_SRC_TELEMETRY, 42U, 1U));
+    one_pass ();
+    CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type && 42U == g_reply_id);
+    CHECK (RUN_REJECT_OPCODE == (g_reply_detail >> 12));
+    CHECK (0U == supervisor_start_count ());
+    CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
+}
+
+/* An operator START arms the token with no resumes; a STOP disarms it. */
+static void check_run_token (void)
+{
+    g_mqtt_seen = true;
+    remote_start (7U);
+    CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+    CHECK (g_token_valid);
+    CHECK ((PLATFORM_RUN_ARMED | PLATFORM_RUN_CONTINUOUS) == g_token_flags);
+    CHECK (0U == g_token_resumes);
+    CHECK (E_OK == vehicle_command_post (VEHICLE_CMD_STOP, VEHICLE_SRC_BUTTON));
+    one_pass ();
+    CHECK (0U == (g_token_flags & PLATFORM_RUN_ARMED));
+}
+
 static void check_estop_precedes_reply (void)
 {
     uint16_t const cmd_id = 101U;
@@ -786,6 +1370,11 @@ static void check_estop_precedes_reply (void)
     CHECK (g_motion_stop_at_reply);
 }
 
+/* The healthy and feedback-fault passes before the timing fault, and the
+ * passes a persistent timing fault runs past its window. */
+#define TIMING_EARLY_PASSES  (2U)
+#define TIMING_LATE_PASSES   (60U)
+
 static void check_motion_timing_fault (uint8_t fault, bool b_stopped)
 {
     unsigned const feeds = g_watchdog_feeds;
@@ -801,18 +1390,35 @@ static void check_motion_timing_fault (uint8_t fault, bool b_stopped)
     g_motion_fault = TELEMETRY_MOTION_FAULT_FEEDBACK;
     liveness_kick (LIVE_MOTION);
     one_pass ();
-    CHECK ((feeds + 2U) == g_watchdog_feeds);
-    CHECK ((renewals + 2U) == g_permit_renewals);
+    CHECK ((feeds + TIMING_EARLY_PASSES) == g_watchdog_feeds);
+    CHECK ((renewals + TIMING_EARLY_PASSES) == g_permit_renewals);
 
+    /* A timing fault that clears inside its window keeps the run and the feed. */
     g_motion_fault = fault;
-    for (unsigned pass = 0U; pass < 60U; pass++)
+    unsigned const window = MOTION_TIMING_RECOVERY_MS / SUPERVISOR_PASS_MS;
+    for (unsigned pass = 0U; pass < window; pass++)
     {
         g_now_ms += SUPERVISOR_PASS_MS;
         liveness_kick (LIVE_MOTION);
         one_pass ();
     }
-    CHECK ((feeds + 2U) == g_watchdog_feeds);
-    CHECK ((renewals + 2U) == g_permit_renewals);
+    CHECK ((feeds + TIMING_EARLY_PASSES + window) == g_watchdog_feeds);
+    CHECK ((renewals + TIMING_EARLY_PASSES + window) == g_permit_renewals);
+    CHECK (0U == g_supervisor_errors);
+
+    /* One that stays past the window stops the feed, so the car reboots. */
+    for (unsigned pass = 0U; pass < TIMING_LATE_PASSES; pass++)
+    {
+        g_now_ms += SUPERVISOR_PASS_MS;
+        liveness_kick (LIVE_MOTION);
+        one_pass ();
+    }
+    CHECK ((feeds + TIMING_EARLY_PASSES + 1U + window) >= g_watchdog_feeds);
+    unsigned const stopped_feeds = g_watchdog_feeds;
+    unsigned const stopped_renewals = g_permit_renewals;
+    one_pass ();
+    CHECK (stopped_feeds == g_watchdog_feeds);
+    CHECK (stopped_renewals == g_permit_renewals);
     CHECK (1U == g_supervisor_errors);
 }
 
@@ -865,8 +1471,8 @@ static void check_running_reference_loss (const char * scenario)
     g_physics.level_still = false;
     g_physics.attitude_unknown = true;
     one_pass ();
-    CHECK (0U != g_holds);
-    CHECK (SUPERVISOR_NO_TURN == supervisor_poll_turn (NULL));
+    /* Mid-run IMU reference loss drives on without holding (S139). */
+    CHECK (0U == g_holds);
     if (b_stop_during_loss)
     {
         expect_turn_reply (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, true);
@@ -875,38 +1481,11 @@ static void check_running_reference_loss (const char * scenario)
     {
         one_pass ();
     }
-    CHECK (0U != g_holds);
+    CHECK (b_stop_during_loss ? (0U != g_holds) : (0U == g_holds));
     CHECK (1U == supervisor_start_count ());
     g_physics.calibrated = true;
     g_physics.attitude_unknown = false;
-    g_obstacle.seq++;
-    one_pass ();
-    CHECK (0U != g_holds);
     g_physics.level_still = true;
-    g_wheel_moved = true;
-    g_obstacle.seq++;
-    one_pass ();
-    CHECK (0U != g_holds);
-    g_wheel_moved = false;
-    g_feedback.speed_valid[1] = false;
-    g_obstacle.seq++;
-    one_pass ();
-    CHECK (0U != g_holds);
-    g_feedback.speed_valid[1] = true;
-    for (unsigned pass = 0U; pass < 12U; pass++)
-    {
-        one_pass ();
-    }
-    CHECK (0U != g_holds);
-    g_survey_reply = true;
-    g_obstacle.seq++;
-    one_pass ();
-    CHECK (0U != g_holds);
-    g_survey_reply = false;
-    g_obstacle.echo_class = TELEMETRY_ECHO_CLASS_NO_ECHO;
-    g_obstacle.seq++;
-    one_pass ();
-    CHECK (0U != g_holds);
     bool const pickup = 0 == strcmp (scenario, "lost-reference-pickup");
     bool const overturn = 0 == strcmp (scenario, "lost-reference-overturn");
     bool const estop = 0 == strcmp (scenario, "lost-reference-estop");
@@ -926,17 +1505,14 @@ static void check_running_reference_loss (const char * scenario)
     g_obstacle.distance_mm = near ? 100U : 0U;
     g_obstacle.seq++;
     one_pass ();
-    bool clear = false;
     if (estop || pickup || overturn || b_stop_during_loss)
     {
         if (estop) CHECK (g_motion_stop_requested);
         else CHECK (0U != (g_holds & (b_stop_during_loss ? MOTION_HOLD_OPERATOR : MOTION_HOLD_LIFT)));
-        CHECK (0U == supervisor_recovery_snapshot (&clear));
     }
     else
     {
         CHECK (0U == g_holds);
-        CHECK (1U == supervisor_recovery_snapshot (&clear) && clear != near);
     }
     CHECK (1U == supervisor_start_count ());
 }
@@ -1119,7 +1695,8 @@ static void check_start_button_debounce (void)
     g_now_ms = UINT32_MAX - SUPERVISOR_PASS_MS;
     button_passes (true, 3U);
     CHECK (2U == g_start_button_replies);
-    CHECK (2U == supervisor_start_count ());
+    CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type);
+    CHECK (1U == supervisor_start_count ());
 }
 
 static void check_start_button_gates (void)
@@ -1157,11 +1734,12 @@ int main (int argc, char ** argv)
     if (2 != argc)
     {
         (void)fprintf (stderr, "Usage: %s faulty-sonar|echo-line|faulty-imu|restored-sonar|"
-                       "running-sonar|running-pickup|historical-sonar|retry-calibration|retry-active-calibration|"
+                       "running-sonar|running-pickup|unverified-start|historical-sonar|retry-calibration|retry-active-calibration|"
                        "offline-start|online-boot|watchdog-offline|other-reset-offline|offline-stop-before|"
                        "estop-before-report|estop-full-stop-inbox|stop-before-report|"
                        "start-calibration-handoff|watchdog-gap|watchdog-expired|"
-                       "watchdog-gap-after-estop|watchdog-expired-after-estop|start-button|start-button-gates\n", argv[0]);
+                       "watchdog-gap-after-estop|watchdog-expired-after-estop|start-button|start-button-gates|"
+                       "watchdog-resume[-bounded|-used|-stopped|-corrupt|-power]|run-token|build-identity|stop-timing|estop-timing\n", argv[0]);
         return 2;
     }
     if ((0 == strcmp (argv[1], "start-button")) || (0 == strcmp (argv[1], "start-button-gates")))
@@ -1186,6 +1764,37 @@ int main (int argc, char ** argv)
     {
         /* The legacy two-value wire report says POWER for other hardware resets. */
         g_reset_was_power_up = false;
+    }
+    else if (0 == strncmp (argv[1], "watchdog-resume", 15U))
+    {
+        g_reset_reason = PLATFORM_RESET_WATCHDOG;
+        g_reset_was_power_up = false;
+        g_mqtt_seen = true;
+        g_token_valid = (0 != strcmp (argv[1], "watchdog-resume-corrupt"));
+        g_token_flags = (uint8_t)(PLATFORM_RUN_ARMED | PLATFORM_RUN_CONTINUOUS);
+        if ((0 == strcmp (argv[1], "watchdog-resume-bounded")) ||
+            (0 == strcmp (argv[1], "watchdog-resume-reject-stationary")))
+        {
+            g_token_flags = PLATFORM_RUN_ARMED;
+            g_token_resumes = (uint8_t)(SUPERVISOR_WATCHDOG_RESUMES - 1U);
+        }
+        else if (0 == strcmp (argv[1], "watchdog-resume-used"))
+        {
+            g_token_resumes = SUPERVISOR_WATCHDOG_RESUMES;
+        }
+        else if (0 == strcmp (argv[1], "watchdog-resume-stopped"))
+        {
+            g_token_flags = PLATFORM_RUN_CONTINUOUS;
+        }
+        else if (0 == strcmp (argv[1], "watchdog-resume-power"))
+        {
+            g_reset_reason = PLATFORM_RESET_POWER;
+            g_reset_was_power_up = true;
+        }
+        else
+        {
+            /* A first resume on the continuous floor. */
+        }
     }
     g_physics.ready = true;
     g_physics.level_still = true;
@@ -1261,6 +1870,10 @@ int main (int argc, char ** argv)
     {
         test_pickup_during_run ();
     }
+    else if (0 == strcmp (argv[1], "unverified-start"))
+    {
+        test_unverified_start_stays_stopped ();
+    }
     else if (0 == strcmp (argv[1], "historical-sonar"))
     {
         test_historical_sonar_fault_does_not_refuse_start ();
@@ -1295,6 +1908,82 @@ int main (int argc, char ** argv)
     else if (0 == strcmp (argv[1], "offline-stop-before"))
     {
         check_stop_cancels_offline_start ();
+    }
+    else if (0 == strcmp (argv[1], "watchdog-resume"))
+    {
+        check_watchdog_resume (true, 0U);
+    }
+    else if (0 == strcmp (argv[1], "watchdog-resume-bounded"))
+    {
+        check_watchdog_resume (false, (uint8_t)(SUPERVISOR_WATCHDOG_RESUMES - 1U));
+    }
+    else if ((0 == strcmp (argv[1], "watchdog-resume-used")) ||
+             (0 == strcmp (argv[1], "watchdog-resume-stopped")) ||
+             (0 == strcmp (argv[1], "watchdog-resume-corrupt")) ||
+             (0 == strcmp (argv[1], "watchdog-resume-power")) ||
+             (0 == strcmp (argv[1], "watchdog-resume-reject-stationary")))
+    {
+        check_no_watchdog_resume ();
+    }
+    else if (0 == strcmp (argv[1], "run-token"))
+    {
+        check_run_token ();
+    }
+    else if (0 == strcmp (argv[1], "build-identity"))
+    {
+        check_build_identity ();
+    }
+    else if (0 == strcmp (argv[1], "stop-timing"))
+    {
+        check_stop_timing (VEHICLE_CMD_STOP);
+    }
+    else if (0 == strcmp (argv[1], "estop-timing"))
+    {
+        check_stop_timing (VEHICLE_CMD_ESTOP);
+    }
+    else if (0 == strcmp (argv[1], "overlapping-stop-timing"))
+    {
+        check_overlapping_stop_timing ();
+    }
+    else if (0 == strcmp (argv[1], "stale-rest-is-ignored"))
+    {
+        check_stale_rest_is_ignored ();
+    }
+    else if (0 == strcmp (argv[1], "gp21-stop-timing"))
+    {
+        check_gp21_stop_timing ();
+    }
+    else if (0 == strcmp (argv[1], "stop-timing-without-brake-evidence"))
+    {
+        check_stop_timing_without_brake_evidence ();
+    }
+    else if (0 == strcmp (argv[1], "stop-episode-rearms-after-motion"))
+    {
+        check_stop_episode_rearms_after_motion ();
+    }
+    else if (0 == strcmp (argv[1], "stop-timing-after-duty-returns"))
+    {
+        check_stop_timing_after_duty_returns ();
+    }
+    else if (0 == strcmp (argv[1], "no-rearm-from-pre-release-motion"))
+    {
+        check_no_rearm_from_pre_release_motion ();
+    }
+    else if (0 == strcmp (argv[1], "between-pass-estop-after-motion"))
+    {
+        check_estop_between_passes (true);
+    }
+    else if (0 == strcmp (argv[1], "between-pass-estop-without-motion"))
+    {
+        check_estop_between_passes (false);
+    }
+    else if (0 == strcmp (argv[1], "stop-with-slow-telemetry-consumer"))
+    {
+        check_stop_with_slow_telemetry_consumer ();
+    }
+    else if (0 == strcmp (argv[1], "stationary-start-is-refused"))
+    {
+        check_stationary_start_is_refused ();
     }
     else if (0 == strcmp (argv[1], "estop-before-report"))
     {

@@ -60,8 +60,17 @@ bool command_ring_push (command_ring_t * p_ring, vehicle_cmd_t cmd)
         }
         if (!b_removed)
         {
-            p_ring->dropped++;
-            b_stored = false;
+            if (is_stop (cmd.opcode))
+            {
+                p_ring->head = (uint8_t) ((p_ring->head + 1U) % COMMAND_RING_LEN);
+                p_ring->count--;
+                p_ring->dropped++;
+            }
+            else
+            {
+                p_ring->dropped++;
+                b_stored = false;
+            }
         }
     }
 

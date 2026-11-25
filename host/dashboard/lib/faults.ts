@@ -19,16 +19,16 @@ export const FAULT_META: Record<number, FaultMeta> = {
   1: { label: 'MQTT rejected', severity: 'warn', hint: 'The broker refused a publish.' },
   2: { label: 'Motor stalled', severity: 'critical', hint: 'A wheel is told to turn and has no edges.' },
   3: { label: 'Encoder fault', severity: 'critical', hint: 'An encoder is dead, or the two plugs are swapped.' },
-  4: { label: 'Line lost', severity: 'warn', hint: 'The car goes straight at reduced speed and stops after 1000 mm without the line.' },
-  5: { label: 'IMU not answering', severity: 'warn', hint: 'The I2C reads of the accelerometer fail.' },
+  4: { label: 'Line lost', severity: 'warn', hint: 'The pilot searches, backs up and retries. It stops if it exhausts the retries.' },
+  5: { label: 'IMU not answering', severity: 'warn', hint: 'The accelerometer or magnetometer is not answering over I2C.' },
   6: { label: 'Stale wheel speed', severity: 'critical', hint: 'The wheel feedback is too old.' },
   7: { label: 'Tilt out of range', severity: 'warn', hint: 'The tilt reading is not valid.' },
   8: { label: 'Sonar silent', severity: 'critical', hint: 'No echo from three pings in a row.' },
   9: { label: 'Emergency stop', severity: 'critical', hint: 'Latched until the car reboots.' },
   10: { label: 'Sonar echo line', severity: 'critical', hint: 'The echo line is stuck or noisy.' },
   11: { label: 'Car lifted', severity: 'critical', hint: 'The wheels are held. Set the car down, then START.' },
-  12: { label: 'Car overturned', severity: 'critical', hint: 'Set the car upright, then RESET and START.' },
-  13: { label: 'Stopped by obstacle', severity: 'warn', hint: 'The obstacle task stopped the car. RESET, then START.' },
+  12: { label: 'Car overturned', severity: 'critical', hint: 'Set the car down upright and still, then press Start.' },
+  13: { label: 'Stopped by obstacle', severity: 'warn', hint: 'Clear the path, then press Start.' },
   14: { label: 'Task stalled', severity: 'critical', hint: 'A task missed its heartbeat, or the car does not move.' },
   15: { label: 'Abnormal reset', severity: 'warn', hint: 'The last reset was not a power-up.' },
 };
@@ -51,7 +51,7 @@ const bitSet = (word: number, bit: number): boolean => (word & (1 << bit)) !== 0
 
 /**
  * The 16 tiles in bit order. `level` is the status packet word (set now).
- * `sticky` is the diag packet word (set since the last RESET). A missing word
+ * `sticky` is the diag packet word (recorded since the last accepted START or RESET). A missing word
  * leaves the tiles `unknown`, never `ok`.
  */
 export function faultTiles(level: number | undefined, sticky: number | undefined): FaultTile[] {

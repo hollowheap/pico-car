@@ -89,8 +89,8 @@ telemetry_cmd_accept (telemetry_cmd_state_t * state, const telemetry_cmd_t * cmd
         state->rejects.old_id++;
         return TELEMETRY_CMD_OLD_ID;
     }
-    if ((cmd->uptime_s > now_s) ||
-        ((now_s - cmd->uptime_s) > TELEMETRY_CMD_MAX_AGE_S))
+    if ((cmd->opcode != TELEMETRY_CMD_ESTOP) &&
+        ((uint32_t)(now_s - cmd->uptime_s) > TELEMETRY_CMD_MAX_AGE_S))
     {
         state->rejects.age++;
         return TELEMETRY_CMD_BAD_AGE;

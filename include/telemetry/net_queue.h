@@ -6,7 +6,8 @@
 
 #include "telemetry/packet.h"
 
-#define TELEMETRY_NET_QUEUE_BYTES   1024u
+/* Holds one 100 ms connection poll burst (~328 B) plus a quarter. */
+#define TELEMETRY_NET_QUEUE_BYTES   512u
 /* Topic byte + the largest wire packet (D110). */
 #define TELEMETRY_NET_QUEUE_MAX_MSG TELEMETRY_FRAME_MAX
 

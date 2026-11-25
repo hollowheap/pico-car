@@ -36,6 +36,7 @@
 #define CM_MASK              (0xFFU)
 #define CM_HALF              (0x80U)
 #define REVERSE_STEP_UM      ((int64_t)LINE_REVERSE_STEP_MM * UM_PER_MM)
+#define TRAIL_STEP_UM        ((int64_t)LINE_TRAIL_STEP_MM * UM_PER_MM)
 /* Trial from the closed-loop straight replay. Leave most of the 150 mm
  * bridge for relaxed steering, so centered tape can come into view again. */
 #define BLIND_HOLD_UM        (60000)
@@ -486,6 +487,8 @@ void line_follow_init(line_follow_t * p_follow)
     p_follow->retry       = 0U;
     p_follow->loss_cm     = 0U;
     p_follow->progress = (line_follow_progress_t){0};
+    p_follow->trail_count = 0U;
+    p_follow->stripe_report = 0U;
 }
 
 void line_follow_set_hump(line_follow_t * p_follow, bool b_hump)
@@ -510,6 +513,8 @@ void line_follow_set_side(line_follow_t * p_follow, line_side_t side)
                                    FOLLOW_MARKER_RECENT | FOLLOW_LOCAL_SEARCH);
     p_follow->sweep   = SWEEP_NONE;
     p_follow->retry   = 0U;
+    /* A turn on the spot changes the heading without travel. */
+    p_follow->trail_count = 0U;
 }
 
 void line_follow_set_route_candidate(line_follow_t * p_follow, bool b_candidate)
@@ -540,6 +545,7 @@ void line_follow_start_search(line_follow_t * p_follow)
                                    FOLLOW_MARKER_RECENT | FOLLOW_LOCAL_SEARCH);
     p_follow->sweep   = SWEEP_NONE;
     p_follow->retry   = 0U;
+    p_follow->trail_count = 0U;
 }
 
 bool line_follow_local_search(line_follow_t const * p_follow)
@@ -565,6 +571,83 @@ void line_follow_stop_local_search(line_follow_t * p_follow)
         p_follow->status = (uint8_t)LINE_FOLLOW_STOPPED;
         p_follow->sweep = SWEEP_NONE;
     }
+}
+
+static int32_t trail_step(int64_t travel_um)
+{
+    int64_t step = travel_um / TRAIL_STEP_UM;
+
+    if ((travel_um < 0) && ((step * TRAIL_STEP_UM) != travel_um))
+    {
+        step--;
+    }
+    return (int32_t)step;
+}
+
+static uint32_t trail_slot(int32_t step)
+{
+    int32_t const slots = (int32_t)LINE_TRAIL_SLOTS;
+
+    return (uint32_t)(((step % slots) + slots) % slots);
+}
+
+/* Record the heading where the car drives forward into a step. Travel back
+ * over recorded steps forgets the steps ahead of the car. */
+static void trail_record(line_follow_t * p_follow, int32_t heading_deci, int64_t travel_um)
+{
+    int32_t const step = trail_step(travel_um);
+    int32_t const oldest = p_follow->trail_step - (int32_t)p_follow->trail_count;
+
+    if ((0U != p_follow->trail_count) && (step == p_follow->trail_step))
+    {
+        return;
+    }
+    if ((0U == p_follow->trail_count) || (step > (p_follow->trail_step + 1)) || (step <= oldest))
+    {
+        p_follow->trail_count = 1U;
+    }
+    else if (step == (p_follow->trail_step + 1))
+    {
+        if (p_follow->trail_count < LINE_TRAIL_SLOTS)
+        {
+            p_follow->trail_count++;
+        }
+    }
+    else
+    {
+        p_follow->trail_count = (uint8_t)(step - oldest);
+    }
+    p_follow->trail_step = step;
+    p_follow->trail_deci[trail_slot(step)] = heading_deci;
+}
+
+static bool trail_known(line_follow_t const * p_follow, int32_t step)
+{
+    return (0U != p_follow->trail_count) && (step <= p_follow->trail_step) &&
+           (step > (p_follow->trail_step - (int32_t)p_follow->trail_count));
+}
+
+/* The recorded heading at a travel, interpolated between step entries. */
+static bool trail_heading(line_follow_t const * p_follow, int64_t travel_um, int32_t * p_heading_deci)
+{
+    int32_t const step = trail_step(travel_um);
+    bool const b_known = trail_known(p_follow, step);
+
+    if (b_known)
+    {
+        int32_t const here = p_follow->trail_deci[trail_slot(step)];
+        int32_t heading = here;
+
+        if (trail_known(p_follow, step + 1))
+        {
+            int64_t const into_um = travel_um - ((int64_t)step * TRAIL_STEP_UM);
+            int64_t const change = (int64_t)p_follow->trail_deci[trail_slot(step + 1)] - here;
+
+            heading += (int32_t)((change * into_um) / TRAIL_STEP_UM);
+        }
+        *p_heading_deci = heading;
+    }
+    return b_known;
 }
 
 static int32_t search_extent(line_follow_t const * p_follow)
@@ -742,7 +825,7 @@ static bool reverse_blocked(line_follow_t * p_follow, int64_t back_um,
  * LINE_SEARCH_SWEEP_DECI toward the side that saw the line last (left if none
  * did), then as far the other way. A failed search starts a retry: the car
  * turns back to the heading it had when the search began, reverses
- * LINE_REVERSE_MM straight and searches again. A reverse that is blocked ends
+ * LINE_REVERSE_MM along the recorded path and searches again. A reverse that is blocked ends
  * early and the search begins again at once. After LINE_RETRY_COUNT retries
  * the car stops. */
 static void search_turn(line_follow_t * p_follow, int32_t heading_deci,
@@ -755,6 +838,8 @@ static void search_turn(line_follow_t * p_follow, int32_t heading_deci,
     {
         int64_t const back_um = p_follow->anchor_um - travel_um;
 
+        /* Without a record the target stays the heading at the search start. */
+        (void)trail_heading(p_follow, travel_um, &p_follow->ref_deci);
         if ((back_um >= REVERSE_UM) ||
             reverse_blocked(p_follow, back_um, heading_deci, dt_ms))
         {
@@ -995,13 +1080,17 @@ static void follow_stripe(line_follow_t * p_follow, bool b_left, bool b_right, i
             uint16_t const width = (uint16_t)(mm - p_follow->progress.stripe.begin_mm[i]);
             uint16_t const limit = (corroborated & mask) != 0U ?
                                    ROUTE_MAX_CROSS_MM : ROUTE_STRIPE_MAX_MM;
-            if ((width >= SINGLE_STRIPE_MIN_MM) && (width <= limit) &&
-                ((p_follow->flags & FOLLOW_STRIPE_READY) == 0U ||
-                 (p_follow->side == (uint8_t)LINE_SIDE_RIGHT)))
+            if ((width >= SINGLE_STRIPE_MIN_MM) && (width <= limit))
             {
-                p_follow->progress.stripe.anchor_mm = p_follow->progress.stripe.begin_mm[i];
-                p_follow->flags &= (uint8_t)~FOLLOW_STRIPE_RIGHT;
-                p_follow->flags |= (uint8_t)(FOLLOW_STRIPE_READY | (i == 1U ? FOLLOW_STRIPE_RIGHT : 0U));
+                p_follow->stripe_report |= (uint8_t)(((corroborated & mask) != 0U ? LINE_STRIPE_CORROBORATED : 0U) |
+                                                     (i == 1U ? LINE_STRIPE_RIGHT : LINE_STRIPE_LEFT));
+                if (((p_follow->flags & FOLLOW_STRIPE_READY) == 0U) ||
+                    (p_follow->side == (uint8_t)LINE_SIDE_RIGHT))
+                {
+                    p_follow->progress.stripe.anchor_mm = p_follow->progress.stripe.begin_mm[i];
+                    p_follow->flags &= (uint8_t)~FOLLOW_STRIPE_RIGHT;
+                    p_follow->flags |= (uint8_t)(FOLLOW_STRIPE_READY | (i == 1U ? FOLLOW_STRIPE_RIGHT : 0U));
+                }
             }
         }
     }
@@ -1022,6 +1111,20 @@ static void follow_stripe(line_follow_t * p_follow, bool b_left, bool b_right, i
         sustained = FOLLOW_SUSTAINED_EDGE;
     }
     p_follow->progress.stripe.detector_bits = (uint8_t)((uint32_t)on | sustained | ((uint32_t)corroborated << CORROBORATED_SHIFT));
+}
+
+uint8_t line_follow_take_stripe(line_follow_t * p_follow)
+{
+    bool const b_tracking = (p_follow->status == (uint8_t)LINE_FOLLOW_FOLLOWING) ||
+                            (p_follow->status == (uint8_t)LINE_FOLLOW_BRIDGING);
+    /* Both detectors of one stripe report together once the tape has passed. */
+    if (b_tracking && ((p_follow->progress.stripe.detector_bits & FRONT_DETECTOR_MASK) != 0U))
+    {
+        return 0U;
+    }
+    uint8_t const report = p_follow->stripe_report;
+    p_follow->stripe_report = 0U;
+    return report;
 }
 
 bool line_follow_marker_sample(line_follow_t * p_follow, bool b_left, bool b_right, bool b_progress,
@@ -1196,6 +1299,11 @@ line_follow_status_t line_follow_update_floor(line_follow_t * p_follow, bool b_l
         base_um_s = (want < (last + rise)) ? want : (last + rise);
     }
     p_follow->speed_q = (uint16_t)(base_um_s / LINE_SPEED_STEP_UM_S);
+    if (((uint8_t)LINE_FOLLOW_FOLLOWING == p_follow->status) ||
+        ((uint8_t)LINE_FOLLOW_BRIDGING == p_follow->status))
+    {
+        trail_record(p_follow, heading_deci, travel_um);
+    }
     if ((uint8_t)LINE_FOLLOW_STOPPED == p_follow->status)
     {
         set_targets(p_targets, 0, 0);
@@ -1203,7 +1311,7 @@ line_follow_status_t line_follow_update_floor(line_follow_t * p_follow, bool b_l
     else if (((uint8_t)LINE_FOLLOW_SEARCHING == p_follow->status) &&
              (SWEEP_REVERSE == p_follow->sweep))
     {
-        /* Straight back on the start heading, at the search speed. The wheel
+        /* Back along the recorded path, at the search speed. The wheel
          * difference that turns the car is the same in reverse. */
         steer_to(heading_deci, p_follow->ref_deci, LINE_SEARCH_UM_S, p_targets);
         set_targets(p_targets, -p_targets->left_um_s, -p_targets->right_um_s);

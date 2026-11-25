@@ -105,8 +105,17 @@ STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
  * LINE_RETRY_COUNT   Retries after a failed search (a guess, not measured on
  *                    the car). A retry turns the car back to the heading it
  *                    had when the search began, reverses LINE_REVERSE_MM
- *                    straight and searches again. After the last retry fails
- *                    the car stops (status STOPPED).
+ *                    along the recorded path and searches again. After the
+ *                    last retry fails the car stops (status STOPPED).
+ * LINE_TRAIL_SLOTS, LINE_TRAIL_STEP_MM
+ *                    The follower records its encoder heading once per
+ *                    LINE_TRAIL_STEP_MM of forward travel while it follows or
+ *                    bridges, for the last LINE_TRAIL_SLOTS steps. A reverse
+ *                    steers to the heading recorded at its travel, so it
+ *                    retraces a curve instead of leaving it on a straight;
+ *                    before the record it holds the heading at the start of
+ *                    the search. The record must cover every reverse
+ *                    (guesses, not measured on the car).
  *                    The retry count stays until a search turn finds the line
  *                    or a hit comes past the travel where the search began
  *                    (to 1 cm), so a reverse that only finds the line the
@@ -144,7 +153,11 @@ STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
 #define LINE_LOCAL_SEARCH_STALL_MS LINE_REVERSE_STALL_MS
 #define LINE_RETRY_COUNT    (3U)
 #define LINE_REVERSE_MM     (150)
-#define LINE_REVERSE_STALL_MS (1500U)
+#define LINE_TRAIL_SLOTS    (16U)
+#define LINE_TRAIL_STEP_MM  (40)
+STATIC_ASSERT((LINE_TRAIL_SLOTS * LINE_TRAIL_STEP_MM) >= (LINE_RETRY_COUNT * LINE_REVERSE_MM),
+              "the trail covers every reverse");
+#define LINE_REVERSE_STALL_MS (1000U)
 #define LINE_REVERSE_STEP_MM  (10)
 #define LINE_HUMP_GAP_MM    (400)
 /** A pass this much later than the last one counts as this long (ms). */
@@ -335,9 +348,13 @@ typedef struct
     uint8_t  loss_cm;       /* travel of the loss, in cm modulo 256: retry clears past it */
     uint16_t speed_q;       /* base speed of the last pass, in LINE_SPEED_STEP_UM_S */
     line_follow_progress_t progress;
+    int32_t  trail_deci[LINE_TRAIL_SLOTS]; /* heading per travel step, ring by step index */
+    int32_t  trail_step;    /* step index of the newest record                 */
+    uint8_t  trail_count;   /* records ending at trail_step, 0 for none        */
+    uint8_t  stripe_report; /* LINE_STRIPE_* bits of an untaken stripe, 0 for none */
 } line_follow_t;
 
-STATIC_ASSERT(sizeof(line_follow_t) == 32U, "line_follow_t size");
+STATIC_ASSERT(sizeof(line_follow_t) == 104U, "line_follow_t size");
 
 /**
  * Speed cap of the sonar bumper.
@@ -453,6 +470,17 @@ void line_follow_stop_local_search(line_follow_t * p_follow);
  * line_follow_update(): while set, the blind limit is LINE_HUMP_GAP_MM.
  */
 void line_follow_set_hump(line_follow_t * p_follow, bool b_hump);
+
+/* line_follow_take_stripe() bits. LEFT and RIGHT name the detectors that
+ * measured the stripe; CORROBORATED means a measurement had the other line
+ * detector or the barcode reader on the same tape. */
+#define LINE_STRIPE_LEFT         (1U)
+#define LINE_STRIPE_RIGHT        (2U)
+#define LINE_STRIPE_CORROBORATED (4U)
+
+/** The stripe the follower measured since the last call, as LINE_STRIPE_*
+ * bits, or 0 while none has passed both detectors. The call clears it. */
+uint8_t line_follow_take_stripe(line_follow_t * p_follow);
 
 /** Reserve an observed candidate for the route probe. A lost candidate gives
  * the ordinary follower its stored transverse tape position back. */

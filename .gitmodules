@@ -5,3 +5,4 @@
 [submodule "lib/mtk3smp-rp2040"]
 	path = lib/mtk3smp-rp2040
 	url = https://github.com/hollowheap/mtk3smp-rp2040
+	branch = main

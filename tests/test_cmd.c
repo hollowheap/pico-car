@@ -450,8 +450,19 @@ test_receive_counts_each_cause (void)
 }
 
 int
-main (void)
+main (int argc, char * argv[])
 {
+    if (argc == 2 && strcmp(argv[1], "reserved-stationary-opcode") == 0)
+    {
+        uint8_t const raw[TELEMETRY_CMD_WIRE_SIZE] = {0U, 1U, 0x12U, 0x34U, 10U, 0U, 0U, 0U, 100U};
+        telemetry_cmd_t command;
+        CHECK (telemetry_cmd_parse (raw, sizeof(raw), &command) == TELEMETRY_CMD_BAD_OPCODE);
+        return (g_failures == 0U) ? 0 : 1;
+    }
+    if (argc != 1)
+    {
+        return 2;
+    }
     test_constants ();
     test_state_init ();
     test_parse_layout ();

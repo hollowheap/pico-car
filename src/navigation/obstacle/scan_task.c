@@ -16,9 +16,8 @@
 
 #include "obstacle_config.h"
 #include "comms.h"
-#include "statechart.h"
+#include "sonar_health.h"
 #include "obstacle_pack.h"
-#include "planner.h"
 #include "obstacle_internal.h"
 #include "platform/liveness.h"
 #include "supervisor/health_ids.h"
@@ -47,22 +46,16 @@ typedef struct
 } servo_state_t;
 
 /* Task-private state. Only this task touches it, so it is not volatile. */
-static obstacle_statechart_t      g_fsm;
-static servo_state_t g_servo        = {0, false};
-static uint32_t      g_last_trig_us = 0U;
+static sonar_health_t g_health;
+static servo_state_t  g_servo        = {0, false};
+static uint32_t       g_last_trig_us = 0U;
 static obstacle_sonar_aim_fn_t gp_observe_aim;
 
 static uint32_t now_ms (void);
 static void     handle_commands (UINT ptn);
 static void     poll_commands (void);
 static bool     wait_ms (uint32_t delay_ms, UINT wake_bits);
-#if !PICO_CAR_PILOT
-static void     tick (void);
-#endif
 static uint32_t settle_ms (int16_t target);
-#if !PICO_CAR_PILOT
-static bool     is_car_driving (void);
-#endif
 static bool     move_servo (void);
 static void     ping (uint8_t * p_cls, uint16_t * p_dist_mm);
 static void     ping_and_step (void);
@@ -102,17 +95,11 @@ static void command_servo (int16_t target)
  */
 void scan_task_obstacle_task (INT stacd, void * exinf)
 {
-    obstacle_plan_cfg_t cfg;
-    obstacle_statechart_out_t  out;
-
     (void)stacd;
     (void)exinf;
 
-    obstacle_plan_cfg_default(&cfg);
-    obstacle_statechart_init(&g_fsm, &cfg, now_ms());
-    obstacle_statechart_out_clear(&out);
-    out.b_profile_changed = true;
-    obstacle_comms_publish(&out, &g_fsm);
+    sonar_health_init(&g_health);
+    obstacle_comms_publish(&g_health);
 
     /* Hardware init already commanded center before this task started. */
     observe_aim(g_servo.deci);
@@ -126,10 +113,6 @@ void scan_task_obstacle_task (INT stacd, void * exinf)
 
         liveness_kick(LIVE_OBSTACLE);
         poll_commands();
-#if !PICO_CAR_PILOT
-        /* The legacy navigator uses the statechart timers for its maneuver. */
-        tick();
-#endif
         since_us = scan_hw_now_us() - g_last_trig_us;
 
         if (serve_ping_request())
@@ -177,30 +160,20 @@ static uint32_t now_ms (void)
  */
 static void handle_commands (UINT ptn)
 {
-    obstacle_statechart_out_t   out;
-    obstacle_travel_t travel;
-    uint8_t           cmd    = 0U;
-    uint32_t const    now    = now_ms();
-    uint32_t          odo_mm = 0U;
-
-    (void)obstacle_comms_travel(&travel);
-    /* The bypass budget counts all travel, forward and backward. */
-    odo_mm = travel.fwd_mm + travel.back_mm;
+    uint8_t cmd = 0U;
 
     if (0U != (ptn & OBSTACLE_FLG_STOP))
     {
         /* Drop any request still pending at the STOP handling boundary. */
         (void)obstacle_comms_take_ping_request();
-        obstacle_statechart_out_clear(&out);
-        obstacle_statechart_command(&g_fsm, obstacle_pack_cmd(OBSTACLE_CMD_STOP, 0U), now, odo_mm, &out);
-        obstacle_comms_publish(&out, &g_fsm);
+        sonar_health_command(&g_health, obstacle_pack_cmd(OBSTACLE_CMD_STOP, 0U));
+        obstacle_comms_publish(&g_health);
     }
 
     while (obstacle_comms_pop_cmd(&cmd))
     {
-        obstacle_statechart_out_clear(&out);
-        obstacle_statechart_command(&g_fsm, cmd, now, odo_mm, &out);
-        obstacle_comms_publish(&out, &g_fsm);
+        sonar_health_command(&g_health, cmd);
+        obstacle_comms_publish(&g_health);
     }
 }
 
@@ -274,31 +247,6 @@ static bool wait_ms (uint32_t delay_ms, UINT wake_bits)
     return b_stopped;
 }
 
-#if !PICO_CAR_PILOT
-/*!
- * @brief Let the statechart check its time and distance limits.
- */
-static void tick (void)
-{
-    obstacle_statechart_out_t out;
-    obstacle_travel_t         travel;
-    uint32_t const            now = now_ms();
-
-    (void)obstacle_comms_travel(&travel);
-    obstacle_statechart_out_clear(&out);
-    obstacle_statechart_tick(&g_fsm, now, travel.fwd_mm + travel.back_mm, &out);
-    obstacle_comms_publish(&out, &g_fsm);
-}
-#endif
-
-/*!
- * @brief Settle time for a servo move: 3 ms per degree plus 20 ms [Spec],
- *        sized for LiPo sag.
- *
- * @param[in] target New angle in deci-degrees.
- *
- * @return Settle time in ms.
- */
 static uint32_t settle_ms (int16_t target)
 {
     uint32_t delta_deci = BOOT_SETTLE_ANGLE_DECI;
@@ -328,52 +276,6 @@ static bool aim_and_settle (int16_t target)
     return wait_ms(delay_ms, 0U);
 }
 
-#if !PICO_CAR_PILOT
-/*!
- * @brief Tell whether the car may be driving in the current state (line
- *        following in MONITOR, the body turns of a scan, or the bypass).
- *
- * @return True in MONITOR, SCANNING, PLAN, BYPASS and REACQUIRE.
- */
-static bool is_car_driving (void)
-{
-    return ((OBSTACLE_STATE_MONITOR == g_fsm.state) ||
-            (OBSTACLE_STATE_SCANNING == g_fsm.state) ||
-            (OBSTACLE_STATE_PLAN == g_fsm.state) ||
-            (OBSTACLE_STATE_BYPASS == g_fsm.state) ||
-            (OBSTACLE_STATE_REACQUIRE == g_fsm.state));
-}
-
-/*!
- * @brief The servo angle for the next ping: the face follow's look in
- *        REACQUIRE, the statechart's angle in every other state.
- *
- * @return Angle in deci-degrees, inside +-OBSTACLE_SERVO_LIMIT_DECI.
- */
-static int16_t servo_target (void)
-{
-    int16_t target = obstacle_statechart_servo_deci(&g_fsm);
-
-    if (OBSTACLE_STATE_REACQUIRE == g_fsm.state)
-    {
-        target = obstacle_comms_look();
-        if (target > (int16_t)OBSTACLE_SERVO_LIMIT_DECI)
-        {
-            target = (int16_t)OBSTACLE_SERVO_LIMIT_DECI;
-        }
-        else if (target < -(int16_t)OBSTACLE_SERVO_LIMIT_DECI)
-        {
-            target = -(int16_t)OBSTACLE_SERVO_LIMIT_DECI;
-        }
-        else
-        {
-            /* Within the limit. */
-        }
-    }
-    return (target);
-}
-#endif
-
 /*!
  * @brief Move the servo if the target angle changed.
  *
@@ -381,12 +283,11 @@ static int16_t servo_target (void)
  */
 static bool move_servo (void)
 {
-    bool    b_moved = false;
-#if PICO_CAR_PILOT
+    bool          b_moved = false;
     /* A pilot look leaves the servo at its last ray. Free-running pings point
      * ahead, so return to 0 once the next such ping is due. Not before: the
      * next ray of one look arrives within the ping spacing. */
-    int16_t const target = 0;
+    int16_t const target  = 0;
 
     if ((!g_servo.b_known) ||
         ((target != g_servo.deci) && ((scan_hw_now_us() - g_last_trig_us) >= OBSTACLE_PING_PERIOD_US)))
@@ -396,26 +297,6 @@ static bool move_servo (void)
     }
 
     return (b_moved);
-#else
-    int16_t target  = servo_target();
-
-    if (g_servo.b_known && (target != g_servo.deci) && (is_car_driving()))
-    {
-        /* Let Navigation stop the wheels before the servo swings: a servo
-         * swing while a motor drives disturbs the wheel encoders. The
-         * target may change meanwhile, so read it again. */
-        (void)wait_ms(OBSTACLE_SERVO_PREDELAY_MS, 0U);
-        target = servo_target();
-    }
-
-    if ((!g_servo.b_known) || (target != g_servo.deci))
-    {
-        (void)aim_and_settle(target);
-        b_moved = true;
-    }
-
-    return (b_moved);
-#endif
 }
 
 /* STOP cancels the taken request without shortening a physical settle. */
@@ -528,9 +409,8 @@ static bool serve_ping_request (void)
 
     if (obstacle_pack_ping_req_is_pending(req))
     {
-        obstacle_statechart_out_t out;
-        uint8_t                   cls     = OBSTACLE_CLASS_NO_ECHO;
-        uint16_t                  dist_mm = 0U;
+        uint8_t       cls     = OBSTACLE_CLASS_NO_ECHO;
+        uint16_t      dist_mm = 0U;
         /* Cast is safe: the clamped servo angle fits in int16_t. */
         int16_t const target =
             (int16_t)obstacle_pack_servo_clamp(obstacle_pack_ping_req_servo(req));
@@ -544,13 +424,8 @@ static bool serve_ping_request (void)
         }
 
         obstacle_comms_count_class(cls);
-        obstacle_statechart_out_clear(&out);
-#if PICO_CAR_PILOT
-        obstacle_statechart_ping_health(&g_fsm, cls, dist_mm, false, now_ms(), &out);
-#else
-        obstacle_statechart_ping_guard(&g_fsm, cls, dist_mm, now_ms(), &out);
-#endif
-        obstacle_comms_publish(&out, &g_fsm);
+        sonar_health_ping(&g_health, cls, dist_mm, false, target);
+        obstacle_comms_publish(&g_health);
         obstacle_comms_publish_ping_reply(
             obstacle_pack_ping_reply(obstacle_pack_ping_req_seq(req), cls, dist_mm, target));
         b_served = true;
@@ -560,44 +435,21 @@ static bool serve_ping_request (void)
 }
 
 /*!
- * @brief Take one ping and feed it to the statechart.
+ * @brief Take one ping and feed it to sonar health.
  */
 static void ping_and_step (void)
 {
-    obstacle_statechart_out_t out;
-    uint8_t                   cls     = OBSTACLE_CLASS_NO_ECHO;
-    uint16_t                  dist_mm = 0U;
-#if !PICO_CAR_PILOT
-    obstacle_travel_t         travel;
-    /* The body may start or stop turning during the echo wait. */
-    bool const                b_turned = obstacle_comms_is_pivoting();
-    bool const                b_fresh  = obstacle_comms_travel(&travel);
+    uint8_t  cls     = OBSTACLE_CLASS_NO_ECHO;
+    uint16_t dist_mm = 0U;
 
-    /* The range check compares the net forward travel. */
-    obstacle_statechart_set_odometer(&g_fsm, travel.fwd_mm - travel.back_mm, b_fresh);
-#endif
-    obstacle_statechart_set_look(&g_fsm, g_servo.deci);
     ping(&cls, &dist_mm);
     if (poll_stop())
     {
         return;
     }
     obstacle_comms_count_class(cls);
-    obstacle_statechart_out_clear(&out);
-#if PICO_CAR_PILOT
-    /* Free-running pings feed only the echo health checks. */
-    obstacle_statechart_ping_health(&g_fsm, cls, dist_mm, true, now_ms(), &out);
-#else
-    if (b_turned || obstacle_comms_is_pivoting())
-    {
-        obstacle_statechart_ping_guard(&g_fsm, cls, dist_mm, now_ms(), &out);
-    }
-    else
-    {
-        obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
-    }
-#endif
-    obstacle_comms_publish(&out, &g_fsm);
+    sonar_health_ping(&g_health, cls, dist_mm, true, g_servo.deci);
+    obstacle_comms_publish(&g_health);
 }
 
 /*** end of file ***/

@@ -215,6 +215,65 @@ static void ideal_step(ideal_t * p_i)
     p_i->m.right_um = p_i->right_um;
 }
 
+/* Pivot witness shares fed to the pilot, and the sweep tolerances. A yaw
+ * this far back from the peak means the sweep turned back. */
+#define WITNESS_NONE_PCT   (0U)
+#define WITNESS_SLIP_PCT   (60U)
+#define WITNESS_NEAR_PCT   (95U)
+#define SWEEP_TOL_DECI     (30)
+#define SWEEP_TURNED_DECI  (2)
+
+/* Encoder yaw of the first sweep of the search, from the heading where the
+ * search began to where the sweep turns back. */
+static int32_t first_sweep_deci(uint8_t pivot_scale_pct)
+{
+    ideal_t i;
+    unsigned tick;
+    int32_t start = 0;
+    int32_t peak = 0;
+    bool b_searching = false;
+
+    ideal_init(&i);
+    i.m.pivot_scale_pct = pivot_scale_pct;
+    for (tick = 0U; tick < BLIND_RUN_TICKS; tick++)
+    {
+        ideal_step(&i);
+        int32_t const heading = line_heading_deci(i.left_um, i.right_um);
+        if (!b_searching && (LINE_FOLLOW_SEARCHING == status_of(&i.st)))
+        {
+            b_searching = true;
+            start = heading;
+        }
+        if (b_searching)
+        {
+            int32_t const yaw = heading - start;
+            if (abs(yaw) + SWEEP_TURNED_DECI < abs(peak))
+            {
+                break;
+            }
+            peak = (abs(yaw) > abs(peak)) ? yaw : peak;
+        }
+    }
+    check(b_searching, "slipping sweep: no search", pivot_scale_pct);
+    return abs(peak);
+}
+
+/* The magnetometer shows the body turning 60 % of the encoder yaw in the
+ * pivot: the sweep turns on until the body has covered it. A share at or
+ * above PILOT_WITNESS_SLIP_PCT is read as no slip. */
+static void test_slipping_sweep_extends(void)
+{
+    int32_t const clean = first_sweep_deci(WITNESS_NONE_PCT);
+    int32_t const slip = first_sweep_deci(WITNESS_SLIP_PCT);
+    int32_t const near = first_sweep_deci(WITNESS_NEAR_PCT);
+
+    (void)printf("sweep: clean %d slipping %d near %d deci\n", (int)clean, (int)slip, (int)near);
+    check(abs(clean - LINE_SEARCH_SWEEP_DECI) <= SWEEP_TOL_DECI, "slipping sweep: clean sweep", WITNESS_NONE_PCT);
+    check(abs(slip - ((LINE_SEARCH_SWEEP_DECI * PERCENT) / (int32_t)WITNESS_SLIP_PCT)) <= SWEEP_TOL_DECI,
+          "slipping sweep: extended", WITNESS_SLIP_PCT);
+    check(abs(near - clean) <= SWEEP_TURNED_DECI, "slipping sweep: near share changed the sweep", WITNESS_NEAR_PCT);
+}
+
 /* The car is against something behind it: every reverse of the search stands
  * still. The pilot must not back off into it, must not hand it to the hug,
  * and the follower must give up after its retries. */
@@ -700,6 +759,79 @@ static void test_tape_is_a_direction_guide(void)
     check(!cmd.speed_mm_s && !cmd.turn_deci_s, "motor hold owns bare-floor travel", 0U);
 }
 
+static int32_t wrap_deci_local(int32_t angle)
+{
+    int32_t a = angle % 3600;
+    if (a >= 1800) { a -= 3600; }
+    if (a < -1800) { a += 3600; }
+    return a;
+}
+
+/* Over a simulated lap with a 1% wheel scale error, the raw encoder heading
+ * drifts far past 50 deci-degrees while the magnetometer-blended heading stays
+ * under 50 deci-degrees of the true field heading. */
+static void test_mag_drift_blend(void)
+{
+    int32_t const max_bound = 50;
+    int32_t worst_ungated = 0;
+    int32_t worst_gated = 0;
+
+    for (unsigned mode = 0U; mode < 2U; mode++)
+    {
+        bool const b_gated = (1U == mode);
+        pilot_state_t st;
+        pilot_cmd_t cmd;
+        pilot_meas_t m = {0};
+        double true_left_um = 0.0;
+        double true_right_um = 0.0;
+        double true_head_deci = 0.0;
+        int32_t worst = 0;
+
+        pilot_init(&st);
+        /* 4 legs: 5 s straight (800 mm) + 1.5 s 90-degree left turn each = 26 s lap. */
+        for (unsigned tick = 0U; tick < 5200U; tick++)
+        {
+            unsigned const seg = tick % 1300U;
+            double const dt_s = 0.005;
+            double v_l = 160.0;
+            double v_r = 160.0;
+            if (seg >= 1000U)
+            {
+                /* 90 deg left over 1.5 s: 60 deg/s => dv = 112 mm/s */
+                v_l = 104.0;
+                v_r = 216.0;
+            }
+            true_left_um += v_l * 1000.0 * dt_s;
+            true_right_um += v_r * 1000.0 * dt_s;
+            true_head_deci += ((v_r - v_l) / (double)CHASSIS_WHEEL_TRACK_MM) * (1800.0 / 3.141592653589793) * dt_s;
+
+            m.now_ms = 1000U + (tick * 5U);
+            m.stamp_ms = m.now_ms;
+            m.left_um = (int64_t)true_left_um;
+            /* 1% scale error on the right wheel encoder. */
+            m.right_um = (int64_t)(true_right_um * 1.01);
+            m.b_line_left = true;
+            m.b_line_right = true;
+            m.b_mag_heading = b_gated;
+            int32_t cw = (int32_t)llround(-true_head_deci) % 3600;
+            if (cw < 0) { cw += 3600; }
+            m.mag_heading_ddeg = (uint16_t)cw;
+            open_course(&m);
+            pilot_step(&st, &m, &cmd);
+
+            int32_t const est = line_heading_deci(m.left_um, m.right_um) + (st.witness_corr / PERCENT);
+            int32_t const err = abs(wrap_deci_local(est - (int32_t)llround(true_head_deci)));
+            if (err > worst) { worst = err; }
+        }
+        if (b_gated) { worst_gated = worst; }
+        else { worst_ungated = worst; }
+    }
+    (void)printf("mag drift lap: ungated worst %d ddeg, gated worst %d ddeg\n",
+                 worst_ungated, worst_gated);
+    check(worst_ungated > 150, "1% wheel error must drift past 150 ddeg without mag", (uint32_t)worst_ungated);
+    check(worst_gated < max_bound, "gated mag blend must hold drift under 50 ddeg", (uint32_t)worst_gated);
+}
+
 int main(int argc, char * argv[])
 {
     if (2 == argc && 0 == strcmp(argv[1], "course-reply-deadline"))
@@ -746,8 +878,10 @@ int main(int argc, char * argv[])
     test_barcode_reader_crosses_unmarked_bend(false);
     test_barcode_straight_keeps_the_gap();
     test_blocked_reverse_stops_after_the_retries();
+    test_slipping_sweep_extends();
     test_one_wheel_jam_after_a_reverse_latches_encoder();
     test_barcode_during_the_reverse();
+    test_mag_drift_blend();
     (void)printf("pilot_line: ok\n");
     return EXIT_SUCCESS;
 }

@@ -25,16 +25,15 @@ function webFocusRing(theme: Theme): ViewStyle | undefined {
   } as ViewStyle;
 }
 
-/** The product name. The app has one page, so the name is a heading and not a link. */
-export function Brand() {
+export function Brand({ iconOnly = false }: { iconOnly?: boolean }) {
   const theme = useTheme();
 
   return (
-    <View style={styles.brand}>
+    <View accessibilityLabel={iconOnly ? 'Pico Car' : undefined} style={styles.brand} testID="console-brand">
       <CarIcon color={theme.colors.accent} />
-      <Text accessibilityRole="header" aria-level={1} style={[theme.typography.headingSm, styles.brandText, { color: theme.colors.text }]}>
+      {iconOnly ? null : <Text style={[theme.typography.headingSm, styles.brandText, { color: theme.colors.text }]}>
         PICO-CAR
-      </Text>
+      </Text>}
     </View>
   );
 }
@@ -58,6 +57,7 @@ export function ThemeToggle() {
         {
           backgroundColor: pressed ? colors.elevated : colors.card,
           borderColor: colors.border,
+          borderRadius: theme.radii.control,
           opacity: pressed ? 0.8 : 1,
         },
       ]}
@@ -75,26 +75,7 @@ export function ThemeToggle() {
   );
 }
 
-export function ConsoleNav() {
-  const theme = useTheme();
-
-  return (
-    <View style={[styles.header, { borderColor: theme.colors.border }]}>
-      <Brand />
-      <ThemeToggle />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  header: {
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    justifyContent: 'space-between',
-  },
   brand: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -102,5 +83,5 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   brandText: { fontWeight: '600', letterSpacing: 1.2 },
-  themeButton: { alignItems: 'center', borderRadius: 59, borderWidth: 1, height: 44, justifyContent: 'center', width: 44 },
+  themeButton: { alignItems: 'center', borderWidth: 1, height: 44, justifyContent: 'center', width: 44 },
 });

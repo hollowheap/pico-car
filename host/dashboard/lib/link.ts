@@ -1,8 +1,38 @@
 export type LinkPacket = {
   timestamp: number;
   packet: string;
+  topic?: string;
+  receiptId?: string;
+  receiptOrder?: number;
+  timelineMs?: number;
+  receivedAt?: number;
   values: Record<string, number>;
 };
+
+export function packetOnTimeline(packet: LinkPacket): LinkPacket {
+  const { timelineMs, timestamp } = packet;
+  return timelineMs === undefined || !Number.isFinite(timelineMs) || timelineMs === timestamp ? packet :
+    { ...packet, timestamp: timelineMs, receivedAt: timestamp };
+}
+
+export function timelineOffset(packet: LinkPacket | null | undefined): number {
+  return packet?.receivedAt === undefined ? 0 : packet.timestamp - packet.receivedAt;
+}
+
+/**
+ * Offset from the browser clock to the bridge timeline clock. When a live packet
+ * has arrived on the WebSocket, `lastPacket.timestamp - lastPacketAt` absorbs
+ * both browser-to-bridge clock skew and bridge timeline rebasing.
+ */
+export function snapshotClockOffset(
+  snapshot: Pick<LinkSnapshot, 'lastPacket' | 'lastPacketAt'>,
+  fallback?: LinkPacket | null,
+): number {
+  if (snapshot.lastPacket != null && snapshot.lastPacketAt != null) {
+    return snapshot.lastPacket.timestamp - snapshot.lastPacketAt;
+  }
+  return timelineOffset(fallback);
+}
 
 export type BridgeMqtt = 'connected' | 'disconnected' | 'unknown';
 
@@ -10,6 +40,7 @@ export type BridgeStatus = {
   mqtt: BridgeMqtt;
   packets: number;
   lastPacketAt: number | null;
+  historyStorage?: 'ready' | 'degraded';
 };
 
 export type LinkStatus = 'disconnected' | 'connecting' | 'open' | 'reconnecting';
@@ -50,12 +81,14 @@ function parseMessage(data: unknown): ParsedMessage {
   if (typeof data !== 'string') {
     return null;
   }
-  let message: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    message = JSON.parse(data) as Record<string, unknown>;
+    parsed = JSON.parse(data);
   } catch {
     return null;
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const message = parsed as Record<string, unknown>;
 
   if (message.type === 'status') {
     const mqtt = message.mqtt;
@@ -77,6 +110,8 @@ function parseMessage(data: unknown): ParsedMessage {
         mqtt,
         packets: message.packets,
         lastPacketAt: message.lastPacketAt,
+        ...(message.historyStorage === 'ready' || message.historyStorage === 'degraded'
+          ? { historyStorage: message.historyStorage } : {}),
       },
     };
   }
@@ -100,11 +135,17 @@ function parseMessage(data: unknown): ParsedMessage {
   }
   return {
     kind: 'packet',
-    packet: {
+    packet: packetOnTimeline({
       timestamp: message.timestamp,
       packet: message.packet,
+      ...(typeof message.topic === 'string' ? { topic: message.topic } : {}),
+      ...(typeof message.receiptId === 'string' && message.receiptId !== '' ? { receiptId: message.receiptId } : {}),
+      ...(typeof message.receiptOrder === 'number' && Number.isSafeInteger(message.receiptOrder)
+        ? { receiptOrder: message.receiptOrder } : {}),
+      ...(typeof message.timelineMs === 'number' && Number.isFinite(message.timelineMs)
+        ? { timelineMs: message.timelineMs } : {}),
       values,
-    },
+    }),
   };
 }
 
