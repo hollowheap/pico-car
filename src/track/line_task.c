@@ -11,6 +11,7 @@
 
 #include "motion/motion.h"
 #include "navigation/obstacle.h"
+#include "platform/drv_timer.h"
 #include "platform/faults.h"
 #include "platform/liveness.h"
 #include "platform/log.h"
@@ -172,7 +173,7 @@ static bool line_sample_fresh (uint32_t timestamp_us)
 {
     static uint32_t s_last_timestamp_us;
     static bool     s_stale;
-    uint32_t const  age_us = in_w(TIMER_TIMERAWL) - timestamp_us;
+    uint32_t const  age_us = now_us() - timestamp_us;
     /* Once stale, the same sample cannot become fresh on timer rollover. */
     bool const b_fresh = (age_us <= LINE_SAMPLE_MAX_AGE_US) &&
                         (!s_stale || (timestamp_us != s_last_timestamp_us));
@@ -1027,7 +1028,7 @@ static bool line_start_check (bool b_line_fresh)
     }
     if (!s_armed || s_generation != generation)
     {
-        start_check_begin(&s_check, in_w(TIMER_TIMERAWL));
+        start_check_begin(&s_check, now_us());
         s_ping_seq = obstacle_pack_ping_seq(obstacle_ping_read());
         s_clear = false;
         s_generation = generation;
@@ -1052,11 +1053,11 @@ static bool line_start_check (bool b_line_fresh)
     bool const imu_valid = (E_OK == physics_snapshot(&physics)) && physics.ready &&
         physics.calibrated && physics.attitude_sample_valid && !physics.attitude_unknown &&
         physics.attitude_state == TELEMETRY_ATTITUDE_STATE_OK;
-    uint32_t const now_us = in_w(TIMER_TIMERAWL);
-    bool const clear = line_start_clearance(&s_ping_seq, &s_ping_us, &s_clear, now_us);
+    uint32_t const sample_us = now_us();
+    bool const clear = line_start_clearance(&s_ping_seq, &s_ping_us, &s_clear, sample_us);
     bool const ready = b_line_fresh && clear && motion_valid && imu_valid &&
-        now_us - physics.forward_sample_us <= START_CHECK_IMU_AGE_US;
-    start_check_phase_t const phase = start_check_step(&s_check, now_us, ready, &wheels,
+        sample_us - physics.forward_sample_us <= START_CHECK_IMU_AGE_US;
+    start_check_phase_t const phase = start_check_step(&s_check, sample_us, ready, &wheels,
                                                       physics.forward_sample_us, physics.forward_specific_mg);
     int32_t const speed = phase == START_CHECK_PROBING ? START_CHECK_SPEED_UM_S : 0;
     g_pilot_last_ms = line_now_ms();

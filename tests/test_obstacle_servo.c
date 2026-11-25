@@ -96,7 +96,7 @@ ER pwm_set_enabled(UINT pin, BOOL enabled)
     return E_OK;
 }
 
-ER gpio_irq_add_handler(UW proc, uint32_t mask, gpio_irq_handler_t handler)
+ER drv_gpio_irq_add_handler(UW proc, uint32_t mask, gpio_irq_handler_t handler)
 {
     assert(TP_PRC1 == proc && (1U << 1U) == mask && handler != 0);
     g_irq = handler;

@@ -154,7 +154,7 @@ ER scan_hw_init (ID h_echo_flag)
     if (E_OK == result)
     {
         g_echo.result = 0U;
-        result     = gpio_irq_add_handler(TP_PRC1, ECHO_BIT, echo_isr);
+        result     = drv_gpio_irq_add_handler(TP_PRC1, ECHO_BIT, echo_isr);
     }
 
     return (result);

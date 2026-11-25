@@ -1,27 +1,15 @@
 /** @file encoder.c
- * @brief Encoder pads, the PIO quadrature counters and a protected snapshot.
+ * @brief The PIO quadrature counters and a protected snapshot.
  */
 #include <tk/tkernel.h>
-#include <bsp/libbsp.h>
 #include <tk/smp.h>
 
+#include "drv_encoder_pads.h"
 #include "motion_pins.h"
 #include "encoder.h"
 #include "encoder_pio.h"
-#include "platform/static_assert.h"
+#include "platform/drv_timer.h"
 
-
-/* Quadrature channels (A and B) per wheel. */
-#define ENCODER_CHANNELS 2U
-
-STATIC_ASSERT((MOTOR_ENCODER_LEFT_A + 1U == MOTOR_ENCODER_LEFT_B) &&
-                  (MOTOR_ENCODER_RIGHT_A + 1U == MOTOR_ENCODER_RIGHT_B),
-              "the state machine reads B from the pin after A");
-
-static const unsigned int g_encoder_pins[ENCODER_WHEELS][ENCODER_CHANNELS] = {
-    {MOTOR_ENCODER_LEFT_A, MOTOR_ENCODER_LEFT_B},
-    {MOTOR_ENCODER_RIGHT_A, MOTOR_ENCODER_RIGHT_B},
-};
 static const unsigned int g_pin_a[ENCODER_WHEELS] = {
     MOTOR_ENCODER_LEFT_A, MOTOR_ENCODER_RIGHT_A,
 };
@@ -47,19 +35,7 @@ ER encoder_init (void)
         return E_OBJ;
     }
 
-    for (uint8_t wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
-    {
-        for (uint8_t channel = 0U; channel < ENCODER_CHANNELS; channel++)
-        {
-            unsigned int pin = g_encoder_pins[wheel][channel];
-            (void)gpio_set_pin(pin, GPIO_MODE_IN);
-            /* Pull-up: a Hall encoder with an open-collector output, or a
-             * loose encoder wire, otherwise leaves the pin floating, and a
-             * floating pin counts motor PWM noise as edges. */
-            clr_w(GPIO(pin), MOTION_PAD_PULL_DOWN);
-            set_w(GPIO(pin), MOTION_PAD_PULL_UP | MOTION_PAD_INPUT_ENABLE | MOTION_PAD_SCHMITT);
-        }
-    }
+    drv_encoder_pads_init(g_pin_a);
 
     /* TA_INHERIT alone: TA_INHERIT | TA_TPRI has the value of TA_CEILING. */
     cmtx.mtxatr = TA_INHERIT;
@@ -133,7 +109,7 @@ ER encoder_read (encoder_sample_t * p_sample)
         (void)quadrature_apply(&g_captured, wheel, words[wheel]);
         p_sample->wheel[wheel] = g_captured.wheel[wheel];
     }
-    p_sample->timestamp_us = in_w(TIMER_TIMERAWL);
+    p_sample->timestamp_us = now_us();
     (void)ISpinUnlock(&g_capture_lock, saved);
     (void)tk_unl_mtx(g_pio_mtx);
     return E_OK;

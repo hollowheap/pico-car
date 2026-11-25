@@ -328,7 +328,7 @@ EXPORT ER ir_capture_init (void)
         ClearInt(LINE_TIMER_ALARM_IRQ);
         EnableInt(LINE_TIMER_ALARM_IRQ, LINE_TIMER_ALARM_PRI);
 
-        result = gpio_irq_add_handler((UW)tk_get_prc(), (1U << IR_BARCODE_PIN),
+        result = drv_gpio_irq_add_handler((UW)tk_get_prc(), (1U << IR_BARCODE_PIN),
                                       ir_isr);
         if (E_OK != result)
         {

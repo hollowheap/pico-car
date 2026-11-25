@@ -35,7 +35,8 @@
 
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
-#include <bsp/libbsp.h>
+
+#include "bench/drv_bench_gpio.h"
 
 #include "physics_task.h"
 
@@ -58,8 +59,7 @@ static void hold_motors (void)
 
     for (i = 0U; i < MOTOR_PIN_COUNT; i++)
     {
-        (void)gpio_set_val (pins[i], 0U);
-        (void)gpio_set_pin (pins[i], GPIO_MODE_OUT);
+        drv_bench_gpio_drive(pins[i], 0U);
     }
 }
 

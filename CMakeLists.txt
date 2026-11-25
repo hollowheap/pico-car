@@ -349,6 +349,7 @@ add_library(telemetry STATIC
     src/telemetry/assemble.c
     src/telemetry/cmd.c
     src/telemetry/connection_task.c
+    src/telemetry/drv_wifi.c
     src/telemetry/emit.c
     src/telemetry/mqtt_client.c
     src/telemetry/net_queue.c

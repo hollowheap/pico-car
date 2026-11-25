@@ -221,6 +221,7 @@ endforeach()
 
 add_executable(test_telemetry_connection_cmd test_telemetry_connection_cmd.c
     ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c
+    ${TELEMETRY_SRC}/drv_wifi.c
     ${TELEMETRY_SRC}/packet.c ${TELEMETRY_SRC}/publisher.c)
 target_include_directories(test_telemetry_connection_cmd PRIVATE
     ${TELEMETRY_TEST_INCLUDES} ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection

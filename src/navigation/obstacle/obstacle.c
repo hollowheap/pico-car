@@ -42,7 +42,7 @@ static obstacle_state_t g_obstacle = {false};
 /*!
  * @brief Start Buddy 5: links, event flag and hardware.
  *
- * Must run on processor 1 after gpio_irq_init(). obstacle_start() creates
+ * Must run on processor 1 after drv_gpio_irq_init(). obstacle_start() creates
  * the task that calls obstacle_run().
  *
  * @param[in] p_links Links to Buddy 2 and Navigation; NULL means none.

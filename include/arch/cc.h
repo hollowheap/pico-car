@@ -85,17 +85,7 @@ void pico_lwip_custom_unlock_tcpip_core(void);
 
 #endif
 
-#ifndef LWIP_PLATFORM_ASSERT
-#include "pico.h"
-#define LWIP_PLATFORM_ASSERT(x) panic(x)
-#endif
-
-#ifndef LWIP_RAND
-#include "pico/rand.h"
-/* Use the pico_rand library which goes to reasonable lengths to try to
- * provide good entropy */
-#define LWIP_RAND() get_rand_32()
-#endif
+#include "telemetry/drv_lwip.h"
 
 #ifdef __cplusplus
 }

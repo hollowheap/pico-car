@@ -6,7 +6,7 @@
  * a run. Consumers decode published measurements using obstacle_ping.h.
  *
  * Start-up order (on processor 1, which is RP2040 core 0):
- *   1. gpio_irq_init()            shared dispatcher
+ *   1. drv_gpio_irq_init()            shared dispatcher
  *   2. motion_service_init()      by the composition root
  *   3. obstacle_line_init()       pins, servo, ISR and obstacle resources
  *
@@ -113,7 +113,7 @@ void obstacle_init (void);
 bool obstacle_start (void);
 
 /* Initialize obstacle while parked. Uses the motion-service links and the
- * obstacle outbox. The startup task calls this after gpio_irq_init() and
+ * obstacle outbox. The startup task calls this after drv_gpio_irq_init() and
  * motion_service_init(); the task created by obstacle_start() runs
  * obstacle_run(). */
 ER obstacle_line_init (void);

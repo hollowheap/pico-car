@@ -446,11 +446,11 @@ static void test_core1_status_is_used_on_core1 (void)
     }
 }
 
-/* The IRQ is set up on the core that ran gpio_irq_init(); a handler for the
+/* The IRQ is set up on the core that ran drv_gpio_irq_init(); a handler for the
  * other core could never fire, so it is refused. */
 static void test_other_core_handler_is_refused(void)
 {
-    CHECK(gpio_irq_add_handler(TP_PRC2, (1U << PIN_NONE), handler_d) == E_PAR);
+    CHECK(drv_gpio_irq_add_handler(TP_PRC2, (1U << PIN_NONE), handler_d) == E_PAR);
     CHECK(g_shim_int_enabled == 1);
 }
 
@@ -461,7 +461,7 @@ static void test_refused_pin_keeps_irq_enabled(void)
     uint32_t const word = PIN_NONE / 8U;
 
     g_inte[1][word] = 0xFFFFFFFFU;
-    CHECK(gpio_irq_add_handler(TP_PRC1, (1U << PIN_NONE), handler_d) == E_OBJ);
+    CHECK(drv_gpio_irq_add_handler(TP_PRC1, (1U << PIN_NONE), handler_d) == E_OBJ);
     CHECK(g_shim_int_enabled == 1);
     g_inte[1][word] = 0U;
 }
@@ -476,7 +476,7 @@ static void test_stale_edge_cleared_on_add(void)
     reset_hw();
     raise_rise(PIN_STALE);
     raise_fall(PIN_STALE);
-    CHECK(gpio_irq_add_handler(TP_PRC1, MASK_ALL, handler_d) == E_OK);
+    CHECK(drv_gpio_irq_add_handler(TP_PRC1, MASK_ALL, handler_d) == E_OK);
     CHECK((g_ints[0][word] & ((EDGE_HIGH_BIT | EDGE_LOW_BIT) << shift)) == 0U);
     CHECK(g_callbacks_started == 0U);
     run_isr();
@@ -485,11 +485,11 @@ static void test_stale_edge_cleared_on_add(void)
 
 int main (void)
 {
-    CHECK(gpio_irq_init() == E_OK);
+    CHECK(drv_gpio_irq_init() == E_OK);
     CHECK(g_shim_inthdr != NULL);
-    CHECK(gpio_irq_add_handler(TP_PRC1, MASK_A, handler_a) == E_OK);
-    CHECK(gpio_irq_add_handler(TP_PRC1, MASK_B, handler_b) == E_OK);
-    CHECK(gpio_irq_add_handler(TP_PRC1, MASK_C, handler_c) == E_OK);
+    CHECK(drv_gpio_irq_add_handler(TP_PRC1, MASK_A, handler_a) == E_OK);
+    CHECK(drv_gpio_irq_add_handler(TP_PRC1, MASK_B, handler_b) == E_OK);
+    CHECK(drv_gpio_irq_add_handler(TP_PRC1, MASK_C, handler_c) == E_OK);
     CHECK(sizeof(gpio_edge_snapshot_t) == 12U);
     if (g_failures != 0)
     {

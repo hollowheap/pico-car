@@ -5,7 +5,7 @@
 #include <tk/smp.h>
 #include <tm/tmonitor.h>
 
-#include "cyw43_utk.h"
+#include "drv_wifi.h"
 
 #include "platform/faults.h"
 #include "platform/liveness.h"
@@ -27,8 +27,6 @@
 #define CONNECTION_POLL_MS      100U
 #define CONNECTION_LOOP_MS      10U
 #define CONNECTION_HEARTBEAT_MS 1000U
-#define CONNECTION_ROSC_RANDOMBIT (0x40060000U + 0x1CU) /* ROSC RANDOMBIT */
-#define CONNECTION_RUN_ID_BITS  16U
 #define CONNECTION_STATUS_MS    1000U
 #define CONNECTION_MS_PER_S     1000U
 #define CONNECTION_FRAME_MIN    2U
@@ -62,22 +60,7 @@ static bool                        g_open_failure_logged;
 static bool                        g_transport_closing;
 static uint32_t                    g_busy_drops;
 static uint32_t                    g_heartbeat_ms;
-static T_CYW43_UTK_STATUS          g_status;
-/* Run ID from 16 reads of the ring oscillator's noisy bit. The kernel never
-   stops the ring oscillator, which runs from reset. */
-static uint16_t
-boot_run_id (void)
-{
-    uint32_t id  = 0u;
-    uint32_t bit = 0u;
-
-    for (bit = 0u; bit < CONNECTION_RUN_ID_BITS; bit++)
-    {
-        id = (id << 1u) | (in_w(CONNECTION_ROSC_RANDOMBIT) & 1u);
-    }
-    /* Cast is safe: 16 bits were read. */
-    return (uint16_t) id;
-}
+static drv_wifi_status_t           g_status;
 
 static void
 publish_cmd_state (const telemetry_cmd_state_t * p_state)
@@ -256,7 +239,7 @@ publish_heartbeat (uint32_t now_ms)
 }
 
 static connection_state_t
-classify (const T_CYW43_UTK_STATUS * status, wifi_join_t join, wifi_lease_t lease)
+classify (const drv_wifi_status_t * status, wifi_join_t join, wifi_lease_t lease)
 {
     if (status->init_result != 0)
     {
@@ -327,7 +310,7 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     /* A new run ID at each boot: a host must read it from the heartbeat,
        so a command for an earlier boot is refused. */
     (void)InitSpinLock(&g_cmd_lock);
-    telemetry_cmd_state_init(&g_cmd_state, boot_run_id());
+    telemetry_cmd_state_init(&g_cmd_state, drv_wifi_boot_run_id());
     gp_dispatch         = dispatch;
     gp_dispatch_context = context;
     g_mqtt_ready        = true;
@@ -445,7 +428,7 @@ connection_run (void)
             connection_state_t next = CONNECTION_DISCONNECTED;
 
             last_poll_ms = now_ms;
-            cyw43_utk_get_status(&g_status);
+            drv_wifi_read_status(&g_status);
             wifi_join_t const join = wifi_link_join();
             wifi_lease_t const lease = wifi_link_lease();
             next = classify(&g_status, join, lease);

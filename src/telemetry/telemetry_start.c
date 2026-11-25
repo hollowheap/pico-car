@@ -5,13 +5,13 @@
 
 #include <tk/tkernel.h>
 #include <tk/smp.h>
-#include <bsp/libbsp.h>
 
 #include "telemetry/telemetry.h"
 
 #include "motion/motion.h"
 #include "navigation/obstacle.h"
 #include "physics/physics.h"
+#include "platform/drv_timer.h"
 #include "platform/faults.h"
 #include "platform/liveness.h"
 #include "platform/log.h"
@@ -240,7 +240,7 @@ LOCAL void telemetry_send_diag (void)
     diag.line_edges_total     = ir_line_edges();
     diag.line_raw_edges_total = ir_line_raw_edges();
     obstacle_echo_counts(diag.echo_total);
-    diag.sensor_sample_us = in_w(TIMER_TIMERAWL);
+    diag.sensor_sample_us = now_us();
 
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_DIAG, packet,

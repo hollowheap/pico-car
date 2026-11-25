@@ -10,7 +10,6 @@
 #define TA_STA (0x02U)
 #define TA_ASSPRC (0x04U)
 #define GPIO_MODE_IN (0U)
-#define TIMER_TIMERAWH (TIMER_BASE + 0x24U)
 
 typedef uint32_t RELTIM;
 typedef struct

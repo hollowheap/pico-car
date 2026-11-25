@@ -46,7 +46,7 @@ STATIC_ASSERT(sizeof(gpio_edge_snapshot_t) == 12U,
  */
 typedef void (*gpio_irq_handler_t)(const gpio_edge_snapshot_t * p_snapshot);
 
-ER gpio_irq_init (void);
+ER drv_gpio_irq_init (void);
 /**
  * `handler` will be called on processor `proc` when any GPIO pin in `gpio_mask`
  * has a falling or rising edge. It is not called for other pins.
@@ -55,11 +55,11 @@ ER gpio_irq_init (void);
  * significant bit corresponds to GPIO1, etc. The 2 most significant bits are
  * ignored as GPIO30 and GPIO31 do not exist.
  *
- * `proc` must be the processor that ran gpio_irq_init(): the bank IRQ is set
+ * `proc` must be the processor that ran drv_gpio_irq_init(): the bank IRQ is set
  * up there only. Another processor returns E_PAR. E_OBJ means the
  * other processor already owns a pin; E_LIMIT means no handler slot is free.
  */
-ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
+ER drv_gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
                          gpio_irq_handler_t handler);
 
 #endif /* PLATFORM_ISR_H */

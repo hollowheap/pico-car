@@ -216,13 +216,13 @@ LOCAL void gpio_isr (UINT intno)
     }
 }
 
-/* Core whose NVIC has the bank IRQ: the one that ran gpio_irq_init(). */
+/* Core whose NVIC has the bank IRQ: the one that ran drv_gpio_irq_init(). */
 LOCAL UW g_irq_prc = 0U;
 
 /* The bank IRQ is defined and enabled on the calling core only: every
  * handler must belong to that core, or its edges could never arrive. The
  * startup task runs this, and all handlers, on core 0. */
-EXPORT ER gpio_irq_init (void)
+EXPORT ER drv_gpio_irq_init (void)
 {
     (void)InitSpinLock(&g_handlers_lock);
     g_irq_prc = (UW)THIS_PRC();
@@ -240,7 +240,7 @@ EXPORT ER gpio_irq_init (void)
     return E_OK;
 }
 
-EXPORT ER gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
+EXPORT ER drv_gpio_irq_add_handler (UW proc, uint32_t gpio_mask,
                                 gpio_irq_handler_t handler)
 {
     if (proc != g_irq_prc)

@@ -25,7 +25,8 @@
 #include <tk/smp.h>
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
-#include <bsp/libbsp.h>
+
+#include "bench/drv_bench_gpio.h"
 
 #include "platform/isr.h"
 #include "platform/log.h"
@@ -33,8 +34,6 @@
 #include "platform/usb_console_compat.h"
 
 #define BTN_RUN_PIN   (21U)
-#define PAD_PULL_UP   (1UL << 3U)
-#define PAD_PULL_DOWN (1UL << 2U)
 
 #define MOTOR_PIN_COUNT (4U)
 #define MOTOR_PIN_A     (8U)
@@ -58,8 +57,7 @@ static void pins_out (UINT const * p_levels)
 
     for (idx = 0U; idx < MOTOR_PIN_COUNT; idx++)
     {
-        (void) gpio_set_val (MOTOR_PINS[idx], p_levels[idx]);
-        (void) gpio_set_pin (MOTOR_PINS[idx], GPIO_MODE_OUT);
+        drv_bench_gpio_drive(MOTOR_PINS[idx], p_levels[idx]);
     }
 }
 
@@ -75,12 +73,10 @@ EXPORT INT usermain (void)
 
     for (idx = 0U; idx < MOTOR_PIN_COUNT; idx++)
     {
-        early[idx] = gpio_get_val (MOTOR_PINS[idx]);
+        early[idx] = drv_bench_gpio_level(MOTOR_PINS[idx]);
     }
     log_init ();
-    (void) gpio_set_pin (BTN_RUN_PIN, GPIO_MODE_IN);
-    clr_w (GPIO (BTN_RUN_PIN), PAD_PULL_DOWN);
-    set_w (GPIO (BTN_RUN_PIN), PAD_PULL_UP);
+    drv_bench_gpio_input(BTN_RUN_PIN);
     for (loops = 0U; (loops < USB_WAIT_LOOPS) && (tm_usb_state () < USB_UP); loops++)
     {
         (void) tk_dly_tsk (USB_WAIT_MS);
@@ -107,7 +103,7 @@ EXPORT INT usermain (void)
     log_flush ();
     for (;;)
     {
-        bool const b_now = (0U == gpio_get_val (BTN_RUN_PIN));
+        bool const b_now = drv_bench_gpio_pressed(BTN_RUN_PIN);
 
         if (b_now && !b_down)
         {

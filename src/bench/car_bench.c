@@ -42,12 +42,14 @@
 #include <tk/smp.h>
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
-#include <bsp/libbsp.h>
+
+#include "bench/drv_bench_gpio.h"
 
 #include "bench/trace.h"
 #include "motion/motion.h"
 #include "motion/motor_setup.h"
 #include "platform/chassis.h"
+#include "platform/drv_timer.h"
 #include "platform/isr.h"
 #include "platform/log.h"
 #include "platform/units.h"
@@ -60,8 +62,6 @@
 /* Bench buttons, active low with pull-ups. */
 #define BTN_NEXT_PIN (20U)
 #define LONG_PRESS_MS (1000U)
-#define PAD_PULL_UP   (1UL << 3U)
-#define PAD_PULL_DOWN (1UL << 2U)
 
 #define STACK_BYTES   (4096U)
 #define STACK_ALIGN   (8U)
@@ -144,13 +144,6 @@ static uint32_t now_ms (void)
     return tim.lo;
 }
 
-static void button_init (UINT pin)
-{
-    (void)gpio_set_pin (pin, GPIO_MODE_IN);
-    clr_w (GPIO (pin), PAD_PULL_DOWN);
-    set_w (GPIO (pin), PAD_PULL_UP);
-}
-
 /* A stop needs the button held for ABORT_POLLS polls in a row (about 50 ms in
  * a 10 ms loop), so the bounce when GP20 is released to start a run does not
  * stop the run at once. */
@@ -161,7 +154,7 @@ static bool abort_requested (void)
 {
     bool b_abort = false;
 
-    if (0U == gpio_get_val (BTN_NEXT_PIN))
+    if (drv_bench_gpio_pressed(BTN_NEXT_PIN))
     {
         g_abort_count++;
         b_abort = (ABORT_POLLS == g_abort_count);
@@ -654,7 +647,7 @@ static void run_timing (void)
     uint32_t                   start = 0U;
 
     brake ();
-    start = in_w (TIMER_TIMERAWL);
+    start = now_us();
     (void) tm_sprintf ((UB *) trial, (UB const *) "timing-%08x", (unsigned int) start);
     if (!bench_trace_start (&trace, &header, g_timing_rows, TIMING_PASSES * TIMING_ROWS_PER_PASS))
     {
@@ -664,17 +657,17 @@ static void run_timing (void)
     for (; (pass < TIMING_PASSES) && !abort_requested (); pass++)
     {
         motion_feedback_t    feedback;
-        bench_trace_record_t row = {.time_us = in_w (TIMER_TIMERAWL) - start, .kind = BENCH_TRACE_SCHEDULER,
+        bench_trace_record_t row = {.time_us = now_us() - start, .kind = BENCH_TRACE_SCHEDULER,
                                     .marker = BENCH_TRACE_RELEASE};
 
         (void) bench_trace_record (&trace, &row);
         if (E_OK == motion_feedback_snapshot (&feedback))
         {
-            row.time_us = in_w (TIMER_TIMERAWL) - start;
+            row.time_us = now_us() - start;
             row.marker  = BENCH_TRACE_CAPTURE;
             (void) bench_trace_record (&trace, &row);
         }
-        row.time_us = in_w (TIMER_TIMERAWL) - start;
+        row.time_us = now_us() - start;
         row.marker  = BENCH_TRACE_COMPLETE;
         (void) bench_trace_record (&trace, &row);
         (void) tk_dly_tsk (LOOP_MS);
@@ -743,7 +736,7 @@ static void bench_task (INT stacd, void * exinf)
     log_flush ();
     for (;;)
     {
-        bool const b_down = (0U == gpio_get_val (BTN_NEXT_PIN));
+        bool const b_down = drv_bench_gpio_pressed(BTN_NEXT_PIN);
 
         if (b_down)
         {
@@ -806,10 +799,10 @@ EXPORT INT usermain (void)
     ID motion_tid = 0;
 
     log_init ();
-    button_init (BTN_NEXT_PIN);
-    if (E_OK != gpio_irq_init ())
+    drv_bench_gpio_input(BTN_NEXT_PIN);
+    if (E_OK != drv_gpio_irq_init ())
     {
-        LOG_ERROR (LOG_TASK_BOOT, LOG_MOD_NONE, "gpio_irq_init failed");
+        LOG_ERROR (LOG_TASK_BOOT, LOG_MOD_NONE, "drv_gpio_irq_init failed");
         log_flush ();
     }
     else

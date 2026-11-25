@@ -1,5 +1,6 @@
 #include <tk/tkernel.h>
-#include <bsp/libbsp.h>
+
+#include "platform/drv_start_button.h"
 
 #include "motion/motion.h"
 #include "motion/motor_setup.h"
@@ -27,17 +28,6 @@
 STATIC_ASSERT(FIRMWARE_TASKS <= CNF_MAX_TSKID, "task limit");
 STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 
-/* GP20 is the active-low operator START input in the main firmware. */
-#define START_BUTTON_PIN             (20U)
-#define START_BUTTON_PULL_UP         (1UL << 3U)
-#define START_BUTTON_PULL_DOWN       (1UL << 2U)
-#define START_BUTTON_SCHMITT         (1UL << 1U)
-
-LOCAL bool start_button_pressed (void)
-{
-    return (0U == gpio_get_val(START_BUTTON_PIN));
-}
-
 /*!
  * @brief Give the supervisor the tasks that must show a pulse. A task that did
  *        not start is left out.
@@ -45,7 +35,7 @@ LOCAL bool start_button_pressed (void)
 LOCAL bool configure_supervisor (uint16_t optional_mask)
 {
     supervisor_config_t config = {0};
-    ER const button_result = gpio_set_pin(START_BUTTON_PIN, GPIO_MODE_IN);
+    ER const button_result = drv_start_button_init();
 
     config.required_mask = (uint16_t)((1U << LIVE_MOTION) | (1U << LIVE_LINE) |
                                       (1U << LIVE_OBSTACLE) | (1U << LIVE_PHYSICS));
@@ -54,9 +44,7 @@ LOCAL bool configure_supervisor (uint16_t optional_mask)
     config.p_telemetry_seen = connection_mqtt_seen;
     if (E_OK == button_result)
     {
-        clr_w(GPIO(START_BUTTON_PIN), START_BUTTON_PULL_DOWN);
-        set_w(GPIO(START_BUTTON_PIN), START_BUTTON_PULL_UP | START_BUTTON_SCHMITT);
-        config.p_start_pressed = start_button_pressed;
+        config.p_start_pressed = drv_start_button_pressed;
     }
     else
     {
@@ -117,7 +105,7 @@ LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
 
 LOCAL void startup_task (INT stacd, void * exinf)
 {
-    ER result = gpio_irq_init();
+    ER result = drv_gpio_irq_init();
 
     (void)stacd;
     (void)exinf;

@@ -31,6 +31,7 @@ typedef void (*FP)(void);
 
 #define IO_BANK0_BASE 0x40014000U
 #define TIMER_BASE    0x40054000U
+#define TIMER_TIMERAWH (TIMER_BASE + 0x24U)
 #define TIMER_TIMERAWL (TIMER_BASE + 0x28U)
 
 typedef struct

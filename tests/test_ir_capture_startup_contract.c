@@ -142,7 +142,7 @@ void shim_reg_write (uint32_t addr, uint32_t value)
     }
 }
 
-ER gpio_irq_add_handler (UW proc, uint32_t mask, gpio_irq_handler_t handler)
+ER drv_gpio_irq_add_handler (UW proc, uint32_t mask, gpio_irq_handler_t handler)
 {
     (void)proc;
     CHECK (g_b_timer_armed);

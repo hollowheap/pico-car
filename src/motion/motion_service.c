@@ -2,12 +2,12 @@
  * @brief One core-0 task owns capture conversion, two PIDs and motor output.
  */
 #include <tk/smp.h>
-#include <bsp/libbsp.h>
+#include "drv_stop.h"
 #include "encoder.h"
 #include "motion/motion.h"
-#include "motion_pins.h"
 #include "motion_service.h"
 #include "pwm.h"
+#include "platform/drv_timer.h"
 #include "platform/faults.h"
 #include "platform/isr.h"
 #include "platform/liveness.h"
@@ -26,14 +26,8 @@ STATIC_ASSERT ((uint32_t)MOTION_FAULT_OUTPUT == TELEMETRY_MOTION_FAULT_OUTPUT,
                "OUTPUT wire code");
 STATIC_ASSERT (MOTION_HOLD_ALL <= UINT8_MAX, "motion event hold mask");
 
-#define STOP_PIN      21U
-#define STOP_PIN_MASK (1U << STOP_PIN)
-/* The STOP input is pulled up; a pressed STOP pulls it to ground. */
-#define STOP_ASSERTED_LEVEL 0U
-
 /* Control-gap limits are in microseconds; the poll delay is in milliseconds. */
 #define US_PER_MS 1000U
-#define TIMER_WORD_BITS (32U)
 
 #define MOTION_SLEEP_TIMEOUT_MS (50U)
 #define MOTION_EVENT_BYTE_SHIFT (8U)
@@ -106,7 +100,7 @@ static ER request_stop (uint32_t stamp_us);
 
 static void stop_pin_edge (const gpio_edge_snapshot_t * p_edges)
 {
-    if (0U != (p_edges->fall_mask & STOP_PIN_MASK))
+    if (0U != (p_edges->fall_mask & DRV_STOP_PIN_MASK))
     {
         (void)request_stop(p_edges->timestamp_us);
     }
@@ -120,7 +114,7 @@ static bool stop_requested (void)
     (void)ISpinLock(&g_service_lock, &saved);
     stop = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
-    return stop || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL;
+    return stop || drv_stop_pressed();
 }
 
 static motion_apply_result_t apply_output (void * context, int16_t left,
@@ -133,13 +127,13 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
     /* Serialize the final output write with a cross-core stop request. The
      * pin level also covers a falling edge whose interrupt is still pending. */
     (void)ISpinLock(&g_service_lock, &saved);
-    if (g_inbox.stopped || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL)
+    if (g_inbox.stopped || drv_stop_pressed())
     {
-        latch_stop_locked(in_w(TIMER_TIMERAWL));
+        latch_stop_locked(now_us());
         (void)ISpinUnlock(&g_service_lock, saved);
         return MOTION_STOP_PENDING;
     }
-    result = pwm_set_pair(left, right);
+    result = drv_pwm_set_pair(left, right);
     (void)ISpinUnlock(&g_service_lock, saved);
     if (result == E_OK)
     {
@@ -149,7 +143,7 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
     {
         /* Also covers unexpected legacy-driver activity: explicitly brake
          * before promising RETRY to the controller. */
-        return pwm_brake() == E_OK ? MOTION_BRAKED_RETRY
+        return drv_pwm_brake() == E_OK ? MOTION_BRAKED_RETRY
                                          : MOTION_OUTPUT_FAILED;
     }
     return MOTION_OUTPUT_FAILED;
@@ -158,7 +152,7 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
 static bool brake_output (void * context, bool latch)
 {
     (void)context;
-    return (latch ? pwm_latch_stop() : pwm_brake()) == E_OK;
+    return (latch ? drv_pwm_latch_stop() : drv_pwm_brake()) == E_OK;
 }
 
 static bool capture_input (motion_input_t * p_input)
@@ -182,15 +176,13 @@ static bool capture_input (motion_input_t * p_input)
  * Returns the first failure; the STOP pin is configured regardless. */
 static ER service_start (motion_output_t * p_output, motion_input_t * p_input)
 {
-    ER result = pwm_init();
+    ER result = drv_pwm_init();
 
     if (result == E_OK)
     {
         result = encoder_init();
     }
-    (void)gpio_set_pin(STOP_PIN, GPIO_MODE_IN);
-    clr_w(GPIO(STOP_PIN), MOTION_PAD_PULL_DOWN);
-    set_w(GPIO(STOP_PIN), MOTION_PAD_PULL_UP | MOTION_PAD_SCHMITT);
+    drv_stop_init();
     if ((result == E_OK) && !capture_input(p_input))
     {
         result = E_IO;
@@ -203,7 +195,7 @@ static ER service_start (motion_output_t * p_output, motion_input_t * p_input)
     }
     if (result == E_OK)
     {
-        result = gpio_irq_add_handler(TP_PRC1, STOP_PIN_MASK, stop_pin_edge);
+        result = drv_gpio_irq_add_handler(TP_PRC1, DRV_STOP_PIN_MASK, stop_pin_edge);
     }
     return result;
 }
@@ -215,8 +207,8 @@ static void service_halt (ER result)
 
     /* Owner-only latch if initialisation reached it; boot brake is also
      * asserted because a failed PWM init may not have registered owner. */
-    pwm_boot_brake();
-    (void)pwm_latch_stop();
+    drv_pwm_boot_brake();
+    (void)drv_pwm_latch_stop();
     if (g_motion_cyc_id > 0)
     {
         (void)tk_del_cyc(g_motion_cyc_id);
@@ -273,12 +265,12 @@ static void service_first_status (void)
 
     if (initial_stop)
     {
-        controller_tick(&g_controller, NULL, in_w(TIMER_TIMERAWL), NULL, true);
+        controller_tick(&g_controller, NULL, now_us(), NULL, true);
     }
     (void)ISpinLock(&g_service_lock, &saved);
     if (initial_stop)
     {
-        latch_stop_locked(in_w(TIMER_TIMERAWL));
+        latch_stop_locked(now_us());
     }
     g_published.stop_requested = g_inbox.stopped;
     g_published.hold_mask      = (uint8_t)g_inbox.hold_mask;
@@ -300,21 +292,6 @@ static uint64_t g_permit_renewed_us = 0U;
 static uint64_t g_permit_lease_us   = 0U;
 static bool     g_permit_armed      = false;
 
-/* An unrenewed permit must stay expired across every low-word timer wrap.
- * Raw reads avoid the shared high-word latch used by the timer's TIME registers. */
-static uint64_t permit_time_us (void)
-{
-    uint32_t high = 0U;
-    uint32_t low = 0U;
-
-    do
-    {
-        high = in_w(TIMER_TIMERAWH);
-        low  = in_w(TIMER_TIMERAWL);
-    } while (high != in_w(TIMER_TIMERAWH));
-    return ((uint64_t)high << TIMER_WORD_BITS) | low;
-}
-
 #define MOTION_PERMIT_MAX_MS (5000U)
 
 ER motion_service_renew_permit (uint32_t lease_ms)
@@ -327,7 +304,7 @@ ER motion_service_renew_permit (uint32_t lease_ms)
     }
 
     (void)ISpinLock(&g_service_lock, &saved);
-    g_permit_renewed_us = permit_time_us();
+    g_permit_renewed_us = drv_timer_now_us64();
     g_permit_lease_us   = (uint64_t)lease_ms * US_PER_MS;
     g_permit_armed      = true;
     (void)ISpinUnlock(&g_service_lock, saved);
@@ -341,7 +318,7 @@ uint32_t motion_service_permit_age_ms (void)
     uint32_t       age  = 0U;
 
     (void)ISpinLock(&g_service_lock, &saved);
-    age = motion_permit_elapsed_ms(g_permit_armed, g_permit_renewed_us, permit_time_us());
+    age = motion_permit_elapsed_ms(g_permit_armed, g_permit_renewed_us, drv_timer_now_us64());
     (void)ISpinUnlock(&g_service_lock, saved);
 
     return age;
@@ -357,7 +334,7 @@ static void check_permit (void)
     /* Fail closed: until the supervisor first renews the permit the wheels
      * are held, so a supervisor that never starts never lets the car move. */
     (void)ISpinLock(&g_service_lock, &saved);
-    now = permit_time_us();
+    now = drv_timer_now_us64();
     b_lapsed = motion_permit_lapsed(g_permit_armed, g_permit_renewed_us,
                                     g_permit_lease_us, now);
     if (b_lapsed != (0U != (g_inbox.hold_mask & MOTION_HOLD_SUPERVISOR)))
@@ -430,7 +407,7 @@ static void service_cycle (motion_input_t * p_input)
         captured = (MOTION_STOPPED == g_controller.status.state) &&
                    (E_OK == wake) && capture_input(p_input);
         controller_tick(&g_controller, captured ? p_input : NULL,
-                            in_w(TIMER_TIMERAWL), NULL,
+                            now_us(), NULL,
                             true);
     }
     else if (E_TMOUT == wake)
@@ -446,12 +423,12 @@ static void service_cycle (motion_input_t * p_input)
         /* Re-read the priority stop slot after capture, before output. */
         (void)ISpinLock(&g_service_lock, &saved);
         received =
-            motion_inbox_take(&g_inbox, in_w(TIMER_TIMERAWL), &command, &stop);
+            motion_inbox_take(&g_inbox, now_us(), &command, &stop);
         intake_holds = (uint8_t)g_inbox.hold_mask;
         (void)ISpinUnlock(&g_service_lock, saved);
-        stop = stop || gpio_get_val(STOP_PIN) == STOP_ASSERTED_LEVEL;
+        stop = stop || drv_stop_pressed();
         controller_tick(&g_controller, captured ? p_input : NULL,
-                            in_w(TIMER_TIMERAWL), received ? &command : NULL,
+                            now_us(), received ? &command : NULL,
                             stop);
         /* A concurrent hold posted after intake belongs to the next pass. */
         if (!stop && (MOTION_STOPPED != g_controller.status.state))
@@ -461,7 +438,7 @@ static void service_cycle (motion_input_t * p_input)
         if (!stop && (MOTION_STOPPED != g_controller.status.state) && stop_requested())
         {
             stop = true;
-            controller_tick(&g_controller, NULL, in_w(TIMER_TIMERAWL), NULL, true);
+            controller_tick(&g_controller, NULL, now_us(), NULL, true);
         }
     }
     liveness_kick(LIVE_MOTION);
@@ -469,7 +446,7 @@ static void service_cycle (motion_input_t * p_input)
     /* An output fault can prevent braking, but the observed stop still latches. */
     if (stop)
     {
-        latch_stop_locked(in_w(TIMER_TIMERAWL));
+        latch_stop_locked(now_us());
     }
     g_published.control        = g_controller.status;
     g_published.stop_requested = g_inbox.stopped;
@@ -478,7 +455,7 @@ static void service_cycle (motion_input_t * p_input)
                         (g_controller.status.state != MOTION_STOPPED) &&
                         (g_controller.status.state != MOTION_FAULT);
     if (g_published.ready && (0U == g_published.hold_mask) &&
-        measured_movement(&g_controller.status, g_inbox.released_us, in_w(TIMER_TIMERAWL)))
+        measured_movement(&g_controller.status, g_inbox.released_us, now_us()))
     {
         g_published.movement_sequence++;
     }
@@ -561,7 +538,7 @@ ER motion_service_init (const motion_service_config_t * p_config, ID task_id)
                             g_configuration.control.max_command_ttl_us);
     (void)InitSpinLock(&g_service_lock);
     g_start_called = true;
-    pwm_boot_brake();
+    drv_pwm_boot_brake();
 
     return E_OK;
 }
@@ -599,7 +576,7 @@ static ER post_command (motion_command_t command, bool stamp_now)
     else
     {
         motion_inbox_result_t admitted = MOTION_INBOX_STALE;
-        uint32_t              now      = in_w(TIMER_TIMERAWL);
+        uint32_t              now      = now_us();
 
         command.id = g_next_id + 1U;
         if (command.id == 0U)
@@ -647,7 +624,7 @@ ER motion_service_submit_request (const motion_drive_request_t * p_request)
     }
     limits[0] = g_configuration.control.speed[0].max_target_um_s;
     limits[1] = g_configuration.control.speed[1].max_target_um_s;
-    now       = in_w(TIMER_TIMERAWL);
+    now       = now_us();
     if (!motion_request_plan(p_request, limits,
                              g_configuration.control.max_command_ttl_us, now,
                              &command))
@@ -685,7 +662,7 @@ ER motion_service_set_hold (uint32_t reason, bool held)
     }
     else
     {
-        result = motion_inbox_hold(&g_inbox, reason, held, in_w(TIMER_TIMERAWL))
+        result = motion_inbox_hold(&g_inbox, reason, held, now_us())
                      ? E_OK
                      : E_PAR;
         g_published.hold_mask = (uint8_t)g_inbox.hold_mask;
@@ -715,7 +692,7 @@ static ER request_stop (uint32_t stamp_us)
 
 ER motion_service_request_stop (void)
 {
-    return g_start_called ? request_stop(in_w(TIMER_TIMERAWL)) : E_OBJ;
+    return g_start_called ? request_stop(now_us()) : E_OBJ;
 }
 
 ER motion_service_read_status (motion_service_status_t * p_status)
@@ -741,7 +718,7 @@ static void fill_feedback (const motion_service_status_t * p_status,
 {
     /* The sample was copied before reading the clock. Unsigned subtraction
      * keeps its age across a timer rollover. */
-    uint32_t const age_us = in_w(TIMER_TIMERAWL) - p_status->control.sample.timestamp_us;
+    uint32_t const age_us = now_us() - p_status->control.sample.timestamp_us;
 
     p_feedback->left_speed_um_s  = p_status->control.sample.wheel[ENCODER_LEFT].velocity_um_s;
     p_feedback->right_speed_um_s = p_status->control.sample.wheel[ENCODER_RIGHT].velocity_um_s;
@@ -778,7 +755,7 @@ static void fill_status (const motion_service_status_t * p_service,
     p_status->hold_mask      = p_service->hold_mask;
     p_status->init_error     = p_service->init_error;
     p_status->stop_age_ms    = p_service->stop_requested
-                                  ? (in_w(TIMER_TIMERAWL) - p_service->stop_stamp_us) / US_PER_MS
+                                  ? (now_us() - p_service->stop_stamp_us) / US_PER_MS
                                   : 0U;
     p_status->movement_sequence = p_service->movement_sequence;
 }

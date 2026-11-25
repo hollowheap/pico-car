@@ -48,7 +48,7 @@ void motion_init (void)
     /* The kernel boot table leaves GP8/GP9 (left motor) on I2C0 with
      * pull-ups. Hold every bridge input low before anything else runs; the
      * motion service repeats it when it takes the pins. */
-    pwm_boot_brake();
+    drv_pwm_boot_brake();
     platform_stack_register(PLATFORM_STACK_MOTION, g_motion_stack, STACK_MOTION_SZ);
 }
 

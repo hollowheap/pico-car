@@ -195,7 +195,7 @@ void shim_reg_write (UW address, UW bits)
     assert(21U == address && 0U != bits);
 }
 
-ER gpio_irq_add_handler (UW proc, uint32_t mask, gpio_irq_handler_t handler)
+ER drv_gpio_irq_add_handler (UW proc, uint32_t mask, gpio_irq_handler_t handler)
 {
     assert(TP_PRC1 == proc && (1U << 21U) == mask && handler != NULL);
     if (E_OK == g_gpio_registration_result)
@@ -223,28 +223,28 @@ ER encoder_read (encoder_sample_t * p_sample)
     return E_OK;
 }
 
-void pwm_boot_brake (void)
+void drv_pwm_boot_brake (void)
 {
 }
 
-ER pwm_init (void)
-{
-    return E_OK;
-}
-
-ER pwm_brake (void)
+ER drv_pwm_init (void)
 {
     return E_OK;
 }
 
-ER pwm_latch_stop (void)
+ER drv_pwm_brake (void)
+{
+    return E_OK;
+}
+
+ER drv_pwm_latch_stop (void)
 {
     g_latch_attempts++;
     g_latch_time_us = g_test_clock_us;
     return g_b_brake_fails ? E_IO : E_OK;
 }
 
-ER pwm_set_pair (int16_t left, int16_t right)
+ER drv_pwm_set_pair (int16_t left, int16_t right)
 {
     g_pair_writes++;
     if ((left != 0) || (right != 0))

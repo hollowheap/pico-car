@@ -85,7 +85,7 @@ static void force_low (uint32_t mask)
     }
 }
 
-void pwm_boot_brake (void)
+void drv_pwm_boot_brake (void)
 {
     force_low(WHEEL_PIN_MASK(0U) | WHEEL_PIN_MASK(1U));
 }
@@ -103,7 +103,7 @@ static ER owner_context (void)
     return tk_get_tid() == g_owner ? E_OK : E_CTX;
 }
 
-ER pwm_init (void)
+ER drv_pwm_init (void)
 {
     unsigned int slice = 0U;
     unsigned int wait  = 0U;
@@ -135,7 +135,7 @@ ER pwm_init (void)
     {
         return E_BUSY;
     }
-    pwm_boot_brake();
+    drv_pwm_boot_brake();
     for (slice = MOTOR_SLICE_FIRST; slice <= MOTOR_SLICE_LAST; slice++)
     {
         uint32_t base = MOTOR_SLICE_BASE(slice);
@@ -155,7 +155,7 @@ ER pwm_init (void)
     return E_OK;
 }
 
-ER pwm_brake (void)
+ER drv_pwm_brake (void)
 {
     unsigned int slice  = 0U;
     ER           result = owner_context();
@@ -166,7 +166,7 @@ ER pwm_brake (void)
     }
     /* Compare writes are buffered and disabling PWM can freeze a HIGH
      * output. First switch the pins to known-low SIO outputs instead. */
-    pwm_boot_brake();
+    drv_pwm_boot_brake();
     for (slice = MOTOR_SLICE_FIRST; slice <= MOTOR_SLICE_LAST; slice++)
     {
         uint32_t base = MOTOR_SLICE_BASE(slice);
@@ -181,7 +181,7 @@ ER pwm_brake (void)
     return E_OK;
 }
 
-ER pwm_set_pair (int16_t left, int16_t right)
+ER drv_pwm_set_pair (int16_t left, int16_t right)
 {
     motor_plan_t plan;
     unsigned int wheel   = 0U;
@@ -202,7 +202,7 @@ ER pwm_set_pair (int16_t left, int16_t right)
     }
     if ((left == 0) && (right == 0))
     {
-        return pwm_brake();
+        return drv_pwm_brake();
     }
     if (g_active && !g_pair_active)
     {
@@ -210,7 +210,7 @@ ER pwm_set_pair (int16_t left, int16_t right)
     }
     if (plan.reversal)
     {
-        (void)pwm_brake();
+        (void)drv_pwm_brake();
         return E_BUSY;
     }
     for (wheel = 0U; wheel < MOTOR_PAIR_WHEELS; wheel++)
@@ -251,7 +251,7 @@ ER pwm_set_pair (int16_t left, int16_t right)
     return E_OK;
 }
 
-ER pwm_drive (unsigned int wheel, bool channel_a, uint16_t duty_permille)
+ER drv_pwm_drive (unsigned int wheel, bool channel_a, uint16_t duty_permille)
 {
     UINT     pin     = 0U;
     uint32_t compare = 0U;
@@ -273,7 +273,7 @@ ER pwm_drive (unsigned int wheel, bool channel_a, uint16_t duty_permille)
     }
     if (duty_permille == 0U)
     {
-        return pwm_brake();
+        return drv_pwm_brake();
     }
     if (g_active)
     {
@@ -291,9 +291,9 @@ ER pwm_drive (unsigned int wheel, bool channel_a, uint16_t duty_permille)
     return E_OK;
 }
 
-ER pwm_latch_stop (void)
+ER drv_pwm_latch_stop (void)
 {
-    ER result = pwm_brake();
+    ER result = drv_pwm_brake();
 
     if (result == E_OK)
     {
