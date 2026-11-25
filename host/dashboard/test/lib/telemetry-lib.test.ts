@@ -1137,6 +1137,14 @@ describe('run summary', () => {
     expect(summarizeRun(store.trail, store.events).scope).toBe('This run');
   });
 
+  it('ends the run summary at the stop so later idle samples do not dilute it', () => {
+    let store = reduceStore(emptyStore(), event(1, 0x02, 0, 0, 0, 1000));
+    for (let i = 0; i < 6; i += 1) store = reduceStore(store, status(i, i * 40, 0, 1000 + i * 200));
+    store = reduceStore(store, event(2, 0x03, 0, 0, 200, 2000));
+    for (let i = 6; i < 20; i += 1) store = reduceStore(store, status(i, 200, 0, 1000 + i * 1000));
+    expect(summarizeRun(store.trail, store.events)).toMatchObject({ distanceMm: 200, durationS: 1, averageMms: 200, stops: 1 });
+  });
+
   it('finds the longest recorded line recovery from events', () => {
     const store = [event(1, 0x18, 0, 0, 200, 1000), event(2, 0x19, 0, 75, 275, 1100),
       event(3, 0x18, 0, 0x8001, 800, 1200), event(4, 0x19, 0, 120, 920, 1300)]
