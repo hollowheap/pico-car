@@ -6,7 +6,7 @@ import type { LinkPacket } from './link.js';
 import { odometerDiscontinuous } from './odometer.js';
 import { hasSpeedFault, headingDegrees, pivotScalePercent } from './schema.js';
 import { profileSurfaces, stationaryContact, type Survey } from './scan.js';
-import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated.js';
+import { BIT_FIELDS, COMMANDS, ENUMS, FAULT_BITS } from './schema.generated.js';
 
 /** Keep up to 20 minutes at full resolution, then simplify the older geometry. */
 export const TRAIL_MAX = 6000;
@@ -457,6 +457,25 @@ function sonarPoseIndex(trail: TrailPoint[], timestamp: number, maxAgeMs: number
   return age <= maxAgeMs ? i : -1;
 }
 
+function recentSonarPoseValues(packet: LinkPacket | undefined, timestamp: number): LinkPacket['values'] | undefined {
+  return packet !== undefined && packet.timestamp <= timestamp && timestamp - packet.timestamp <= SONAR_POSE_MAX_AGE_MS
+    ? packet.values : undefined;
+}
+
+function airborneAt(store: TelemetryStore, timestamp: number): boolean {
+  const physics = recentSonarPoseValues(store.latest.physics, timestamp);
+  if (physics && ((physics.flags ?? 0) & (1 << BIT_FIELDS.physicsFlags.calibrated)) !== 0 &&
+      ((physics.physics_faults ?? 0) & (1 << BIT_FIELDS.physicsFaults.i2c)) === 0) {
+    const attitude = physics.attitude_state;
+    if (attitude === ENUMS.attitudeState.lifted || attitude === ENUMS.attitudeState.overturned) return true;
+    // The supervisor can keep the lift hold latched after the IMU sees set-down.
+    if (attitude === ENUMS.attitudeState.ok) return false;
+  }
+  const status = recentSonarPoseValues(store.latest.status, timestamp);
+  return status?.mode === ENUMS.vehicleMode.lifted || status?.mode === ENUMS.vehicleMode.overturned ||
+    ((status?.faults ?? 0) & ((1 << FAULT_BITS.lifted) | (1 << FAULT_BITS.overturned))) !== 0;
+}
+
 function observeScanStart(store: TelemetryStore, packet: LinkPacket, previous?: LinkPacket): TrailPoint | null {
   const state = packet.values.state;
   const states = ENUMS.obstacleState;
@@ -472,6 +491,7 @@ function observeScanStart(store: TelemetryStore, packet: LinkPacket, previous?: 
 }
 
 function recordProfile(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
+  if (airborneAt(store, packet.timestamp)) return { ...store, scanStart: null };
   const contact = stationaryContact(packet.values);
   const sample = contact ? store.trail[sonarPoseIndex(store.trail, packet.timestamp, HUG_POSE_MAX_AGE_MS)] : store.scanStart;
   if (contact && (!sample || sample.speedFault || (sample.wheels &&
@@ -620,10 +640,14 @@ export function reduceStore(store: TelemetryStore, packet: LinkPacket): Telemetr
     firstTimestamp: store.firstTimestamp ?? packet.timestamp,
   };
   if (packet.packet === 'obstacle') {
-    next.scanStart = observeScanStart(store, packet, previousObstacle);
     next.obstaclePing = observeObstaclePing(store.obstaclePing, packet);
-    const newPing = next.obstaclePing !== undefined && next.obstaclePing !== store.obstaclePing;
-    next = addObstacle(next, packet, previousObstacle?.values.hug_state, newPing);
+    if (airborneAt(store, packet.timestamp)) {
+      next.scanStart = null;
+    } else {
+      next.scanStart = observeScanStart(store, packet, previousObstacle);
+      const newPing = next.obstaclePing !== undefined && next.obstaclePing !== store.obstaclePing;
+      next = addObstacle(next, packet, previousObstacle?.values.hug_state, newPing);
+    }
   }
   if (packet.packet === 'barcode_sample') {
     const previous = store.barcodeEdges.at(-1);

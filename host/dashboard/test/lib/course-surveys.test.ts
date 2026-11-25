@@ -7,6 +7,7 @@ import type { LinkPacket } from '../../src/lib/link';
 import { obstacleView } from '../../../bridge/src/console/obstacle-view.js';
 import { profileSurfaces } from '../../../bridge/src/console/scan.js';
 import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
+import { BIT_FIELDS, ENUMS, FAULT_BITS } from '../../src/lib/schema.generated';
 
 const profile = (timestamp: number, first = 16, status = 0, req_id = 1): LinkPacket => {
   const slots = Object.fromEntries(Array.from({ length: 37 }, (_, i) => [
@@ -22,6 +23,56 @@ const start = [hb(100), pose(100, 1), obstacle(110, 2), pose(300, 2, 20, 90), ob
 const complete = [...start, obstacle(450, 3, 400), pose(500, 3, 20, 50), obstacle(510, 4), profile(520, 26)];
 const fold = (packets: LinkPacket[]) => packets.reduce(reduceStore, emptyStore());
 const courseOf = (packets: LinkPacket[]) => buildCourse(fold(packets).trail, []);
+
+const forwardPing = (timestamp: number, seq: number, dist_mm: number): LinkPacket => ({
+  packet: 'obstacle', timestamp,
+  values: { seq, dist_mm, servo_deci: 0, echo_class: ENUMS.echoClass.valid, state: ENUMS.obstacleState.stopped },
+});
+const attitude = (timestamp: number, attitude_state: number): LinkPacket => ({
+  packet: 'physics', timestamp, values: { attitude_state, flags: 1 << BIT_FIELDS.physicsFlags.calibrated },
+});
+
+it('retains the grounded map return through a pickup and resumes with a new ping after set-down', () => {
+  const previous = fold([pose(1000, 1), forwardPing(1050, 1, 200)]);
+  const offFloor = forwardPing(1250, 2, 105);
+  const held = pose(1200, 2, 0, 0, 1 << FAULT_BITS.lifted);
+  held.values.mode = ENUMS.vehicleMode.lifted;
+  const lifted = [held, attitude(1250, ENUMS.attitudeState.lifted), offFloor].reduce(reduceStore, previous);
+  expect(lifted.latest.obstacle).toBe(offFloor);
+  expect(lifted.obstaclePing).toBe(offFloor);
+  expect(lifted.forwardReturn).toBe(previous.forwardReturn);
+
+  const grounded = [attitude(1430, ENUMS.attitudeState.ok), { ...offFloor, timestamp: 1450 }].reduce(reduceStore, lifted);
+  expect(grounded.forwardReturn).toBe(previous.forwardReturn);
+  const fresh = reduceStore(grounded, forwardPing(1470, 3, 205));
+  const course = buildCourse(fresh.trail, [], fresh.obstacle, fresh.trailStart, fresh.forwardReturn);
+  expect(course.forwardReturn?.rangeMm).toBe(205);
+});
+
+it('uses recent lift and overturn status when there is no usable IMU attitude', () => {
+  const lifted = pose(1100, 1);
+  lifted.values.mode = ENUMS.vehicleMode.lifted;
+  const overturned = pose(1100, 1, 0, 0, 1 << FAULT_BITS.overturned);
+  const stale = attitude(600, ENUMS.attitudeState.ok);
+  const uncalibrated = attitude(1150, ENUMS.attitudeState.ok);
+  uncalibrated.values.flags = 0;
+  expect(fold([attitude(1150, ENUMS.attitudeState.lifted), forwardPing(1200, 1, 105)]).forwardReturn).toBeNull();
+  expect(fold([stale, lifted, forwardPing(1200, 1, 105)]).forwardReturn).toBeNull();
+  expect(fold([overturned, uncalibrated, forwardPing(1200, 1, 105)]).forwardReturn).toBeNull();
+  expect(fold([lifted, forwardPing(1900, 1, 105)]).forwardReturn).toEqual({ rangeMm: 105, pose: null });
+});
+
+it('keeps airborne contact and survey packets out of the map', () => {
+  const lifted = pose(1100, 1, 0, 0, 1 << FAULT_BITS.lifted);
+  const contact: LinkPacket = { packet: 'obstacle', timestamp: 1130, values: { hug_state: 1, face_mm: 105, body_deci: 0 } };
+  const fan = profile(1150, 16, ENUMS.profileStatus.pilotSparse);
+  fan.values.flags = 1 << BIT_FIELDS.profileFlags.stationaryContact;
+  const store = fold([obstacle(1090, ENUMS.obstacleState.waitStop), lifted, contact, fan]);
+  expect(store.latest.obstacle).toBe(contact);
+  expect(store.latest.profile).toBe(fan);
+  expect(store.obstacle).toBeNull();
+  expect(buildCourse(store.trail, []).surfaces).toHaveLength(0);
+});
 
 it('places each surveyed bearing from the sonar mount at its body pivot, in the scan-start axle frame', () => {
   const [local] = profileSurfaces(profile(520, 26).values); // +40° slot is straight on a +40° body pivot.
