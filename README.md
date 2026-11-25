@@ -26,6 +26,50 @@ with `PICO_CAR_WIFI_SSID`, `PICO_CAR_WIFI_PASSWORD`, and `PICO_CAR_MQTT_HOST`
 as local CMake settings. The car needs the broker's LAN address. Keep
 credentials in the environment or local build cache.
 
+## Broker credentials
+
+The broker refuses anonymous clients. `configure.sh` runs `host/credentials.sh`,
+which creates random 192-bit passwords for two broker users, `car` and
+`bridge`, when they are missing. Run it by hand before the first
+`npm start` or compose start:
+
+```sh
+host/credentials.sh
+```
+
+The files live in `host/credentials/`, which Git ignores:
+
+| File | Holds | Read by |
+| --- | --- | --- |
+| `car.env` | the car's login in plaintext | `configure.sh`, for the CMake cache |
+| `bridge.env` | the bridge's login in plaintext | the bridge and the compose bridge |
+| `passwd` | salted PBKDF2 hashes for both users | the broker |
+| `acl` | topic permissions | the broker |
+| `car-id` | the pinned car ID | the bridge |
+
+The car may publish only its telemetry topics and subscribe only to its
+command topic. The bridge may subscribe to every topic under the prefix and
+publish only the command topic. Set `PICO_CAR_TOPIC_PREFIX` when the prefix is
+not `car/PICO-CAR`. The script rewrites `acl` on every run.
+
+Existing files stay as they are. To replace a password, delete `car.env` or
+`bridge.env`, rerun `host/credentials.sh`, then run `./configure.sh` and flash
+the car again. The firmware must hold its own password in plaintext in flash
+and in the build cache, while the broker stores only hashes. Anyone who can read
+the car's flash or `host/credentials/` can publish as the car.
+
+### Pair a car
+
+Each car reports a fingerprint: the last four bytes of its radio MAC, in the
+heartbeat `car_id` field and at the end of its MQTT client ID
+(`pico-car-<eight hex digits>`). The bridge pins the first car it hears, or the
+ID in `CAR_ID`, and saves it in `host/credentials/car-id`. While a heartbeat
+with another ID is arriving, the bridge drops all telemetry and refuses
+commands with 409. `GET /health` shows `car.expected`, `car.reporting` and
+`car.mismatch`. To pair a different car, power off the old one, delete
+`host/credentials/car-id` (or change `CAR_ID`), restart the bridge, and power on
+the new car. The ID identifies a car; the password authenticates it.
+
 ## Ground station
 
 The Nix shell provides Node.js 24, npm, and Mosquitto.
@@ -38,10 +82,11 @@ npm start
 Open <http://127.0.0.1:5281>. The bridge serves the dashboard, HTTP API, and
 WebSocket on the same port. Use `npm run serve` to reuse the current web export.
 
-- **Broker.** The station starts Mosquitto on TCP 1883 when needed. Set
-  `MQTT_URL` to use a different broker. Match the firmware's
-  `PICO_CAR_TOPIC_PREFIX` to the bridge's `MQTT_TOPIC_PREFIX`. Both default to
-  `car/PICO-CAR`.
+- **Broker.** The station starts Mosquitto on TCP 1883 when needed, with the
+  files in `host/credentials/`, and logs in as `bridge`. Set `MQTT_URL` to use a
+  different broker, and `MQTT_USERNAME` and `MQTT_PASSWORD` for its login.
+  Match the firmware's `PICO_CAR_TOPIC_PREFIX` to the bridge's
+  `MQTT_TOPIC_PREFIX`. Both default to `car/PICO-CAR`.
 - **Recordings.** The bridge records to `host/bridge/history.jsonl` and saves
   course geometry in a `.course` sidecar. Set `BRIDGE_HISTORY_PATH` to select
   another file. Use one writer per recording.
@@ -54,10 +99,14 @@ WebSocket on the same port. Use `npm run serve` to reuse the current web export.
 To run the station in containers:
 
 ```sh
+host/credentials.sh
 podman-compose -f deploy/compose.yaml up -d --build
 ```
 
-Set `BROKER_PORT` (1883), `DASHBOARD_LOCAL_PORT` (5281), or the private HTTP
+The broker container mounts only `passwd` and `acl` from `host/credentials/`
+read-only. The bridge container takes its login from `bridge.env` and keeps its
+pinned car ID in the `bridge-data` volume. Run the broker rootless, because the
+credential files are mode 0600. Set `BROKER_PORT` (1883), `DASHBOARD_LOCAL_PORT` (5281), or the private HTTP
 build option in `deploy/.env`. The dashboard binds to loopback and the
 `bridge-data` volume keeps its recordings.
 
