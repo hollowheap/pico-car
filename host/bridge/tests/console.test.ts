@@ -27,6 +27,18 @@ describe('bridge console projection', () => {
     expect(snapshot.frameLog.nextId).toBe(4);
   });
 
+  it('distinguishes the MQTT session timeout from a publish rejection', () => {
+    const latest = status(1, 0, 1000);
+    const { view } = createConsoleView([{ ...latest, values: { ...latest.values, faults: 0b11 } }]).read();
+
+    expect(view.faults.slice(0, 2)).toEqual([
+      { bit: 0, key: 'wifiDisconn', state: 'set', severity: 'warn',
+        label: 'MQTT session down', hint: 'No MQTT session for at least 3 seconds.' },
+      { bit: 1, key: 'mqttNack', state: 'set', severity: 'warn',
+        label: 'MQTT rejected', hint: 'The broker refused a publish.' },
+    ]);
+  });
+
   it('keeps receipt order and clears the course on the accepted Reset boundary', () => {
     const view = createConsoleView([{ ...status(1, 90, 1000), receiptOrder: 1 }]);
     const before = view.read();

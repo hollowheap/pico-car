@@ -26,7 +26,7 @@ type Props = {
 const VIEWS = { matrix: 'Matrix', health: 'Health' } as const;
 
 const SHORT_LABEL: Record<number, string> = {
-  0: 'Wi-Fi',
+  0: 'MQTT link',
   1: 'MQTT',
   2: 'Stall',
   3: 'Encoder',

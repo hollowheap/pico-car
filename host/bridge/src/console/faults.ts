@@ -15,7 +15,7 @@ export type FaultMeta = {
 
 /** Keyed by bit number. A test fails when the schema adds a bit without a row. */
 export const FAULT_META: Record<number, FaultMeta> = {
-  0: { label: 'Wi-Fi down', severity: 'warn', hint: 'The car lost its access point.' },
+  0: { label: 'MQTT session down', severity: 'warn', hint: 'No MQTT session for at least 3 seconds.' },
   1: { label: 'MQTT rejected', severity: 'warn', hint: 'The broker refused a publish.' },
   2: { label: 'Motor stalled', severity: 'critical', hint: 'A wheel is told to turn and has no edges.' },
   3: { label: 'Encoder fault', severity: 'critical', hint: 'An encoder is dead, or the two plugs are swapped.' },
