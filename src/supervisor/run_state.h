@@ -34,6 +34,7 @@ typedef enum
 #define RUN_REJECT_LIFTED      (4U)
 #define RUN_REJECT_SOURCE      (5U)
 #define RUN_REJECT_OPCODE      (6U)
+#define RUN_REJECT_ON_HUMP     (7U) /* a calibration on a ramp would be wrong */
 
 /* The turn the line task must run, or none. */
 #define RUN_TURN_NONE (0xFFU)
@@ -55,6 +56,7 @@ typedef struct
     bool b_overturned;
     bool b_estop;
     bool b_follow; /* the line task follows the line, the obstacle task monitors, no turn is pending */
+    bool b_on_hump; /* the hump detector is in a hump: the car is not level */
 } run_inputs_t;
 
 /* What the supervisor must do after a step. hold_mask is the full set of
@@ -71,7 +73,7 @@ typedef struct
     bool     b_obstacle_reset;
     bool     b_obstacle_start;
     bool     b_motion_estop;
-    bool     b_physics_recal; /* the IMU must calibrate again after an overturn */
+    bool     b_physics_recal; /* the IMU must calibrate again: after an overturn, on START, on RECAL */
 } run_result_t;
 
 void        run_state_init (run_ctx_t * p_ctx);

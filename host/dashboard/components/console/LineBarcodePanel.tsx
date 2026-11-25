@@ -58,7 +58,7 @@ export function LineBarcodePanel({ statusPacket, diag, events, status, style }: 
   const barcodes = events.filter((event) => event.text.kind === 'barcode').slice(-4).reverse();
 
   return (
-    <Panel status={status} style={style} testID="line-panel" title="Line and barcode">
+    <Panel icon="line" status={status} style={style} testID="line-panel" title="Line and barcode">
       <View style={styles.lamps}>
         <Lamp name="LEFT" on={on(BIT_LEFT)} />
         <Lamp name="RIGHT" on={on(BIT_RIGHT)} />

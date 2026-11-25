@@ -5,9 +5,7 @@ planning and the obstacle statechart. The code is in
 `src/navigation/obstacle/`. Buddy 5 never writes the motors: it only sends events and
 steering words to the line task.
 
-The artifacts are the source of truth: the project notes (S12, S13, S39,
-S40) and the project notes (D95 to D99, D150, D151). This page
-describes the code that implements them.
+This page describes the code.
 
 Other Buddy 5 docs:
 
@@ -21,14 +19,14 @@ Last updated 12 November 2026.
 
 | Step | Work | Current position |
 |---|---|---|
-| 1 | Design (pins, statechart, scan, bypass) | Done; see the artifacts above. |
+| 1 | Design (pins, statechart, scan, bypass) | Done. |
 | 2 | Code in `src/navigation/obstacle/` | Done: six echo classes, the 2-of-3 hit rule, the retry policy, and the plan, flags and class counts in telemetry. |
 | 3 | Host tests | Done: `ctest -R obstacle_` (scan, plan, statechart, bypass simulation). |
 | 4 | BARR-C:2018 pass | Done; `bash tools/lint.sh src/navigation/obstacle include/navigation` reports 0 findings. |
 | 5 | Bench build in the normal team build | Done; `./build.sh` makes `build/obstacle_bench.uf2`. |
 | 6 | Car measurements (**FILL** values) | Pending; see [Numbers to fill in](#numbers-to-fill-in). The sonar edge and incidence measurement (Q56) comes first. |
 | 7 | Hardware checklist H1 to H9 on the car | Pending; see the [checklist](obstacle_hardware_checklist.md). |
-| 8 | Floor test | Pending. Boxes 240 to 340 mm wide are planned too narrow; see wide-box findings. |
+| 8 | Floor test | Pending. Boxes 240 to 340 mm wide are planned too narrow. |
 
 ## Wiring
 
@@ -154,12 +152,13 @@ The states, the time limits and the fault causes are in the
 
 - **Grid:** 37 slots, -90 to +90 degrees in 5 degree steps, positive = left.
   Slot 18 is straight ahead.
-- **Servo:** never beyond +-30 degrees. The scan reaches the rest of the grid
-  by turning the car body +-60 degrees (S40).
+- **Servo:** never beyond +-15 degrees (the board has about 10 mm of room
+  behind it). The scan reaches the rest of the grid by turning the car body in
+  30 degree steps up to 75 degrees (D166).
 - **Coarse:** every 2nd slot (10 degrees) in the centre window.
 - **Region:** the closest hit within 600 mm, plus coarse neighbours within
   closest + 250 mm. The closest reading is looked for inside the car's path
-  (+-30 degrees) first.
+  (+-15 degrees) first.
 - **Fine:** walk outward from each edge, one slot at a time, up to the first
   real miss (OPEN, or VALID beyond the last hit on that edge + 250 mm).
   - A NO_ECHO, GLITCH or STUCK slot proves nothing, so the walk assumes the
@@ -179,8 +178,7 @@ The states, the time limits and the fault causes are in the
 β = half-cone (9.5 degrees), the planner places an edge between h - β and
 m - β. This assumes the sonar returns an echo when only the edge of its beam
 is on the obstacle. That assumption is not measured (Q56), and the
-simulation does not follow it. See the
- wide-box findings.
+simulation does not follow it.
 
 **Choosing a side.** A side is usable when the sideways offset it needs (edge
 + `OBSTACLE_BOX_GAP_MM`) fits on the free floor, and no other reading on that
@@ -194,7 +192,7 @@ NO_SAFE_PATH and the car holds.
 `OBSTACLE_PLAN_MARGIN_MM`. The car never reverses.
 
 **Along the obstacle.** Every `OBSTACLE_SIDE_LOOK_MM` (250 mm) the car stops,
-pivots 60 degrees toward the obstacle, aims the servo at 30 degrees so the
+pivots 75 degrees toward the obstacle, aims the servo at 15 degrees so the
 ray is normal to the face, takes a side reading, and pivots back. The reading
 sets the lean that holds `OBSTACLE_BOX_GAP_MM` (190 mm) from the axle line.
 For a wall the gap is `OBSTACLE_WALL_HOLD_MM` (300 mm).

@@ -119,6 +119,30 @@ static void command_start (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
         p_out->b_accepted       = true;
         p_out->b_obstacle_reset = true;
         p_out->b_obstacle_start = true;
+        /* A level car calibrates again before it moves; on a hump the old
+           reference is better than a tilted one. */
+        p_out->b_physics_recal = !p_in->b_on_hump;
+    }
+}
+
+static void command_recal (const run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t * p_out)
+{
+    if (p_ctx->b_estop)
+    {
+        reject (p_out, RUN_REJECT_LATCHED);
+    }
+    else if (p_in->b_lifted || p_in->b_overturned)
+    {
+        reject (p_out, RUN_REJECT_LIFTED);
+    }
+    else if (p_in->b_on_hump)
+    {
+        reject (p_out, RUN_REJECT_ON_HUMP);
+    }
+    else
+    {
+        p_out->b_accepted      = true;
+        p_out->b_physics_recal = true;
     }
 }
 
@@ -170,7 +194,8 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
         reject (p_out, RUN_REJECT_SOURCE);
     }
     else if ((VEHICLE_SRC_BARCODE == cmd.source) &&
-             ((VEHICLE_CMD_RESET == cmd.opcode) || (VEHICLE_CMD_ESTOP == cmd.opcode)))
+             ((VEHICLE_CMD_RESET == cmd.opcode) || (VEHICLE_CMD_ESTOP == cmd.opcode) ||
+              (VEHICLE_CMD_RECAL == cmd.opcode)))
     {
         reject (p_out, RUN_REJECT_SOURCE);
     }
@@ -196,6 +221,10 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
 
             case VEHICLE_CMD_RESET:
                 command_reset (p_ctx, p_in, p_out);
+            break;
+
+            case VEHICLE_CMD_RECAL:
+                command_recal (p_ctx, p_in, p_out);
             break;
 
             case VEHICLE_CMD_LEFT:

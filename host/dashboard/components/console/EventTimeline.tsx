@@ -7,6 +7,7 @@ import { enumLabel } from '../../lib/schema';
 import type { EventRow } from '../../lib/telemetry-store';
 import { useTheme } from '../../lib/theme-provider';
 import { Button } from '../ui/button';
+import { EventGlyph } from './CourseTrace';
 import { formatTime, metres } from './format';
 import { Panel } from './Panel';
 
@@ -57,7 +58,7 @@ export function EventTimeline({ events, limit = 60, maxHeight, title = 'Events',
     .reverse();
 
   return (
-    <Panel status={status} style={style} testID="event-timeline" title={title}>
+    <Panel icon="events" status={status} style={style} testID="event-timeline" title={title}>
       <View style={styles.filters}>
         {FILTERS.map((item) => (
           <Button
@@ -87,9 +88,12 @@ export function EventTimeline({ events, limit = 60, maxHeight, title = 'Events',
               style={[styles.row, { borderColor: theme.colors.border }]}
             >
               <View style={styles.rowHead}>
-                <Text style={[theme.typography.body, { color: event.text.kind === 'fault' ? theme.colors.danger : theme.colors.text, fontWeight: '600' }]}>
-                  {event.text.title}
-                </Text>
+                <View style={styles.titleRow}>
+                  <EventGlyph kind={event.text.kind} />
+                  <Text style={[theme.typography.body, { color: event.text.kind === 'fault' ? theme.colors.danger : theme.colors.text, fontWeight: '600' }]}>
+                    {event.text.title}
+                  </Text>
+                </View>
                 <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
                   {formatTime(event.timestamp)} · {metres(event.odometerMm)}
                 </Text>
@@ -109,5 +113,6 @@ export function EventTimeline({ events, limit = 60, maxHeight, title = 'Events',
 const styles = StyleSheet.create({
   filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   row: { borderTopWidth: 1, gap: 2, paddingVertical: 8 },
-  rowHead: { alignItems: 'baseline', flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
+  rowHead: { alignItems: 'center', flexDirection: 'row', gap: 8, justifyContent: 'space-between' },
+  titleRow: { alignItems: 'center', flexDirection: 'row', gap: 8 },
 });

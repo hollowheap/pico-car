@@ -356,7 +356,14 @@ static void ping_and_step (void)
     ping(&cls, &dist_mm);
     obstacle_comms_count_class(cls);
     obstacle_statechart_out_clear(&out);
-    obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
+    if (obstacle_comms_is_pivoting())
+    {
+        obstacle_statechart_ping_guard(&g_fsm, cls, dist_mm, now_ms(), &out);
+    }
+    else
+    {
+        obstacle_statechart_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
+    }
     obstacle_comms_publish(&out, &g_fsm);
 }
 

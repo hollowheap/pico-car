@@ -12,7 +12,7 @@
  *
  * States: OK, CANDIDATE, LIFTED, OVERTURNED. Before the rest calibration the
  * module reports OK and calibrated = false. All limits are placeholders until
- * tuned on logs from the car (the project notes).
+ * tuned on logs from the car.
  */
 
 #ifndef ATTITUDE_H

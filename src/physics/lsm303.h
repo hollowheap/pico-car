@@ -6,7 +6,7 @@
  * code runs against the RP2040 driver (i2c_rp2040.c) on the car and a
  * simulated chip in the host tests.
  *
- * Settings, from SE01_PostTri1 and the datasheet (DocID018771 Rev 2):
+ * Settings, from the datasheet (DocID018771 Rev 2):
  *   Accelerometer 0x19: CTRL_REG1_A (0x20) = 0x47  50 Hz, X/Y/Z on
  *                       CTRL_REG4_A (0x23) = 0x88  BDU, +/-2 g, high-res
  *                       1 mg per LSB, 12-bit left-justified, little-endian.

@@ -170,8 +170,8 @@ static void test_build_bounded_unchanged(void)
     CHECK(result.width_mm == 82U);
     CHECK(result.start_deg == 45U);
     CHECK(result.closest_mm == 300U);
-    CHECK(result.need_mm[OBSTACLE_SIDE_LEFT] == 245U);
-    CHECK(result.need_mm[OBSTACLE_SIDE_RIGHT] == 245U);
+    CHECK(result.need_mm[OBSTACLE_SIDE_LEFT] == (245U + OBSTACLE_BOX_GAP_MM - 190U));
+    CHECK(result.need_mm[OBSTACLE_SIDE_RIGHT] == (245U + OBSTACLE_BOX_GAP_MM - 190U));
     CHECK(!result.b_wall);
 
     /* A wider obstacle on the right: the left side needs less. */

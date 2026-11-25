@@ -20,6 +20,9 @@ const MINOR_LEN = 5;
 const MAJOR_LEN = 10;
 const LABEL_R = 70;
 const ARC_R = 46;
+/** The lubber mark sits between the turn-rate arc and the card letters, so a letter never covers it. */
+const LUBBER_TIP_R = 60;
+const LUBBER_BASE_R = 50;
 const ARC_FULL_DPS = 90;
 const ARC_MAX_DEG = 80;
 const ARC_MIN_DPS = 3;
@@ -105,7 +108,7 @@ export function Compass({ headingDeg, available = true, yawRateDps = 0, size = 2
       </G>
 
       {/* Fixed parts: the lubber mark at the top and the car. */}
-      <Polygon fill={theme.colors.text} points={`${CENTRE},${CENTRE - RING + 14} ${CENTRE - 5},${CENTRE - RING + 24} ${CENTRE + 5},${CENTRE - RING + 24}`} />
+      <Polygon fill={theme.colors.text} points={`${CENTRE},${CENTRE - LUBBER_TIP_R} ${CENTRE - 5},${CENTRE - LUBBER_BASE_R} ${CENTRE + 5},${CENTRE - LUBBER_BASE_R}`} />
       {arc !== null ? <Path d={arc} fill="none" stroke={theme.colors.accent} strokeLinecap="round" strokeWidth="4" /> : null}
       <G>
         <Path

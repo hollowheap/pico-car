@@ -15,9 +15,9 @@
  * Keep the car still for the first second: calibration needs rest.
  *
  * Guided checks (D162). The program prints PHYS_G lines that tell you what to do
- * and when. They answer the four checks "Why the hump state may always read
- * FLAT" of the project notes. Save the whole console to a
- * file and run `python3 tools/physics_log_summary.py FILE --checks`.
+ * and when. They answer four checks of why the hump state may always read
+ * FLAT. Save the whole console to a file and run
+ * `python3 tools/physics_log_summary.py FILE --checks`.
  *
  *    0 to  4 s  keep the car still and level          check 1, calibration
  *    6 to 11 s  lift the NOSE to about 10 degrees     check 2, forward axis
@@ -26,8 +26,8 @@
  *   26 to 30 s  set it level and keep it still
  *   32 to 52 s  push the car by hand up and over a ramp  check 3, ramp angle
  *
- * Check 4 (driving against standing still) needs the wheels: see
- * docs/bench.md, "Hump check 4".
+ * Check 4 (pitch while driving against pitch standing still) needs the
+ * wheels: run the car with main.uf2 on flat ground.
  */
 
 #include <stdbool.h>

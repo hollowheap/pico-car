@@ -42,7 +42,7 @@ export function LinkPanel({ snapshot, store, nowMs, status, style }: Props) {
   const reset = hb === undefined ? '--' : enumLabel('resetReason', hb.reset_reason).toLowerCase();
 
   return (
-    <Panel status={status} style={style} testID="link-panel" title="Link">
+    <Panel icon="link" status={status} style={style} testID="link-panel" title="Link">
       <View
         accessibilityLabel={`Signal ${rssi ?? 'unknown'} dBm`}
         accessibilityRole="progressbar"
@@ -65,7 +65,7 @@ export function LinkPanel({ snapshot, store, nowMs, status, style }: Props) {
 
 const styles = StyleSheet.create({
   bar: { height: 10 },
-  fill: { bottom: 0, left: 0, position: 'absolute', top: 0 },
+  fill: { height: '100%' },
   row: { flexDirection: 'row', gap: 12, justifyContent: 'space-between' },
   value: { flexShrink: 1, textAlign: 'right' },
 });

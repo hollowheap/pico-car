@@ -1,10 +1,10 @@
 /** @file test_telemetry_queue.c
- * @brief Host test for the Core 0 to Core 1 telemetry queue (S03, S46).
+ * @brief Host test for the Core 0 to Core 1 telemetry queue.
  *
  * src/telemetry/queue.c is compiled unchanged against the kernel shim. The
  * message buffer is the fake in tests/shim/tk/mbf_fake.h, which copies the
  * capacity and ring rules of lib/mtk3smp-rp2040/kernel/tkernel/messagebuf.c.
- * A queued frame is the topic byte plus the wire packet (D110), so a 1024-byte
+ * A queued frame is the topic byte plus the wire packet, so a 1024-byte
  * buffer holds:
  *   physics   (25 B frame): 32 bytes each, 32 messages
  *   status    (17 B frame): 24 bytes each, 42 messages
@@ -36,7 +36,7 @@
 #define COST_EVENT     20U
 #define COST_STATUS    24U
 #define COST_PHYSICS   32U
-#define COST_DIAG      40U
+#define COST_DIAG      44U /* 37 B diag + topic byte = 38, rounded to 40, + 4 */
 #define COST_PROFILE   88U
 #define FILL_LEN       28U /* kernel math only: a 28 B message costs 32 B */
 #define CAP_FILL       32U
@@ -345,7 +345,7 @@ static void test_create_parameters (void)
     unsigned before = g_fail;
 
     setup();
-    /* S03: 1024-byte user buffer, kernel-managed wait order irrelevant. */
+    /* 1024-byte user buffer, kernel-managed wait order irrelevant. */
     CHECK(g_mbf_fake.create_calls == 1U);
     CHECK((g_mbf_fake.last_cmbf.mbfatr & TA_USERBUF) != 0U);
     CHECK(g_mbf_fake.last_cmbf.bufsz == (SZ)TELEMETRY_QUEUE_BYTES);
@@ -428,7 +428,7 @@ static void test_push_arguments (void)
     pass("push_arguments", before);
 }
 
-/* D110: a frame is valid only when its length matches its topic's wire size. */
+/* a frame is valid only when its length matches its topic's wire size. */
 static void test_topic_length_validation (void)
 {
     uint8_t  frame[FRAME_MAX + 1U];
@@ -747,8 +747,8 @@ static void test_small_frame_evicts_larger_oldest (void)
     pass("small_frame_evicts_larger_oldest", before);
 }
 
-/* Spec S03: "a QoS 0 push drops the oldest frame and increments the drop
-   counter". S35: eviction never removes a QoS 1 event. The oldest message is
+/* Spec "a QoS 0 push drops the oldest frame and increments the drop
+   counter". eviction never removes a QoS 1 event. The oldest message is
    an event, so the QoS 0 push is rejected, counted, and evicts nothing. */
 static void test_qos1_event_is_never_evicted (void)
 {

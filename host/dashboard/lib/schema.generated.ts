@@ -157,6 +157,7 @@ export const COMMANDS = {
   uturn: 5,
   estop: 6,
   straight: 7,
+  recalibrate: 8,
 } as const;
 
 export const EVENTS = {
@@ -408,5 +409,6 @@ export const BIT_FIELDS = {
     barcode: 3,
     lift: 4,
     supervisor: 5,
+    calibrate: 6,
   },
 } as const;

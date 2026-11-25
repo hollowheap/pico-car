@@ -20,7 +20,7 @@ export type EventText = { title: string; detail: string; kind: EventKind };
 const SOURCES = ['', 'telemetry', 'barcode', 'button'];
 const TURNS = ['', 'Turn left', 'Turn right', 'U-turn', 'Straight'];
 const SIDES = ['none', 'left', 'right'];
-const REJECT = ['', 'not running', 'busy', 'latched', 'lifted', 'source not allowed', 'unknown command'];
+const REJECT = ['', 'not running', 'busy', 'latched', 'lifted', 'source not allowed', 'unknown command', 'on a hump'];
 const BARCODE_BAD = ['', 'bad element', 'parity', 'delimiter', 'speed out of range', 'same code twice'];
 const PLAN_STATUS = ['ok', 'clear', 'no safe path', 'failed'];
 const RUN_STATES = ['boot', 'running', 'stopped', 'held', 'latched'];
@@ -30,7 +30,7 @@ const STALLS: Record<number, string> = {
   0x82: 'wheels answer crosswise (encoder plugs)',
 };
 const TASKS = ['motion', 'line', 'obstacle', 'physics', 'telemetry', 'connection', 'barcode'];
-const BOOT_CHECKS: [number, string][] = [[1, 'IMU'], [2, 'sonar'], [4, 'sonar beam blocked']];
+const BOOT_CHECKS: [number, string][] = [[1, 'IMU'], [2, 'sonar'], [4, 'sonar beam blocked'], [8, 'IMU not calibrated']];
 
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
 const word = (list: string[], index: number, fallback = String(index)) => list[index] ?? fallback;

@@ -1,4 +1,4 @@
-# Single source of truth for the vehicle wire protocol (schema 2, D43, D110).
+# Single source of truth for the vehicle wire protocol (schema 2).
 # Firmware, CLI, backend, and dashboard consumers are generated from or checked
 # against this file; do not hand-edit generated constants or decoders.
 #
@@ -95,7 +95,7 @@ packets:
       - { name: body_deci, offset: 22, type: int16 }
   # 1 Hz. Counters and health.
   diag:
-    wire_size: 34
+    wire_size: 37
     fields:
       - { name: sticky_faults, offset: 0, type: uint16 }
       - { name: task_alive_mask, offset: 2, type: uint16 }
@@ -119,6 +119,10 @@ packets:
       - { name: line_edges_per_s, offset: 30, type: uint8 }
       - { name: line_raw_edges_per_s, offset: 31, type: uint8 }
       - { name: supervisor_passes, offset: 32, type: uint16 }
+      # The smallest free stack since boot, and the task it belongs to
+      # (index in main.c stack order). Cached from the 30 s stack scan.
+      - { name: stack_min_free, offset: 34, type: uint16 }
+      - { name: stack_min_task, offset: 36, type: uint8 }
   # 1 Hz. Sent by the connection task, not through the queue.
   heartbeat:
     wire_size: 8
@@ -160,21 +164,25 @@ commands:
   uturn: 0x05
   estop: 0x06
   straight: 0x07
+  recalibrate: 0x08
 
-# Event types (D110). `p1` and `p2` meanings are in
-# the project notes section 6, with these
-# layouts from D130 and D160:
+# Event types. The `p1` and `p2` layouts:
 #   barcode      p1 = ASCII letter (S straight, L left, R right, U u-turn, H halt),
 #                p2 = narrow width/4 um << 4 | reverse << 3 | action
 #   barcode_bad  p1 = reason (1 element, 2 parity, 3 delimiter, 4 speed, 5 duplicate)
+#   barcode_block  p1 = length of a black block in mm (over 50, saturates at 32767); at most
+#                one event per 200 mm of travel
 #   cmd_accept   p1 = opcode, p2 = source (1 telemetry, 2 barcode, 3 button)
 #   cmd_reject   p1 = opcode, p2 = source << 8 | reason (1 not running, 2 busy,
-#                3 latched, 4 lifted, 5 source, 6 opcode)
+#                3 latched, 4 lifted, 5 source, 6 opcode, 7 on a hump)
 #   task_stall   p1 = liveness bit; 0x80 = the car does not move; 0x81 = line sensors stuck;
 #                0x82 = the wheels answer crosswise (encoder plugs swapped)
-#   line_lost    p1 = side that saw the line last (0 none, 1 left, 2 right); the weave starts
+#   line_lost    p1 = side that saw the line last (0 none, 1 left, 2 right), p2 = 0 when the
+#                search starts; sent again with p2 = the search turn in degrees (each way)
+#                when the car stops
 #   line_found   p1 = side that saw the line last, p2 = distance driven while lost, in mm
-#   boot         p1 = reset reason, p2 = failed self-test checks (1 imu, 2 sonar, 4 beam)
+#   boot         p1 = reset reason, p2 = failed self-test checks (1 imu, 2 sonar, 4 beam,
+#                8 imu not calibrated)
 #   turn_*       p1 = turn (1 left, 2 right, 3 u-turn, 4 straight), p2 = elapsed ms on done/abort
 #   run_stop     p1 = run state entered (2 stopped, 3 held, 4 latched)
 #   obstacle_seen  p1 = distance mm
@@ -195,6 +203,7 @@ events:
   turn_start: 0x12
   turn_done: 0x13
   turn_abort: 0x14
+  barcode_block: 0x15
   line_lost: 0x18
   line_found: 0x19
   obstacle_seen: 0x20
@@ -276,6 +285,14 @@ enums:
       line_timeout: 12
       init_fail: 13
       echo_noise: 14
+      bypass_gave_up: 15
+  bypass_reason:
+    values:
+      none: 0
+      circled: 1
+      no_progress: 2
+      wheel_stall: 3
+      echo_lost: 4
   echo_class:
     values:
       valid: 0
@@ -385,6 +402,7 @@ enums:
       barcode: 3
       lift: 4
       supervisor: 5
+      calibrate: 6
 
 # Shared 16-bit fault register (level bits). Matches include/platform/faults.h.
 fault_bits:

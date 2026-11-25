@@ -168,4 +168,31 @@ typedef enum
 
 drive_probe_t drive_probe_verdict (int32_t driven_mm, int32_t other_mm);
 
+/* Calibration hold (D165). The car stays still while the IMU takes its rest
+ * reference: at boot, after START on level ground, and after RECAL. A started
+ * request first waits for physics to drop the old reference, then for the new
+ * one. A timeout releases the car and reports it. One step per supervisor pass. */
+#define CALHOLD_DROP_PASSES (10U)   /* 200 ms for physics to start over        */
+#define CALHOLD_MAX_PASSES  (250U)  /* 5 s: the car never came to rest          */
+
+typedef enum
+{
+    CALHOLD_IDLE = 0,
+    CALHOLD_WAIT_DROP,
+    CALHOLD_WAIT_CAL
+} calhold_phase_t;
+
+typedef struct
+{
+    uint8_t  phase;   /* calhold_phase_t */
+    uint16_t passes;
+    bool     b_timed_out;
+} calhold_t;
+
+/* b_wait_drop is false at boot, when no reference exists yet. */
+void calhold_start (calhold_t * p_hold, bool b_wait_drop);
+
+/* One pass. Returns true while the car must stay held. */
+bool calhold_update (calhold_t * p_hold, bool b_calibrated);
+
 #endif /* SUPERVISOR_HEALTH_CORE_H */

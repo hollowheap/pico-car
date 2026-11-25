@@ -1,0 +1,14 @@
+# Keep the image build context small: only host/, protocol/ and deploy/ are used.
+**/node_modules
+**/.expo
+**/dist
+.git
+build
+build-tests
+lib
+logs
+skills
+.claude
+.direnv
+.venv
+*.uf2

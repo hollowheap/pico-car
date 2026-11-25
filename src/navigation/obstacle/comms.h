@@ -35,6 +35,13 @@ ER       obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan);
 uint32_t obstacle_comms_aim (void);
 uint8_t  obstacle_comms_flags (void);
 void     obstacle_comms_count_class (uint8_t cls);
+
+/* Navigation tells the scan task that the body is turning (a scan pivot or a
+ * side look). The sonar keeps pinging, but only the collision and health
+ * checks use those pings: they point at the wrong angle for a scan slot or the
+ * forward guard (D167). */
+void     obstacle_comms_set_pivoting (bool b_pivoting);
+bool     obstacle_comms_is_pivoting (void);
 void     obstacle_comms_class_counts (uint32_t * p_counts);
 
 #endif /* OBSTACLE_COMMS_H */

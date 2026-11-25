@@ -137,6 +137,7 @@ typedef struct
     uint8_t  wait_seq;
     bool     b_have_prev_gap;
     bool     b_passed;
+    bool     b_corner;
     uint8_t  clear_checks;
     uint8_t  side_ping_count;
     uint8_t  side_agree_count;
@@ -536,9 +537,10 @@ static void task_ping(sim_t * p_s)
                 dist = 0U;
             }
             p_s->last_trig = p_s->now;
-            p_s->fsm.seq   = (uint8_t)(((uint32_t)p_s->fsm.seq + 1U) & OBSTACLE_ST_SEQ_MK);
-            p_s->fsm.last_class = cls;
-            p_s->fsm.last_dist  = (OBSTACLE_CLASS_VALID == cls) ? dist : 0U;
+            /* As the firmware: a side look feeds only the guards (D167). */
+            obstacle_statechart_out_clear(&out);
+            obstacle_statechart_ping_guard(&p_s->fsm, cls, dist, p_s->now, &out);
+            publish(p_s, &out);
             return;
         }
         else
@@ -561,6 +563,27 @@ static void task_ping(sim_t * p_s)
     obstacle_statechart_out_clear(&out);
     obstacle_statechart_ping(&p_s->fsm, cls, dist, p_s->now, &out);
     publish(p_s, &out);
+}
+
+/* A ping while the body turns: only the guards see it, as in scan_task.c. */
+static void task_ping_guard(sim_t * p_s, bool b_turning)
+{
+    if (b_turning)
+    {
+        obstacle_statechart_out_t out;
+        uint8_t                   cls  = OBSTACLE_CLASS_OPEN;
+        uint16_t                  dist = 0U;
+
+        sonar(p_s, p_s->servo, &cls, &dist);
+        p_s->last_trig = p_s->now;
+        obstacle_statechart_out_clear(&out);
+        obstacle_statechart_ping_guard(&p_s->fsm, cls, dist, p_s->now, &out);
+        publish(p_s, &out);
+    }
+    else
+    {
+        task_ping(p_s);
+    }
 }
 
 static void task_step(sim_t * p_s)
@@ -612,10 +635,9 @@ static void task_step(sim_t * p_s)
             bool const b_scan_pivoting = (OBSTACLE_STATE_SCANNING == p_s->fsm.state) &&
                                          (is_car_driving(p_s) || (body_err < -20) || (body_err > 20));
 
-            if (!b_pivoting && !b_scan_pivoting)
-            {
-                task_ping(p_s);
-            }
+            /* As the firmware (D167): the sonar pings in every state; while
+             * the body turns only the health and collision checks use it. */
+            task_ping_guard(p_s, b_pivoting || b_scan_pivoting);
         }
         else
         {
@@ -643,6 +665,12 @@ static void nav_keep_plan(sim_t * p_s, uint32_t angle, bool b_wall)
     p_s->b_wall    = b_wall;
     p_s->need_mm   = (int32_t)(((double)p_s->fsm.plan.closest_mm *
                                 obstacle_plan_tan_q14((int32_t)angle * 10)) / 16384.0);
+    /* As obstacle_nav.c keep_plan(): the planner's side room is the offset. */
+    if ((p_s->fsm.plan.need_mm[p_s->fsm.plan.side] < OBSTACLE_PLAN_SIDE_BLOCKED) &&
+        ((int32_t)p_s->fsm.plan.need_mm[p_s->fsm.plan.side] > p_s->need_mm))
+    {
+        p_s->need_mm = (int32_t)p_s->fsm.plan.need_mm[p_s->fsm.plan.side];
+    }
 }
 
 static void nav_event(sim_t * p_s, uint32_t evt)
@@ -953,7 +981,7 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
                     ((OBSTACLE_CLASS_VALID == cls) && (dist >= OBSTACLE_CORNER_CLEAR_MM)))
                 {
                     p_s->clear_checks++;
-                    if (p_s->clear_checks >= OBSTACLE_PASS_CLEARS)
+                    if (p_s->clear_checks >= (p_s->b_wall ? OBSTACLE_CORNER_CLEARS : OBSTACLE_PASS_CLEARS))
                     {
                         p_s->b_passed = true;
                     }
@@ -1022,8 +1050,10 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
             obstacle_plan_wheel_pivot(head_deci(p_s), p_s->along_head_deci, &left_um_s, &right_um_s, &steer, &b_done);
             if (b_done)
             {
-                if (p_s->b_passed && (!p_s->b_wall))
+                if (p_s->b_passed)
                 {
+                    /* As obstacle_nav.c: a wall face that ends is a wide box. */
+                    p_s->b_corner    = p_s->b_wall;
                     p_s->phase       = OBSTACLE_PHASE_EXTRA;
                     p_s->leg_base_um = mean_um;
                 }
@@ -1044,9 +1074,22 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
                                          (int32_t)OBSTACLE_BYPASS_SPEED_MM_S,
                                          &left_um_s, &right_um_s, &steer);
             observe_hug(p_s, (double)p_s->along_head_deci / 10.0);
-            if (leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM)
+            if ((leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM) && p_s->b_corner)
+            {
+                p_s->b_corner        = false;
+                p_s->b_wall          = false;
+                p_s->b_passed        = false;
+                p_s->clear_checks    = 0U;
+                p_s->b_have_prev_gap = false;
+                p_s->phase           = OBSTACLE_PHASE_ALIGN;
+            }
+            else if (leg_dist >= (int32_t)OBSTACLE_PASS_EXTRA_MM)
             {
                 p_s->phase = OBSTACLE_PHASE_RETURN_PIVOT;
+            }
+            else
+            {
+                /* Still driving past the face. */
             }
         }
         break;
@@ -1443,8 +1486,7 @@ static void test_wall_follow_to_time_limit(void)
     /* It never touched the wall. */
     CHECK(s->body_min_mm > 20.0);
 
-    /* Ends on the time limit, not on the 3.8 m distance budget, and the car
-     * really drove farther than the budget. */
+    /* Ends on the time limit, not on a distance budget. */
     if (NULL != getenv("SIM_DEBUG"))
     {
         printf("WALL_CHECK: stop=%u reacq_start=%u diff=%u max=%u hug_lim=%u odo=%.1f\n",
@@ -1456,8 +1498,9 @@ static void test_wall_follow_to_time_limit(void)
     CHECK(s->last_cause == OBSTACLE_CAUSE_LINE_TIMEOUT);
     CHECK((s->stop_ms - s->reacquire_start) >= (OBSTACLE_HUG_MAX_MS - 200U));
     CHECK((s->stop_ms - s->reacquire_start) <= (OBSTACLE_HUG_MAX_MS + 200U));
-    CHECK(s->fsm.hug_limit_mm < 5000U);
-    CHECK((mean_odo_mm(s) - 0.0) > (double)s->fsm.hug_limit_mm);
+    /* The distance budget does not apply to a wall: the time limit above ended
+     * the run. (The box budget now includes the along-leg cap, so it is no
+     * longer shorter than this wall run.) */
 
     /* No rescan, no fault on the way. */
     CHECK(s->rescans == 0U);
@@ -1497,12 +1540,15 @@ static void test_wall_open_never_turns_in(void)
     sim_run(s);
     print_run("open", s);
 
-    CHECK(s->bypass_count == 1U);
+    /* A long OPEN streak looks like the end of the face (D166): the car may
+     * turn the corner, meet the wall with its forward guard and scan again.
+     * That costs one rescan; it must never touch the wall. */
+    CHECK(s->bypass_count <= 2U);
     CHECK(s->window_head_min_deg >= 87.0);
     CHECK(s->head_min_deg >= 60.0);
     CHECK(s->head_max_deg <= 120.0);
     CHECK(s->body_min_mm > 20.0);
-    CHECK(s->rescans == 0U);
+    CHECK(s->rescans <= 1U);
 
     /* One OPEN in every three side pings all run long: still in the band. */
     wall_world(&cfg, 700.0);

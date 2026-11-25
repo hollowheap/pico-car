@@ -9,8 +9,10 @@ rows) and "PHYS_S," (5 s counters) are used, so other text is ignored. A leading
 "[SEV](task) " prefix is dropped first.
 --from / --to limit the rows to that many seconds after the first row.
 --checks reads the "PHYS_G," phase markers of the guided run of physics_check and
-prints a verdict for checks 1 to 3 of "Why the hump state may always read FLAT"
-(the project notes). Check 4 needs the wheels (docs/bench.md).
+prints a verdict for checks 1 to 3 of "Why the hump state may always read FLAT":
+1 the rest calibration, 2 the forward and side axes, 3 the ramp angle. Check 4
+(pitch while driving against pitch standing still) needs the wheels: run the
+car with main.uf2 on flat ground.
 
 Standard library only. Column order must match log_header() in
 src/physics_task.c.

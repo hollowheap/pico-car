@@ -4,8 +4,8 @@ Node/TypeScript backend for MQTT ingestion and dashboard state.
 
 ## Run
 
-From the repo root, `./dev.sh` starts the broker, this bridge, and the
-dashboard. To run the bridge alone, start a broker on `localhost:1883` and
+From the repo root, `deploy/ground-station.sh up` starts the broker, this
+bridge and the dashboard in containers and puts them on the tailnet. To run the bridge alone, start a broker on `localhost:1883` and
 run `npm start` in this directory.
 
 Environment:

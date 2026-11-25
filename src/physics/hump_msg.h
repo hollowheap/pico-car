@@ -2,7 +2,7 @@
  *
  * @brief Packed 32-bit Buddy 4 hump/terrain message (packed_hump_t).
  *
- * Implements the minimum-bit requirement from Tribunal 1 for the messages
+ * Uses the fewest bits (minimum-bit requirement) for the messages
  * Buddy 4 sends to Navigation (mbf_nav_evt_id) and Telemetry (mbf_telem_id),
  * and for the binary MQTT payload. Uses explicit masks and shifts on an
  * unsigned 32-bit word instead of C bit-fields, whose bit order is

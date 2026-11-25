@@ -33,7 +33,7 @@
 
 typedef struct
 {
-    PRI      priority;           /* PostTri1: 4. See plan.md.              */
+    PRI      priority;           /* Planned value: 4.                      */
     UW       processor;          /* TP_PRC1 or TP_PRC2.                    */
     uint32_t period_ms;          /* 20.                                    */
     uint32_t mag_every;          /* Read the magnetometer every N cycles.  */

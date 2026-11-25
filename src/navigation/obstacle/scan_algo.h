@@ -81,14 +81,15 @@ bool    scan_algo_has_region (scan_algo_ctx_t const * p_ctx);
 bool    scan_algo_echo_noisy (scan_algo_ctx_t const * p_ctx);
 
 /* Servo travel check (D162). A square wall straight ahead returns d(angle) =
- * d0 / cos(angle). The ratio of the readings at the +30 and -30 degree slots
- * to the reading straight ahead gives the angle the servo really reached. */
+ * d0 / cos(angle). The ratio of the readings at the slots of the servo limit
+ * (+-15 degrees) to the reading straight ahead gives the angle the servo
+ * really reached. */
 typedef enum
 {
-    SERVO_CHECK_OK = 0,       /* both sides within 3 degrees of 30                 */
+    SERVO_CHECK_OK = 0,       /* both sides within 3 degrees of the limit          */
     SERVO_CHECK_NO_DATA,      /* a slot is missing, not VALID, or the wall is far  */
     SERVO_CHECK_FLAT,         /* both ratios near 1: the servo hardly moves        */
-    SERVO_CHECK_SCALE,        /* it moves, but not 30 degrees: tune US_PER_10DEG   */
+    SERVO_CHECK_SCALE,        /* it moves, but not to the limit: tune US_PER_10DEG */
     SERVO_CHECK_ASYMMETRIC    /* the two sides differ: the wall is skewed or the
                                  centre is off (OBSTACLE_SERVO_CENTRE_US)          */
 } servo_check_verdict_t;
@@ -96,8 +97,8 @@ typedef enum
 typedef struct
 {
     uint8_t  verdict;     /* servo_check_verdict_t                              */
-    int16_t  left_deci;   /* angle reached at the +30 slot, deci-degrees        */
-    int16_t  right_deci;  /* angle reached at the -30 slot, deci-degrees        */
+    int16_t  left_deci;   /* angle reached at the + limit slot, deci-degrees    */
+    int16_t  right_deci;  /* angle reached at the - limit slot, deci-degrees    */
     uint16_t centre_mm;   /* reading straight ahead                             */
 } servo_check_t;
 

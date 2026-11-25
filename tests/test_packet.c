@@ -216,6 +216,8 @@ test_diag (void)
         .line_edges_per_s     = TELEMETRY_VEC_DIAG_LINE_EDGES_PER_S,
         .line_raw_edges_per_s = TELEMETRY_VEC_DIAG_LINE_RAW_EDGES_PER_S,
         .supervisor_passes = TELEMETRY_VEC_DIAG_SUPERVISOR_PASSES,
+        .stack_min_free    = TELEMETRY_VEC_DIAG_STACK_MIN_FREE,
+        .stack_min_task    = TELEMETRY_VEC_DIAG_STACK_MIN_TASK,
     };
 
     CHECK_PACK (DIAG, diag, src, 0u);

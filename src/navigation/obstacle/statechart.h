@@ -93,6 +93,12 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
 
 int16_t  obstacle_statechart_servo_deci (obstacle_statechart_t const * p_fsm);
 int16_t  obstacle_statechart_body_deci (obstacle_statechart_t const * p_fsm);
+
+/* A ping taken while the body turns: only the health and collision checks use
+ * it (D167). */
+void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
+                                     uint16_t dist_mm, uint32_t now_ms,
+                                     obstacle_statechart_out_t * p_out);
 uint32_t obstacle_statechart_status (obstacle_statechart_t const * p_fsm);
 uint8_t  obstacle_statechart_flags (obstacle_statechart_t const * p_fsm);
 

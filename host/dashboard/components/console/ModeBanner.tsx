@@ -37,7 +37,7 @@ export function bannerMessage(overview: Overview, faults: number | undefined): B
     return { title: 'LIFTED', action: 'The wheels are held. Set the car down, then send START.' };
   }
   if (set(BIT_TASK_STALLED)) {
-    return { title: 'TASK STALLED', action: 'A task missed its heartbeat or the car does not move. See Systems.' };
+    return { title: 'TASK STALLED', action: 'A task missed its heartbeat or the car does not move. See Tasks and timing.' };
   }
   if (set(BIT_OBSTACLE_STOPPED)) {
     return { title: 'STOPPED BY OBSTACLE', action: 'Clear the path, then send RESET, then START.' };
@@ -45,7 +45,7 @@ export function bannerMessage(overview: Overview, faults: number | undefined): B
   return null;
 }
 
-/** A persistent banner for offline, stale, emergency, lift and overturn. Never a toast. */
+/** A persistent banner for offline, stale, emergency, lift and overturn. Never a toast. It sits at the right end of the status rail. */
 export function ModeBanner({ overview, faults }: Props) {
   const theme = useTheme();
   const message = bannerMessage(overview, faults);
@@ -73,5 +73,5 @@ export function ModeBanner({ overview, faults }: Props) {
 }
 
 const styles = StyleSheet.create({
-  banner: { borderWidth: 1, gap: 2, padding: 12 },
+  banner: { borderWidth: 1, flexBasis: 320, flexGrow: 1, gap: 2, maxWidth: 420, padding: 12 },
 });

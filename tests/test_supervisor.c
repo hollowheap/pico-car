@@ -94,7 +94,7 @@ static void test_ring_full_keeps_stops (void)
 
 static run_inputs_t follow_inputs (void)
 {
-    run_inputs_t in = { false, false, false, true };
+    run_inputs_t in = { false, false, false, true, false };
 
     return in;
 }
@@ -659,6 +659,76 @@ static void test_edge_hump_and_run (void)
     CHECK ((TELEMETRY_EVT_RUN_STOP == ev[0].type) && (RUN_STATE_STOPPED == ev[0].p1));
 }
 
+static void test_recalibrate (void)
+{
+    run_ctx_t    ctx;
+    run_result_t out;
+    run_inputs_t in = follow_inputs ();
+
+    run_state_init (&ctx);
+    run_state_tick (&ctx, &in, &out);
+
+    /* START on level ground calibrates again; on a hump it keeps the old reference. */
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_accepted && out.b_physics_recal);
+    in.b_on_hump = true;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_accepted && !out.b_physics_recal);
+
+    /* RECAL: refused on a hump, while lifted, from a barcode, after an e-stop. */
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_ON_HUMP == out.reason));
+    in.b_on_hump = false;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_accepted && out.b_physics_recal);
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_BARCODE), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_SOURCE == out.reason));
+    in.b_lifted = true;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_LIFTED == out.reason));
+    in.b_lifted = false;
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_ESTOP, VEHICLE_SRC_TELEMETRY), &in, &out);
+    run_state_command (&ctx, cmd_of (VEHICLE_CMD_RECAL, VEHICLE_SRC_TELEMETRY), &in, &out);
+    CHECK (out.b_rejected && (RUN_REJECT_LATCHED == out.reason));
+}
+
+static void test_calhold (void)
+{
+    calhold_t hold;
+    unsigned  idx = 0U;
+
+    /* Boot: held until the first calibration. */
+    calhold_start (&hold, false);
+    CHECK (calhold_update (&hold, false));
+    CHECK (!calhold_update (&hold, true));
+    CHECK (!hold.b_timed_out);
+
+    /* A request: the old reference is still reported for a few passes. */
+    calhold_start (&hold, true);
+    CHECK (calhold_update (&hold, true));
+    CHECK (calhold_update (&hold, false));
+    CHECK (calhold_update (&hold, false));
+    CHECK (!calhold_update (&hold, true));
+
+    /* Physics never drops the flag: the hold waits CALHOLD_DROP_PASSES, then for a fresh one. */
+    calhold_start (&hold, true);
+    for (idx = 0U; idx < (CALHOLD_DROP_PASSES - 1U); idx++)
+    {
+        CHECK (calhold_update (&hold, true));
+    }
+    CHECK (calhold_update (&hold, true));
+    CHECK (!calhold_update (&hold, true));
+
+    /* No calibration at all: released after CALHOLD_MAX_PASSES, with the timeout flag. */
+    calhold_start (&hold, false);
+    for (idx = 0U; idx < (CALHOLD_MAX_PASSES - 1U); idx++)
+    {
+        CHECK (calhold_update (&hold, false));
+    }
+    CHECK (!calhold_update (&hold, false));
+    CHECK (hold.b_timed_out);
+}
+
 int main (void)
 {
     test_ring_order_and_source ();
@@ -677,6 +747,8 @@ int main (void)
     test_drive_crossed ();
     test_drive_free_wheels ();
     test_drive_probe ();
+    test_recalibrate ();
+    test_calhold ();
     test_edge_obstacle_cycle ();
     test_edge_obstacle_stop_and_clear ();
     test_edge_hump_and_run ();

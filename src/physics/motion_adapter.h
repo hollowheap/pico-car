@@ -12,7 +12,7 @@
  *   - ds is the change in mean wheel displacement since the previous call,
  *     so it is exact however often the motion service updates. It is zero on the first
  *     call and after odometry was invalid.
- *   - the motion service does not publish dv/dt yet (PostTri1 planned accel_mms2).
+ *   - the motion service does not publish dv/dt yet (an accel_mms2 field is planned).
  *     Until it does, dv/dt is the change in mean speed between the motion service
  *     sample timestamps, smoothed with an EMA. Encoder speeds are interval
  *     averages, so this estimate is noisy and lags; replace it with Buddy
