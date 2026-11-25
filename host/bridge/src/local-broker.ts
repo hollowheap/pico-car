@@ -18,7 +18,7 @@ export async function startLocalBroker(): Promise<ChildProcess | undefined> {
   });
   if (listening) return;
 
-  const config = fileURLToPath(new URL("../../broker/mosquitto.conf", import.meta.url));
+  const config = fileURLToPath(new URL("../../mosquitto.conf", import.meta.url));
   const broker = spawn("mosquitto", ["-c", config], { stdio: "inherit" });
   try {
     await once(broker, "spawn");

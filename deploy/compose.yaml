@@ -12,7 +12,7 @@ services:
     ports:
       - "${BROKER_PORT:-1883}:1883"
     volumes:
-      - ../host/broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z
+      - ../host/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z
     restart: unless-stopped
 
   bridge:

@@ -134,7 +134,7 @@ For Compose, put `EXPO_PUBLIC_ALLOW_INSECURE=1` in `deploy/.env` and rebuild
 the `bridge` service. Expo embeds this setting when it exports the dashboard.
 
 The station uses the local broker on TCP 1883, starting Mosquitto with
-`host/broker/mosquitto.conf` when the port is free. The car reaches that
+`host/mosquitto.conf` when the port is free. The car reaches that
 listener over Wi-Fi. Set `MQTT_URL` to use another broker. Only a broker
 started by the station is stopped on exit.
 
