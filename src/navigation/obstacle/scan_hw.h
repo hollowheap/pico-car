@@ -16,7 +16,7 @@ void     scan_hw_servo_set (int16_t deci);
 uint32_t scan_hw_now_us (void);
 bool     scan_hw_rearm (void);
 bool     scan_hw_trigger (void);
-uint32_t scan_hw_echo_result (void);
+uint32_t scan_hw_echo_result (uint32_t trigger_us);
 bool     scan_hw_is_echo_high (void);
 
 #endif /* SCAN_HW_H */

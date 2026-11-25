@@ -10,6 +10,7 @@
 #include "supervisor/command.h"
 #include "telemetry/assemble.h"
 #include "telemetry/emit.h"
+#include "telemetry/packet.h"
 #include "telemetry/wire_schema.h"
 #include "track/barcode.h"
 #include "track/track.h"
@@ -58,6 +59,15 @@ typedef struct
 
 static event_t g_events[8];
 static size_t g_event_count;
+static telemetry_barcode_sample_t g_samples[64];
+static unsigned g_sample_count;
+
+ER telemetry_try_emit_barcode_sample(telemetry_barcode_sample_t const * sample)
+{
+    assert(g_sample_count < sizeof(g_samples) / sizeof(g_samples[0]));
+    g_samples[g_sample_count++] = *sample;
+    return E_TMOUT; /* A full telemetry queue cannot interrupt decoding. */
+}
 
 static void travel_mm (uint32_t distance)
 {
@@ -116,7 +126,8 @@ ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
         }
     }
     *p_timestamp_us = g_timestamp_us;
-    *p_level = (g_edge % 2U) != 0U;
+    /* The first rising edge enters the first black bar from white floor. */
+    *p_level = (g_edge % 2U) == 0U;
     g_edge++;
     return (g_edge - 1U == g_loss_edge) ? IR_BARCODE_EDGE_AFTER_LOSS : IR_BARCODE_EDGE;
 }
@@ -206,6 +217,7 @@ static void replay (uint8_t const * p_delimiter, uint8_t const * p_widths, size_
     g_start_mm = g_odometer_mm;
     g_tick_remainder = 0U;
     g_event_count  = 0U;
+    g_sample_count = 0U;
     if (setjmp(g_finish) == 0)
     {
         barcode_task_run();
@@ -315,9 +327,16 @@ int main (int argc, char ** argv)
     assert(argc == 1);
     expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_UNKNOWN, TELEMETRY_BARCODE_PHASE_UNKNOWN);
     g_speed_mm_s = 100U;
-    replay(NULL, g_element, sizeof(g_element));
+    static uint8_t const invalid_start[] = {1U, 4U};
+    replay(NULL, invalid_start, sizeof(invalid_start));
+    assert(g_sample_count == 3U);
+    assert(g_samples[0].interval_us == 0U && !g_samples[0].width_valid);
+    assert(g_samples[1].interval_us == 10000U && !g_samples[1].level_high);
+    assert(g_samples[1].width_valid && g_samples[1].width_um == 1000U);
+    assert(g_samples[2].edge_us - g_samples[1].edge_us == 40000U);
+    assert(g_samples[2].level_high && g_samples[2].seq == (uint8_t)(g_samples[1].seq + 1U));
     assert(g_event_count == 1U);
-    expect_event(0U, TELEMETRY_EVT_BARCODE_BAD, BARCODE_REJECT_ELEMENT, 2000U, 2U);
+    expect_event(0U, TELEMETRY_EVT_BARCODE_BAD, BARCODE_REJECT_ELEMENT, 4000U, 2U);
     expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_SPACE, TELEMETRY_BARCODE_PHASE_UNKNOWN);
 
     test_active_reject(g_delimiter, g_parity, sizeof(g_parity), BARCODE_REJECT_PARITY, 3000U, 0U);
@@ -337,6 +356,7 @@ int main (int argc, char ** argv)
 
     g_invalid_speed_stripe = 11U;
     replay(g_delimiter, g_a, 1U);
+    assert(g_samples[11].interval_us == 30000U && !g_samples[11].width_valid);
     g_invalid_speed_stripe = SIZE_MAX;
     assert(g_event_count == 3U);
     expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, 0U, 10U);
@@ -382,6 +402,7 @@ int main (int argc, char ** argv)
     /* A lost pulse in the final delimiter must prevent posting this L. */
     g_loss_edge = 29U;
     replay(g_delimiter, g_l, 19U);
+    assert(g_samples[29].capture_loss && !g_samples[29].interval_us && !g_samples[29].width_valid);
     g_loss_edge = SIZE_MAX;
     assert(g_event_count == 4U);
     expect_phase(2U, TELEMETRY_BARCODE_PHASE_ABORTED, BARCODE_REJECT_CAPTURE << 8U, 29U);
@@ -395,6 +416,16 @@ int main (int argc, char ** argv)
     expect_phase(6U, TELEMETRY_BARCODE_PHASE_COMPLETE, 0U, 29U);
     assert(g_events[7U].type == TELEMETRY_EVT_BARCODE && g_events[7U].p1 == 'L');
     assert(g_command_count == 1U);
+    /* A real reading has value without a driving action. Drop every raw
+     * packet and still report the complete Z and its diagnostic fallback. */
+    static uint8_t const delim_two[] = {1,2,1,1,2,1,2,1,1,1};
+    static uint8_t const z_two[] = {1,2,2,1,2,1,1,1,1,1};
+    replay(delim_two, z_two, 19U);
+    assert(g_sample_count == 30U && g_event_count == 4U);
+    assert(g_events[3].type == TELEMETRY_EVT_BARCODE && g_events[3].p1 == 'Z');
+    barcode_stats_t stats;
+    barcode_stats(&stats);
+    assert(stats.last_letter == 'Z' && stats.last_action == BARCODE_ACTION_REJECTED && g_command_count == 1U);
     test_full_sized_markers();
     return 0;
 }

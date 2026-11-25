@@ -17,7 +17,7 @@ STATIC_ASSERT(IR_LEVEL_LINE <= 1U, ir_line_level_is_one_bit);
 
 /* Pin level of the barcode sensor over a space (white). The pull goes to it,
  * so an unplugged sensor decodes no bars. */
-#define BARCODE_LEVEL_SPACE 1U
+#define BARCODE_LEVEL_SPACE 0U
 
 STATIC_ASSERT(BARCODE_LEVEL_SPACE <= 1U, barcode_level_is_one_bit);
 

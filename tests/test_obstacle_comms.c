@@ -244,7 +244,9 @@ static void test_parked_echo_faults (bool pilot)
     {
         publish_ping(&fsm, pilot, OBSTACLE_CLASS_STUCK, ping++);
     }
-    CHECK(FAULT_ECHO_LINE_BIT == (g_level_faults & mask));
+    /* Both diagnoses are still unresolved. Publishing STUCK must not emit
+     * a false NO_ECHO recovery to the dashboard. */
+    CHECK(mask == (g_level_faults & mask));
     publish_ping(&fsm, pilot, OBSTACLE_CLASS_VALID, ping);
     CHECK(0U == (g_level_faults & mask));
     CHECK(OBSTACLE_STATE_STOPPED == fsm.state);

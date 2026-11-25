@@ -310,6 +310,7 @@ fill_hug (telemetry_obstacle_t * p_out, const uint32_t * p_hug)
     {
         uint32_t const state = hug_word_get(p_hug[0], HUG_WORD_STATE_SH, HUG_WORD_STATE_MK);
 
+        p_out->flags |= (uint8_t)(hug_word_get(p_hug[1], HUG_WORD_WALL_SH, 1U) << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL);
         p_out->hug_state  = (uint8_t)state;
         p_out->hug_seq    = (uint8_t)hug_word_get(p_hug[0], HUG_WORD_SEQ_SH, HUG_WORD_SEQ_MK);
         p_out->hug_side   = (state == TELEMETRY_HUG_STATE_IDLE)

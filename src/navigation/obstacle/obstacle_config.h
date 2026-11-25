@@ -45,16 +45,14 @@
  * Ping timing [Spec] [HC-SR04 datasheet].
  * ------------------------------------------------------------------ */
 
-/* The pilot keeps its forward and requested ping spacing. The legacy scan
- * uses the 60 ms interval recommended for the sensor. */
-#if defined(PICO_CAR_PILOT) && (PICO_CAR_PILOT != 0)
-#define OBSTACLE_PING_PERIOD_MS (50U)
-#else
+/* Let the transducer finish the preceding shot before retriggering. */
 #define OBSTACLE_PING_PERIOD_MS (60U)
-#endif
 
-/* The task waits at most this long for the end of an echo. */
+/* An echo must have begun by this deadline to get the rest of its slot. */
 #define OBSTACLE_ECHO_WAIT_MS (40U)
+/* The ISR timestamps edges in microseconds. */
+#define OBSTACLE_ECHO_WAIT_US  (OBSTACLE_ECHO_WAIT_MS * 1000U)
+#define OBSTACLE_PING_PERIOD_US (OBSTACLE_PING_PERIOD_MS * 1000U)
 
 /* The trigger pulse must be at least 10 us long. */
 #define OBSTACLE_TRIG_PULSE_US (12U)
@@ -531,7 +529,7 @@ OBSTACLE_CT_ASSERT(dist_fits, OBSTACLE_VALID_MAX_MM <= OBSTACLE_DIST_MAX);
 OBSTACLE_CT_ASSERT(region_fits,
              (OBSTACLE_REGION_MAX_MM + OBSTACLE_REGION_EXTRA_MM) <= OBSTACLE_DIST_MAX);
 OBSTACLE_CT_ASSERT(echo_width_fits,
-             (OBSTACLE_ECHO_WAIT_MS * 1000U) <= ((1UL << OBSTACLE_ECHO_WIDTH_BITS) - 1UL));
+             OBSTACLE_PING_PERIOD_US < ((1UL << OBSTACLE_ECHO_WIDTH_BITS) - 1UL));
 OBSTACLE_CT_ASSERT(slots_fit, OBSTACLE_SLOT_COUNT <= (1U << OBSTACLE_SLOT_BITS));
 OBSTACLE_CT_ASSERT(states_fit, OBSTACLE_STATE_COUNT <= (1U << OBSTACLE_STATE_BITS));
 OBSTACLE_CT_ASSERT(causes_fit, OBSTACLE_CAUSE_COUNT <= (1U << OBSTACLE_CAUSE_BITS));

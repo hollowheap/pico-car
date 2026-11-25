@@ -260,11 +260,26 @@ bool scan_hw_trigger (void)
 /*!
  * @brief Read the echo result the ISR writes.
  *
+ * @param[in] trigger_us Start of this trigger in the ISR's timer domain.
  * @return The echo result word (width 16 | RISE | DONE).
  */
-uint32_t scan_hw_echo_result (void)
+uint32_t scan_hw_echo_result (uint32_t trigger_us)
 {
-    return (g_echo.result);
+    uint32_t result = g_echo.result;
+    if (0U != (result & OBSTACLE_ECHO_RISE))
+    {
+        /* The ISR writes rise_us before RISE and keeps it until rearm.
+         * Use edge times, even when the task wakes a scheduler tick late. */
+        uint32_t const rise_delay_us = g_echo.rise_us - trigger_us;
+        uint32_t const width_us = result & OBSTACLE_ECHO_WIDTH_MASK;
+        if ((rise_delay_us > OBSTACLE_ECHO_WAIT_US) ||
+            (width_us > (OBSTACLE_PING_PERIOD_US - rise_delay_us)))
+        {
+            /* An unmatched edge is a glitch and cannot establish clearance. */
+            result = OBSTACLE_ECHO_DONE;
+        }
+    }
+    return result;
 }
 
 /*!

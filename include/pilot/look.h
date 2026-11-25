@@ -21,23 +21,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "navigation/obstacle_ping.h"
 #include "platform/chassis.h"
 #include "platform/static_assert.h"
 
 /** Rays in one look. A full look refuses the new ray. */
 #define LOOK_RAYS_MAX (24U)
 
-/**
- * Echo classes of a ping. Copies of OBSTACLE_ECHO_IDX_VALID, _OPEN and
- * _TOO_CLOSE in include/navigation/obstacle.h (that header needs the kernel);
- * keep the values in step. TOO_CLOSE counts as a VALID point at its range.
- */
-#define LOOK_ECHO_VALID     (0U)
-#define LOOK_ECHO_OPEN      (1U)
-#define LOOK_ECHO_TOO_CLOSE (2U)
+/* The face fitter consumes the sonar service's observation codes. */
+#define LOOK_ECHO_VALID     OBSTACLE_CLASS_VALID
+#define LOOK_ECHO_OPEN      OBSTACLE_CLASS_OPEN
+#define LOOK_ECHO_TOO_CLOSE OBSTACLE_CLASS_TOO_CLOSE
 /** No usable reading (no echo, a glitch, a stuck echo line). It says nothing
  *  about the scene: look_add() refuses it and it is never OPEN. */
-#define LOOK_ECHO_NONE      (3U)
+#define LOOK_ECHO_NONE      OBSTACLE_ECHO_UNUSABLE
 
 /** Sonar position ahead of the axle. */
 #define LOOK_SONAR_FWD_MM CHASSIS_SONAR_FORWARD_MM

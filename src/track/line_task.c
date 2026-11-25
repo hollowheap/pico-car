@@ -302,6 +302,7 @@ static void line_turn_ended (void)
 static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uint32_t now_ms,
                                 motion_feedback_t * p_feedback, pilot_meas_t * p_meas);
 static void line_pilot_note (pilot_cmd_t const * p_cmd);
+static void line_step_with_profile (pilot_meas_t const * p_meas, pilot_cmd_t * p_cmd);
 
 static bool line_sonar_fault (void)
 {
@@ -506,7 +507,7 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
             break;
         }
         meas.b_commanded_turn = true;
-        pilot_step(&g_pilot, &meas, &cmd);
+        line_step_with_profile(&meas, &cmd);
         if ((uint8_t)PILOT_BEHAVIOUR_NONE != cmd.behaviour)
         {
             status = LINE_TURN_ABORTED;
@@ -651,16 +652,18 @@ static void line_follow_step (ir_sensors_state_t state)
 #define PILOT_EVENT_BEHAVIOUR_MUL (256U)
 #define PILOT_SCAN_CLEARANCE_UNVERIFIED (4)
 
-static void line_pilot_profile (look_t const * p_look, uint8_t sequence, int8_t probe_side)
+static void line_pilot_profile (look_t const * p_look, uint8_t sequence, int8_t probe_side,
+                                uint8_t flags, int16_t origin_deci, int16_t endpoint_deci)
 {
     telemetry_profile_t profile = {0};
     uint8_t             frame[TELEMETRY_FRAME_MAX];
 
     profile.req_id = sequence;
+    profile.flags = flags;
     profile.status = (uint8_t)TELEMETRY_PROFILE_STATUS_PILOT_SPARSE;
     if (0 != probe_side)
     {
-        profile.flags = (uint8_t)(1U << TELEMETRY_PROFILE_FLAGS_BIT_PROBE_SIDE_VALID);
+        profile.flags |= (uint8_t)(1U << TELEMETRY_PROFILE_FLAGS_BIT_PROBE_SIDE_VALID);
         profile.side = (probe_side > 0) ? (uint8_t)TELEMETRY_HUG_SIDE_LEFT : (uint8_t)TELEMETRY_HUG_SIDE_RIGHT;
     }
     for (uint8_t i = 0U; i < p_look->count; i++)
@@ -668,7 +671,13 @@ static void line_pilot_profile (look_t const * p_look, uint8_t sequence, int8_t 
         look_ray_t const * const p_ray = &p_look->rays[i];
         uint8_t const            echo  = look_ray_echo(p_ray);
 
-        obstacle_profile_record_ray(profile.slots, look_ray_angle_deci(p_ray), p_ray->range_mm, echo);
+        int32_t const bearing = look_ray_angle_deci(p_ray);
+        uint8_t const fan_slot = obstacle_profile_record_ray(profile.slots, bearing - origin_deci,
+                                                             p_ray->range_mm, echo);
+        if ((LOOK_ECHO_VALID == echo) && (bearing == endpoint_deci))
+        {
+            profile.flags |= (uint8_t)(fan_slot << TELEMETRY_PROFILE_FLAGS_BIT_ENDPOINT_LSB);
+        }
         if ((LOOK_ECHO_VALID == echo) && ((0U == profile.closest_mm) || (p_ray->range_mm < profile.closest_mm)))
         {
             profile.closest_mm = p_ray->range_mm;
@@ -677,6 +686,29 @@ static void line_pilot_profile (look_t const * p_look, uint8_t sequence, int8_t 
     frame[0] = (uint8_t)TELEMETRY_TOPIC_PROFILE;
     (void)telemetry_pack_profile(&frame[1], &profile);
     (void)telemetry_queue_try_push(frame, (uint16_t)sizeof(frame));
+}
+
+static void line_step_with_profile (pilot_meas_t const * p_meas, pilot_cmd_t * p_cmd)
+{
+    bypass_t const * const p_bypass = &g_pilot.avoidance.hug.bypass;
+    bool const b_front_fan = (p_bypass->phase == BYPASS_CONTACT) && (0U == p_bypass->sector);
+    bool const b_side_fan = (p_bypass->phase == BYPASS_SIDE_FAN) && p_bypass->b_pending;
+    int16_t const heading = p_bypass->requested_head;
+    pilot_step(&g_pilot, p_meas, p_cmd);
+    if (b_side_fan && p_bypass->phase != BYPASS_SIDE_FAN && g_pilot.avoidance.look.count > 0U)
+    {
+        int16_t const endpoint = (p_bypass->phase == BYPASS_LEVEL && g_pilot.avoidance.hug.breadth_mm > 0U)
+                                 ? p_bypass->last_hit_deci : INT16_MAX;
+        line_pilot_profile(&g_pilot.avoidance.look, p_bypass->seq, g_pilot.avoidance.hug.side,
+                           (uint8_t)(1U << TELEMETRY_PROFILE_FLAGS_BIT_STATIONARY_CONTACT), heading, endpoint);
+    }
+    if (b_front_fan && ((p_bypass->phase != BYPASS_CONTACT) || (0U != p_bypass->sector)) &&
+        (p_bypass->phase != BYPASS_IDLE) && (g_pilot.avoidance.look.count > 0U))
+    {
+        uint8_t const flags = (uint8_t)((1U << TELEMETRY_PROFILE_FLAGS_BIT_STATIONARY_CONTACT) |
+            (p_bypass->b_wall ? (1U << TELEMETRY_PROFILE_FLAGS_BIT_WALL) : 0U));
+        line_pilot_profile(&g_pilot.avoidance.look, p_bypass->seq, 0, flags, 0, INT16_MAX);
+    }
 }
 
 /*!
@@ -698,7 +730,8 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
         (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
                                    (uint8_t)TELEMETRY_EVT_SCAN_DONE,
                                    PILOT_SCAN_CLEARANCE_UNVERIFIED, 0U, odometer_mm());
-        line_pilot_profile(&g_pilot.look, g_pilot.course_scan_seq, g_pilot.course_side);
+        line_pilot_profile(&g_pilot.avoidance.look, g_pilot.avoidance.course_scan_seq,
+                           g_pilot.avoidance.course_side, 0U, 0, INT16_MAX);
     }
     if (pilot_log_note(&g_pilot_log, p_cmd))
     {
@@ -719,17 +752,17 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
                                               p_cmd->reason),
                                    odometer_mm());
     }
-    if (!hug_active(&g_pilot.hug))
+    if (!hug_active(&g_pilot.avoidance.hug))
     {
         g_hug_leg_reported = false;
     }
     else if (!g_hug_leg_reported && (p_cmd->speed_mm_s > 0) &&
              ((uint8_t)PILOT_BEHAVIOUR_HUG == p_cmd->behaviour) &&
-             (TELEMETRY_HUG_STATE_LEG == hug_word_state(&g_pilot.hug)))
+             (TELEMETRY_HUG_STATE_LEG == hug_word_state(&g_pilot.avoidance.hug)))
     {
         /* This event means the first forward side leg was commanded.
          * The wheel frames establish whether the car actually travelled. */
-        int16_t const side = (g_pilot.hug.side > 0) ? (int16_t)TELEMETRY_HUG_SIDE_LEFT :
+        int16_t const side = (g_pilot.avoidance.hug.side > 0) ? (int16_t)TELEMETRY_HUG_SIDE_LEFT :
                                                       (int16_t)TELEMETRY_HUG_SIDE_RIGHT;
         (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
                                    (uint8_t)TELEMETRY_EVT_BYPASS_START, side, 0U, odometer_mm());
@@ -738,8 +771,8 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
     if (p_cmd->b_rejoined)
     {
         (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_LINE,
-                                   (uint8_t)TELEMETRY_EVT_BYPASS_END, (int16_t)g_pilot.exit_width_mm,
-                                   g_pilot.exit_breadth_mm, odometer_mm());
+                                   (uint8_t)TELEMETRY_EVT_BYPASS_END, (int16_t)g_pilot.avoidance.exit_width_mm,
+                                   g_pilot.avoidance.exit_breadth_mm, odometer_mm());
     }
 }
 
@@ -803,7 +836,7 @@ static void line_pilot_publish_hug (int16_t servo_deci)
     UINT     saved = 0U;
     uint32_t idx   = 0U;
 
-    hug_word_pack(words, &g_pilot.hug, servo_deci, hug_heading_deci(&g_pilot.hug));
+    hug_word_pack(words, &g_pilot.avoidance.hug, servo_deci, hug_heading_deci(&g_pilot.avoidance.hug));
     /* The count moves only when the hug content does, so a changed value
      * marks a new sample. g_hug_words is written by this task only. */
     if ((0U == ((words[0] ^ g_hug_words[0]) & ~(HUG_WORD_SEQ_MK << HUG_WORD_SEQ_SH))) &&
@@ -880,6 +913,10 @@ static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uin
         /* RESET: the ENCODER and HUG_TIMEOUT latches end; the ESTOP stays. The
          * supervisor holds the wheels until START. */
         pilot_clear_latches(&g_pilot);
+        pilot_change_floor(&g_pilot, b_continuous_floor);
+        drive_init(&g_drive);
+        g_route = (line_route_t){0};
+        g_hug_leg_reported = false;
         g_pilot_ping_sent = 0U;
     }
     bool const b_new_start = pilot_count_moved(&g_pilot_start_seen, starts);
@@ -960,7 +997,7 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
     bool const        b_feedback_fresh = line_pilot_measure(state, b_line_fresh, now_ms, &feedback, &meas);
 
     line_follow_set_hump(&g_pilot.follow, line_on_hump(&roll_cdeg));
-    pilot_step(&g_pilot, &meas, &cmd);
+    line_step_with_profile(&meas, &cmd);
     if (((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE != cmd.behaviour) && (SUPERVISOR_NO_TURN != route_opcode))
     {
         /* The approach evidence belongs to this location. The choice remains
@@ -977,7 +1014,7 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
         ((uint8_t)PILOT_REASON_NONE == cmd.reason) &&
         (cmd.speed_mm_s > 0) && (0 == cmd.turn_deci_s) &&
         ((uint8_t)LINE_FOLLOW_FOLLOWING == g_pilot.follow.status) &&
-        !meas.b_barcode && !hug_reapproaching(&g_pilot.hug))
+        !meas.b_barcode && !hug_reapproaching(&g_pilot.avoidance.hug))
     {
         drive_compensate_roll(&g_drive, roll_cdeg, feedback.left_speed_um_s,
                               feedback.right_speed_um_s);

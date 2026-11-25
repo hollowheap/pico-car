@@ -309,7 +309,7 @@ static void test_follow_acquisition_after_pivot(void)
     for (int32_t side = -1; side <= 1; side += 2)
     {
         pilot_state_t pilot;
-        pilot_meas_t meas = {.b_line_left = (side > 0), .b_line_right = (side < 0),
+        pilot_meas_t meas = {.b_bounded_course = true, .b_line_left = (side > 0), .b_line_right = (side < 0),
                              .ping_echo = LOOK_ECHO_OPEN};
         drive_state_t drive;
         pilot_cmd_t cmd;

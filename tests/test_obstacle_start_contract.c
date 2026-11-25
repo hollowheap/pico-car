@@ -40,11 +40,7 @@ ER tk_get_otm (SYSTIM * p_time)
 ER obstacle_init (obstacle_links_t const * p_links)
 {
     CHECK(p_links->p_get_distance_mm != NULL);
-#if PICO_CAR_PILOT
-    CHECK(p_links->p_stop == NULL);
-#else
     CHECK(p_links->p_stop != NULL);
-#endif
     return E_OK;
 }
 

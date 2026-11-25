@@ -121,6 +121,21 @@ static void test_sequence_match(void)
     CHECK(obstacle_pack_ping_answers(reply, 20U + 64U));
 }
 
+static void test_requested_bearing(void)
+{
+    CHECK(obstacle_ping_reply_matches(true, 0U, 100, 0U, 100, 0U));
+    CHECK(!obstacle_ping_reply_matches(false, 0U, 100, 0U, 100, 0U));
+    CHECK(!obstacle_ping_reply_matches(true, 63U, 100, 0U, 100, 0U));
+    CHECK(!obstacle_ping_reply_matches(true, 0U, 100, 0U, 101, 0U));
+
+    /* The servo reports whole degrees for requests in tenths of a degree. */
+    uint8_t const tolerance = OBSTACLE_PING_MAX_QUANTIZATION_DECI;
+    CHECK(obstacle_ping_reply_matches(true, 1U, 100, 1U, 109, tolerance));
+    CHECK(obstacle_ping_reply_matches(true, 1U, -100, 1U, -109, tolerance));
+    CHECK(!obstacle_ping_reply_matches(true, 1U, 100, 1U, 110, tolerance));
+    CHECK(!obstacle_ping_reply_matches(true, 1U, -100, 1U, -110, tolerance));
+}
+
 static void test_failure_classes_are_carried(void)
 {
     uint32_t const stuck = obstacle_pack_ping_reply(1U, OBSTACLE_CLASS_STUCK, 0U, -50);
@@ -187,6 +202,7 @@ int main(void)
     test_clamped_request_reply_carries_used_angle();
     test_reply_flag();
     test_sequence_match();
+    test_requested_bearing();
     test_failure_classes_are_carried();
 
     if (0 != g_failures)

@@ -1,13 +1,12 @@
 /** @file pilot.h
- * @brief Pilot: the one owner of the wheels. One motion command per tick.
+ * @brief Pilot selects one movement request per tick. Motion owns the motor outputs.
  *
  * Pure C, no kernel, no driver and no floating point. The caller owns the
  * clock, gathers the latest measurements and sends the returned command to
  * the motion layer.
  *
- * Each tick the behaviours run in priority order and the first one that asks
- * for control sets the command. The choice is made again every tick; the
- * behaviours do not hand anything over to each other.
+ * Safety can preempt any movement. Obstacle avoidance supplies detour commands
+ * and reports when the pilot should return control to the line follower.
  *
  * Units: speed in mm/s (positive = forward), turn rate in deci-degrees per
  * second (counter-clockwise positive), travel in um, time in ms.
@@ -20,15 +19,14 @@
 #include <stdint.h>
 
 #include "pilot/drive.h"
-#include "pilot/hug.h"
-#include "pilot/look.h"
+#include "pilot/avoidance.h"
 #include "platform/static_assert.h"
 #include "track/line_control.h"
 
 /** Wheel feedback (stamp_ms) older than this gives a stop with reason STALE
  *  (ms). */
 #define PILOT_STALE_MS            (100U)
-/** A free-running forward ping normally arrives every 50 ms. Allow up to
+/** A free-running forward ping normally arrives every 60 ms. Allow up to
  *  250 ms between observed sequences before stopping with reason SONAR. */
 #define PILOT_FORWARD_PING_STALE_MS (250U)
 /** A longer dropout needs a confirmed recovery before the pilot drives
@@ -106,20 +104,6 @@ typedef enum
 
 STATIC_ASSERT(sizeof(pilot_behaviour_t) <= 4U, "pilot_behaviour_t size");
 
-/** Phase of the stuck check. A stall while following calls for a survey.
- *  A stall during an active hug can back off and retry. A back-off
- *  after a try in which one wheel alone showed no travel ends in ENCODER when
- *  that wheel shows none in the back-off either. */
-typedef enum
-{
-    PILOT_PHASE_TRY = 0,
-    PILOT_PHASE_RETRY,
-    PILOT_PHASE_BACKOFF,
-    PILOT_PHASE_BACKOFF_ONE_WHEEL
-} pilot_phase_t;
-
-STATIC_ASSERT(sizeof(pilot_phase_t) <= 4U, "pilot_phase_t size");
-
 /** Latest measurements. The wheel travel is taken at stamp_ms. The ping is the
  *  latest one the sonar task published, with no time stamp of its own: a reply
  *  to the request of the last command (b_ping_reply, ping_seq is the request
@@ -184,39 +168,24 @@ typedef struct
     uint32_t      forward_ping_ms; /* grace start, last forward observation or requested look */
     uint32_t      slip_left_um;   /* travel at the first stable forward range */
     uint32_t      slip_right_um;
-    uint8_t       phase;         /* pilot_phase_t                                  */
     uint8_t       b_estop;       /* latched until pilot_init()                     */
     uint8_t       b_encoder;     /* latched until pilot_init() or pilot_clear_latches() */
     /* Last command and the open or latched data stop. */
     uint8_t       flags;
-    hug_t         hug;
-    look_t        look;          /* the one look, used by the hug */
-    uint8_t       b_timeout;     /* as b_encoder; in the padding                 */
+    uint8_t       b_timeout;     /* latched after an expired maneuver */
     uint8_t       forward_ping_seq;
     uint16_t      slip_range_mm;
     bool          b_slip_forward : 1;
-    bool          b_course_hold : 1;
     bool          b_check_left : 1;  /* wheel showed no travel through a commanded window */
     bool          b_check_right : 1;
-    uint32_t      course_scan_ms;
-    uint32_t      course_left_um; /* low wheel totals at the stationary survey origin */
-    uint32_t      course_right_um;
-    uint8_t       course_scan_step;
-    uint8_t       course_scan_seq;
-    uint8_t       course_clear_count;
-    uint8_t       course_scan_attempts;
     uint8_t       data_recovery_pings;
     bool          b_forward_timer_started;
-    int8_t        course_side; /* provisional surveyed side: left +1, right -1, unknown 0 */
-    bool          b_course_anchor;
-    bool          b_course_stuck; /* stall recovery needs operator clearance */
     bool          b_follow_forward; /* forward line command during the measured interval */
-    uint16_t      exit_width_mm; /* measured before giving up the active hug frame */
-    uint16_t      exit_breadth_mm;
     int16_t       line_radius_mm; /* prior forward line-steering request, left positive */
+    avoidance_t   avoidance;
 } pilot_state_t;
 
-STATIC_ASSERT(sizeof(pilot_state_t) == 416U, "pilot_state_t size");
+STATIC_ASSERT(sizeof(pilot_state_t) == 496U, "pilot_state_t size");
 
 /** Clear the state: no latch, follower at its start. The line task calls it
  *  once, at boot. */

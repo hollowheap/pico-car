@@ -890,9 +890,13 @@ static uint8_t health_cause (obstacle_statechart_t * p_fsm, uint8_t cls)
 
     /* State changes can reset counters. Keep a known fault through
      * unresolved pings until a reply proves recovery. */
-    if (!b_unresolved || (OBSTACLE_CAUSE_NONE != cause))
+    if (!b_unresolved)
     {
-        p_fsm->echo_faults = fault_bit(cause);
+        p_fsm->echo_faults = 0U;
+    }
+    else if (OBSTACLE_CAUSE_NONE != cause)
+    {
+        p_fsm->echo_faults |= fault_bit(cause);
     }
 
     return (cause);

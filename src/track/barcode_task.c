@@ -37,10 +37,10 @@
 #define BARCODE_GAP_WAITS    (BARCODE_GAP_MS / LIVENESS_WAIT_MS)
 STATIC_ASSERT((BARCODE_GAP_WAITS * LIVENESS_WAIT_MS) == BARCODE_GAP_MS, barcode_gap_is_whole_waits);
 
-/* Event p2 of `barcode`: width/4 um in bits 4..15, reverse in bit 3, action in
-   bits 0..2. A narrow width is at most 16383 um, so width/4 fits 12 bits. */
+/* Event p2 holds the learned narrow width in 4 µm units, reverse and action. */
 #define EVENT_WIDTH_SHIFT   (4U)
 #define EVENT_WIDTH_DIV     (4U)
+#define EVENT_WIDTH_MAX     (UINT16_MAX >> EVENT_WIDTH_SHIFT)
 #define EVENT_REVERSE_SHIFT (3U)
 
 #define STATUS_ELEMENT_MASK (3U << TELEMETRY_LINE_BITS_BIT_BARCODE_ELEMENT_LSB)
@@ -148,7 +148,7 @@ static void report_decoded (uint8_t code, const barcode_info_t * p_info)
     barcode_action_t const act    = barcode_action_of(code);
     uint8_t const          letter = (uint8_t)(code + (uint8_t)'A');
     uint16_t const         width  = (uint16_t)(p_info->narrow_width_um / EVENT_WIDTH_DIV);
-    uint32_t const         bits   = ((uint32_t)width << EVENT_WIDTH_SHIFT) |
+    uint32_t const         bits   = ((uint32_t)((width > EVENT_WIDTH_MAX) ? EVENT_WIDTH_MAX : width) << EVENT_WIDTH_SHIFT) |
                                     ((p_info->is_reverse ? 1UL : 0UL) << EVENT_REVERSE_SHIFT) |
                                     (uint32_t)act.action;
     uint16_t const         detail = (uint16_t)bits;
@@ -173,16 +173,13 @@ static void report_decoded (uint8_t code, const barcode_info_t * p_info)
 }
 
 /* Only displacement sampled near each edge can measure the intervening block. */
-static bool report_block (bool level, uint32_t timestamp_us, uint32_t odo_mm,
-                          motion_feedback_t const * p_feedback)
+static bool report_block (bool level, uint32_t odo_mm, bool b_have_odometer)
 {
     bool const        is_black = (0U != BARCODE_LEVEL_SPACE) ? !level : level;
     bool              b_measured = false;
     uint16_t          block_mm = 0U;
 
-    if (p_feedback->fresh && p_feedback->odometry_valid[0U] && p_feedback->odometry_valid[1U] &&
-        (((timestamp_us - p_feedback->timestamp_us) <= BARCODE_SPEED_SLACK_US) ||
-         ((p_feedback->timestamp_us - timestamp_us) <= BARCODE_SPEED_SLACK_US)))
+    if (b_have_odometer)
     {
         block_mm = barcode_block_edge(&g_block, is_black, odo_mm, &b_measured);
     }
@@ -306,6 +303,7 @@ void barcode_task_run (void)
     bool             previous_level = false;
     bool             have_previous = false;
     uint32_t         idle_waits = 0U;
+    uint8_t          sample_seq = 0U;
 
     g_start_prefix_um = 0U;
     barcode_gate_init(&g_gate);
@@ -320,7 +318,8 @@ void barcode_task_run (void)
              IR_BARCODE_EMPTY != edge; edge = ir_barcode_pop(&timestamp_us, &level))
         {
             uint32_t const gap_us = timestamp_us - previous_us;
-            bool const b_lost = (IR_BARCODE_EDGE_AFTER_LOSS == edge);
+            bool const b_lost = (IR_BARCODE_EDGE_AFTER_LOSS == edge) ||
+                                (have_previous && (level == previous_level));
             motion_feedback_t feedback = {0};
             bool const b_feedback = (E_OK == motion_feedback_snapshot(&feedback));
             edge_odo_mm = b_feedback ? telemetry_odometer_mm(&feedback) : 0U;
@@ -333,7 +332,10 @@ void barcode_task_run (void)
             {
                 feedback.fresh = false;
             }
-            bool const b_measured_block = report_block(level, timestamp_us, edge_odo_mm, &feedback);
+            bool const b_have_odometer = feedback.fresh && feedback.odometry_valid[0] && feedback.odometry_valid[1] &&
+                (((timestamp_us - feedback.timestamp_us) <= BARCODE_SPEED_SLACK_US) ||
+                 ((feedback.timestamp_us - timestamp_us) <= BARCODE_SPEED_SLACK_US));
+            bool const b_measured_block = report_block(level, edge_odo_mm, b_have_odometer);
 
             if (b_lost || (have_previous && (gap_us > BARCODE_GAP_US)))
             {
@@ -342,40 +344,45 @@ void barcode_task_run (void)
                 have_previous = false;
             }
 
+            telemetry_barcode_sample_t sample = {
+                .edge_us = timestamp_us,
+                .interval_us = have_previous ? gap_us : 0U,
+                .odometer_mm = b_have_odometer ? edge_odo_mm : UINT32_MAX,
+                .seq = sample_seq++,
+                .level_high = level,
+                .capture_loss = b_lost,
+            };
+            sample.width_valid = have_previous && barcode_width_um(gap_us, timestamp_us, &feedback, &sample.width_um);
             if (b_measured_block)
             {
                 /* Encoder travel across this black stripe already rules out a bar. */
                 report_abort(&parser, BARCODE_REJECT_NONE, edge_odo_mm);
                 parser = BARCODE_PARSER_INIT;
-                have_previous = true;
             }
             else if (have_previous)
             {
-                uint16_t          width_um = 0U;
-                if (!barcode_width_um(gap_us, timestamp_us, &feedback, &width_um))
+                if (0U == sample.width_valid)
                 {
                     /* A stale snapshot, zero speed, or reversing speed rejects
                      * the current character instead of decoding a time-based width. */
                     report_abort(&parser, BARCODE_REJECT_SPEED, edge_odo_mm);
                     report_bad(BARCODE_REJECT_SPEED, 0U);
                     parser        = BARCODE_PARSER_INIT;
-                    have_previous = false;
                 }
                 else
                 {
                     bool const is_space = (0U != BARCODE_LEVEL_SPACE)
                                               ? previous_level
                                               : !previous_level;
-                    read_stripe(&parser, is_space, width_um, edge_odo_mm);
+                    read_stripe(&parser, is_space, sample.width_um, edge_odo_mm);
                 }
             }
-            else
-            {
-                have_previous = true;
-            }
-
+            /* The edge remains a boundary for the next stripe even when
+             * speed was unusable over the interval that just ended. */
+            have_previous = true;
             previous_us    = timestamp_us;
             previous_level = level;
+            (void)telemetry_try_emit_barcode_sample(&sample);
         }
 
         if (wait_for_gap(&idle_waits))

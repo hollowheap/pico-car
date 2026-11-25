@@ -294,10 +294,10 @@ static void test_start_boundaries_and_deadbands (void)
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 2000U));
     assert_parser_reset(&parser);
 
-    /* 2.0x = 8000 um (between 1.5x narrow and 2.4x wide scale) */
+    /* 1.65x lies in the gap between a narrow and an unlearned wide. */
     parser = BARCODE_PARSER_INIT;
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, 4000U));
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 8000U));
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 6600U));
     assert_parser_reset(&parser);
 
     /* 4.0x = 16000 um (> 3.6x wide scale) */
@@ -528,8 +528,31 @@ static void test_continuous_streaming (void)
     assert_parser_reset(&parser);
 }
 
+static void test_adaptive_z(void)
+{
+    for (unsigned reversed = 0; reversed <= 1; reversed++)
+    {
+        for (unsigned ratio = 2; ratio <= 3; ratio++)
+        {
+            barcode_parser_t parser = BARCODE_PARSER_INIT;
+            for (unsigned i = 0; i < 29U; i++)
+            {
+                unsigned pos = i % 10U;
+                if (reversed && pos < 9U) pos = 8U - pos;
+                bool data = i >= 10U && i < 20U;
+                bool wide = pos == 1U || pos == 4U || pos == (data ? 2U : 6U);
+                unsigned narrow = 2200U + 50U * i;
+                uint16_t width = (uint16_t)(narrow * (wide ? ratio : 1U));
+                uint8_t code = barcode_parser_input(&parser, (i & 1U) != 0U, width);
+                assert(code == (i == 28U ? char_to_data('Z') : BARCODE_NO_CHAR));
+            }
+        }
+    }
+}
+
 int main (void)
 {
+    test_adaptive_z();
     test_only_letter_payloads();
     test_forward_and_reverse_valid();
     test_invalid_interchar_elements();

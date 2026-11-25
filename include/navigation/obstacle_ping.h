@@ -12,8 +12,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "pilot/look.h"
-
 /* Physical travel from straight ahead, in either direction. */
 #define OBSTACLE_SERVO_LIMIT_DECI (200)
 
@@ -25,6 +23,9 @@
 #define OBSTACLE_CLASS_NO_ECHO   (3U) /* nothing on ECHO within the wait    */
 #define OBSTACLE_CLASS_GLITCH    (4U) /* one edge missing, or a tiny pulse  */
 #define OBSTACLE_CLASS_STUCK     (5U) /* ECHO high before the trigger       */
+
+/* Normalized result for a reader when the raw class gives no usable ray. */
+#define OBSTACLE_ECHO_UNUSABLE   (3U)
 
 /* Two VALID samples from the same point agree within this range. */
 #define OBSTACLE_AGREE_MM          (15U)
@@ -58,6 +59,7 @@
  * private obstacle config holds the same values and checks them at build
  * time. */
 #define OBSTACLE_PING_DECI_PER_DEG  (10)
+#define OBSTACLE_PING_MAX_QUANTIZATION_DECI (OBSTACLE_PING_DECI_PER_DEG - 1)
 #define OBSTACLE_PING_TOO_CLOSE_MM  (20U)
 
 /* Ping request (u32, written whole under the spinlock): servo 16 (signed
@@ -113,39 +115,28 @@ static inline bool obstacle_pack_ping_is_reply (uint32_t word)
     return (0U != ((word >> OBSTACLE_PING_REPLY_SH) & OBSTACLE_PING_REPLY_MK));
 }
 
+/* Match a decoded reply to the requested sequence and bearing. A zero
+ * tolerance requires an exact bearing. The caller checks age and chassis pose. */
+static inline bool obstacle_ping_reply_matches (bool b_reply, uint8_t seq, int16_t servo_deci,
+                                                uint8_t requested_seq, int32_t requested_deci,
+                                                uint8_t max_error_deci)
+{
+    return b_reply && (seq == requested_seq) &&
+           (requested_deci >= (int32_t)servo_deci - max_error_deci) &&
+           (requested_deci <= (int32_t)servo_deci + max_error_deci);
+}
+
 /*!
- * @brief Echo class of a ping word as the pilot reads it (LOOK_ECHO_*).
- *
- * NO_ECHO, GLITCH, STUCK and any unknown code have no reading: they give
- * LOOK_ECHO_NONE and never LOOK_ECHO_OPEN.
+ * @brief Usable sonar observation in a published ping word.
  *
  * @param[in] word Packed ping word.
  *
- * @return LOOK_ECHO_VALID, LOOK_ECHO_OPEN, LOOK_ECHO_TOO_CLOSE or LOOK_ECHO_NONE.
+ * @return VALID, OPEN or TOO_CLOSE. A failed or unknown echo yields OBSTACLE_ECHO_UNUSABLE.
  */
 static inline uint8_t obstacle_pack_ping_echo (uint32_t word)
 {
-    uint32_t const cls  = (word >> OBSTACLE_PING_CLASS_SH) & OBSTACLE_PING_CLASS_MK;
-    uint8_t        echo = LOOK_ECHO_NONE;
-
-    if (OBSTACLE_CLASS_VALID == cls)
-    {
-        echo = LOOK_ECHO_VALID;
-    }
-    else if (OBSTACLE_CLASS_OPEN == cls)
-    {
-        echo = LOOK_ECHO_OPEN;
-    }
-    else if (OBSTACLE_CLASS_TOO_CLOSE == cls)
-    {
-        echo = LOOK_ECHO_TOO_CLOSE;
-    }
-    else
-    {
-        /* No reading. */
-    }
-
-    return (echo);
+    uint32_t const cls = (word >> OBSTACLE_PING_CLASS_SH) & OBSTACLE_PING_CLASS_MK;
+    return (uint8_t)((cls <= OBSTACLE_CLASS_TOO_CLOSE) ? cls : OBSTACLE_ECHO_UNUSABLE);
 }
 
 /*!
@@ -191,10 +182,11 @@ static inline uint8_t obstacle_pack_ping_seq (uint32_t word)
     return ((uint8_t)((word >> OBSTACLE_PING_SEQ_SH) & OBSTACLE_PING_SEQ_MK));
 }
 
-/* Record one measured ray in a 37-slot scan profile. Off-grid angles leave
- * the profile unchanged. Unsampled slots are left clear by the caller. */
-void obstacle_profile_record_ray (uint16_t * p_slots, int32_t angle_deci,
-                                  uint16_t range_mm, uint8_t echo);
+/* Store a ray at the nearest profile bearing. A tie or a bearing outside
+ * the profile is unresolved. Return 1..9 for a stored ray in the stationary
+ * servo fan (-20..+20 degrees), zero otherwise. */
+uint8_t obstacle_profile_record_ray (uint16_t * p_slots, int32_t angle_deci,
+                                     uint16_t range_mm, uint8_t echo);
 
 #endif /* NAVIGATION_OBSTACLE_PING_H */
 

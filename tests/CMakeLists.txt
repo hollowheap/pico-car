@@ -102,12 +102,14 @@ foreach(pilot RANGE 0 1)
         "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/sonar_task_kernel.h"
         -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
     add_test(NAME obstacle_aim_${pilot} COMMAND test_obstacle_aim_${pilot})
+    add_test(NAME obstacle_echo_timing_${pilot} COMMAND test_obstacle_aim_${pilot} echo-timing)
 endforeach()
 
 add_test(NAME obstacle_aim_pilot_mirrored COMMAND test_obstacle_aim_1 mirror)
 add_test(NAME obstacle_aim_stop_settle COMMAND test_obstacle_aim_1 stop-settle)
 add_test(NAME obstacle_aim_stop_spacing COMMAND test_obstacle_aim_1 stop-spacing)
 add_test(NAME obstacle_aim_stop_echo COMMAND test_obstacle_aim_1 stop-echo)
+add_test(NAME obstacle_aim_stop_late_echo COMMAND test_obstacle_aim_1 stop-late-echo)
 add_test(NAME obstacle_aim_stop_pending COMMAND test_obstacle_aim_1 stop-pending)
 add_test(NAME obstacle_aim_legacy_stop_settle COMMAND test_obstacle_aim_0 stop-settle)
 
@@ -185,13 +187,14 @@ add_test(NAME obstacle_legacy_plan_source COMMAND test_obstacle_comms legacy-pla
 # Exercise the real startup facade and stopped-state navigation adapter in both modes.
 foreach(pilot IN ITEMS 0 1)
     set(target test_obstacle_start_${pilot})
-    add_executable(${target} test_obstacle_start_contract.c
-        ${OBSTACLE_SRC}/obstacle_nav.c
-        ${OBSTACLE_SRC}/nav_core.c
-        ${OBSTACLE_SRC}/follow.c
-        ${OBSTACLE_SRC}/geometry.c
-        ${OBSTACLE_SRC}/planner.c
-        ${OBSTACLE_SRC}/scan_algo.c)
+    if(pilot)
+        set(start_sources test_pilot_sonar_start.c)
+    else()
+        set(start_sources test_obstacle_start_contract.c ${OBSTACLE_SRC}/obstacle_nav.c)
+    endif()
+    add_executable(${target} ${start_sources} ${OBSTACLE_SRC}/motion_link.c
+        ${OBSTACLE_SRC}/nav_core.c ${OBSTACLE_SRC}/follow.c
+        ${OBSTACLE_SRC}/geometry.c ${OBSTACLE_SRC}/planner.c ${OBSTACLE_SRC}/scan_algo.c)
     target_include_directories(${target} PRIVATE
         ${OBSTACLE_SRC} ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
     target_compile_definitions(${target} PRIVATE PICO_CAR_PILOT=${pilot})
@@ -292,9 +295,12 @@ add_executable(test_line_task_contract test_line_slope_contract.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_task.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot_log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/bypass.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
     ${OBSTACLE_SRC}/scan_algo.c
@@ -334,8 +340,11 @@ add_test(NAME pilot_turn_stale_line_capture COMMAND test_line_task_contract turn
 
 add_executable(test_pilot_observations test_pilot_observations.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/bypass.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
@@ -350,8 +359,11 @@ add_test(NAME pilot_observations COMMAND test_pilot_observations)
 
 add_executable(test_pilot_line test_pilot_line.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/bypass.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
@@ -372,7 +384,10 @@ add_test(NAME pilot_interrupted_course_scan_budget COMMAND test_pilot_line inter
 add_executable(test_pilot_drive test_pilot_drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/bypass.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
@@ -624,8 +639,8 @@ add_test(NAME ir_edge COMMAND test_ir_edge)
 
 add_executable(test_ir_capture_contract test_ir_capture_startup_contract.c
     ../src/track/ir_capture.c ../src/track/line_filter.c ../src/track/line_control.c
-    ../src/barcode/action.c ../src/pilot/pilot.c ../src/pilot/drive.c
-    ../src/pilot/hug.c ../src/pilot/look.c ${OBSTACLE_SRC}/geometry.c)
+    ../src/barcode/action.c ../src/pilot/pilot.c ../src/pilot/avoidance.c ../src/pilot/contour.c ../src/pilot/drive.c
+    ../src/pilot/hug.c ../src/pilot/bypass.c ../src/pilot/look.c ${OBSTACLE_SRC}/geometry.c)
 target_include_directories(test_ir_capture_contract PRIVATE
     ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/shim_ir_capture ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_definitions(test_ir_capture_contract PRIVATE TEST_CAPTURE_PILOT)
@@ -644,8 +659,11 @@ add_test(NAME pilot_barcode_noise COMMAND test_ir_capture_contract pilot-barcode
 add_executable(test_pilot_latches test_pilot_latches.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/avoidance.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/contour.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot_log.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/bypass.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
@@ -678,3 +696,9 @@ target_compile_definitions(test_liveness PRIVATE PICO_TEST_LIVENESS_ATOMICS)
 target_compile_options(test_liveness PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME liveness COMMAND test_liveness)
+
+add_executable(test_bypass_legs test_bypass_legs.c ../src/pilot/hug.c ../src/pilot/bypass.c
+    ../src/pilot/look.c ${OBSTACLE_SRC}/geometry.c)
+target_include_directories(test_bypass_legs PRIVATE ${APP_INCLUDE} ${OBSTACLE_SRC})
+target_compile_options(test_bypass_legs PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_bypass_measured_legs COMMAND test_bypass_legs)
