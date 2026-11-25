@@ -83,45 +83,20 @@ add_test(NAME ir.line_task_contract.pending_obstacle COMMAND test_line_task_cont
 add_test(NAME ir.line_task_contract.pending_stale COMMAND test_line_task_contract pending-stale)
 add_test(NAME ir.line_task_contract.pilot_stale_line_capture COMMAND test_line_task_contract stale-line-capture)
 add_test(NAME ir.line_task_contract.pilot_turn_stale_line_capture COMMAND test_line_task_contract turn-stale-line-capture)
-# These plain square corners exceed the track-width bound at the modeled
-# barcode reader. They stay available in the replay binary.
-set(CORNER_REPLAY_KNOWN_FAILING
-    ir.line_task_contract.line_plain_square_left_matched_0_30
-    ir.line_task_contract.line_plain_square_left_matched_5.5_30
-    ir.line_task_contract.line_plain_square_left_nov16_-5.5_30
-    ir.line_task_contract.line_plain_square_left_nov16_0_30
-    ir.line_task_contract.line_plain_square_left_nov16_5.5_30
-    ir.line_task_contract.line_plain_square_left_nov20_-5.5_30
-    ir.line_task_contract.line_plain_square_left_nov20_0_30
-    ir.line_task_contract.line_plain_square_left_nov20_5.5_30
-    ir.line_task_contract.line_plain_square_right_matched_-5.5_30
-    ir.line_task_contract.line_plain_square_right_matched_0_30
-    ir.line_task_contract.line_plain_square_right_matched_5.5_30
-    ir.line_task_contract.line_plain_square_right_nov16_-5.5_30
-    ir.line_task_contract.line_plain_square_right_nov16_0_30
-    ir.line_task_contract.line_plain_square_right_nov16_5.5_30
-    ir.line_task_contract.line_plain_square_right_nov20_-5.5_30
-    ir.line_task_contract.line_plain_square_right_nov20_0_30
-    ir.line_task_contract.line_plain_square_right_nov20_5.5_30
-)
 foreach (shape IN ITEMS round square)
     foreach (direction IN ITEMS left right)
         foreach (wheel_model IN ITEMS matched nov16 nov20)
             foreach (lateral IN ITEMS -5.5 0 5.5)
                 foreach (lead IN ITEMS -30 0 30)
                     set(case_name ir.line_task_contract.line_plain_${shape}_${direction}_${wheel_model}_${lateral}_${lead})
-                    if (NOT case_name IN_LIST CORNER_REPLAY_KNOWN_FAILING)
-                        add_test(NAME ${case_name} COMMAND test_line_task_contract
-                            route-plain-${shape}-${direction} ${lateral} ${lead} ${wheel_model})
-                        set_tests_properties(${case_name} PROPERTIES LABELS ordinary_corner)
-                    endif ()
+                    add_test(NAME ${case_name} COMMAND test_line_task_contract
+                        route-plain-${shape}-${direction} ${lateral} ${lead} ${wheel_model})
+                    set_tests_properties(${case_name} PROPERTIES LABELS ordinary_corner)
                     foreach (request IN ITEMS straight left right)
                         set(case_name ir.line_task_contract.line_pending_${request}_${shape}_${direction}_${wheel_model}_${lateral}_${lead})
-                        if (NOT case_name IN_LIST CORNER_REPLAY_KNOWN_FAILING)
-                            add_test(NAME ${case_name} COMMAND test_line_task_contract
-                                route-${shape}-${direction}-pending-${request} ${lateral} ${lead} ${wheel_model})
-                            set_tests_properties(${case_name} PROPERTIES LABELS pending_corner)
-                        endif ()
+                        add_test(NAME ${case_name} COMMAND test_line_task_contract
+                            route-${shape}-${direction}-pending-${request} ${lateral} ${lead} ${wheel_model})
+                        set_tests_properties(${case_name} PROPERTIES LABELS pending_corner)
                     endforeach ()
                 endforeach ()
             endforeach ()

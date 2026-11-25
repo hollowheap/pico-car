@@ -484,13 +484,16 @@ static void route_record_geometry(void)
         route_record_course();
         return;
     }
-    double const pts[6][2] = {
+    /* Check the measured barcode corner and the nominal optical position.
+     * The GP26 offsets vary the tape inputs, not the chassis outline. */
+    double const pts[][2] = {
         {(double)LINE_SENSOR_LEAD_MM, (double)LINE_SENSOR_SPACING_MM * 0.5},
         {(double)LINE_SENSOR_LEAD_MM, -(double)LINE_SENSOR_SPACING_MM * 0.5},
         {0.0, (double)CHASSIS_WHEEL_TRACK_MM * 0.5},
         {0.0, -(double)CHASSIS_WHEEL_TRACK_MM * 0.5},
         {-(double)CHASSIS_AXLE_TO_CASTER_MM, 0.0},
-        {(double)LINE_SENSOR_LEAD_MM + g_route_sim.reader_dx_mm, g_route_sim.barcode_left_mm},
+        {(double)CHASSIS_BARCODE_FORWARD_MM, (double)CHASSIS_LEFT_REACH_MM},
+        {(double)LINE_SENSOR_LEAD_MM, g_route_sim.barcode_left_mm},
     };
     double const exit_x = g_route_sim.bend_x_mm + g_route_sim.radius_mm;
     double const overshoot = g_route_sim.x_mm - exit_x;
@@ -511,7 +514,7 @@ static void route_record_geometry(void)
     {
         g_route_sim.max_sensor_dev_mm = sensor_dev;
     }
-    for (unsigned i = 0U; i < 6U; i++)
+    for (unsigned i = 0U; i < (sizeof(pts) / sizeof(pts[0])); i++)
     {
         double wx = 0.0;
         double wy = 0.0;
