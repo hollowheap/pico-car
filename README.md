@@ -54,10 +54,10 @@ and starts one startup task that initialises the shared hardware.
 
 | Path                                        | Contents                                                             |
 | ------------------------------------------- | -------------------------------------------------------------------- |
-| `include/navigation/obstacle.h`             | Buddy 5 facade: commands, events, telemetry snapshot, line-task glue |
-| `include/physics/physics.h`                 | Buddy 4 facade: telemetry snapshot                                   |
-| `src/navigation/obstacle/`                  | Buddy 5 scan, planner, statechart, comms, flight log                 |
-| `src/physics/`                              | Buddy 4 IMU, hump detection, pipeline, task                          |
+| `include/navigation/obstacle.h`             | Obstacle API: commands, events, telemetry snapshot, line-task glue    |
+| `include/physics/physics.h`                 | IMU API: telemetry snapshot                                          |
+| `src/navigation/obstacle/`                  | Obstacle scan, planner, statechart, comms, flight log                |
+| `src/physics/`                              | IMU sensor, hump detection, pipeline, task                           |
 | `src/motion/`                               | Motor owner, PIO quadrature encoders, PID                            |
 | `src/track/`, `src/platform/`               | Line sensors and the shared GPIO IRQ dispatcher                      |
 | `src/telemetry/`                            | lwIP transport, MQTT client, queues, command ingress                 |

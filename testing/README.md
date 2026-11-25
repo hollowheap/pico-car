@@ -10,14 +10,14 @@ This folder records how each subsystem was tested and what happened. Each test i
 
 ## Subsystems
 
-| Subsystem | Owner | Covers |
-|---|---|---|
-| comms | Buddy 1 | Wi-Fi, MQTT telemetry and commands |
-| motion | Buddy 2 | Motors, encoders, wheel control and the pilot |
-| ir | Buddy 3 | Line sensors and barcode reading |
-| imu | Buddy 4 | Attitude, humps and lift detection |
-| obstacle | Buddy 5 | Sonar, servo scan and obstacle bypass |
-| shared | Team | Platform, supervisor, watchdog and start-up |
+| Subsystem | Covers |
+|---|---|
+| comms | Wi-Fi, MQTT telemetry and commands |
+| motion | Motors, encoders, wheel control and the pilot |
+| ir | Line sensors and barcode reading |
+| imu | Attitude, humps and lift detection |
+| obstacle | Sonar, servo scan and obstacle bypass |
+| shared | Platform, supervisor, watchdog and start-up |
 
 ## Host tests
 
