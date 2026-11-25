@@ -10,6 +10,9 @@
 
 #define MICROSECONDS_PER_SECOND UINT32_C(1000000)
 
+/* Shift that places the lowest-order mask bit on bit 31 of the multiplier. */
+#define MULTIPLIER_TOP_SHIFT 31U
+
 /* Compute floor(remainder * multiplier / denominator) without forming the
  * potentially overflowing product. Each step extends a binary prefix of the
  * multiplier. The remainder stays below denominator, and subtraction tests
@@ -20,9 +23,10 @@ static uint32_t fractional_product (uint64_t remainder, uint32_t multiplier,
 {
     uint64_t accumulator = UINT64_C(0);
     uint32_t quotient    = UINT32_C(0);
-    uint32_t mask;
+    uint32_t mask        = UINT32_C(0);
 
-    for (mask = UINT32_C(1) << 31; mask != UINT32_C(0); mask >>= 1)
+    for (mask = UINT32_C(1) << MULTIPLIER_TOP_SHIFT; mask != UINT32_C(0);
+         mask >>= 1U)
     {
         quotient *= UINT32_C(2);
         if (accumulator >= (denominator - accumulator))
@@ -61,7 +65,7 @@ bool encoder_math_distance_um (uint32_t count, uint32_t wheel_travel_um,
                                uint32_t   edges_per_revolution,
                                uint32_t * p_distance_um)
 {
-    uint64_t distance;
+    uint64_t distance = UINT64_C(0);
 
     if ((p_distance_um == NULL) || (wheel_travel_um == UINT32_C(0)) ||
         (edges_per_revolution == UINT32_C(0)))
@@ -85,11 +89,11 @@ bool encoder_math_speed_um_s (uint32_t count, uint32_t elapsed_us,
                               uint32_t   edges_per_revolution,
                               uint32_t * p_speed_um_s)
 {
-    uint64_t numerator;
-    uint64_t denominator;
-    uint64_t whole;
-    uint64_t speed;
-    uint32_t fraction;
+    uint64_t numerator   = UINT64_C(0);
+    uint64_t denominator = UINT64_C(0);
+    uint64_t whole       = UINT64_C(0);
+    uint64_t speed       = UINT64_C(0);
+    uint32_t fraction    = UINT32_C(0);
 
     if ((p_speed_um_s == NULL) || (elapsed_us == UINT32_C(0)) ||
         (wheel_travel_um == UINT32_C(0)) ||

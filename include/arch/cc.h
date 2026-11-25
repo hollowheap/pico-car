@@ -29,8 +29,8 @@
  * Author: Adam Dunkels <adam@sics.se>
  *
  */
-#ifndef __CC_H__
-#define __CC_H__
+#ifndef ARCH_CC_H
+#define ARCH_CC_H
 
 #include <sys/time.h>
 
@@ -43,7 +43,8 @@ extern "C" {
 #endif
 
 #if NO_SYS
-// todo really we should just not allow SYS_LIGHTWEIGHT_PROT for nosys mode (it doesn't do anything anyway)
+/* todo really we should just not allow SYS_LIGHTWEIGHT_PROT for nosys mode
+ * (it doesn't do anything anyway) */
 typedef int sys_prot_t;
 #elif PICO_LWIP_CUSTOM_LOCK_TCPIP_CORE
 void pico_lwip_custom_lock_tcpip_core(void);
@@ -91,7 +92,8 @@ void pico_lwip_custom_unlock_tcpip_core(void);
 
 #ifndef LWIP_RAND
 #include "pico/rand.h"
-// Use the pico_rand library which goes to reasonable lengths to try to provide good entropy
+/* Use the pico_rand library which goes to reasonable lengths to try to
+ * provide good entropy */
 #define LWIP_RAND() get_rand_32()
 #endif
 
@@ -99,4 +101,4 @@ void pico_lwip_custom_unlock_tcpip_core(void);
 }
 #endif
 
-#endif /* __CC_H__ */
+#endif /* ARCH_CC_H */

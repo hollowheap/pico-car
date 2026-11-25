@@ -11,7 +11,11 @@ typedef enum
 {
     TELEMETRY_CMD_STOP  = 0u,
     TELEMETRY_CMD_START = 1u,
-    TELEMETRY_CMD_RESET = 2u
+    TELEMETRY_CMD_RESET = 2u,
+    TELEMETRY_CMD_LEFT  = 3u,
+    TELEMETRY_CMD_RIGHT = 4u,
+    TELEMETRY_CMD_UTURN = 5u,
+    TELEMETRY_CMD_ESTOP = 6u
 } telemetry_cmd_opcode_t;
 
 typedef enum
@@ -41,8 +45,8 @@ typedef struct
     bool     has_last;
 } telemetry_cmd_state_t;
 
-typedef void (*telemetry_cmd_dispatch_fn)(const telemetry_cmd_t * cmd,
-                                           void * context);
+typedef void (*telemetry_cmd_dispatch_fn_t)(const telemetry_cmd_t * cmd,
+                                             void * context);
 
 void telemetry_cmd_state_init (telemetry_cmd_state_t * state,
                                uint16_t expected_run_id);
@@ -54,7 +58,8 @@ telemetry_cmd_result_t telemetry_cmd_parse (const uint8_t * src, uint16_t len,
 telemetry_cmd_result_t telemetry_cmd_accept (telemetry_cmd_state_t * state,
                                              const telemetry_cmd_t * cmd,
                                              uint16_t now_ms,
-                                             telemetry_cmd_dispatch_fn dispatch,
+                                             telemetry_cmd_dispatch_fn_t
+                                                 dispatch,
                                              void * context);
 
 #endif /* TELEMETRY_CMD_H */

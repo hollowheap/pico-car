@@ -2,19 +2,21 @@
 
 #include "telemetry/queue.h"
 
-static uint8_t s_queue_buffer[TELEMETRY_QUEUE_BYTES]
-    __attribute__((aligned(4)));
-static UW s_drop_count;
+#define QUEUE_BUFFER_ALIGN 4
 
-ID mbf_telem_id;
+static uint8_t g_queue_buffer[TELEMETRY_QUEUE_BYTES]
+    __attribute__((aligned(QUEUE_BUFFER_ALIGN)));
+static UW g_drop_count;
+
+ID g_mbf_telem_id;
 
 ER
 telemetry_queue_create (void)
 {
     T_CMBF cmbf = {0};
-    ER     result;
+    ER     result = E_OK;
 
-    if (mbf_telem_id > 0)
+    if (g_mbf_telem_id > 0)
     {
         return E_OK;
     }
@@ -22,12 +24,12 @@ telemetry_queue_create (void)
     cmbf.mbfatr = TA_USERBUF | TA_TPRI;
     cmbf.bufsz  = TELEMETRY_QUEUE_BYTES;
     cmbf.maxmsz = TELEMETRY_QUEUE_MAX_MSG;
-    cmbf.bufptr = s_queue_buffer;
+    cmbf.bufptr = g_queue_buffer;
 
     result = tk_cre_mbf(&cmbf);
     if (result > 0)
     {
-        mbf_telem_id = result;
+        g_mbf_telem_id = result;
         return E_OK;
     }
 
@@ -40,9 +42,9 @@ telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t topic,
 {
     uint8_t tagged[TELEMETRY_QUEUE_MAX_MSG];
     uint8_t discarded[TELEMETRY_QUEUE_MAX_MSG];
-    ER      result;
-    INT     discarded_len;
-    uint16_t tagged_len;
+    ER       result = E_OK;
+    INT      discarded_len = 0;
+    uint16_t tagged_len = 0u;
 
     if ((payload == 0) || (len == 0u) || (len > (TELEMETRY_QUEUE_MAX_MSG - 1u)))
     {
@@ -53,7 +55,7 @@ telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t topic,
     {
         return E_PAR;
     }
-    if (mbf_telem_id <= 0)
+    if (g_mbf_telem_id <= 0)
     {
         return E_NOEXS;
     }
@@ -65,22 +67,22 @@ telemetry_queue_push (const uint8_t * payload, uint16_t len, uint8_t topic,
     }
     tagged_len = (uint16_t) (len + 1u);
 
-    result = tk_snd_mbf(mbf_telem_id, tagged, (INT) tagged_len, TMO_POL);
+    result = tk_snd_mbf(g_mbf_telem_id, tagged, (INT) tagged_len, TMO_POL);
     if ((result != E_TMOUT) || (qos != 0u))
     {
         return result;
     }
 
-    discarded_len = tk_rcv_mbf(mbf_telem_id, discarded, TMO_POL);
+    discarded_len = tk_rcv_mbf(g_mbf_telem_id, discarded, TMO_POL);
     if (discarded_len <= 0)
     {
         return result;
     }
 
-    result = tk_snd_mbf(mbf_telem_id, tagged, (INT) tagged_len, TMO_POL);
+    result = tk_snd_mbf(g_mbf_telem_id, tagged, (INT) tagged_len, TMO_POL);
     if (result == E_OK)
     {
-        (void) atomic_inc(&s_drop_count);
+        (void) atomic_inc(&g_drop_count);
     }
     return result;
 }
@@ -92,16 +94,16 @@ telemetry_queue_pop (uint8_t * payload, TMO tmout)
     {
         return E_PAR;
     }
-    if (mbf_telem_id <= 0)
+    if (g_mbf_telem_id <= 0)
     {
         return E_NOEXS;
     }
 
-    return tk_rcv_mbf(mbf_telem_id, payload, tmout);
+    return tk_rcv_mbf(g_mbf_telem_id, payload, tmout);
 }
 
 UW
 telemetry_queue_drop_count (void)
 {
-    return atomic_add(&s_drop_count, 0u);
+    return atomic_add(&g_drop_count, 0u);
 }

@@ -25,10 +25,13 @@
 typedef struct
 {
     bool     ready;          /* The task has produced a message.        */
+    bool     calibrated;     /* Hump detector has its rest reference.   */
     uint8_t  state;          /* Hump state: idle, rising, falling, ...  */
     uint8_t  motion;         /* Motion class from the IMU.              */
     uint8_t  faults;         /* Latched B4 faults.                      */
     int16_t  pitch_cdeg;     /* Pitch in centi-degrees.                 */
+    uint8_t  heading_deg;    /* Tilt-compensated magnetic heading.      */
+    bool     heading_valid;  /* heading_deg is fresh and usable.        */
     uint16_t hump_peak_mm;   /* Peak height of the current hump, mm.    */
     uint16_t run_peak_mm;    /* Highest valid hump in the run, mm.      */
     bool     hump_active;    /* A hump is in progress.                  */

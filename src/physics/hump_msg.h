@@ -48,6 +48,8 @@
 
 typedef uint32_t packed_hump_t;
 
+#define HUMP_WORD_BYTES (4U)   /* Bytes in the packed word.                */
+
 /* motion_class_t (3 bits) is defined in imu_motion.h. */
 
 /* Fault bits within the 3-bit message field. */
@@ -110,8 +112,8 @@ bool hump_pack (const hump_fields_t * p_fields,
 bool hump_unpack (packed_hump_t word, hump_fields_t * p_fields);
 
 /* Little-endian byte order for MQTT and other byte streams. */
-void hump_to_bytes (packed_hump_t word, uint8_t p_bytes[4]);
-packed_hump_t hump_from_bytes (const uint8_t p_bytes[4]);
+void hump_to_bytes (packed_hump_t word, uint8_t p_bytes[HUMP_WORD_BYTES]);
+packed_hump_t hump_from_bytes (const uint8_t p_bytes[HUMP_WORD_BYTES]);
 
 /* Run peak tracking. Call hump_run_update with every hump_detect output; it
  * only acts on HUMP_EVENT_FINISHED. A hump counts only if it finished

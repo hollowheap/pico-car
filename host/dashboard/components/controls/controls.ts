@@ -1,3 +1,4 @@
+import { COMMANDS } from '../../lib/schema.generated';
 import type { CommandAction } from '../../lib/command';
 
 export type ControlAction = CommandAction;
@@ -7,11 +8,7 @@ export type ControlDecision = {
   reason?: string;
 };
 
-const OPCODES: Record<ControlAction, number> = {
-  stop: 0x00,
-  start: 0x01,
-  reset: 0x02,
-};
+const OPCODES: Record<ControlAction, number> = COMMANDS;
 
 export function confirmControl(
   action: ControlAction,

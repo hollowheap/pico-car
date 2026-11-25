@@ -13,6 +13,7 @@ type Props = {
 const FLAG_ACTIVE = 1 << 0;
 const FLAG_FINISHED = 1 << 1;
 const FLAG_HEIGHT_VALID = 1 << 2;
+const FLAG_CALIBRATED = 1 << 3;
 
 function valueOr(value: number | undefined, unit: string): string {
   return value === undefined ? '--' : `${value} ${unit}`;
@@ -36,6 +37,7 @@ export function SystemPanel({ system, style }: Props) {
     flags & FLAG_ACTIVE ? 'active' : null,
     flags & FLAG_FINISHED ? 'finished' : null,
     flags & FLAG_HEIGHT_VALID ? 'height valid' : null,
+    flags & FLAG_CALIBRATED ? 'calibrated' : 'calibrating',
   ]
     .filter(Boolean)
     .join(', ');

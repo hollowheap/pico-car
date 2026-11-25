@@ -70,6 +70,94 @@ static packed_hump_t fault_word (const pipeline_t * p_pipe)
     return word;
 }
 
+/* Build the hump sample and the motion input for one cycle with good
+ * accelerometer data, folding in the travel and time carried over from
+ * failed cycles. */
+static void prepare_inputs (pipeline_t * p_pipe, const float * p_acc_g,
+                            const float * p_mag_g,
+                            const motion_input_t * p_motion, float dt_s,
+                            hump_sample_t * p_sample, imu_motion_input_t * p_in)
+{
+    (void)memset (p_sample, 0, sizeof (*p_sample));
+    p_sample->ax_g = p_acc_g[HUMP_AXIS_X];
+    p_sample->ay_g = p_acc_g[HUMP_AXIS_Y];
+    p_sample->az_g = p_acc_g[HUMP_AXIS_Z];
+    p_sample->motion_valid = p_motion->valid && !p_pipe->carry_invalid;
+    p_sample->motion_age_s = p_motion->age_s;
+    p_sample->speed_mps = p_motion->speed_mps;
+    p_sample->ds_m = p_motion->ds_m + p_pipe->carry_ds_m;
+    p_sample->accel_mps2 = p_motion->accel_mps2;
+
+    (void)memset (p_in, 0, sizeof (*p_in));
+    p_in->dt_s = dt_s + p_pipe->carry_dt_s;
+    p_in->wheels_valid = p_sample->motion_valid && p_motion->wheels_valid;
+    p_pipe->carry_ds_m = 0.0f;
+    p_pipe->carry_dt_s = 0.0f;
+    p_pipe->carry_invalid = false;
+    p_in->v_left_mps = p_motion->v_left_mps;
+    p_in->v_right_mps = p_motion->v_right_mps;
+    if (NULL != p_mag_g)
+    {
+        p_in->mag_new = true;
+        p_in->mx_g = p_mag_g[HUMP_AXIS_X];
+        p_in->my_g = p_mag_g[HUMP_AXIS_Y];
+        p_in->mz_g = p_mag_g[HUMP_AXIS_Z];
+    }
+}
+
+/* Run hump detection and motion classification on one prepared sample. */
+static void run_detectors (pipeline_t * p_pipe, hump_sample_t * p_sample,
+                           imu_motion_input_t * p_in, pipeline_step_t * p_out)
+{
+    /* Bad numbers from Buddy 2 make hump_update refuse the sample;
+     * retry once with the motion data marked invalid. */
+    if (!hump_update (&p_pipe->hump, p_sample, &p_out->hump))
+    {
+        p_sample->motion_valid = false;
+        p_in->wheels_valid = false;
+        p_out->sensors_ok = hump_update (&p_pipe->hump, p_sample,
+                                         &p_out->hump);
+    }
+    else
+    {
+        p_out->sensors_ok = true;
+    }
+
+    if (p_out->sensors_ok
+        && !imu_motion_update (&p_pipe->motion, p_sample, &p_out->hump,
+                               p_in, &p_out->motion))
+    {
+        /* Only non-finite magnetometer values get here. */
+        p_in->mag_new = false;
+        p_out->sensors_ok = imu_motion_update (&p_pipe->motion, p_sample,
+                                               &p_out->hump, p_in,
+                                               &p_out->motion);
+    }
+}
+
+/* Pack the detector results into *p_word. Clears sensors_ok when the fields
+ * do not pack; sets *p_event when a message must go to navigation. */
+static void pack_result (pipeline_t * p_pipe, pipeline_step_t * p_out,
+                         bool i2c_fault, packed_hump_t * p_word,
+                         bool * p_event)
+{
+    hump_fields_t fields;
+
+    hump_run_update (&p_pipe->run, &p_out->hump);
+    (void)hump_fields_from_output (&p_out->hump, &p_pipe->run,
+                                   p_out->motion.motion, i2c_fault, &fields);
+    if (!hump_pack (&fields, p_word))
+    {
+        p_out->sensors_ok = false;
+    }
+    else
+    {
+        *p_event = (HUMP_EVENT_NONE != p_out->hump.event)
+                   || (p_out->motion.motion != p_pipe->last_motion);
+        p_pipe->last_motion = p_out->motion.motion;
+    }
+}
+
 bool pipeline_step (pipeline_t * p_pipe,
                        const float * p_acc_g,
                        const float * p_mag_g,
@@ -82,7 +170,7 @@ bool pipeline_step (pipeline_t * p_pipe,
     imu_motion_input_t in;
     hump_fields_t fields;
     packed_hump_t word = 0U;
-    uint8_t faults;
+    uint8_t faults = 0U;
     bool event = false;
 
     if ((NULL == p_pipe) || (NULL == p_motion) || (NULL == p_out)
@@ -103,74 +191,13 @@ bool pipeline_step (pipeline_t * p_pipe,
     }
     else
     {
-        (void)memset (&sample, 0, sizeof (sample));
-        sample.ax_g = p_acc_g[0];
-        sample.ay_g = p_acc_g[1];
-        sample.az_g = p_acc_g[2];
-        sample.motion_valid = p_motion->valid && !p_pipe->carry_invalid;
-        sample.motion_age_s = p_motion->age_s;
-        sample.speed_mps = p_motion->speed_mps;
-        sample.ds_m = p_motion->ds_m + p_pipe->carry_ds_m;
-        sample.accel_mps2 = p_motion->accel_mps2;
-
-        (void)memset (&in, 0, sizeof (in));
-        in.dt_s = dt_s + p_pipe->carry_dt_s;
-        in.wheels_valid = sample.motion_valid && p_motion->wheels_valid;
-        p_pipe->carry_ds_m = 0.0f;
-        p_pipe->carry_dt_s = 0.0f;
-        p_pipe->carry_invalid = false;
-        in.v_left_mps = p_motion->v_left_mps;
-        in.v_right_mps = p_motion->v_right_mps;
-        if (NULL != p_mag_g)
-        {
-            in.mag_new = true;
-            in.mx_g = p_mag_g[0];
-            in.my_g = p_mag_g[1];
-            in.mz_g = p_mag_g[2];
-        }
-
-        /* Bad numbers from Buddy 2 make hump_update refuse the sample;
-         * retry once with the motion data marked invalid. */
-        if (!hump_update (&p_pipe->hump, &sample, &p_out->hump))
-        {
-            sample.motion_valid = false;
-            in.wheels_valid = false;
-            p_out->sensors_ok = hump_update (&p_pipe->hump, &sample,
-                                             &p_out->hump);
-        }
-        else
-        {
-            p_out->sensors_ok = true;
-        }
-
-        if (p_out->sensors_ok
-            && !imu_motion_update (&p_pipe->motion, &sample, &p_out->hump,
-                                   &in, &p_out->motion))
-        {
-            /* Only non-finite magnetometer values get here. */
-            in.mag_new = false;
-            p_out->sensors_ok = imu_motion_update (&p_pipe->motion, &sample,
-                                                   &p_out->hump, &in,
-                                                   &p_out->motion);
-        }
+        prepare_inputs (p_pipe, p_acc_g, p_mag_g, p_motion, dt_s, &sample, &in);
+        run_detectors (p_pipe, &sample, &in, p_out);
     }
 
     if (p_out->sensors_ok)
     {
-        hump_run_update (&p_pipe->run, &p_out->hump);
-        (void)hump_fields_from_output (&p_out->hump, &p_pipe->run,
-                                          p_out->motion.motion, i2c_fault,
-                                          &fields);
-        if (!hump_pack (&fields, &word))
-        {
-            p_out->sensors_ok = false;
-        }
-        else
-        {
-            event = (HUMP_EVENT_NONE != p_out->hump.event)
-                    || (p_out->motion.motion != p_pipe->last_motion);
-            p_pipe->last_motion = p_out->motion.motion;
-        }
+        pack_result (p_pipe, p_out, i2c_fault, &word, &event);
     }
 
     if (!p_out->sensors_ok)

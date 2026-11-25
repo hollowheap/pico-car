@@ -33,13 +33,24 @@
 #define PITCH_OFFSET    (64.0f)   /* Code for 0 degrees.                   */
 #define PITCH_CODE_MAX  (127.0f)
 #define HALF_DEG_PER_DEG (2.0f)
+#define MM_PER_M        (1000.0f)
+#define ROUND_HALF      (0.5f)
+
+#define BYTE_MASK       (0xFFU)
+#define BYTE1_SHIFT     (8U)
+#define BYTE2_SHIFT     (16U)
+#define BYTE3_SHIFT     (24U)
+#define BYTE_INDEX_0    (0U)      /* Little-endian: byte 0 is the lowest.  */
+#define BYTE_INDEX_1    (1U)
+#define BYTE_INDEX_2    (2U)
+#define BYTE_INDEX_3    (3U)
 
 /* Round a height in metres to a 7-bit code. Sets *p_overflow when the value
  * is above HUMP_HEIGHT_MAX_MM after rounding. Caller has checked >= 0. */
 static uint32_t height_code (float height_m, bool * p_overflow)
 {
-    float mm = floorf ((height_m * 1000.0f) + 0.5f);
-    uint32_t code;
+    float mm = floorf ((height_m * MM_PER_M) + ROUND_HALF);
+    uint32_t code = 0U;
 
     if (mm > (float)HUMP_HEIGHT_MAX_MM)
     {
@@ -59,7 +70,8 @@ static uint32_t height_code (float height_m, bool * p_overflow)
  * outside HUMP_PITCH_MIN_DEG .. HUMP_PITCH_MAX_DEG after rounding. */
 static uint32_t pitch_code (float pitch_deg, bool * p_clipped)
 {
-    float code = floorf ((pitch_deg * HALF_DEG_PER_DEG) + 0.5f) + PITCH_OFFSET;
+    float code = floorf ((pitch_deg * HALF_DEG_PER_DEG) + ROUND_HALF)
+                 + PITCH_OFFSET;
 
     *p_clipped = false;
     if (code < 0.0f)
@@ -83,12 +95,12 @@ static uint32_t pitch_code (float pitch_deg, bool * p_clipped)
 bool hump_pack (const hump_fields_t * p_fields,
                    packed_hump_t * p_word)
 {
-    uint32_t word;
-    uint32_t faults;
-    bool clipped;
-    bool hump_over;
-    bool run_over;
-    bool valid;
+    uint32_t word = 0U;
+    uint32_t faults = 0U;
+    bool clipped = false;
+    bool hump_over = false;
+    bool run_over = false;
+    bool valid = false;
 
     if ((NULL == p_fields) || (NULL == p_word))
     {
@@ -151,7 +163,7 @@ bool hump_pack (const hump_fields_t * p_fields,
 
 bool hump_unpack (packed_hump_t word, hump_fields_t * p_fields)
 {
-    uint32_t pitch;
+    uint32_t pitch = 0U;
 
     if ((NULL == p_fields)
         || (((word & ACTIVE_BIT) != 0U) && ((word & FINISHED_BIT) != 0U)))
@@ -165,9 +177,9 @@ bool hump_unpack (packed_hump_t word, hump_fields_t * p_fields)
     pitch = (word >> PITCH_SHIFT) & PITCH_MASK;
     p_fields->pitch_deg = ((float)pitch - PITCH_OFFSET) / HALF_DEG_PER_DEG;
     p_fields->hump_peak_m = (float)((word >> HPEAK_SHIFT) & HPEAK_MASK)
-                            / 1000.0f;
+                            / MM_PER_M;
     p_fields->run_peak_m = (float)((word >> RPEAK_SHIFT) & RPEAK_MASK)
-                           / 1000.0f;
+                           / MM_PER_M;
     p_fields->hump_active = ((word & ACTIVE_BIT) != 0U);
     p_fields->finished = ((word & FINISHED_BIT) != 0U);
     p_fields->height_valid = ((word & VALID_BIT) != 0U);
@@ -175,27 +187,27 @@ bool hump_unpack (packed_hump_t word, hump_fields_t * p_fields)
     return true;
 }
 
-void hump_to_bytes (packed_hump_t word, uint8_t p_bytes[4])
+void hump_to_bytes (packed_hump_t word, uint8_t p_bytes[HUMP_WORD_BYTES])
 {
     if (NULL != p_bytes)
     {
-        p_bytes[0] = (uint8_t)(word & 0xFFU);
-        p_bytes[1] = (uint8_t)((word >> 8U) & 0xFFU);
-        p_bytes[2] = (uint8_t)((word >> 16U) & 0xFFU);
-        p_bytes[3] = (uint8_t)((word >> 24U) & 0xFFU);
+        p_bytes[BYTE_INDEX_0] = (uint8_t)(word & BYTE_MASK);
+        p_bytes[BYTE_INDEX_1] = (uint8_t)((word >> BYTE1_SHIFT) & BYTE_MASK);
+        p_bytes[BYTE_INDEX_2] = (uint8_t)((word >> BYTE2_SHIFT) & BYTE_MASK);
+        p_bytes[BYTE_INDEX_3] = (uint8_t)((word >> BYTE3_SHIFT) & BYTE_MASK);
     }
 }
 
-packed_hump_t hump_from_bytes (const uint8_t p_bytes[4])
+packed_hump_t hump_from_bytes (const uint8_t p_bytes[HUMP_WORD_BYTES])
 {
     packed_hump_t word = 0U;
 
     if (NULL != p_bytes)
     {
-        word = (uint32_t)p_bytes[0]
-               | ((uint32_t)p_bytes[1] << 8U)
-               | ((uint32_t)p_bytes[2] << 16U)
-               | ((uint32_t)p_bytes[3] << 24U);
+        word = (uint32_t)p_bytes[BYTE_INDEX_0]
+               | ((uint32_t)p_bytes[BYTE_INDEX_1] << BYTE1_SHIFT)
+               | ((uint32_t)p_bytes[BYTE_INDEX_2] << BYTE2_SHIFT)
+               | ((uint32_t)p_bytes[BYTE_INDEX_3] << BYTE3_SHIFT);
     }
 
     return word;
@@ -246,7 +258,7 @@ bool hump_fields_from_output (const hump_output_t * p_out,
                                  bool i2c_fault,
                                  hump_fields_t * p_fields)
 {
-    bool finished;
+    bool finished = false;
     uint8_t faults = 0U;
 
     if ((NULL == p_out) || (NULL == p_run) || (NULL == p_fields))

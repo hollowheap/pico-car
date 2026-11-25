@@ -15,11 +15,11 @@
 #define BARCODE_GAP_US       500000U
 #define BARCODE_LEVEL_SPACE  1U
 
-static barcode_handler_t g_handler;
+static barcode_handler_t gp_handler;
 
 void barcode_set_handler (barcode_handler_t handler)
 {
-    g_handler = handler;
+    gp_handler = handler;
 }
 
 void barcode_task_run (void)
@@ -31,8 +31,8 @@ void barcode_task_run (void)
 
     for (;;)
     {
-        uint32_t timestamp_us;
-        bool     level;
+        uint32_t timestamp_us = 0U;
+        bool     level        = false;
 
         while (ir_barcode_pop(&timestamp_us, &level))
         {
@@ -56,9 +56,9 @@ void barcode_task_run (void)
                 uint8_t const code =
                     barcode_parser_input(&parser, is_space, width_um);
 
-                if ((BARCODE_NO_CHAR != code) && (NULL != g_handler))
+                if ((BARCODE_NO_CHAR != code) && (NULL != gp_handler))
                 {
-                    g_handler(code);
+                    gp_handler(code);
                 }
             }
 

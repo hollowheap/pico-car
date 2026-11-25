@@ -56,6 +56,10 @@ commands:
   stop: 0x00
   start: 0x01
   reset: 0x02
+  left: 0x03
+  right: 0x04
+  uturn: 0x05
+  estop: 0x06
 
 # Event IDs are defined with the command/event schema in T04.
 events: {}
