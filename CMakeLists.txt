@@ -392,3 +392,5 @@ target_link_libraries(main PRIVATE obstacle_motion supervisor physics)
 target_link_libraries(track PUBLIC pilot)
 
 include(cmake/bench.cmake)
+
+include(cmake/obstacle_extras.cmake)

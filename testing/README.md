@@ -53,6 +53,32 @@ Build the images with `./build.sh`. Build the optional physics image with `cmake
 
 On `car_bench`, a short press on GP20 selects the next item. Hold GP20 for 1 s to run it. Do not press GP21: it latches the emergency stop until a power cycle.
 
+## Obstacle extras
+
+Build the two optional obstacle-extras images in the configured firmware build.
+
+```sh
+cmake --build build --target obstacle_extras obstacle_extras_bench
+ctest --test-dir build-tests --no-tests=error -R '^obstacle[.]extras_' --output-on-failure
+```
+
+- `obstacle_extras.uf2` runs the original line-following, sweep, bypass and
+  rejoin controller on the shared motion and GPIO drivers with the original
+  200 mm/s wheel target limit and 25% duty cap. GP21 is the emergency stop.
+  Diagnostics use USB. GP7 stays available for I²C.
+- `obstacle_extras_bench.uf2` drives the sonar and simulates navigation in
+  software. GP20 selects a menu item and GP21 sends it. The motor task is
+  absent and the AUTO-RUN simulation starts at boot.
+
+Use these images with a mount that clears the original physical sweep
+from −48° to +48° around the 1450 μs center pulse. The dev-stack mount was
+qualified only from −20° to +20°. The normal build still produces `main.uf2`
+for that narrower range.
+
+The host tests replay the recorded scan profiles and navigation events from
+`obstacle-extras` at `eeb8177`. Three recorded flat-face profiles return
+`NO_SAFE_PATH` at that revision and retain that expected outcome here.
+
 ## Behaviour runs
 
 1. Flash `main.uf2` and start the ground station (`npm start`).
