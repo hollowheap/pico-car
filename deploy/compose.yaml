@@ -1,6 +1,10 @@
 # Optional container deployment of Mosquitto and the ground station.
 #
+#   host/credentials.sh
 #   podman-compose -f deploy/compose.yaml up -d --build
+#
+# host/credentials.sh creates the broker password and ACL files and the
+# bridge login. The broker mounts only the hashed passwords and the ACL.
 #
 # The broker publishes BROKER_PORT (default 1883) on every interface so the
 # car reaches it on the Wi-Fi. The ground station is published on loopback.
@@ -11,8 +15,11 @@ services:
     image: docker.io/library/eclipse-mosquitto:2
     ports:
       - "${BROKER_PORT:-1883}:1883"
+    working_dir: /mosquitto/config
     volumes:
       - ../host/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z
+      - ../host/credentials/passwd:/mosquitto/config/passwd:ro,Z
+      - ../host/credentials/acl:/mosquitto/config/acl:ro,Z
     restart: unless-stopped
 
   bridge:
@@ -21,6 +28,8 @@ services:
       dockerfile: deploy/station.Dockerfile
       args:
         EXPO_PUBLIC_ALLOW_INSECURE: "${EXPO_PUBLIC_ALLOW_INSECURE:-0}"
+    env_file:
+      - ../host/credentials/bridge.env
     environment:
       MQTT_URL: mqtt://broker:1883
     ports:

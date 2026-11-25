@@ -28,3 +28,6 @@ __pycache__/
 
 # host test build
 build-tests/
+
+# Generated MQTT credentials and broker files
+/host/credentials/

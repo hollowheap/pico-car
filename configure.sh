@@ -8,6 +8,16 @@ cd "$DIR"
 git submodule sync -- lib/mtk3smp-rp2040
 git submodule update --init --recursive
 
+# The car's broker login comes from host/credentials.sh. A value already in
+# the environment wins.
+host/credentials.sh
+if [ -z "${PICO_CAR_MQTT_USERNAME:-}" ] && [ -z "${PICO_CAR_MQTT_PASSWORD:-}" ]; then
+    car_env=${PICO_CAR_CREDENTIALS_DIR:-host/credentials}/car.env
+    PICO_CAR_MQTT_USERNAME=$(sed -n 's/^PICO_CAR_MQTT_USERNAME=//p' "$car_env")
+    PICO_CAR_MQTT_PASSWORD=$(sed -n 's/^PICO_CAR_MQTT_PASSWORD=//p' "$car_env")
+    export PICO_CAR_MQTT_USERNAME PICO_CAR_MQTT_PASSWORD
+fi
+
 # Detect the active Wi-Fi and the broker host unless the caller supplied
 # them with -D flags or the environment.
 if [ -z "${PICO_CAR_WIFI_SSID:-}" ] && command -v nmcli >/dev/null 2>&1; then

@@ -10,10 +10,14 @@ project(pico-car C CXX ASM)
 # configure line; the defaults target a LAN Mosquitto instance.
 set(PICO_CAR_MQTT_HOST "$ENV{PICO_CAR_MQTT_HOST}" CACHE STRING "MQTT broker host or IP")
 set(PICO_CAR_MQTT_PORT "1883" CACHE STRING "MQTT broker TCP port")
-set(PICO_CAR_MQTT_USERNAME "" CACHE STRING "MQTT username (empty for anonymous)")
-set(PICO_CAR_MQTT_PASSWORD "" CACHE STRING "MQTT password (empty for anonymous)")
+set(PICO_CAR_MQTT_USERNAME "$ENV{PICO_CAR_MQTT_USERNAME}" CACHE STRING "MQTT username (set by host/credentials.sh)")
+set(PICO_CAR_MQTT_PASSWORD "$ENV{PICO_CAR_MQTT_PASSWORD}" CACHE STRING "MQTT password (set by host/credentials.sh)")
 set(PICO_CAR_TOPIC_PREFIX "car/PICO-CAR" CACHE STRING "MQTT topic prefix")
 set(PICO_CAR_CLIENT_ID "pico-car" CACHE STRING "MQTT client identifier")
+
+if (NOT PICO_CAR_MQTT_USERNAME OR NOT PICO_CAR_MQTT_PASSWORD)
+    message(WARNING "The broker refuses anonymous clients. Run ./configure.sh to load the car credentials.")
+endif()
 
 if (NOT PICO_CAR_MQTT_PORT MATCHES "^[0-9]+$")
     message(FATAL_ERROR "PICO_CAR_MQTT_PORT must be numeric")

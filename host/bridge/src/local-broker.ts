@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { connect } from "node:net";
 import { fileURLToPath } from "node:url";
+import { credentialsDir } from "./config.js";
 
 /** Leave an existing listener under its owner's control. */
 export async function startLocalBroker(): Promise<ChildProcess | undefined> {
@@ -19,7 +21,11 @@ export async function startLocalBroker(): Promise<ChildProcess | undefined> {
   if (listening) return;
 
   const config = fileURLToPath(new URL("../../mosquitto.conf", import.meta.url));
-  const broker = spawn("mosquitto", ["-c", config], { stdio: "inherit" });
+  const credentials = credentialsDir();
+  if (!existsSync(`${credentials}/passwd`) || !existsSync(`${credentials}/acl`)) {
+    throw new Error("Broker credentials missing. Run host/credentials.sh.");
+  }
+  const broker = spawn("mosquitto", ["-c", config], { stdio: "inherit", cwd: credentials });
   try {
     await once(broker, "spawn");
   } catch (error) {
