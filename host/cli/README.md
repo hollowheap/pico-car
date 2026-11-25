@@ -2,7 +2,7 @@
 
 Direct-MQTT ground-station CLI. It consumes `protocol/telemetry.yaml`, decodes
 the schema 3 packets (status, motion, physics, obstacle, diag, event,
-heartbeat, profile), and sends validated commands without going
+heartbeat, profile and barcode sample), and sends validated commands without going
 through the dashboard backend (D41).
 
 ## Usage
@@ -45,6 +45,11 @@ with another one. It also refuses a cmd_id that is not newer than the last
 one it accepted, so the CLI sends `cmd_last_id + 1`, and an uptime echo more
 than 3 s old. Override the ids with `--run-id` and `--cmd-id` for controlled
 tests; the uptime always comes from the heartbeat.
+
+Diagnostics use `/d` in both layouts. The current 73-byte frame sends
+cumulative line and sonar counters with the device timer. The CLI and bridge
+also read the 45-byte legacy frame. Update the CLI and bridge before flashing
+firmware that sends the current layout so command correlation continues to work.
 
 ## Outage check
 

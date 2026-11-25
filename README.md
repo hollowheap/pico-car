@@ -34,8 +34,9 @@ Build notes:
   devshell environment variable cannot override it.
 - The firmware uses the kernel object limits in `cmake/mtk3smp_config.h.in`.
   CMake applies those limits to the pinned kernel and firmware targets.
-- Kernel translation units build with `-std=gnu11`; only `src/` is held to
-  BARR-C C99 with `-Werror`.
+- Application C, the PIO adapter, and the compiled SDK, lwIP and TinyUSB sources
+  build with `-std=c99` using the pinned `hollowheap/pico-sdk` C99 fork.
+  The kernel port builds with `-std=gnu11`. Application warnings are errors.
 - The kernel linker script asserts `.boot2` is exactly 256 bytes. Link with
   `-Wl,--undefined=boot2` so the member is not dropped from the archive.
 - Hand-rolled firmware targets need `-ffunction-sections` and `-fdata-sections`;
@@ -84,8 +85,8 @@ loopback only. The dashboard build holds the bridge address, so rebuild it with
 
 ## Telemetry
 
-The firmware publishes the status, motion, physics, obstacle, diag, heartbeat,
-event and profile packets on MQTT (topics `s m p o d h e f`) and accepts
+The firmware publishes status, motion, physics, obstacle, diag, heartbeat,
+event, profile and barcode sample packets on MQTT (topics `s m p o d h e f b`) and accepts
 STOP/START/RESET and E-STOP commands. Broker settings are CMake cache values:
 `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`, `PICO_CAR_MQTT_USERNAME`,
 `PICO_CAR_MQTT_PASSWORD`, `PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.

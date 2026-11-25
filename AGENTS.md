@@ -2,7 +2,7 @@
 
 ## Style & Standards
 - Enforce BARR-C:2018 in `src/` with `-Werror`.
-- C standard: C99 for application code (`CMAKE_C_STANDARD 99`); the kernel, lwIP, and Pico SDK build as gnu11.
+- Application C, the PIO adapter and the compiled Pico SDK dependencies use `-std=c99`. Application code in `src/` follows BARR-C:2018 with `-Werror`. The μT-Kernel port uses `-std=gnu11`.
 - Format: `.clang-format` and `.clang-tidy`.
 - Keep μT-Kernel task attributes literal in `src/main.c`; do not add `PRIO_*` constants.
 - Log with `LOG_*` from `platform/log.h`: `[<SEV>](<task>:<module>) message`. Never call `tm_printf` in `src/`.

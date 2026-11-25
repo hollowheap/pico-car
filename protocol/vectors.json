@@ -178,6 +178,58 @@
         ]
       },
       "hex": "7585090c70e36c986d55d38f1ed9e45f78299359b6526c20f3cce177aa9056813f2ea23d0ef3314c058c6f4102e1180467ef4b1489e805b39cf1d63474237a074ac5793f3adc059e1f77386af570919f6b71"
+    },
+    "diag_counts": {
+      "values": {
+        "sticky_faults": 9267,
+        "task_alive_mask": 51832,
+        "line_lost_count": 30347,
+        "reserved": 0,
+        "barcode_ok": 49727,
+        "barcode_bad": 39763,
+        "barcode_edge_drops": 33062,
+        "last_barcode": 182,
+        "last_barcode_action": 229,
+        "telem_queue_drops": 53751,
+        "net_queue_drops": 5870,
+        "physics_overruns": 60842,
+        "telemetry_overruns": 32398,
+        "line_edges_total": 1378908288,
+        "line_raw_edges_total": 2103972319,
+        "supervisor_passes": 53405,
+        "stack_min_free": 26936,
+        "stack_min_task": 105,
+        "cmd_ring_drops": 228,
+        "cmd_last_id": 18018,
+        "cmd_rej_length": 150,
+        "cmd_rej_opcode": 184,
+        "cmd_rej_run": 52,
+        "cmd_rej_old_id": 120,
+        "cmd_rej_age": 199,
+        "echo_total": [
+          1442376156,
+          2646375307,
+          1758305134,
+          2827725813,
+          1022840016,
+          1575533039
+        ],
+        "sensor_sample_us": 3819740802
+      },
+      "hex": "2433ca78768b0000c23f9b538126b6e5d1f716eeedaa7e8e523078807d6811dfd09d693869e4466296b83478c755f8e9dc9dbc7b8b68cd9b6ea88babf53cf74cd05de8b9efe3ac9e82"
+    },
+    "barcode_sample": {
+      "values": {
+        "edge_us": 235719673,
+        "interval_us": 4155213060,
+        "odometer_mm": 612912275,
+        "width_um": 57400,
+        "seq": 85,
+        "level_high": 187,
+        "width_valid": 181,
+        "capture_loss": 164
+      },
+      "hex": "0e0ccbf9f7ab850424884c93e03855bbb5a4"
     }
   }
 }

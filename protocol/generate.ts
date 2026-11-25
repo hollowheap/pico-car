@@ -15,6 +15,7 @@ interface Field {
 interface Packet {
   wire_size: number;
   fields: Field[];
+  variant_of?: string;
 }
 
 type EnumDefinition =
@@ -72,8 +73,18 @@ for (const [name, packet] of Object.entries(schema.packets)) {
 
 const topicChars = Object.values(schema.topics);
 if (new Set(topicChars).size !== topicChars.length) throw new Error('duplicate topic character');
-for (const name of Object.keys(schema.packets)) {
-  if (!(name in schema.topics)) throw new Error(`packet ${name} has no topic`);
+for (const [name, packet] of Object.entries(schema.packets)) {
+  if (packet.variant_of === undefined) {
+    if (!(name in schema.topics)) throw new Error(`packet ${name} has no topic`);
+  } else {
+    const base = schema.packets[packet.variant_of];
+    const sameSize = Object.entries(schema.packets).some(([otherName, other]) =>
+      otherName !== name && (otherName === packet.variant_of || other.variant_of === packet.variant_of) &&
+      other.wire_size === packet.wire_size);
+    if (!(packet.variant_of in schema.topics) || base === undefined || name in schema.topics || sameSize) {
+      throw new Error(`packet ${name} must have a distinct size on its base topic`);
+    }
+  }
 }
 
 const enums: Record<string, EnumDefinition> = { ...(schema.enums ?? {}) };
@@ -293,7 +304,7 @@ for (const [name, packet] of Object.entries(schema.packets)) {
       }
     };
     if (field.count === undefined) {
-      const value = sample(field.type);
+      const value = field.name === 'reserved' ? 0 : sample(field.type);
       write(value, field.offset);
       values[field.name] = value;
     } else {

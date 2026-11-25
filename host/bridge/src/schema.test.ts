@@ -58,7 +58,26 @@ describe("protocol schema", () => {
     }
   });
 
+  it("preserves a sonar command's signed angle in the existing event frame", () => {
+    const type = packetNameForTopic(schema, "car/PICO-CAR/e");
+    expect(type).toBe("event");
+    const wire = Uint8Array.of(0, 23, 0x25, 3, 0xff, 0xbf, 0, 0, 0, 0, 0, 65);
+    expect(decodePacket(schema, type!, wire).values).toEqual({
+      event_id: 23, event_type: 0x25, source: 3, p1: -65, p2: 0, odometer_mm: 65,
+    });
+  });
+
   it("rejects a wrong-sized frame", () => {
     expect(() => decodePacket(schema, "heartbeat", new Uint8Array(3))).toThrow(RangeError);
+  });
+
+  it("keeps new cumulative diagnostics on the command-correlation stream", () => {
+    const bytes = new Uint8Array(73);
+    const view = new DataView(bytes.buffer);
+    view.setUint16(38, 1234);
+    view.setUint32(24, 0x1234ffff);
+    const diag = decodePacket(schema, "diag", bytes);
+    expect(diag.name).toBe("diag");
+    expect(diag.values).toMatchObject({ cmd_last_id: 1234, line_edges_total: 0x1234ffff });
   });
 });

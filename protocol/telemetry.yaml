@@ -22,6 +22,7 @@ topics:
   diag: "d"
   heartbeat: "h"
   event: "e"
+  barcode_sample: "b"
   profile: "f"
   command: "c"
 
@@ -181,6 +182,68 @@ packets:
       - { name: closest_mm, offset: 4, type: uint16 }
       - { name: width_mm, offset: 6, type: uint16 }
       - { name: slots, offset: 8, type: uint16, count: 37 }
+  # Current /d layout. Keep the 45-byte layout for previously recorded runs.
+  diag_counts:
+    variant_of: diag
+    wire_size: 73
+    fields:
+      - { name: sticky_faults, offset: 0, type: uint16 }
+      - { name: task_alive_mask, offset: 2, type: uint16 }
+      - { name: line_lost_count, offset: 4, type: uint16 }
+      - { name: reserved, offset: 6, type: uint16 }
+      - { name: barcode_ok, offset: 8, type: uint16 }
+      - { name: barcode_bad, offset: 10, type: uint16 }
+      - { name: barcode_edge_drops, offset: 12, type: uint16 }
+      - { name: last_barcode, offset: 14, type: uint8 }
+      - { name: last_barcode_action, offset: 15, type: uint8, enum: barcode_action }
+      - { name: telem_queue_drops, offset: 16, type: uint16 }
+      - { name: net_queue_drops, offset: 18, type: uint16 }
+      - { name: physics_overruns, offset: 20, type: uint16 }
+      - { name: telemetry_overruns, offset: 22, type: uint16 }
+      - { name: line_edges_total, offset: 24, type: uint32 }
+      - { name: line_raw_edges_total, offset: 28, type: uint32 }
+      - { name: supervisor_passes, offset: 32, type: uint16 }
+      # The smallest free stack since boot, and the task it belongs to
+      # (index in main.c stack order). Cached from the 30 s stack scan.
+      - { name: stack_min_free, offset: 34, type: uint16 }
+      - { name: stack_min_task, offset: 36, type: uint8 }
+      # Commands the supervisor inbox dropped when full: the low byte of a
+      # count that wraps. A client takes the difference between frames.
+      - { name: cmd_ring_drops, offset: 37, type: uint8 }
+      # The last command id the car accepted, 0 before the first. A sender
+      # that starts or restarts sends the next id after it.
+      - { name: cmd_last_id, offset: 38, type: uint16 }
+      # Commands the car refused, one count per cause, each the low byte of a
+      # count that wraps like cmd_ring_drops: a wrong length; an unknown
+      # opcode; another run id; an id not newer than cmd_last_id; an uptime
+      # echo more than 3 s old or ahead of the car.
+      - { name: cmd_rej_length, offset: 40, type: uint8 }
+      - { name: cmd_rej_opcode, offset: 41, type: uint8 }
+      - { name: cmd_rej_run, offset: 42, type: uint8 }
+      - { name: cmd_rej_old_id, offset: 43, type: uint8 }
+      - { name: cmd_rej_age, offset: 44, type: uint8 }
+      # Cumulative counter order matches echo_class codes 0 through 5.
+      - { name: echo_total, offset: 45, type: uint32, count: 6 }
+      # Low 32 bits of the boot-relative hardware timer, in microseconds.
+      - { name: sensor_sample_us, offset: 69, type: uint32 }
+
+  # Best effort, one packet per captured GP26 transition. edge_us wraps at
+  # 32 bits. level_high is the level after the edge. An interval ends at
+  # this edge; zero starts a span. capture_loss breaks continuity. seq
+  # increments even when delivery fails. UINT32_MAX is an unknown odometer.
+  # width_um is usable only with width_valid and saturates at 65535.
+  barcode_sample:
+    wire_size: 18
+    fields:
+      - { name: edge_us, offset: 0, type: uint32 }
+      - { name: interval_us, offset: 4, type: uint32 }
+      - { name: odometer_mm, offset: 8, type: uint32 }
+      - { name: width_um, offset: 12, type: uint16 }
+      - { name: seq, offset: 14, type: uint8 }
+      - { name: level_high, offset: 15, type: uint8 }
+      - { name: width_valid, offset: 16, type: uint8 }
+      - { name: capture_loss, offset: 17, type: uint8 }
+
 # A command on the command topic is a 9-byte frame, big-endian:
 #   cmd_id u16, run_id u16, opcode u8, uptime_s u32
 # run_id and uptime_s are copied from the newest heartbeat. The car accepts a
@@ -402,6 +465,8 @@ enums:
     bits:
       wall: 0
       probe_side_valid: 1  # pilot_sparse: side identifies the selected edge to investigate
+      stationary_contact: 2  # front or side fan measured at one stopped axle pose
+      endpoint_lsb: 4  # bits 4..7: 0 unconfirmed, 1..9 measured side endpoint at -20..+20 degrees in 5-degree steps
   obstacle_flags:
     bits:
       wall: 0

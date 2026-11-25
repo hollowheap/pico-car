@@ -91,6 +91,8 @@ pico_sdk_init()
 # Configuration mirrors build_make/pico_rp2040.mk:
 #   SMP=1 CONSOLE=usb_cdc WIFI=cyw43 (JOIN/NETIF/STATIC/DHCP/DNS/UDP/TCP/BULK=0)
 add_library(mtk3smp STATIC)
+add_library(pico_car_sdk OBJECT)
+add_library(pico_car_board INTERFACE)
 
 # The kernel's own makefile builds with -std=gnu11; only the application is
 # held to Barr-C C99.
@@ -100,7 +102,7 @@ set_target_properties(mtk3smp PROPERTIES
     C_EXTENSIONS ON
 )
 
-target_compile_definitions(mtk3smp PUBLIC
+target_compile_definitions(pico_car_board INTERFACE
     _PICO_RP2040_
     CNF_SMP=1
     TM_CONSOLE_USB_CDC=1
@@ -162,7 +164,7 @@ set(PICO_SDK_INCLUDES
     ${PICO_SDK_PATH}/lib/tinyusb/src
 )
 
-target_include_directories(mtk3smp PUBLIC
+set(PICO_CAR_BOARD_INCLUDES
     # The project config supplies the object budget to the kernel and its callers.
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${MTK3SMP_PATH}/include
@@ -178,9 +180,11 @@ target_include_directories(mtk3smp PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
     ${MTK3SMP_PATH}/lib/libnet/lwip/include
     ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
-  PRIVATE
-    ${PICO_SDK_INCLUDES}
 )
+target_link_libraries(mtk3smp PUBLIC pico_car_board)
+target_link_libraries(pico_car_sdk PRIVATE pico_car_board)
+target_include_directories(mtk3smp PUBLIC ${PICO_CAR_BOARD_INCLUDES} PRIVATE ${PICO_SDK_INCLUDES})
+target_include_directories(pico_car_sdk PRIVATE ${PICO_CAR_BOARD_INCLUDES} ${PICO_SDK_INCLUDES})
 
 target_sources(mtk3smp PRIVATE
     ${MTK3SMP_PATH}/device/adc/adc.c
@@ -255,6 +259,12 @@ target_sources(mtk3smp PRIVATE
     ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040/cyw43_utk_compat.c
     ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040/cyw43_utk_kernel.c
 
+    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk.c
+    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk_ipv4.c
+    $<TARGET_OBJECTS:pico_car_sdk>
+)
+
+target_sources(pico_car_sdk PRIVATE
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_ctrl.c
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_ll.c
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_lwip.c
@@ -296,11 +306,11 @@ target_sources(mtk3smp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4_addr.c
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4_frag.c
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/netif/ethernet.c
-    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk.c
-    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk_ipv4.c
 )
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
+target_link_libraries(pico_car_sdk PRIVATE pico_base_headers)
+target_compile_options(pico_car_sdk PRIVATE -ffunction-sections -fdata-sections)
 
 # Warning set shared by every application firmware target (BARR-C:2018).
 set(FIRMWARE_WARNINGS
@@ -378,19 +388,11 @@ target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
 target_link_libraries(motion_core PUBLIC platform mtk3smp)
 target_compile_options(motion_core PRIVATE ${FIRMWARE_WARNINGS})
 
-# The encoder state machines. The SDK PIO driver needs C11, as the kernel
-# build does; SYSTEM keeps the firmware warnings off the SDK headers.
-add_library(motion_pio STATIC
-    src/motion/encoder_pio.c
-)
-set_target_properties(motion_pio PROPERTIES
-    C_STANDARD 11
-    C_STANDARD_REQUIRED ON
-    C_EXTENSIONS ON
-)
+# The pinned SDK exposes the PIO headers to the C99 encoder adapter.
+add_library(motion_pio STATIC src/motion/encoder_pio.c)
 target_include_directories(motion_pio SYSTEM PRIVATE ${PICO_SDK_INCLUDES}
     ${CMAKE_CURRENT_LIST_DIR}/src/motion/generated)
-target_link_libraries(motion_pio PUBLIC mtk3smp)
+target_link_libraries(motion_pio PUBLIC mtk3smp PRIVATE pico_base_headers)
 target_compile_options(motion_pio PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(motion_service STATIC
