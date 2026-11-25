@@ -5,6 +5,7 @@ set -euo pipefail
 DIR=$(dirname -- "${BASH_SOURCE[0]}")
 cd "$DIR"
 
+git submodule sync -- lib/mtk3smp-rp2040
 git submodule update --init --recursive
 
 # Detect the active Wi-Fi and the broker host unless the caller supplied

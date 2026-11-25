@@ -312,6 +312,13 @@ target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 target_link_libraries(pico_car_sdk PRIVATE pico_base_headers)
 target_compile_options(pico_car_sdk PRIVATE -ffunction-sections -fdata-sections)
 
+# The driver calls this macro from the radio owner task once the station
+# netif exists; the link timer registers its first lwIP timeout there. The
+# hook is weak, so images without the telemetry library still link.
+set_source_files_properties(${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_lwip.c
+    PROPERTIES COMPILE_OPTIONS
+    "-include;${CMAKE_CURRENT_SOURCE_DIR}/include/telemetry/wifi_link.h;-DCYW43_CB_TCPIP_INIT_EXTRA(self,itf)=((void)(wifi_link_netif_init!=0&&(wifi_link_netif_init(self,itf),1)))")
+
 # Warning set shared by every application firmware target (BARR-C:2018).
 set(FIRMWARE_WARNINGS
     -Werror
@@ -349,10 +356,17 @@ add_library(telemetry STATIC
     src/telemetry/publisher.c
     src/telemetry/queue.c
     src/telemetry/tcp_transport.c
+    src/telemetry/wifi_link.c
     src/telemetry/worker.c
 )
 target_include_directories(telemetry PUBLIC include PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# wifi_link.c calls the CYW43 driver. The kernel's cyw43_configport.h must win
+# over the SDK's, so the SDK's own driver include directory stays out.
+set(TELEMETRY_RADIO_INCLUDES ${PICO_SDK_INCLUDES})
+list(FILTER TELEMETRY_RADIO_INCLUDES EXCLUDE REGEX "pico_cyw43_driver")
+target_include_directories(telemetry SYSTEM PRIVATE ${TELEMETRY_RADIO_INCLUDES})
+target_link_libraries(telemetry PRIVATE pico_base_headers)
 target_link_libraries(telemetry PUBLIC platform mtk3smp)
 target_compile_options(telemetry PRIVATE ${FIRMWARE_WARNINGS})
 

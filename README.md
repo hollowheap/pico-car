@@ -28,10 +28,14 @@ When developing, `configure.sh` should be run before the first build or whenever
 
 Build notes:
 
-- `configure.sh` initializes submodules before configuring CMake.
+- `configure.sh` syncs the kernel remote and initializes submodules before
+  configuring CMake. When updating submodules manually in an existing checkout,
+  run `git submodule sync -- lib/mtk3smp-rp2040` before
+  `git submodule update --init --recursive`.
 - `CMakeLists.txt` pins `PICO_SDK_PATH` to the vendored `lib/pico-sdk` so a
   devshell environment variable cannot override it.
-- The kernel and firmware use the object limits in the pinned port's
+- The kernel is the unmodified upstream `sirfonzie/mtk3smp-rp2040` at the
+  pinned commit. The kernel and firmware use the object limits in its
   `lib/mtk3smp-rp2040/config/config.h`.
 - Application C, the PIO adapter, and the compiled SDK, lwIP and TinyUSB sources
   build with `-std=c99` using the pinned `hollowheap/pico-sdk` C99 fork.
@@ -332,7 +336,10 @@ sensor sample directly. The logged board Z and acceleration magnitude include
 gravity and retain impact peaks at the telemetry sampling instants.
 
 A link outage during a run leaves local navigation active. With Wi-Fi configured,
-the car retries five seconds after a failed association or a lost link. The USB
+the car retries five seconds after a failed association or a lost link. The
+upstream kernel joins once and adopts DHCP once, so `src/telemetry/wifi_link.c`
+repeats the join and tracks the lease from a repeating lwIP timeout in the
+radio task. The USB
 console reports a connection fault during this wait and joining during the next
 attempt. After association the car waits for a current DHCP lease and queues a
 heartbeat as soon as MQTT reconnects. The

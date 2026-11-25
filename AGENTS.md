@@ -10,7 +10,7 @@ Pico W line-following firmware and LAN ground station.
 
 ## Conventions
 
-- Build `pico_w` with pinned SDK and kernel forks. Application, PIO and SDK use C99. Kernel uses GNU11. Follow BARR-C:2018, clang-format and clang-tidy. Keep `-Werror`, lint and tests enabled.
+- Build `pico_w` with the pinned SDK fork and the unmodified upstream `sirfonzie/mtk3smp-rp2040` kernel; never patch the kernel. Application, PIO and SDK use C99. Kernel uses GNU11. Follow BARR-C:2018, clang-format and clang-tidy. Keep `-Werror`, lint and tests enabled.
 - Match public `include/<subsystem>` to `src/<subsystem>`. Keep domain C driver-free. Create tasks only in each subsystem's `<subsystem>_start()` with literal attributes and no `PRIO_*` constants; `src/main.c` calls every `<subsystem>_init()` and then every `<subsystem>_start()`. With `CNF_SMP=1`, core 0 runs control at priorities 1–5 and CYW43/lwIP at 4. Core 1 runs MQTT at 6.
 - Use SIO spinlocks, never `hw_set_bits` on SRAM. Use fixed buffers, packed fields and `STATIC_ASSERT`. Log with `LOG_*` as `[<SEV>](<task>:<module>)`, never `tm_printf`.
 - Read source before editing. Fix causes with minimal changes. Reproduce bugs with failing tests and preserve assertions. Explain non-obvious reasons in comments, document behavior changes and measure tuning on the car. Keep artifact IDs out of code, comments and commits.

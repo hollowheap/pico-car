@@ -15,6 +15,7 @@
 #include "telemetry/net_queue.h"
 #include "telemetry/queue.h"
 #include "telemetry/tcp_transport.h"
+#include "telemetry/wifi_link.h"
 
 #ifdef NDEBUG
 #error "tests need assert()"
@@ -41,6 +42,8 @@ static bool     g_publish_failure;
 static bool     g_fail_data;
 static bool     g_data_pulled;
 static bool     g_join_failure;
+
+#define RECOVERED_RSSI (-71)
 
 uint32_t shim_reg_read (uint32_t addr)
 {
@@ -88,9 +91,29 @@ void cyw43_utk_get_status (T_CYW43_UTK_STATUS * p_status)
         p_status->join_started = 1U;
         p_status->link_up = g_pass >= 5U;
         p_status->dhcp_complete = g_pass >= 6U;
-        p_status->join_complete = (g_pass == 2U || g_pass == 3U || p_status->link_up);
-        p_status->join_result = p_status->link_up ? 0 : (p_status->join_complete ? -1 : -5);
+        p_status->join_complete = g_pass >= 2U;
+        p_status->join_result = p_status->join_complete ? -1 : -5;
+        p_status->link_rssi = INT16_MIN;
     }
+}
+
+wifi_join_t wifi_link_join (void)
+{
+    if (g_join_failure && (g_pass == 2U || g_pass == 3U))
+    {
+        return WIFI_JOIN_FAILED;
+    }
+    return (g_join_failure && g_pass == 4U) ? WIFI_JOIN_ACTIVE : WIFI_JOIN_IDLE;
+}
+
+wifi_lease_t wifi_link_lease (void)
+{
+    return (g_join_failure && g_pass < 6U) ? WIFI_LEASE_PENDING : WIFI_LEASE_READY;
+}
+
+int32_t wifi_link_rssi (void)
+{
+    return g_join_failure ? RECOVERED_RSSI : 0;
 }
 
 ID tk_get_tid (void) { return 1; }
@@ -208,6 +231,10 @@ mqtt_result_t mqtt_client_publish (mqtt_client_t * p_client, const char * p_topi
            now_ms == tcp_transport_now_ms());
     if (b_heartbeat)
     {
+        if (g_join_failure)
+        {
+            assert(p_payload[TELEMETRY_HEARTBEAT_OFF_WIFI_RSSI] == (uint8_t)RECOVERED_RSSI);
+        }
         g_heartbeats++;
     }
     if (g_publish_failure && g_pass == 2U && b_heartbeat != g_fail_data)
@@ -354,12 +381,14 @@ int main (int argc, char ** argv)
     if (argc > 1 && strcmp(argv[1], "join-failure") == 0)
     {
         g_join_failure = true;
+        assert(E_OK == connection_init(dispatch_command, &g_dispatches));
         if (setjmp(g_finish) == 0)
         {
             connection_run();
         }
         assert(g_transport_open == 1U);
         assert(g_transport_close == 1U);
+        assert(g_heartbeats == 1U && connection_mqtt_seen());
         return 0;
     }
     g_publish_failure = (argc > 1);

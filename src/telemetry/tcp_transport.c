@@ -8,8 +8,8 @@
 #include "lwip/sys.h"
 #include "lwip/tcp.h"
 
-#include "cyw43_utk.h"
 #include "telemetry/tcp_transport.h"
+#include "telemetry/wifi_link.h"
 #include "platform/log.h"
 #include "stream_loss.h"
 
@@ -503,7 +503,6 @@ tcp_transport_recv (void * context, uint8_t * data, uint16_t len)
 void
 tcp_transport_poll (void)
 {
-    T_CYW43_UTK_STATUS status;
     uint32_t now_ms = 0u;
 
     if (!g_desired)
@@ -521,9 +520,7 @@ tcp_transport_poll (void)
         return;
     }
 
-    cyw43_utk_get_status(&status);
-    if ((status.link_up == 0u) || (status.dhcp_complete == 0u) ||
-        (status.dhcp_result != 0))
+    if (wifi_link_lease() != WIFI_LEASE_READY)
     {
         close_abort();
         g_resolving = false;
@@ -547,11 +544,4 @@ tcp_transport_poll (void)
         begin_attempt(now_ms);
     }
     drain_tx();
-}
-
-/* Weak hook defined by the kernel fork; the lwIP owner task calls it. */
-void
-cyw43_utk_app_poll (void)
-{
-    tcp_transport_poll();
 }

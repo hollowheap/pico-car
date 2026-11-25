@@ -1,4 +1,5 @@
-/* Exercise the radio owner task through startup, join failures and a later link loss. */
+/* Run the radio owner task with the link timer through startup, join failures,
+ * a later link loss and a renumbered lease. */
 #include <assert.h>
 #include <setjmp.h>
 #include <string.h>
@@ -6,7 +7,9 @@
 #include "cyw43.h"
 #include "cyw43_utk.h"
 #include "lwip/dns.h"
+#include "lwip/timeouts.h"
 #include "lwip_utk_ipv4.h"
+#include "telemetry/wifi_link.h"
 
 #ifdef NDEBUG
 #error "tests need assert()"
@@ -17,14 +20,18 @@ volatile uint32_t cyw43_utk_poll_requested;
 struct netif *netif_default = &cyw43_state.netif[CYW43_ITF_STA];
 static ip_addr_t dns;
 static uint64_t now_us, attempt_us, failure_us, lost_us;
-static unsigned attempts, adoptions, attempts_before_loss, app_polls, timeout_checks;
-static bool supplied, recovered, dropped, saw_timeout, in_driver;
+static unsigned attempts, adoptions, adoptions_at_recovery, attempts_before_loss, transport_polls;
+static bool supplied, recovered, dropped, saw_timeout, in_driver, renumbered;
+static sys_timeout_handler timer_handler;
+static void *timer_arg;
+static uint32_t timer_due_ms;
 static int link;
 static jmp_buf done;
 static const char *scenario;
 
 #define RETRY_US 5000000ULL
-#define POLL_US 2000ULL
+#define RETRY_SLACK_US 10000ULL
+#define JOIN_TIMEOUT_US 30000000ULL
 
 static bool is_case(const char *name) { return strcmp(scenario, name) == 0; }
 uint64_t time_us_64(void) { return now_us; }
@@ -33,11 +40,42 @@ int32_t tk_get_prc(void) { return 1; }
 void cyw43_thread_enter(void) { assert(!in_driver); in_driver = true; }
 void cyw43_thread_exit(void) { assert(in_driver); in_driver = false; }
 void lwip_init(void) {}
-void sys_check_timeouts(void) { assert(in_driver); timeout_checks++; }
+u32_t sys_now(void) { return (u32_t)(now_us / 1000U); }
+
+void sys_timeout(u32_t msecs, sys_timeout_handler handler, void *arg)
+{
+    assert(in_driver && timer_handler == NULL);
+    timer_handler = handler;
+    timer_arg = arg;
+    timer_due_ms = sys_now() + msecs;
+}
+
+void sys_check_timeouts(void)
+{
+    sys_timeout_handler handler = timer_handler;
+
+    assert(in_driver);
+    if (handler != NULL && (int32_t)(sys_now() - timer_due_ms) >= 0) {
+        timer_handler = NULL;
+        handler(timer_arg);
+    }
+}
+
+void tcp_transport_poll(void)
+{
+    assert(in_driver);
+    transport_polls++;
+}
 void cyw43_init(cyw43_t *self) { (void)self; }
 int cyw43_wifi_get_mac(cyw43_t *s, int i, uint8_t mac[6]) { (void)s; (void)i; (void)mac; return 0; }
 int cyw43_wifi_get_bssid(cyw43_t *s, uint8_t b[6]) { (void)s; (void)b; return 0; }
-int cyw43_wifi_get_rssi(cyw43_t *s, int32_t *r) { (void)s; *r = -50; return 0; }
+int cyw43_wifi_get_rssi(cyw43_t *s, int32_t *r)
+{
+    (void)s;
+    assert(in_driver && netif_is_link_up(netif_default));
+    *r = dropped ? -64 : -50;
+    return 0;
+}
 int cyw43_wifi_link_status(cyw43_t *s, int i) { (void)s; (void)i; return link; }
 const ip_addr_t *dns_getserver(u8_t i) { (void)i; return &dns; }
 u8_t dhcp_supplied_address(const struct netif *n) { (void)n; return supplied; }
@@ -50,6 +88,7 @@ void cyw43_wifi_set_up(cyw43_t *self, int itf, bool up, uint32_t country)
     (void)country;
     assert(up && itf == CYW43_ITF_STA);
     self->itf_state = 1U << itf;
+    wifi_link_netif_init(self, itf);
 }
 
 int cyw43_wifi_scan(cyw43_t *s, cyw43_wifi_scan_options_t *opts, void *env,
@@ -70,12 +109,22 @@ int cyw43_wifi_join(cyw43_t *s, size_t len, const uint8_t *ssid, size_t key_len,
     if (attempts != 0) {
         /* Space retries from the failure, even when the attempt itself took 30 s. */
         uint64_t elapsed = now_us - (dropped ? lost_us : failure_us);
-        assert(elapsed >= RETRY_US && elapsed <= RETRY_US + POLL_US);
+        assert(elapsed >= RETRY_US && elapsed <= RETRY_US + RETRY_SLACK_US);
+        assert(link != CYW43_LINK_JOIN || is_case("timeout"));
     }
     attempts++;
     attempt_us = now_us;
-    link = CYW43_LINK_JOIN; /* The SDK also returns JOIN while still associating. */
-    return (attempts == 1 && is_case("request")) ? -CYW43_EIO : 0;
+    if (attempts == 2 && is_case("request")) {
+        now_us += 250000U;
+        failure_us = now_us;
+        return -CYW43_EIO;
+    }
+    if (attempts == 1 && is_case("request")) {
+        failure_us = now_us;
+        return -CYW43_EIO;
+    }
+    link = CYW43_LINK_JOIN; /* A rejected request leaves the SDK's link state unchanged. */
+    return 0;
 }
 
 static void poll_driver(void)
@@ -89,8 +138,13 @@ static void poll_driver(void)
         if (is_case("late-link") && failure_us && now_us >= failure_us + 500000U) {
             netif_default->flags |= NETIF_FLAG_LINK_UP;
             supplied = true;
-        } else if (!is_case("timeout") && now_us - attempt_us >= 100000U) {
+        } else if (is_case("timeout")) {
+            if (failure_us < attempt_us && now_us >= attempt_us + JOIN_TIMEOUT_US) {
+                failure_us = attempt_us + JOIN_TIMEOUT_US;
+            }
+        } else if (now_us - attempt_us >= 100000U && link == CYW43_LINK_JOIN) {
             link = CYW43_LINK_FAIL;
+            failure_us = now_us;
         }
     } else if (dropped && attempts == attempts_before_loss) {
         netif_default->flags &= (u8_t)~NETIF_FLAG_LINK_UP;
@@ -103,67 +157,48 @@ static void poll_driver(void)
 }
 void (*cyw43_poll)(void) = poll_driver;
 
-void cyw43_utk_app_poll(void)
-{
-    T_CYW43_UTK_STATUS st;
-
-    assert(in_driver);
-    app_polls++;
-    assert(timeout_checks == app_polls);
-    cyw43_utk_get_status(&st);
-    assert(st.status_retries == 0U);
-    assert(st.poll_count == app_polls);
-    if (!cyw43_wifi_scan_active(&cyw43_state)) {
-        assert(st.scan_complete == 1U);
-    }
-    if (st.link_up) {
-        assert(st.join_complete == 1U && st.join_result == 0);
-    }
-    assert(cyw43_utk_poll_requested == 0U);
-    cyw43_utk_poll_requested = 1U;
-}
-
 int32_t tk_dly_tsk(uint32_t delay)
 {
     T_CYW43_UTK_STATUS st;
+    bool leased = wifi_link_lease() == WIFI_LEASE_READY;
+
     assert(!in_driver);
-    assert(app_polls > 0U);
-    assert(cyw43_utk_poll_requested == 1U);
     cyw43_utk_get_status(&st);
     assert(st.status_retries == 0U);
-    assert(st.poll_count == app_polls);
-    if (st.join_complete && st.join_result != 0 && !st.link_up && !dropped) {
-        if (failure_us < attempt_us) {
-            failure_us = now_us;
-            if (is_case("request") && attempts == 1U) {
-                assert(st.join_request_result == -CYW43_EIO && st.join_result == -CYW43_EIO);
-            } else if (is_case("timeout")) {
-                assert(st.join_result == -CYW43_ETIMEDOUT && st.join_elapsed_ms == 30000U);
-            } else {
-                assert(st.join_result == CYW43_LINK_FAIL);
-            }
-        }
-        assert(now_us - failure_us < 15000000U && "failed Wi-Fi join never retried");
-    }
-    if (st.link_up && st.dhcp_complete && st.dhcp_result == 0) {
-        assert(supplied && st.join_complete && st.join_result == 0);
+    assert(st.poll_count == transport_polls + 1U);
+    if (leased) {
+        assert(supplied && netif_is_link_up(netif_default) && st.link_up);
+        assert(wifi_link_rssi() == (dropped ? -64 : -50));
         if (!recovered) {
             assert(attempts == (is_case("late-link") ? 1U : 3U));
-            assert(adoptions == 1U);
             recovered = true;
+            adoptions_at_recovery = adoptions;
+            assert(adoptions_at_recovery >= 1U);
             attempts_before_loss = attempts;
             lost_us = now_us + 10000000U;
+        } else if (renumbered) {
+            assert(adoptions == adoptions_at_recovery + 1U && attempts == attempts_before_loss);
+            longjmp(done, 1);
         } else if (dropped) {
-            assert(attempts == attempts_before_loss + 1U && adoptions == 2U && saw_timeout);
+            assert(attempts == attempts_before_loss + 1U && saw_timeout);
+            assert(adoptions == adoptions_at_recovery + 1U);
             longjmp(done, 1);
         }
     }
-    if (recovered && !dropped && now_us >= lost_us) dropped = true;
-    if (dropped && !st.link_up) {
-        assert(!st.dhcp_complete && "old lease survived link loss");
+    if (recovered && !dropped && !renumbered && now_us >= lost_us) {
+        if (is_case("renumber")) {
+            IP4_ADDR(&netif_default->ip_addr, 192, 0, 2, 9);
+            renumbered = true;
+        } else {
+            dropped = true;
+        }
+    }
+    if (dropped && !netif_is_link_up(netif_default)) {
+        assert(!leased && "old lease survived link loss");
+        assert(wifi_link_rssi() == INT32_MIN);
         assert(now_us - lost_us < 15000000U);
     }
-    if (dropped && st.link_up && st.dhcp_complete && st.dhcp_result != 0) saw_timeout = true;
+    if (dropped && wifi_link_lease() == WIFI_LEASE_TIMEOUT) saw_timeout = true;
     assert(now_us < 180000000U && "radio never recovered");
     now_us += delay * 1000U;
     return 0;

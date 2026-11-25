@@ -1,12 +1,12 @@
 #include <stdarg.h>
 #include <string.h>
 
-#include "cyw43_utk.h"
 #include "lwip/dns.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
 #include "lwip/sys.h"
 #include "platform/log.h"
+#include "telemetry/wifi_link.h"
 #include "tcp_stubs.h"
 
 tcp_stubs_t g_stubs;
@@ -176,13 +176,13 @@ sys_now (void)
     return g_stubs.now_ms;
 }
 
-void
-cyw43_utk_get_status (T_CYW43_UTK_STATUS * status)
+wifi_lease_t
+wifi_link_lease (void)
 {
-    (void) memset(status, 0, sizeof(*status));
-    status->link_up = g_stubs.link_up;
-    status->dhcp_complete = g_stubs.dhcp_complete;
-    status->dhcp_result = g_stubs.dhcp_result;
+    return ((g_stubs.link_up != 0u) && (g_stubs.dhcp_complete != 0u) &&
+            (g_stubs.dhcp_result == 0))
+               ? WIFI_LEASE_READY
+               : WIFI_LEASE_PENDING;
 }
 
 void

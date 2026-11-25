@@ -21,6 +21,7 @@
 #include "telemetry/publisher.h"
 #include "telemetry/queue.h"
 #include "telemetry/tcp_transport.h"
+#include "telemetry/wifi_link.h"
 #include "telemetry_config.h"
 
 #define CONNECTION_POLL_MS      100U
@@ -208,12 +209,12 @@ add_saturating (uint32_t a, uint32_t b)
 }
 
 static void
-publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
+publish_heartbeat (uint32_t now_ms)
 {
     uint8_t               payload[TELEMETRY_HEARTBEAT_WIRE_SIZE];
     telemetry_heartbeat_t heartbeat;
     uint32_t              drops = 0u;
-    int32_t               rssi = status->link_rssi;
+    int32_t               rssi = wifi_link_rssi();
 
     if ((uint32_t) (now_ms - g_heartbeat_ms) < CONNECTION_HEARTBEAT_MS)
     {
@@ -255,7 +256,7 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
 }
 
 static connection_state_t
-classify (const T_CYW43_UTK_STATUS * status)
+classify (const T_CYW43_UTK_STATUS * status, wifi_join_t join, wifi_lease_t lease)
 {
     if (status->init_result != 0)
     {
@@ -263,6 +264,16 @@ classify (const T_CYW43_UTK_STATUS * status)
     }
     if (!status->link_up)
     {
+        switch (join)
+        {
+        case WIFI_JOIN_ACTIVE:
+            return CONNECTION_JOINING;
+        case WIFI_JOIN_FAILED:
+            return CONNECTION_FAULT;
+        case WIFI_JOIN_IDLE:
+        default:
+            break;
+        }
         if (status->join_complete)
         {
             return (status->join_result != 0) ? CONNECTION_FAULT
@@ -271,15 +282,17 @@ classify (const T_CYW43_UTK_STATUS * status)
         return status->join_started ? CONNECTION_JOINING
                                     : CONNECTION_DISCONNECTED;
     }
-    if (!status->dhcp_complete)
+    switch (lease)
     {
-        return CONNECTION_WAIT_DHCP;
-    }
-    if (status->dhcp_result == 0)
-    {
+    case WIFI_LEASE_READY:
         return CONNECTION_READY;
+    case WIFI_LEASE_TIMEOUT:
+        return CONNECTION_FAULT;
+    case WIFI_LEASE_PENDING:
+    default:
+        break;
     }
-    return CONNECTION_FAULT;
+    return CONNECTION_WAIT_DHCP;
 }
 
 ER
@@ -397,7 +410,7 @@ service_mqtt (uint32_t now_ms, bool b_mqtt_up)
         g_heartbeat_ms = now_ms - CONNECTION_HEARTBEAT_MS;
     }
     g_b_mqtt_seen = true;
-    publish_heartbeat(now_ms, &g_status);
+    publish_heartbeat(now_ms);
     if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
     {
         telemetry_publisher_run(net_pull, publish_frame);
@@ -433,7 +446,9 @@ connection_run (void)
 
             last_poll_ms = now_ms;
             cyw43_utk_get_status(&g_status);
-            next = classify(&g_status);
+            wifi_join_t const join = wifi_link_join();
+            wifi_lease_t const lease = wifi_link_lease();
+            next = classify(&g_status, join, lease);
             if ((next != previous) || first_status ||
                 ((next != CONNECTION_READY) &&
                  ((uint32_t) (now_ms - last_status_ms) >= CONNECTION_STATUS_MS)))
@@ -443,12 +458,9 @@ connection_run (void)
                 first_status = false;
                 last_status_ms = now_ms;
                 LOG_INFO(LOG_TASK_CONNECTION, LOG_MOD_NONE,
-                         "state=%d link=%d started=%d join=%d dhcp_done=%d "
-                         "dhcp=%d init=%d",
-                         (int) next, (int) g_status.link_up,
-                         (int) g_status.join_started, (int) g_status.join_result,
-                         (int) g_status.dhcp_complete, (int) g_status.dhcp_result,
-                         (int) g_status.init_result);
+                         "state=%d link=%d join=%d lease=%d init=%d",
+                         (int) next, (int) g_status.link_up, (int) join,
+                         (int) lease, (int) g_status.init_result);
             }
             if (next == CONNECTION_READY)
             {

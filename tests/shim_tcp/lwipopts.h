@@ -10,5 +10,7 @@
 #define LWIP_SOCKET             0
 #define LWIP_NETCONN            0
 #define MEM_ALIGNMENT           4
+/* The firmware value; the radio timer needs one slot beyond the stack's own. */
+#define MEMP_NUM_SYS_TIMEOUT    8
 
 #endif /* SHIM_TCP_LWIPOPTS_H */
