@@ -25,12 +25,11 @@
 #define VEHICLE_CMD_RECAL    (8U) /* calibrate the IMU again at rest */
 
 #define VEHICLE_CMD_START_CONTINUOUS_FLOOR (9U)
-#define VEHICLE_CMD_START_STATIONARY (10U)
+/* 10U is reserved; never reuse for a new command. */
 
 static inline bool vehicle_is_start (uint8_t opcode)
 {
-    return (VEHICLE_CMD_START == opcode) || (VEHICLE_CMD_START_CONTINUOUS_FLOOR == opcode) ||
-           (VEHICLE_CMD_START_STATIONARY == opcode);
+    return (VEHICLE_CMD_START == opcode) || (VEHICLE_CMD_START_CONTINUOUS_FLOOR == opcode);
 }
 
 static inline bool vehicle_is_junction_choice (uint8_t opcode)

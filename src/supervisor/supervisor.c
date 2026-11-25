@@ -145,7 +145,6 @@ static bool     g_b_motion_timing_fault;
 static timing_watch_t g_timing;
 static bool     g_b_offline_start_pending;
 static bool     g_b_watchdog_resume_pending;
-static bool     g_resume_continuous;
 static uint8_t  g_run_resumes;
 static uint8_t  g_token_flags;
 static uint8_t  g_token_resumes;
@@ -186,17 +185,20 @@ static void restore_run_token (void)
     uint8_t flags   = 0U;
     uint8_t resumes = 0U;
 
-    g_token_flags   = 0U;
-    g_token_resumes = 0U;
+    g_b_watchdog_resume_pending = false;
+    g_run_resumes               = 0U;
+    g_token_flags               = 0U;
+    g_token_resumes             = 0U;
     if (platform_run_token_read (&flags, &resumes))
     {
         g_token_flags   = flags;
         g_token_resumes = resumes;
         if ((PLATFORM_RESET_WATCHDOG == platform_reset_reason ()) &&
-            (0U != (flags & PLATFORM_RUN_ARMED)) && (resumes < SUPERVISOR_WATCHDOG_RESUMES))
+            (0U != (flags & PLATFORM_RUN_ARMED)) &&
+            (0U != (flags & PLATFORM_RUN_CONTINUOUS)) &&
+            (resumes < SUPERVISOR_WATCHDOG_RESUMES))
         {
             g_b_watchdog_resume_pending = true;
-            g_resume_continuous         = (0U != (flags & PLATFORM_RUN_CONTINUOUS));
             g_run_resumes               = resumes;
         }
     }
@@ -1059,9 +1061,9 @@ static bool parked_observation (const run_inputs_t * p_in, uint32_t hold, uint16
 }
 
 /* A START the operator did not send: parked, with a fresh clear ping. */
-static bool parked_start (const run_inputs_t * p_in, uint8_t opcode)
+static bool parked_start (const run_inputs_t * p_in)
 {
-    vehicle_cmd_t const cmd = {0U, 0U, opcode, VEHICLE_SRC_TELEMETRY};
+    vehicle_cmd_t const cmd = {0U, 0U, VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY};
     run_result_t        result;
     bool                clear = false;
 
@@ -1093,7 +1095,7 @@ static void consider_offline_start (const run_inputs_t * p_in, bool b_critical)
         g_b_offline_start_pending = false;
     }
     else if (!b_critical && (E_OK == tk_get_otm (&time)) && (time.lo >= OFFLINE_START_MS) &&
-             parked_start (p_in, VEHICLE_CMD_START))
+             parked_start (p_in))
     {
         g_b_offline_start_pending = false;
         LOG_INFO (LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "offline START after telemetry timeout");
@@ -1106,8 +1108,6 @@ static void consider_offline_start (const run_inputs_t * p_in, bool b_critical)
 
 static void consider_watchdog_resume (const run_inputs_t * p_in, bool b_critical)
 {
-    uint8_t const opcode = g_resume_continuous ? VEHICLE_CMD_START : VEHICLE_CMD_START_STATIONARY;
-
     if (!g_b_watchdog_resume_pending)
     {
         return;
@@ -1118,7 +1118,7 @@ static void consider_watchdog_resume (const run_inputs_t * p_in, bool b_critical
     {
         g_b_watchdog_resume_pending = false;
     }
-    else if (!b_critical && parked_start (p_in, opcode))
+    else if (!b_critical && parked_start (p_in))
     {
         g_b_watchdog_resume_pending = false;
         g_run_resumes++;

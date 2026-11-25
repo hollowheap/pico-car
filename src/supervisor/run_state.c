@@ -281,7 +281,6 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
                 command_stop (p_ctx, cmd, p_out);
             break;
 
-            case VEHICLE_CMD_START_STATIONARY:
             case VEHICLE_CMD_START_CONTINUOUS_FLOOR:
             case VEHICLE_CMD_START:
                 if (RUN_STATE_RUNNING == run_state_of (p_ctx))
@@ -293,7 +292,7 @@ void run_state_command (run_ctx_t * p_ctx, vehicle_cmd_t cmd, const run_inputs_t
                     command_start (p_ctx, p_in, p_out);
                     if (p_out->b_start)
                     {
-                        p_ctx->b_continuous_floor = (VEHICLE_CMD_START_STATIONARY != cmd.opcode);
+                        p_ctx->b_continuous_floor = true;
                     }
                 }
             break;
