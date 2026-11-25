@@ -30,6 +30,24 @@ static inline void mp_memory_barrir (void)
 {
 }
 
+/** Single-threaded host stand-ins for the kernel atomics. Both return the
+ *  value held before the update, as the kernel does. */
+static inline UW atomic_inc (UW * addr)
+{
+    const UW old = *addr;
+
+    *addr = old + 1U;
+    return old;
+}
+
+static inline UW atomic_add (UW * addr, UW val)
+{
+    const UW old = *addr;
+
+    *addr = old + val;
+    return old;
+}
+
 /** Processor the caller runs on, from 1. Defined and set by the test. */
 extern INT g_shim_prc;
 

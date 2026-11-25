@@ -87,3 +87,46 @@ target_include_directories(test_isr_dispatch PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_options(test_isr_dispatch PRIVATE -Wall -Wextra -Werror)
 add_test(NAME isr_dispatch COMMAND test_isr_dispatch)
+
+# Telemetry pure modules: packet, command validation and MQTT client
+# (the MQTT client runs against a fake transport port).
+foreach(tname packet cmd mqtt)
+    if(tname STREQUAL "mqtt")
+        set(tsrc mqtt_client.c)
+    else()
+        set(tsrc ${tname}.c)
+    endif()
+    add_executable(test_${tname} test_${tname}.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/${tsrc})
+    target_include_directories(test_${tname} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    target_compile_options(test_${tname} PRIVATE -Wall -Wextra -Werror)
+    add_test(NAME telemetry_${tname} COMMAND test_${tname})
+endforeach()
+
+# Telemetry queue, net queue, worker and publisher (S03, S24). The queues run
+# unchanged against the kernel shim and the message buffer fake in
+# shim/tk/mbf_fake.h.
+set(TELEMETRY_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry)
+set(TELEMETRY_TEST_INCLUDES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+set(TELEMETRY_TEST_FLAGS -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+
+foreach(name IN ITEMS queue net_queue worker publisher)
+    add_executable(test_telemetry_${name} test_telemetry_${name}.c
+        ${TELEMETRY_SRC}/${name}.c)
+    target_include_directories(test_telemetry_${name} PRIVATE
+        ${TELEMETRY_TEST_INCLUDES})
+    target_compile_options(test_telemetry_${name} PRIVATE ${TELEMETRY_TEST_FLAGS})
+    add_test(NAME telemetry_${name} COMMAND test_telemetry_${name})
+endforeach()
+
+add_executable(test_line_control test_line_control.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+target_include_directories(test_line_control PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_line_control PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_line_control PRIVATE m)
+add_test(NAME line_control COMMAND test_line_control)
