@@ -6,8 +6,7 @@
  *        statechart. Commands and time limits are handled on every pass.
  *
  * NOTE: The kernel API types INT, UINT, ER, TMO and SYSTIM are used where
- * the kernel functions require them (deviation from BARR-C 5.2.a, see
- * docs/obstacle.md).
+ * the kernel functions require them (deviation from BARR-C 5.2.a).
  */
 
 #include <stdbool.h>

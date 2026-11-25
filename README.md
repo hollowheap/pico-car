@@ -46,8 +46,6 @@ Build notes:
 All C and C++ code in this repository must comply with the
 [BARR-C:2018 standard](https://barrgroup.com/sites/default/files/barr_c_coding_standard_2018.pdf).
 
-When creating a new file, use the templates in `templates/` for consistency.
-
 ## Layout
 
 Public subsystem headers live in `include/<subsystem>/`; implementations live in
@@ -56,10 +54,10 @@ and starts one startup task that initialises the shared hardware.
 
 | Path                                        | Contents                                                             |
 | ------------------------------------------- | -------------------------------------------------------------------- |
-| `include/navigation/obstacle.h`             | Buddy 5 facade: commands, events, telemetry snapshot, line-task glue |
-| `include/physics/physics.h`                 | Buddy 4 facade: telemetry snapshot                                   |
-| `src/navigation/obstacle/`                  | Buddy 5 scan, planner, statechart, comms, flight log                 |
-| `src/physics/`                              | Buddy 4 IMU, hump detection, pipeline, task                          |
+| `include/navigation/obstacle.h`             | Obstacle API: commands, events, telemetry snapshot, line-task glue    |
+| `include/physics/physics.h`                 | IMU API: telemetry snapshot                                          |
+| `src/navigation/obstacle/`                  | Obstacle scan, planner, statechart, comms, flight log                |
+| `src/physics/`                              | IMU sensor, hump detection, pipeline, task                           |
 | `src/motion/`                               | Motor owner, PIO quadrature encoders, PID                            |
 | `src/track/`, `src/platform/`               | Line sensors and the shared GPIO IRQ dispatcher                      |
 | `src/telemetry/`                            | lwIP transport, MQTT client, queues, command ingress                 |
@@ -250,7 +248,7 @@ applies to the GP20 button and offline startup. On a course with possible
 drop-offs, select **Stop at obstacles** in the dashboard Start popup. The
 three-second limit on a planned obstacle pause uses wheel feedback. The pilot
 takes another observation from a new pose or sets up its next leg. The next
-physical run must establish the timing and rejoin. [Obstacle behavior](docs/obstacle.md#hug-pilot-path)
+physical run must establish the timing and rejoin.
 
 After an obstacle bypass rejoins the line, the follower drives 100 mm on the
 line. The pilot then sends a `rejoin` event with the heading against the entry
@@ -447,7 +445,7 @@ on the tape. The rate is a guess until it is measured on the car.
 ## Tests
 
 The measurement benches (`car_bench`, `wdt_check`, `physics_check`) build to
-`build/*.uf2`. The [course calibration guide](docs/course-calibration.md)
+`build/*.uf2`. The [course calibration guide](testing/course-calibration.md)
 covers ODO and PIVOT logs, measured fixtures and dashboard trace replay.
 
 Host tests build out of tree:

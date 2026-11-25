@@ -2,7 +2,7 @@
 """Summarise a console capture of car_bench and wdt_check.
 
 Usage:
-    python3 tools/bench_summary.py LOGFILE
+    python3 testing/bench_summary.py LOGFILE
 
 LOGFILE is the raw console capture. The lines that count start with a tag in
 capitals, optionally prefixed by a timestamp and "[SEV](task:module) ":

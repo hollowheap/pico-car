@@ -21,8 +21,7 @@
  *     never asserting a reset or changing a tick someone else set up.
  *
  * NOTE: The kernel and BSP types ID, ER, UINT, UW and BOOL are used where
- * their API requires them (deviation from BARR-C 5.2.a, see
- * docs/obstacle.md).
+ * their API requires them (deviation from BARR-C 5.2.a).
  */
 
 #include <stdbool.h>

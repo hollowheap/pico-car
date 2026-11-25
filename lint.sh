@@ -2,7 +2,7 @@
 # Run clang-tidy (BARR-C checks from the repository .clang-tidy) over the
 # production firmware sources.
 #
-# Usage: tools/lint.sh [PREFIX...]
+# Usage: ./lint.sh [PREFIX...]
 #
 #   No argument   Lint every src/ entry of build/compile_commands.json except
 #                 the standalone bench/demo files, and report findings in
@@ -55,7 +55,7 @@ join_alt() {
     printf '%s' "${out}"
 }
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${ROOT}"
 
 DB="build/compile_commands.json"

@@ -17,7 +17,7 @@
  * Guided checks. The program prints PHYS_G lines that tell you what to do
  * and when. They answer four checks of why the hump state may always read
  * FLAT. Save the whole console to a file and run
- * `python3 tools/physics_log_summary.py FILE --checks`.
+ * `python3 testing/physics_log_summary.py FILE --checks`.
  *
  *    0 to  4 s  keep the car still and level          check 1, calibration
  *    6 to 11 s  lift the NOSE to about 10 degrees     check 2, forward axis
