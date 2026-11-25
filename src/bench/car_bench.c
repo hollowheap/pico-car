@@ -47,16 +47,15 @@
 #include "bench/trace.h"
 #include "motion/motion.h"
 #include "motion/motor_setup.h"
-#include "../motion/motion_service.h"
 #include "platform/chassis.h"
 #include "platform/isr.h"
 #include "platform/log.h"
 #include "platform/units.h"
+#include "platform/usb_console_compat.h"
 #include "platform/watchdog.h"
+#include "supervisor/health_drive.h"
 #include "track/line_control.h"
 #include "track/track.h"
-#include "../supervisor/health_core.h"
-#include "../usb_console_compat.h"
 
 /* Bench buttons, active low with pull-ups. */
 #define BTN_NEXT_PIN (20U)

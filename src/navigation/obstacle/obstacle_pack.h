@@ -17,7 +17,6 @@
 #include "navigation/obstacle_cmd.h"
 #include "navigation/obstacle_flags.h"
 #include "navigation/obstacle_ping.h"
-#include "pilot/look.h"
 
 /* The ping-word layout and its decoders live in navigation/obstacle_ping.h.
  * The public copies of two config values must match the private ones. */

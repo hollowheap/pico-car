@@ -30,7 +30,7 @@
 #include "platform/isr.h"
 #include "platform/log.h"
 #include "platform/watchdog.h"
-#include "../usb_console_compat.h"
+#include "platform/usb_console_compat.h"
 
 #define BTN_RUN_PIN   (21U)
 #define PAD_PULL_UP   (1UL << 3U)

@@ -21,7 +21,7 @@
 
 #include "platform/log.h"
 #include "log_core.h"
-#include "../usb_console_compat.h"
+#include "platform/usb_console_compat.h"
 
 /* tm_usb_state() value once a serial monitor has opened the port. */
 #define USB_OPEN (3U)

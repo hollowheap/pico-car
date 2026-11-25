@@ -6,6 +6,7 @@
 
 #include <tk/tkernel.h>
 #include "controller.h"
+#include "motion/motor_setup.h"
 #include "platform/static_assert.h"
 #include "motion_request.h"
 #include "motion_inbox.h"
@@ -40,10 +41,6 @@ STATIC_ASSERT (sizeof(motion_service_status_t) == sizeof(controller_status_t) + 
  * diagnostic button run. Integrator must start only after agreeing
  * pin/IRQ/resource ownership. */
 ER motion_service_init (const motion_service_config_t * p_config, ID task_id);
-
-/* Task body. The composition root creates the task and calls this; the
- * task owns the motors until reboot. Never returns. */
-void motion_service_run (void);
 
 /* Task-context APIs on either core after the init call returns. Latest
  * pending speeds replace the previous pending speeds; no unbounded queue.

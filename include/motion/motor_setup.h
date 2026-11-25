@@ -21,6 +21,12 @@
  */
 ER motion_setup (ID motion_tid);
 
+/**
+ * Task body of the motion service. The composition root creates the task and
+ * calls this; the task owns the motors until reboot. Never returns.
+ */
+void motion_service_run (void);
+
 #endif /* MOTION_MOTOR_SETUP_H */
 
 /*** end of file ***/
