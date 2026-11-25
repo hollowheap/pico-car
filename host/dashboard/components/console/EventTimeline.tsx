@@ -29,10 +29,11 @@ type Props = {
 
 const PAGE_SIZE = 3;
 
-type Filter = 'all' | 'fault' | 'obstacle' | 'line' | 'turn' | 'barcode' | 'physics' | 'command' | 'system';
+type Filter = 'all' | 'alerts' | 'fault' | 'obstacle' | 'line' | 'turn' | 'barcode' | 'physics' | 'command' | 'system';
 
 const FILTERS: { key: Filter; label: string; kinds: EventKind[] | null }[] = [
   { key: 'all', label: 'All', kinds: null },
+  { key: 'alerts', label: 'Alerts', kinds: ['fault', 'obstacle', 'attitude'] },
   { key: 'fault', label: 'Faults', kinds: ['fault'] },
   { key: 'obstacle', label: 'Obstacles', kinds: ['obstacle'] },
   { key: 'line', label: 'Line', kinds: ['line'] },
@@ -236,7 +237,7 @@ export function EventTimeline({
   const groups = useMemo(() => groupActivity(events), [events]);
   const filterCounts = useMemo(() => {
     const counts: Record<Filter, number> = {
-      all: groups.length, fault: 0, obstacle: 0, line: 0, turn: 0, barcode: 0, physics: 0, command: 0, system: 0,
+      all: groups.length, alerts: 0, fault: 0, obstacle: 0, line: 0, turn: 0, barcode: 0, physics: 0, command: 0, system: 0,
     };
     for (const group of groups) {
       for (const item of FILTERS) {
