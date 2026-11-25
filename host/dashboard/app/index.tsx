@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentRef } 
 import { Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 
 import { AttitudePanel, DynamicsPanel } from '../components/console/AttitudePanel';
-import { CourseTrace } from '../components/console/CourseTrace';
+import { CourseTrace } from '../components/console/course-trace/CourseTrace';
 import { EventTimeline } from '../components/console/EventTimeline';
 import { FaultGrid } from '../components/console/FaultGrid';
 import { FrameLogPanel, type FrameReceipt } from '../components/console/FrameLogPanel';

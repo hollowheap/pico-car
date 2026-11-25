@@ -11,7 +11,7 @@ import type { EventRow } from '../../lib/telemetry-store';
 import { useTheme } from '../../lib/theme-provider';
 import type { EventInspection } from '../../lib/useEventInspection';
 import { Button } from '../ui/button';
-import { EventGlyph } from './CourseTrace';
+import { EventGlyph } from './course-trace/layers';
 import { formatTime, metres } from './format';
 import { Panel, useDense } from './Panel';
 
