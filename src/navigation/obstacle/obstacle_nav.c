@@ -48,8 +48,8 @@
  *
  * NOTE: The kernel API types ER, ID, UB and SYSTIM are used where the
  * kernel requires them (deviation from BARR-C 5.2.a, see
- * docs/obstacle.md). Casts to (UB *) and (INT) feed tm_printf()
- * only; every value printed is below 2^16.
+ * docs/obstacle.md). Casts to (INT) feed the log macros only; every
+ * value printed is below 2^16.
  */
 
 #include <stdbool.h>
@@ -57,6 +57,7 @@
 #include <tk/tkernel.h>
 #include <tm/tmonitor.h>
 
+#include "platform/log.h"
 #include "motion/motion.h"
 #include "obstacle_config.h"
 #include "flight_log.h"
@@ -350,7 +351,12 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
 
             case OBSTACLE_STATE_STOPPED:
                 hold_car(true);
-                if ((now - g_nav.retry_ms) >= OBSTACLE_NAV_RETRY_MS)
+                /* Retry policy: only a start after boot or a transient cause
+                 * restarts by itself. A collision, a scan with no safe path, a
+                 * sensor fault and a STOP wait for an explicit RESET and START. */
+                if (obstacle_pack_cause_may_auto_restart(
+                        obstacle_pack_get(status, OBSTACLE_ST_CAUSE_SH, OBSTACLE_ST_CAUSE_MK)) &&
+                    ((now - g_nav.retry_ms) >= OBSTACLE_NAV_RETRY_MS))
                 {
                     g_nav.retry_ms = now;
                     post(OBSTACLE_CMD_RESET, 0U);
@@ -479,7 +485,7 @@ static void post (uint32_t type, uint8_t req_id)
 {
     ER const result = obstacle_post_cmd(obstacle_pack_cmd(type, req_id));
 
-    tm_printf((UB *)"[obstacle-nav] cmd %d id=%d -> %d\n", (INT)type, (INT)req_id,
+    LOG_NOW("INFO", "line:nav", "cmd %d id=%d -> %d\n", (INT)type, (INT)req_id,
               (INT)result);
 
     /* Cast is safe: the command type is 3 bits wide. */
@@ -621,7 +627,7 @@ static void note_turned (bool b_turned, uint32_t now)
         if (!g_nav.b_turned)
         {
             g_nav.b_turned = true;
-            tm_printf((UB *)"[obstacle-nav] escape turned %d deg (plan %d)\n",
+            LOG_NOW("INFO", "line:nav", "escape turned %d deg (plan %d)\n",
                       (INT)(turned / DECI_PER_DEG), (INT)g_nav.start_deg);
             log_rec(OBSTACLE_LOG_TURNED, 0U, 0U, 0U, turned, (int32_t)g_nav.start_deg, 0);
         }
@@ -670,7 +676,7 @@ static void drive_wheels (uint8_t steer, int32_t left_um_s, int32_t right_um_s)
         if (g_nav.last_drive != key)
         {
             g_nav.last_drive = key;
-            tm_printf((UB *)"[obstacle-nav] steer %d: left %d right %d mm/s\n",
+            LOG_NOW("INFO", "line:nav", "steer %d: left %d right %d mm/s\n",
                       (INT)steer, (INT)left_mm_s, (INT)right_mm_s);
 
             log_rec(OBSTACLE_LOG_STEER, steer, 0U, 0U, left_mm_s, right_mm_s,
@@ -722,7 +728,7 @@ static bool is_reverse_pause (int32_t const p_speed[WHEELS])
     {
         g_nav.b_pausing = true;
         g_nav.pause_ms  = now;
-        tm_printf((UB *)"[obstacle-nav] wheel reverses: stop for %d ms first\n",
+        LOG_NOW("INFO", "line:nav", "wheel reverses: stop for %d ms first\n",
                   (INT)OBSTACLE_NAV_REVERSE_PAUSE_MS);
     }
 
@@ -750,7 +756,7 @@ static void set_phase (uint8_t phase)
     int32_t const heading = side_sign() * heading_deci();
 
     g_nav.phase = phase;
-    tm_printf((UB *)"[obstacle-nav] phase %d: side %d mm, ahead %d mm, heading %d "
+    LOG_NOW("INFO", "line:nav", "phase %d: side %d mm, ahead %d mm, heading %d "
                     "deg\n",
               (INT)phase, (INT)lateral_mm(), (INT)ahead_mm(),
               (INT)(heading / DECI_PER_DEG));
@@ -820,7 +826,7 @@ static bool step_look_ping (uint32_t status)
             g_nav.b_have_prev_gap = false;
             b_side_done           = true;
         }
-        else if (OBSTACLE_CLASS_VALID == cls)
+        else if (obstacle_pack_class_is_ranged(cls))
         {
             if ((g_nav.side_agree_count > 0U) &&
                 (geom_abs((int32_t)dist - (int32_t)g_nav.last_side_dist_mm) <= (int32_t)OBSTACLE_AGREE_MM))
@@ -867,7 +873,7 @@ static bool step_look_ping (uint32_t status)
         }
         else
         {
-            /* UNKNOWN or STUCK: wait for next ping. */
+            /* NO_ECHO, GLITCH or STUCK: wait for next ping. */
         }
 
         if ((!b_side_done) && (g_nav.side_ping_count >= OBSTACLE_SIDE_PINGS_MAX))
@@ -1093,7 +1099,7 @@ static void update_ir_gate (bool b_line_seen)
     if (g_nav.b_ir_armed && (!g_nav.b_ir_cleared) && (!b_line_seen))
     {
         g_nav.b_ir_cleared = true;
-        tm_printf((UB *)"[obstacle-nav] IR clear of the line: the next line "
+        LOG_NOW("INFO", "line:nav", "IR clear of the line: the next line "
                         "contact ends the bypass\n");
     }
 }
@@ -1104,14 +1110,16 @@ static void update_ir_gate (bool b_line_seen)
  *
  * @param[in] status Packed Buddy 5 status word.
  *
- * @return True for a VALID reading at or below OBSTACLE_DETECT_MM.
+ * @return True when the latest ping is a hit: VALID at or below
+ *         OBSTACLE_DETECT_MM, or TOO_CLOSE. The statechart confirms an
+ *         obstacle with the same hit rule, 2 of the last 3 pings.
  */
 static bool is_obstacle_close (uint32_t status)
 {
     uint32_t const cls = obstacle_pack_get(status, OBSTACLE_ST_CLASS_SH, OBSTACLE_ST_CLASS_MK);
     uint32_t const dist_mm = obstacle_pack_get(status, OBSTACLE_ST_DIST_SH, OBSTACLE_ST_DIST_MK);
 
-    return ((OBSTACLE_CLASS_VALID == cls) && (dist_mm <= OBSTACLE_DETECT_MM));
+    return (obstacle_pack_class_is_ranged(cls) && (dist_mm <= OBSTACLE_DETECT_MM));
 }
 
 /*!
@@ -1135,9 +1143,9 @@ static void report_state (uint32_t status)
         /* Casts are safe: the state field is 3 bits, the cause 4 bits. */
         g_nav.last_state = (uint8_t)state;
         g_nav.last_drive = NAV_DRIVE_UNSEEN;
-        tm_printf((UB *)"[obstacle-nav] state %d cause %d\n", (INT)state, (INT)cause);
+        LOG_NOW("INFO", "line:nav", "state %d cause %d\n", (INT)state, (INT)cause);
         log_rec(OBSTACLE_LOG_STATE, (uint8_t)state, (uint8_t)cause,
-                obstacle_get_faults(), 0, 0, 0);
+                (uint8_t)obstacle_get_faults(), 0, 0, 0);
 
         if (OBSTACLE_STATE_BYPASS == state)
         {
@@ -1241,7 +1249,7 @@ static void keep_plan (uint32_t angle, bool b_wall)
 
             if ((deci >= -OBSTACLE_PATH_HALF_DECI) && (deci <= OBSTACLE_PATH_HALF_DECI) &&
                 (obstacle_pack_slot_is_measured(value)) &&
-                (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(value)) &&
+                (obstacle_pack_class_is_ranged(obstacle_pack_slot_class(value))) &&
                 (dist <= (int32_t)OBSTACLE_REGION_MAX_MM) && (dist < closest))
             {
                 closest = dist;
@@ -1254,15 +1262,15 @@ static void keep_plan (uint32_t angle, bool b_wall)
     g_nav.b_wall    = b_wall;
     g_nav.need_mm =
         (closest * obstacle_plan_tan_q14((int32_t)angle * DECI_PER_DEG)) / Q14_ONE;
-    tm_printf((UB *)"[obstacle-nav] plan: obstacle %d mm, start %d deg, side "
+    LOG_NOW("INFO", "line:nav", "plan: obstacle %d mm, start %d deg, side "
                     "offset %d mm, %s\n",
               (INT)closest, (INT)angle, (INT)g_nav.need_mm,
               b_wall ? "wall (follow in parallel)" : "box (out and back)");
 }
 
 /*!
- * @brief Print the 25 scan readings and why each side was or was not
- *        usable, for tethered debugging. The scan is replayed through
+ * @brief Print why each side was or was not usable, for tethered debugging.
+ *        The scan is replayed through
  *        scan_algo and obstacle_plan from the published profile (the same slots
  *        in the same order, so the result is the one Buddy 5 found).
  *
@@ -1273,38 +1281,11 @@ static void explain_scan (uint16_t const * p_profile)
     static scan_algo_ctx_t g_replay;
     obstacle_plan_cfg_t          cfg;
     obstacle_plan_result_t       result;
-    uint32_t               slot   = 0U;
     uint32_t               guard  = 0U;
     bool                   b_done = false;
 
-    for (slot = 0U; slot < OBSTACLE_SLOT_COUNT; slot++)
-    {
-        uint16_t const value = p_profile[slot];
-
-        /* Cast is safe: slot is 0..24. */
-        tm_printf((UB *)" %+3d:",
-                  (INT)(scan_algo_slot_deci((uint8_t)slot) / DECI_PER_DEG));
-
-        if (!obstacle_pack_slot_is_measured(value))
-        {
-            tm_printf((UB *)"--  ");
-        }
-        else if (OBSTACLE_CLASS_VALID == obstacle_pack_slot_class(value))
-        {
-            tm_printf((UB *)"%-4d", (INT)obstacle_pack_slot_dist(value));
-        }
-        else
-        {
-            tm_printf((UB *)"%s", (OBSTACLE_CLASS_OPEN == obstacle_pack_slot_class(value))
-                                      ? "OPN "
-                                      : "UNK ");
-        }
-
-        if ((OBSTACLE_SLOT_COUNT - 1U) == slot)
-        {
-            tm_printf((UB *)"\n");
-        }
-    }
+    /* The 37 readings are not printed here: the flight log prints each
+     * stored profile (flight_log.c) and the dashboard plots it. */
 
     /* Replay: feed each requested slot's stored value twice, so the
      * agreement rule settles it exactly as before. */
@@ -1336,7 +1317,7 @@ static void explain_scan (uint16_t const * p_profile)
     /* Edge states: 0 none, 1 bounded, 2 unbounded (reaches +-60 deg).
      * need 65535 = side blocked (unbounded, too far out, or something in
      * the way beyond the edge). */
-    tm_printf((UB *)"[obstacle-nav] scan: closest %d mm, region %d..%d deg | LEFT "
+    LOG_NOW("INFO", "line:nav", "scan: closest %d mm, region %d..%d deg | LEFT "
                     "edge %d last hit %d deg need %d mm | RIGHT edge %d last "
                     "hit %d deg need %d mm\n",
               (INT)g_replay.closest_mm,
@@ -1369,7 +1350,7 @@ static void handle_event (uint32_t evt, uint32_t now)
     {
         uint32_t const dist_mm = obstacle_pack_get(evt, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK);
 
-        tm_printf((UB *)"[obstacle-nav] OBSTACLE at %d mm: holding\n", (INT)dist_mm);
+        LOG_NOW("INFO", "line:nav", "OBSTACLE at %d mm: holding\n", (INT)dist_mm);
         log_rec(OBSTACLE_LOG_OBST, 0U, 0U, 0U, (int32_t)dist_mm, 0, 0);
         hold_car(true);
         g_nav.hold_ms        = now;
@@ -1386,10 +1367,12 @@ static void handle_event (uint32_t evt, uint32_t now)
         uint32_t const faults =
             obstacle_pack_get(evt, OBSTACLE_EV_FAULTS_SH, OBSTACLE_EV_FAULTS_MK);
 
-        tm_printf((UB *)"[obstacle-nav] FAULT cause=%d: holding, retry in 3 s\n",
-                  (INT)cause);
+        LOG_NOW("ERROR", "line:nav", "FAULT cause=%d: holding, %s\n", (INT)cause,
+                  obstacle_pack_cause_may_auto_restart(cause) ? "retry in 3 s"
+                                                              : "needs RESET and START");
 
-        /* Casts are safe: the cause is 4 bits, the faults 8 bits. */
+        /* Casts are safe: the cause is 4 bits. The flight log keeps the low 8
+         * fault bits. */
         log_rec(OBSTACLE_LOG_FAULT, (uint8_t)cause, 0U, (uint8_t)faults, 0, 0, 0);
         hold_car(true);
         g_nav.b_scan_pending = false;
@@ -1405,7 +1388,7 @@ static void handle_event (uint32_t evt, uint32_t now)
             (0U != obstacle_pack_get(evt, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK));
         uint32_t       index = 0U;
 
-        tm_printf((UB *)"[obstacle-nav] SCAN_RESULT status=%d side=%d width=%d mm "
+        LOG_NOW("INFO", "line:nav", "SCAN_RESULT status=%d side=%d width=%d mm "
                         "start=%d deg\n",
                   (INT)status, (INT)side, (INT)width, (INT)angle);
 
@@ -1463,7 +1446,7 @@ static void report_fault (motion_status_t const * p_status,
 {
     uint32_t wheel = 0U;
 
-    tm_printf((UB *)"[obstacle-nav] MOTION FAULT %d: state %d, stop %d, "
+    LOG_NOW("ERROR", "line:nav", "MOTION FAULT %d: state %d, stop %d, "
                     "hold %d\n",
               (INT)p_status->fault, (INT)p_status->state,
               (INT)p_status->stop_requested, (INT)p_status->hold_mask);
@@ -1474,7 +1457,7 @@ static void report_fault (motion_status_t const * p_status,
                                   ? p_feedback->left_speed_um_s
                                   : p_feedback->right_speed_um_s;
 
-        tm_printf((UB *)"[obstacle-nav]   wheel %d: speed %d um/s, "
+        LOG_NOW("ERROR", "line:nav", "  wheel %d: speed %d um/s, "
                         "speed_valid %d, odo_valid %d\n",
                   (INT)wheel, (INT)speed,
                   (INT)p_feedback->speed_valid[wheel],
@@ -1512,7 +1495,7 @@ static void update_motion (void)
         if (b_changed)
         {
             g_nav.motion_word = word;
-            tm_printf((UB *)"[obstacle-nav] motion state=%d fault=%d hold=%d\n",
+            LOG_NOW("INFO", "line:nav", "motion state=%d fault=%d hold=%d\n",
                       (INT)status.state, (INT)status.fault,
                       (INT)status.hold_mask);
             log_rec(OBSTACLE_LOG_MOTION, status.state, status.fault,

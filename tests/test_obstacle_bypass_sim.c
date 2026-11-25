@@ -1001,7 +1001,7 @@ static void nav_reacquire(sim_t * p_s, uint32_t status, bool b_line)
                 }
                 else
                 {
-                    /* UNKNOWN or STUCK: wait for next ping */
+                    /* NO_ECHO, GLITCH or STUCK: wait for next ping */
                 }
 
                 if ((!b_side_done) && (p_s->side_ping_count >= OBSTACLE_SIDE_PINGS_MAX))

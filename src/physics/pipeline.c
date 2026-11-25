@@ -12,6 +12,7 @@
 #include "pipeline.h"
 #include "hump_detect.h"
 #include "hump_msg.h"
+#include "attitude.h"
 #include "imu_motion.h"
 
 bool pipeline_init (pipeline_t * p_pipe,
@@ -34,6 +35,15 @@ bool pipeline_init (pipeline_t * p_pipe,
         return false;
     }
     hump_run_init (&fresh.run);
+    {
+        attitude_config_t att_cfg;
+
+        attitude_default_config (&att_cfg);
+        if (!attitude_init (&fresh.attitude, &att_cfg))
+        {
+            return false;
+        }
+    }
     fresh.telem_every = telem_every;
     fresh.last_motion = MOTION_CLASS_UNKNOWN;
 
@@ -47,6 +57,7 @@ void pipeline_new_run (pipeline_t * p_pipe)
     {
         hump_recalibrate (&p_pipe->hump);
         hump_run_init (&p_pipe->run);
+        attitude_reset (&p_pipe->attitude);
     }
 }
 
@@ -105,6 +116,9 @@ static void prepare_inputs (pipeline_t * p_pipe, const float * p_acc_g,
     }
 }
 
+static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
+                          pipeline_step_t * p_out);
+
 /* Run hump detection and motion classification on one prepared sample. */
 static void run_detectors (pipeline_t * p_pipe, hump_sample_t * p_sample,
                            imu_motion_input_t * p_in, pipeline_step_t * p_out)
@@ -132,6 +146,34 @@ static void run_detectors (pipeline_t * p_pipe, hump_sample_t * p_sample,
         p_out->sensors_ok = imu_motion_update (&p_pipe->motion, p_sample,
                                                &p_out->hump, p_in,
                                                &p_out->motion);
+    }
+
+    if (p_out->sensors_ok)
+    {
+        run_attitude (p_pipe, p_sample, p_out);
+    }
+}
+
+/* Lift and overturn from the gravity direction. A lifted or overturned car
+ * reports the LIFTED motion class. */
+static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
+                          pipeline_step_t * p_out)
+{
+    attitude_input_t in;
+
+    (void)memset (&in, 0, sizeof (in));
+    in.ax_g = p_sample->ax_g;
+    in.ay_g = p_sample->ay_g;
+    in.az_g = p_sample->az_g;
+    in.calibrated = hump_rest_gravity (&p_pipe->hump, in.g0);
+    in.fwd[p_pipe->hump.cfg.fwd_axis] = (float)p_pipe->hump.cfg.fwd_sign;
+    in.b_wheels_free = p_pipe->wheels_free;
+
+    if (attitude_update (&p_pipe->attitude, &in, &p_out->attitude)
+        && ((ATTITUDE_LIFTED == p_out->attitude.state)
+            || (ATTITUDE_OVERTURNED == p_out->attitude.state)))
+    {
+        p_out->motion.motion = MOTION_CLASS_LIFTED;
     }
 }
 

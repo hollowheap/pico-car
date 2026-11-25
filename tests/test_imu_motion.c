@@ -1,6 +1,6 @@
 /** @file test_imu_motion.c
  *
- * @brief Host tests for motion classification, collision and turn rate.
+ * @brief Host tests for motion classification and turn rate.
  *
  * World model: board X forward, Y left, Z up (right-handed), level mount.
  * World frame north-east-down. Heading psi is clockwise from north, pitch
@@ -287,7 +287,6 @@ static void test_moving_and_accelerating (void)
     cruise (&w);
     sim_run (&s, &w, 10U);
     CHECK (MOTION_CLASS_MOVING == s.mout.motion);
-    CHECK (!s.mout.collision);
     CHECK (fabsf (s.mout.yaw_rate_dps) < 0.01f);
 
     /* A one-sample dv/dt blip does not change the class. */
@@ -306,7 +305,6 @@ static void test_moving_and_accelerating (void)
     CHECK (s.mout.changed);
     sim_step (&s, &w);
     CHECK (!s.mout.changed);
-    CHECK (!s.mout.collision);
 
     /* Braking counts as accelerating too. */
     w.accel = -0.5f;
@@ -503,44 +501,33 @@ static void test_stale_motion (void)
     CHECK (MOTION_CLASS_UNKNOWN == s.mout.motion);
 }
 
-static void test_collision (void)
+/* The IMU does not detect collisions (D140). A hard hit on the forward axis
+ * leaves the class as it was. */
+static void test_forward_spike_is_ignored (void)
 {
     sim_t s;
     world_t w;
     uint32_t i;
-    uint32_t impact_samples = 0U;
-    bool hump_impact = false;
-    bool flagged = false;
 
-    printf ("forward_collision_detected\n");
+    printf ("forward_spike_is_not_a_class\n");
     sim_init (&s);
     world_init (&w);
     sim_calibrate (&s, &w);
     cruise (&w);
     sim_run (&s, &w, 10U);
 
-    /* Hitting an obstacle: -0.8 g for 2 samples on the forward axis. */
     w.fwd_spike_g = -0.8f;
     for (i = 0U; i < 2U; i++)
     {
         sim_step (&s, &w);
-        flagged = flagged || s.mout.collision;
-        hump_impact = hump_impact || s.hout.impact;
+        CHECK (MOTION_CLASS_LIFTED != s.mout.motion);
     }
     w.fwd_spike_g = 0.0f;
-    CHECK (flagged);
-    CHECK (!hump_impact);   /* | |a| - 1 g | alone would miss this hit. */
-    CHECK (MOTION_CLASS_IMPACT == s.mout.motion);
-
     for (i = 0U; i < 30U; i++)
     {
         sim_step (&s, &w);
-        if (MOTION_CLASS_IMPACT == s.mout.motion)
-        {
-            impact_samples++;
-        }
+        CHECK (MOTION_CLASS_LIFTED != s.mout.motion);
     }
-    CHECK (impact_samples >= 9U);
     CHECK (MOTION_CLASS_MOVING == s.mout.motion);
 }
 
@@ -549,9 +536,7 @@ static void test_reported_braking (void)
     sim_t s;
     world_t w;
     uint32_t i;
-    bool any_collision = false;
-
-    printf ("hard_braking_reported_by_buddy2_is_not_a_collision\n");
+    printf ("hard_braking_reported_by_buddy2_keeps_the_class\n");
     sim_init (&s);
     world_init (&w);
     sim_calibrate (&s, &w);
@@ -563,11 +548,9 @@ static void test_reported_braking (void)
     for (i = 0U; i < 3U; i++)
     {
         sim_step (&s, &w);
-        any_collision = any_collision || s.mout.collision;
         CHECK (s.mout.heading_valid);
     }
-    CHECK (!any_collision);
-    CHECK (MOTION_CLASS_IMPACT != s.mout.motion);
+    CHECK (MOTION_CLASS_LIFTED != s.mout.motion);
 }
 
 static void test_hump_classes (void)
@@ -577,7 +560,6 @@ static void test_hump_classes (void)
     uint32_t i;
     bool saw_climb = false;
     bool saw_descend = false;
-    bool any_collision = false;
 
     printf ("hump_gives_climbing_then_descending_no_collision\n");
     sim_init (&s);
@@ -604,11 +586,9 @@ static void test_hump_classes (void)
         sim_step (&s, &w);
         saw_climb = saw_climb || (MOTION_CLASS_CLIMBING == s.mout.motion);
         saw_descend = saw_descend || (MOTION_CLASS_DESCENDING == s.mout.motion);
-        any_collision = any_collision || s.mout.collision;
     }
     CHECK (saw_climb);
     CHECK (saw_descend);
-    CHECK (!any_collision);
     CHECK (MOTION_CLASS_MOVING == s.mout.motion);
 }
 
@@ -626,7 +606,7 @@ int main (void)
     test_wheel_slip ();
     test_mag_fallback ();
     test_stale_motion ();
-    test_collision ();
+    test_forward_spike_is_ignored ();
     test_reported_braking ();
     test_hump_classes ();
 

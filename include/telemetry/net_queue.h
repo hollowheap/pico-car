@@ -4,8 +4,11 @@
 #include <stdint.h>
 #include <tk/tkernel.h>
 
-#define TELEMETRY_NET_QUEUE_BYTES   384u
-#define TELEMETRY_NET_QUEUE_MAX_MSG 17u
+#include "telemetry/packet.h"
+
+#define TELEMETRY_NET_QUEUE_BYTES   1024u
+/* Topic byte + the largest wire packet (D110). */
+#define TELEMETRY_NET_QUEUE_MAX_MSG TELEMETRY_FRAME_MAX
 
 extern ID g_mbf_net_tx_id;
 

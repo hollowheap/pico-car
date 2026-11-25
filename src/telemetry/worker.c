@@ -1,6 +1,7 @@
+#include "telemetry/packet.h"
 #include "telemetry/worker.h"
 
-#define TELEMETRY_WORKER_MAX_FRAME 17U
+#define TELEMETRY_WORKER_MAX_FRAME TELEMETRY_FRAME_MAX
 
 void telemetry_worker_run (telemetry_pop_t pop, telemetry_sink_t sink, TMO timeout)
 {

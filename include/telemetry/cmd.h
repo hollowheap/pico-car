@@ -17,7 +17,8 @@ typedef enum
     TELEMETRY_CMD_LEFT  = 3u,
     TELEMETRY_CMD_RIGHT = 4u,
     TELEMETRY_CMD_UTURN = 5u,
-    TELEMETRY_CMD_ESTOP = 6u
+    TELEMETRY_CMD_ESTOP = 6u,
+    TELEMETRY_CMD_STRAIGHT = 7u
 } telemetry_cmd_opcode_t;
 
 STATIC_ASSERT (sizeof(telemetry_cmd_opcode_t) <= 4U,

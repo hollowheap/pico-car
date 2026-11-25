@@ -5,6 +5,7 @@
 - C standard: C99 for application code (`CMAKE_C_STANDARD 99`); the kernel, lwIP, and Pico SDK build as gnu11.
 - Format: `.clang-format` and `.clang-tidy`.
 - Keep μT-Kernel task attributes literal in `src/main.c`; do not add `PRIO_*` constants.
+- Log with `LOG_*` from `platform/log.h`: `[<SEV>](<task>:<module>) message`. Never call `tm_printf` in `src/` (the `check_firmware_policy` check). See `docs/debugging.md`.
 
 ## Architecture & Layout
 - Dual Hierarchy: public interfaces in `include/<subsystem>/`, implementations in `src/<subsystem>/`.

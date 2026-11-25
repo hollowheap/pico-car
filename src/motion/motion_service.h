@@ -51,13 +51,15 @@ ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
  * Invalid/stale requests cancel pending motion and request an ordinary brake.
  * E_BUSY means a sensor/operator hold prevents motion. No sensor GPIO reads. */
 ER motion_service_submit_request (const motion_drive_request_t * p_request);
-/* Each owner sets/clears ONE of MOTION_HOLD_OBSTACLE/LINE_LOST/OPERATOR.
+/* Each owner sets/clears ONE of MOTION_HOLD_OBSTACLE/OPERATOR.
  * Clearing one never clears another. Last release requires a fresh request
  * sensed at/after release; cached old intent cannot restart motion. */
 ER motion_service_set_hold (uint32_t reason, bool held);
 ER motion_service_request_stop (
     void); /* Latches until reboot; next owner poll. */
 ER motion_service_read_status (motion_service_status_t * p_status);
+/* Renew the supervisor run permit (D160). See motion_renew_permit. */
+ER motion_service_renew_permit (uint32_t lease_ms);
 
 #endif /* MOTION_SERVICE_H */
 

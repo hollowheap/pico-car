@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 
-type FieldType = "int8" | "uint8" | "int16" | "uint16";
+type FieldType = "int8" | "uint8" | "int16" | "uint16" | "int32" | "uint32";
 
 type Field = {
   name: string;
   offset: number;
   type: FieldType;
+  count?: number;
 };
 
 type Packet = {
@@ -43,8 +44,21 @@ function readField(view: DataView, field: Field): number {
       return view.getInt16(field.offset, false);
     case "uint16":
       return view.getUint16(field.offset, false);
+    case "int32":
+      return view.getInt32(field.offset, false);
+    case "uint32":
+      return view.getUint32(field.offset, false);
   }
 }
+
+const FIELD_SIZE: Record<FieldType, number> = {
+  int8: 1,
+  uint8: 1,
+  int16: 2,
+  uint16: 2,
+  int32: 4,
+  uint32: 4,
+};
 
 export function decodePacket(
   schema: ProtocolSchema,
@@ -66,9 +80,20 @@ export function decodePacket(
     payload.byteOffset,
     payload.byteLength,
   );
+  // Dashboard values are a flat Record<string, number>, so an array field
+  // `slots` with count N becomes slots_0 .. slots_<N-1>.
   const values: Record<string, number> = {};
   for (const field of packet.fields) {
-    values[field.name] = readField(view, field);
+    if (field.count === undefined) {
+      values[field.name] = readField(view, field);
+      continue;
+    }
+    for (let index = 0; index < field.count; index += 1) {
+      values[`${field.name}_${index}`] = readField(view, {
+        ...field,
+        offset: field.offset + index * FIELD_SIZE[field.type],
+      });
+    }
   }
   return { name, values };
 }

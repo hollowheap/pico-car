@@ -1,3 +1,5 @@
+import { emptyStore, reduceStore, type TelemetryStore } from './telemetry-store';
+
 export type HistoryRecord = {
   timestamp: number;
   topic: string;
@@ -38,4 +40,18 @@ export async function fetchHistory(
     throw new Error('history response is not an array');
   }
   return payload.filter(isRecord);
+}
+
+/**
+ * Rebuild the store from the records the bridge keeps. The bridge lists the
+ * newest first, so the records go in reverse.
+ */
+export function storeFromHistory(records: HistoryRecord[]): TelemetryStore {
+  return [...records]
+    .reverse()
+    .reduce(
+      (store, record) =>
+        reduceStore(store, { timestamp: record.timestamp, packet: record.packet, values: record.values }),
+      emptyStore(),
+    );
 }

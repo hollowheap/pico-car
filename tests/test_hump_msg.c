@@ -54,7 +54,7 @@ static void test_size_and_layout (void)
     /* Each field lands in its documented bits. */
     base_fields (&f);
     f.state = HUMP_STATE_DESCEND;            /* 3 at bits 0-1   */
-    f.motion = MOTION_CLASS_IMPACT;             /* 7 at bits 2-4   */
+    f.motion = MOTION_CLASS_LIFTED;             /* 7 at bits 2-4   */
     f.faults = PHYSICS_FAULT_I2C | PHYSICS_FAULT_STALE; /* 3 at bits 5-7  */
     f.pitch_deg = 31.5f;                     /* 127 at bits 8-14 */
     f.hump_peak_m = 0.126f;                  /* 126 at 15-21    */

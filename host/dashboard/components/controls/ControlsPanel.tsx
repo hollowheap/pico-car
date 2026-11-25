@@ -15,6 +15,18 @@ type Props = {
   feedbackError?: boolean;
 };
 
+/** What the confirmation says. The wire name `reset` clears faults: it never moves the car. */
+const ACTION_WORDS: Record<string, string> = {
+  start: 'start',
+  stop: 'stop',
+  estop: 'emergency stop',
+  reset: 'clear faults (then START)',
+  left: 'turn left 90°',
+  right: 'turn right 90°',
+  uturn: 'U-turn',
+  straight: 'go straight across the junction',
+};
+
 export function ControlsPanel({
   emergencyLatched,
   onAction,
@@ -135,7 +147,7 @@ export function ControlsPanel({
             variant="secondary"
             onPress={() => request('reset')}
           >
-            <Button.Text>Reset</Button.Text>
+            <Button.Text>Clear faults</Button.Text>
           </Button>
           <Button
             disabled={disabled || emergencyLatched}
@@ -143,6 +155,13 @@ export function ControlsPanel({
             onPress={() => request('left')}
           >
             <Button.Text>Left 90°</Button.Text>
+          </Button>
+          <Button
+            disabled={disabled || emergencyLatched}
+            variant="secondary"
+            onPress={() => request('straight')}
+          >
+            <Button.Text>Straight</Button.Text>
           </Button>
           <Button
             disabled={disabled || emergencyLatched}
@@ -180,7 +199,7 @@ export function ControlsPanel({
               { color: theme.colors.text },
             ]}
           >
-            Confirm {pending}?
+            Confirm {ACTION_WORDS[pending] ?? pending}?
           </Text>
         </View>
       )}

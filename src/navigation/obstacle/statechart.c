@@ -25,16 +25,16 @@
 #define EVT_IDX_PRIMARY   (0U)
 #define EVT_IDX_SECONDARY (1U)
 
-static uint32_t cnt_get (obstacle_statechart_t const * p_fsm, uint32_t shift, uint32_t mask);
-static void     cnt_set (obstacle_statechart_t * p_fsm, uint32_t shift, uint32_t mask,
-                         uint32_t value);
-static uint32_t cnt_inc (obstacle_statechart_t * p_fsm, uint32_t shift, uint32_t mask);
+static uint8_t  run_count (uint8_t count, bool b_match);
+static uint32_t window_push (uint8_t * p_hist, bool b_hit);
+static uint16_t ranged_dist (uint8_t cls, uint16_t dist_mm);
+static void     check_plausibility (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm);
 static uint32_t event_base (uint32_t type, uint32_t req_id);
 static void     emit (obstacle_statechart_out_t * p_out, uint32_t evt);
 static void     emit_steer (obstacle_statechart_t * p_fsm,
                             obstacle_statechart_out_t * p_out, uint8_t steer);
 static void     enter (obstacle_statechart_t * p_fsm, uint8_t state, uint32_t now_ms);
-static uint8_t  fault_bit (uint8_t cause);
+static uint16_t fault_bit (uint8_t cause);
 static void     enter_stopped (obstacle_statechart_t * p_fsm, uint8_t cause, uint32_t now_ms,
                                obstacle_statechart_out_t * p_out);
 static bool     is_cause_cleared (obstacle_statechart_t const * p_fsm);
@@ -42,9 +42,9 @@ static void     accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms, uin
                              obstacle_statechart_out_t * p_out);
 static bool     check_health (obstacle_statechart_t * p_fsm, uint8_t cls, uint32_t now_ms,
                               obstacle_statechart_out_t * p_out);
-static bool     check_collision (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
+static bool     check_collision (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
                                  uint32_t now_ms, obstacle_statechart_out_t * p_out);
-static void     ping_monitor (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
+static void     ping_monitor (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
                               uint32_t now_ms, obstacle_statechart_out_t * p_out);
 static void     ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm,
                                uint32_t now_ms, obstacle_statechart_out_t * p_out);
@@ -89,17 +89,25 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm,
     p_fsm->cause            = OBSTACLE_CAUSE_BOOT;
     p_fsm->faults           = 0U;
     p_fsm->req_id           = 0U;
-    p_fsm->last_class       = OBSTACLE_CLASS_UNKNOWN;
+    p_fsm->last_class       = OBSTACLE_CLASS_NO_ECHO;
     p_fsm->last_dist        = 0U;
     p_fsm->seq              = 0U;
     p_fsm->steer            = OBSTACLE_STEER_HOLD;
     p_fsm->steer_seq        = 0U;
-    p_fsm->counters         = 0U;
+    p_fsm->counts           = (obstacle_counters_t){0};
     p_fsm->b_reset_ok       = false;
     p_fsm->since_ms         = now_ms;
     p_fsm->bypass_mm        = 0U;
     p_fsm->scan_progress_ms = now_ms;
     p_fsm->hug_limit_mm     = OBSTACLE_HUG_MIN_MM;
+    p_fsm->odo_mm           = 0U;
+    p_fsm->anchor_odo_mm    = 0U;
+    p_fsm->anchor_dist      = 0U;
+    p_fsm->b_anchor         = false;
+    p_fsm->b_inconsistent   = false;
+    p_fsm->boot_pings       = 0U;
+    p_fsm->boot_hits        = 0U;
+    p_fsm->b_beam_blocked   = false;
     p_fsm->cfg              = *p_cfg;
     scan_algo_start(&p_fsm->scan);
 
@@ -235,17 +243,18 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
                                uint16_t dist_mm, uint32_t now_ms,
                                obstacle_statechart_out_t * p_out)
 {
-    uint16_t const dist = (OBSTACLE_CLASS_VALID == cls) ? dist_mm : 0U;
+    uint16_t const dist = ranged_dist(cls, dist_mm);
 
     p_fsm->seq        = (uint8_t)(((uint32_t)p_fsm->seq + 1U) & OBSTACLE_ST_SEQ_MK);
     p_fsm->last_class = cls;
     p_fsm->last_dist  = dist;
+    check_plausibility(p_fsm, cls, dist);
 
     if (check_health(p_fsm, cls, now_ms, p_out))
     {
         /* Fault latched. */
     }
-    else if (check_collision(p_fsm, cls, dist_mm, now_ms, p_out))
+    else if (check_collision(p_fsm, dist, now_ms, p_out))
     {
         /* Collision latched. */
     }
@@ -254,7 +263,7 @@ void obstacle_statechart_ping (obstacle_statechart_t * p_fsm, uint8_t cls,
         switch (p_fsm->state)
         {
             case OBSTACLE_STATE_MONITOR:
-                ping_monitor(p_fsm, cls, dist_mm, now_ms, p_out);
+                ping_monitor(p_fsm, dist, now_ms, p_out);
             break;
 
             case OBSTACLE_STATE_SCANNING:
@@ -423,29 +432,146 @@ uint32_t obstacle_statechart_status (obstacle_statechart_t const * p_fsm)
     return (word);
 }
 
-static uint32_t cnt_get (obstacle_statechart_t const * p_fsm, uint32_t shift, uint32_t mask)
+/*!
+ * @brief Warning flags for the snapshot: wall plan, noisy echo, noisy scan.
+ *
+ * @param[in] p_fsm Statechart.
+ *
+ * @return OBSTACLE_FLAG_* bits.
+ */
+uint8_t obstacle_statechart_flags (obstacle_statechart_t const * p_fsm)
 {
-    return (obstacle_pack_get(p_fsm->counters, shift, mask));
-}
+    uint8_t flags = 0U;
+    bool const b_planned = (OBSTACLE_STATE_PLAN == p_fsm->state) ||
+                           (OBSTACLE_STATE_BYPASS == p_fsm->state) ||
+                           (OBSTACLE_STATE_REACQUIRE == p_fsm->state);
 
-static void cnt_set (obstacle_statechart_t * p_fsm, uint32_t shift, uint32_t mask,
-                     uint32_t value)
-{
-    p_fsm->counters =
-        (uint16_t)obstacle_pack_put(p_fsm->counters, shift, mask, value);
-}
-
-static uint32_t cnt_inc (obstacle_statechart_t * p_fsm, uint32_t shift, uint32_t mask)
-{
-    uint32_t count = cnt_get(p_fsm, shift, mask);
-
-    if (count < mask)
+    if (b_planned && p_fsm->plan.b_wall)
     {
-        count++;
-        cnt_set(p_fsm, shift, mask, count);
+        flags |= (uint8_t)OBSTACLE_FLAG_WALL;
+    }
+    if (scan_algo_echo_noisy(&p_fsm->scan))
+    {
+        flags |= (uint8_t)OBSTACLE_FLAG_ECHO_NOISY;
+    }
+    if (p_fsm->b_inconsistent)
+    {
+        flags |= (uint8_t)OBSTACLE_FLAG_ECHO_INCONSISTENT;
+    }
+    if (p_fsm->b_beam_blocked)
+    {
+        flags |= (uint8_t)OBSTACLE_FLAG_BEAM_BLOCKED;
+    }
+    if (p_fsm->scan.b_scan_noisy)
+    {
+        flags |= (uint8_t)OBSTACLE_FLAG_SCAN_NOISY;
     }
 
-    return (count);
+    return (flags);
+}
+
+void obstacle_statechart_set_odometer (obstacle_statechart_t * p_fsm, uint32_t odo_mm)
+{
+    p_fsm->odo_mm = odo_mm;
+}
+
+/* Plausibility checks on a ping. They raise flags and never stop the car.
+ * P3: of the first pings after boot, mostly hits means the beam is blocked.
+ * P2: the range change between two VALID readings must follow the wheel travel. */
+static void check_plausibility (obstacle_statechart_t * p_fsm, uint8_t cls, uint16_t dist_mm)
+{
+    uint16_t const dist = ranged_dist(cls, dist_mm);
+
+    if (p_fsm->boot_pings < OBSTACLE_BEAM_CHECK_PINGS)
+    {
+        p_fsm->boot_pings++;
+        if ((0U != dist) && (dist <= OBSTACLE_DETECT_MM))
+        {
+            p_fsm->boot_hits++;
+        }
+        if (OBSTACLE_BEAM_CHECK_PINGS == p_fsm->boot_pings)
+        {
+            p_fsm->b_beam_blocked = (p_fsm->boot_hits >= OBSTACLE_BEAM_CHECK_HITS);
+        }
+    }
+
+    if ((OBSTACLE_CLASS_VALID == cls) && (dist_mm < OBSTACLE_CONSIST_RANGE_MM))
+    {
+        int32_t const travel = (int32_t)(p_fsm->odo_mm - p_fsm->anchor_odo_mm);
+
+        if (!p_fsm->b_anchor || (travel < 0))
+        {
+            p_fsm->b_anchor = true;
+        }
+        else if (travel >= (int32_t)OBSTACLE_CONSIST_TRAVEL_MM)
+        {
+            int32_t const expected = (int32_t)p_fsm->anchor_dist - travel;
+            int32_t const diff     = (int32_t)dist_mm - expected;
+
+            p_fsm->b_inconsistent = (diff > (int32_t)OBSTACLE_CONSIST_TOL_MM) ||
+                                    (-diff > (int32_t)OBSTACLE_CONSIST_TOL_MM);
+        }
+        else
+        {
+            /* Not far enough yet: keep the anchor. */
+            return;
+        }
+        p_fsm->anchor_dist   = dist_mm;
+        p_fsm->anchor_odo_mm = p_fsm->odo_mm;
+    }
+}
+
+/* Length of the current run of matching pings, saturated at 255. */
+static uint8_t run_count (uint8_t count, bool b_match)
+{
+    uint8_t result = 0U;
+
+    if (b_match)
+    {
+        result = (count < UINT8_MAX) ? (uint8_t)(count + 1U) : count;
+    }
+
+    return (result);
+}
+
+/* Shift one ping into a hit history of OBSTACLE_HIT_WINDOW bits (newest in
+ * bit 0) and return how many of the pings in the window are hits. */
+static uint32_t window_push (uint8_t * p_hist, bool b_hit)
+{
+    uint32_t bits = (((uint32_t)*p_hist << 1U) | (b_hit ? 1U : 0U)) &
+                    ((1UL << OBSTACLE_HIT_WINDOW) - 1UL);
+    uint32_t hits = 0U;
+
+    *p_hist = (uint8_t)bits;
+    while (0U != bits)
+    {
+        hits += bits & 1U;
+        bits >>= 1U;
+    }
+
+    return (hits);
+}
+
+/* The range of a ping that has one: the reading for VALID, and the minimum
+ * range for TOO_CLOSE. Any other class has none (0). */
+static uint16_t ranged_dist (uint8_t cls, uint16_t dist_mm)
+{
+    uint16_t dist = 0U;
+
+    if (OBSTACLE_CLASS_VALID == cls)
+    {
+        dist = dist_mm;
+    }
+    else if (OBSTACLE_CLASS_TOO_CLOSE == cls)
+    {
+        dist = (uint16_t)OBSTACLE_MIN_RANGE_MM;
+    }
+    else
+    {
+        dist = 0U;
+    }
+
+    return (dist);
 }
 
 static uint32_t event_base (uint32_t type, uint32_t req_id)
@@ -487,49 +613,53 @@ static void enter (obstacle_statechart_t * p_fsm, uint8_t state, uint32_t now_ms
 {
     p_fsm->state    = state;
     p_fsm->since_ms = now_ms;
-    p_fsm->counters = 0U;
+    p_fsm->counts   = (obstacle_counters_t){0};
     if (OBSTACLE_STATE_SCANNING == state)
     {
         p_fsm->scan_progress_ms = now_ms;
     }
 }
 
-static uint8_t fault_bit (uint8_t cause)
+static uint16_t fault_bit (uint8_t cause)
 {
-    uint8_t bit = 0U;
+    uint16_t bit = 0U;
 
     switch (cause)
     {
         case OBSTACLE_CAUSE_NO_ECHO:
-            bit = (uint8_t)OBSTACLE_FAULT_NO_ECHO;
+            bit = (uint16_t)OBSTACLE_FAULT_NO_ECHO;
         break;
 
         case OBSTACLE_CAUSE_ECHO_STUCK:
-            bit = (uint8_t)OBSTACLE_FAULT_ECHO_STUCK;
+            bit = (uint16_t)OBSTACLE_FAULT_ECHO_STUCK;
         break;
 
         case OBSTACLE_CAUSE_SCAN_TIMEOUT:
-            bit = (uint8_t)OBSTACLE_FAULT_SCAN_TIMEOUT;
+            bit = (uint16_t)OBSTACLE_FAULT_SCAN_TIMEOUT;
         break;
 
         case OBSTACLE_CAUSE_NO_SAFE_PATH:
-            bit = (uint8_t)OBSTACLE_FAULT_NO_SAFE_PATH;
+            bit = (uint16_t)OBSTACLE_FAULT_NO_SAFE_PATH;
         break;
 
         case OBSTACLE_CAUSE_COLLISION:
-            bit = (uint8_t)OBSTACLE_FAULT_COLLISION;
+            bit = (uint16_t)OBSTACLE_FAULT_COLLISION;
+        break;
+
+        case OBSTACLE_CAUSE_ECHO_NOISE:
+            bit = (uint16_t)OBSTACLE_FAULT_ECHO_NOISE;
         break;
 
         case OBSTACLE_CAUSE_HANDOVER:
-            bit = (uint8_t)OBSTACLE_FAULT_HANDOVER;
+            bit = (uint16_t)OBSTACLE_FAULT_HANDOVER;
         break;
 
         case OBSTACLE_CAUSE_BYPASS_LIMIT:
-            bit = (uint8_t)OBSTACLE_FAULT_BYPASS_LIMIT;
+            bit = (uint16_t)OBSTACLE_FAULT_BYPASS_LIMIT;
         break;
 
         case OBSTACLE_CAUSE_LINE_TIMEOUT:
-            bit = (uint8_t)OBSTACLE_FAULT_LINE_TIMEOUT;
+            bit = (uint16_t)OBSTACLE_FAULT_LINE_TIMEOUT;
         break;
 
         default:
@@ -543,7 +673,7 @@ static uint8_t fault_bit (uint8_t cause)
 static void enter_stopped (obstacle_statechart_t * p_fsm, uint8_t cause,
                            uint32_t now_ms, obstacle_statechart_out_t * p_out)
 {
-    uint8_t const  bit  = fault_bit(cause);
+    uint16_t const bit  = fault_bit(cause);
     uint32_t       word = 0U;
 
     enter(p_fsm, OBSTACLE_STATE_STOPPED, now_ms);
@@ -584,90 +714,69 @@ static void accept_plan (obstacle_statechart_t * p_fsm, uint32_t now_ms,
 static bool check_health (obstacle_statechart_t * p_fsm, uint8_t cls,
                           uint32_t now_ms, obstacle_statechart_out_t * p_out)
 {
-    bool b_fault = false;
+    obstacle_counters_t * const p_cnt = &p_fsm->counts;
+    uint8_t                     cause = OBSTACLE_CAUSE_NONE;
 
-    if (OBSTACLE_CLASS_UNKNOWN == cls)
+    p_cnt->no_echo = run_count(p_cnt->no_echo, OBSTACLE_CLASS_NO_ECHO == cls);
+    p_cnt->stuck   = run_count(p_cnt->stuck, OBSTACLE_CLASS_STUCK == cls);
+    p_cnt->glitch  = run_count(p_cnt->glitch, OBSTACLE_CLASS_GLITCH == cls);
+    p_cnt->fail    = run_count(p_cnt->fail, obstacle_pack_class_is_unresolved(cls));
+
+    if (p_cnt->no_echo >= OBSTACLE_NO_ECHO_COUNT)
     {
-        uint32_t const unk = cnt_inc(p_fsm, OBSTACLE_CNT_UNK_SH, OBSTACLE_CNT_UNK_MK);
-
-        if (unk >= OBSTACLE_NO_ECHO_COUNT)
-        {
-            enter_stopped(p_fsm, OBSTACLE_CAUSE_NO_ECHO, now_ms, p_out);
-            b_fault = true;
-        }
+        cause = OBSTACLE_CAUSE_NO_ECHO;
+    }
+    else if (p_cnt->stuck >= OBSTACLE_STUCK_COUNT)
+    {
+        cause = OBSTACLE_CAUSE_ECHO_STUCK;
+    }
+    else if ((p_cnt->glitch >= OBSTACLE_GLITCH_COUNT) || (p_cnt->fail >= OBSTACLE_FAIL_COUNT))
+    {
+        cause = OBSTACLE_CAUSE_ECHO_NOISE;
     }
     else
     {
-        cnt_set(p_fsm, OBSTACLE_CNT_UNK_SH, OBSTACLE_CNT_UNK_MK, 0U);
+        /* The echo line is healthy enough. */
     }
 
-    if ((!b_fault) && (OBSTACLE_CLASS_STUCK == cls))
+    if (OBSTACLE_CAUSE_NONE != cause)
     {
-        uint32_t const stk = cnt_inc(p_fsm, OBSTACLE_CNT_STUCK_SH, OBSTACLE_CNT_STUCK_MK);
+        enter_stopped(p_fsm, cause, now_ms, p_out);
+    }
 
-        if (stk >= OBSTACLE_STUCK_COUNT)
-        {
-            enter_stopped(p_fsm, OBSTACLE_CAUSE_ECHO_STUCK, now_ms, p_out);
-            b_fault = true;
-        }
-    }
-    else if (!b_fault)
+    return (OBSTACLE_CAUSE_NONE != cause);
+}
+
+static bool check_collision (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
+                             uint32_t now_ms, obstacle_statechart_out_t * p_out)
+{
+    bool const     b_close = (0U != dist_mm) && (dist_mm <= OBSTACLE_COLLISION_MM);
+    uint32_t const hits    = window_push(&p_fsm->counts.coll_hist, b_close);
+    bool           b_fault = false;
+
+    if (hits >= OBSTACLE_COLLISION_HITS)
     {
-        cnt_set(p_fsm, OBSTACLE_CNT_STUCK_SH, OBSTACLE_CNT_STUCK_MK, 0U);
-    }
-    else
-    {
-        /* Fault already entered. */
+        enter_stopped(p_fsm, OBSTACLE_CAUSE_COLLISION, now_ms, p_out);
+        b_fault = true;
     }
 
     return (b_fault);
 }
 
-static bool check_collision (obstacle_statechart_t * p_fsm, uint8_t cls,
-                             uint16_t dist_mm, uint32_t now_ms,
-                             obstacle_statechart_out_t * p_out)
+static void ping_monitor (obstacle_statechart_t * p_fsm, uint16_t dist_mm,
+                          uint32_t now_ms, obstacle_statechart_out_t * p_out)
 {
-    bool b_fault = false;
+    bool const     b_hit = (0U != dist_mm) && (dist_mm <= OBSTACLE_DETECT_MM);
+    uint32_t const hits  = window_push(&p_fsm->counts.hit_hist, b_hit);
 
-    if ((OBSTACLE_CLASS_VALID == cls) && (dist_mm <= OBSTACLE_COLLISION_MM))
+    if (hits >= OBSTACLE_DETECT_HITS)
     {
-        uint32_t const hits = cnt_inc(p_fsm, OBSTACLE_CNT_COLL_SH, OBSTACLE_CNT_COLL_MK);
+        uint32_t word = 0U;
 
-        if (hits >= OBSTACLE_COLLISION_HITS)
-        {
-            enter_stopped(p_fsm, OBSTACLE_CAUSE_COLLISION, now_ms, p_out);
-            b_fault = true;
-        }
-    }
-    else
-    {
-        cnt_set(p_fsm, OBSTACLE_CNT_COLL_SH, OBSTACLE_CNT_COLL_MK, 0U);
-    }
-
-    return (b_fault);
-}
-
-static void ping_monitor (obstacle_statechart_t * p_fsm, uint8_t cls,
-                          uint16_t dist_mm, uint32_t now_ms,
-                          obstacle_statechart_out_t * p_out)
-{
-    if ((OBSTACLE_CLASS_VALID == cls) && (dist_mm <= OBSTACLE_DETECT_MM))
-    {
-        uint32_t const hits = cnt_inc(p_fsm, OBSTACLE_CNT_HIT_SH, OBSTACLE_CNT_HIT_MK);
-
-        if (hits >= OBSTACLE_DETECT_HITS)
-        {
-            uint32_t word = 0U;
-
-            enter(p_fsm, OBSTACLE_STATE_WAIT_STOP, now_ms);
-            word = event_base(OBSTACLE_EVT_OBSTACLE, p_fsm->req_id);
-            word = obstacle_pack_put(word, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK, dist_mm);
-            emit(p_out, word);
-        }
-    }
-    else
-    {
-        cnt_set(p_fsm, OBSTACLE_CNT_HIT_SH, OBSTACLE_CNT_HIT_MK, 0U);
+        enter(p_fsm, OBSTACLE_STATE_WAIT_STOP, now_ms);
+        word = event_base(OBSTACLE_EVT_OBSTACLE, p_fsm->req_id);
+        word = obstacle_pack_put(word, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK, dist_mm);
+        emit(p_out, word);
     }
 }
 
@@ -698,6 +807,9 @@ static void ping_scanning (obstacle_statechart_t * p_fsm, uint8_t cls,
         word = obstacle_pack_put(word, OBSTACLE_EV_WALL_SH, OBSTACLE_EV_WALL_MK,
                                  p_fsm->plan.b_wall ? 1U : 0U);
         emit(p_out, word);
+
+        /* The finished profile and plan are what the profile telemetry shows. */
+        p_out->b_profile_changed = true;
     }
 }
 
@@ -707,9 +819,9 @@ static void ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls,
 {
     if (obstacle_plan_is_escape_clear(cls, dist_mm, p_fsm->plan.closest_mm))
     {
-        uint32_t const clears = cnt_inc(p_fsm, OBSTACLE_CNT_CLEAR_SH, OBSTACLE_CNT_CLEAR_MK);
+        p_fsm->counts.clear = run_count(p_fsm->counts.clear, true);
 
-        if ((clears >= OBSTACLE_ESCAPE_CLEARS) && (p_fsm->b_turned))
+        if ((p_fsm->counts.clear >= OBSTACLE_ESCAPE_CLEARS) && (p_fsm->b_turned))
         {
             enter(p_fsm, OBSTACLE_STATE_REACQUIRE, now_ms);
             emit_steer(p_fsm, p_out, OBSTACLE_STEER_STRAIGHT);
@@ -721,7 +833,7 @@ static void ping_bypass (obstacle_statechart_t * p_fsm, uint8_t cls,
     }
     else
     {
-        cnt_set(p_fsm, OBSTACLE_CNT_CLEAR_SH, OBSTACLE_CNT_CLEAR_MK, 0U);
+        p_fsm->counts.clear = 0U;
         emit_steer(p_fsm, p_out, obstacle_plan_steer_away(p_fsm->plan.side));
     }
 }
@@ -730,15 +842,18 @@ static void ping_reacquire (obstacle_statechart_t * p_fsm, uint8_t cls,
                             uint16_t dist_mm, uint32_t now_ms,
                             obstacle_statechart_out_t * p_out)
 {
-    /* S40, D96: While moving, the sonar faces forward (0 deg). Any VALID
-     * reading under OBSTACLE_FWD_GUARD_MM (300 mm) stops the car and rescans. */
-    if ((OBSTACLE_CLASS_VALID == cls) && (dist_mm < OBSTACLE_FWD_GUARD_MM))
+    /* S40, D96: While moving, the sonar faces forward (0 deg). Any VALID or
+     * TOO_CLOSE reading under OBSTACLE_FWD_GUARD_MM (300 mm) stops the car and
+     * rescans. */
+    uint16_t const dist = ranged_dist(cls, dist_mm);
+
+    if ((0U != dist) && (dist < OBSTACLE_FWD_GUARD_MM))
     {
         uint32_t word = 0U;
 
         enter(p_fsm, OBSTACLE_STATE_WAIT_STOP, now_ms);
         word = event_base(OBSTACLE_EVT_OBSTACLE, p_fsm->req_id);
-        word = obstacle_pack_put(word, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK, dist_mm);
+        word = obstacle_pack_put(word, OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK, dist);
         emit(p_out, word);
         emit_steer(p_fsm, p_out, OBSTACLE_STEER_HOLD);
     }

@@ -19,6 +19,8 @@ Hold BOOTSEL while plugging the Pico W. If it mounts as `RPI-RP2`,
 ```sh
 ./flash.sh build/physics_check.uf2
 ./flash.sh build/obstacle_bench.uf2
+./flash.sh build/car_bench.uf2
+./flash.sh build/wdt_check.uf2
 ```
 
 When developing, `configure.sh` should be run before the first build or
@@ -75,15 +77,19 @@ interface in the host firewall.
 
 ## Telemetry
 
-The firmware publishes the status, system, heartbeat and event packets on
-MQTT and accepts STOP/START/RESET commands. Broker settings are CMake cache
+The firmware publishes the status, motion, physics, obstacle, diag, heartbeat,
+event and profile packets on MQTT (topics `s m p o d h e f`) and accepts
+STOP/START/RESET commands. Broker settings are CMake cache
 values: `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`,
 `PICO_CAR_MQTT_USERNAME`, `PICO_CAR_MQTT_PASSWORD`,
 `PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.
 
-The system packet carries the Buddy 4 and Buddy 5 state every 500 ms. The
-status packet keeps the motion state, speed, distance and fault word at the
-original 8 bytes.
+The status, motion and physics packets go out at 5 Hz. The obstacle packet
+goes out at 2 Hz and on change, and the diag and heartbeat packets at 1 Hz.
+Events go out when they happen, and the scan profile once per scan. The layout
+of every packet, the fault bits and the event types are in
+`protocol/telemetry.yaml` (schema 2). After you edit that file, run
+`npm --prefix host/dashboard run generate`.
 
 `lib/lwip` is a submodule used by the telemetry build; `configure.sh`
 initialises it. Set the Wi-Fi credentials on the configure line:
@@ -106,7 +112,8 @@ An empty SSID keeps `TM_WIFI_JOIN=0`.
 
 ## Tests
 
-The hardware smoke test plan is in [`docs/smoke-test.md`](docs/smoke-test.md).
+The hardware smoke test plan is in [`docs/smoke-test.md`](docs/smoke-test.md). The measurement benches (`car_bench`, `wdt_check`, `physics_check`, `obstacle_bench`) are in [`docs/bench.md`](docs/bench.md); `tools/bench_summary.py` reads their logs.
+The supervisor, its commands and its health checks are in [`docs/supervisor.md`](docs/supervisor.md).
 
 Host tests build out of tree:
 

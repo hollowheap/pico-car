@@ -27,6 +27,7 @@
 
 #include "hump_detect.h"
 #include "hump_msg.h"
+#include "attitude.h"
 #include "imu_motion.h"
 
 /* Motion data from Buddy 2, already converted to SI units. */
@@ -46,6 +47,8 @@ typedef struct
 {
     hump_ctx_t        hump;
     imu_motion_ctx_t  motion;
+    attitude_ctx_t    attitude;
+    bool              wheels_free;   /* Second lift cue, set by the owner (D161). */
     hump_run_t          run;
     uint32_t          telem_every;
     uint32_t          cycle;
@@ -68,6 +71,7 @@ typedef struct
     bool                sensors_ok;  /* False when accel read failed.      */
     hump_output_t       hump;        /* Valid only when sensors_ok.        */
     imu_motion_output_t motion;      /* Valid only when sensors_ok.        */
+    attitude_output_t   attitude;    /* Valid only when sensors_ok.        */
 } pipeline_step_t;
 
 /* telem_every >= 1. Returns false for a null pointer or a bad config. */

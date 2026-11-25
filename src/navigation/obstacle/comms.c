@@ -32,6 +32,7 @@
 #include "statechart.h"
 #include "obstacle_pack.h"
 #include "obstacle_internal.h"
+#include "platform/faults.h"
 
 /* A reader of the profile tries this many times before giving up. */
 #define PROFILE_TRIES (2U)
@@ -65,14 +66,33 @@ typedef struct
 
 static comms_links_t g_links = {0, 0, NULL, NULL};
 
+#define AIM_BODY_SHIFT (16U)
+
 static uint32_t volatile g_status = 0U;
 static uint32_t volatile g_steer  = 0U;
-static uint8_t volatile g_faults  = 0U;
+static uint16_t volatile g_faults = 0U;
 static uint8_t volatile g_drops   = 0U;
 
 /* The sequence number is odd while the profile is being written. */
 static uint16_t volatile g_profile[OBSTACLE_SLOT_COUNT];
 static uint8_t volatile g_profile_seq = 0U;
+
+/* The plan that goes with the profile. Written under the same sequence. */
+static uint16_t volatile g_plan_closest = 0U;
+static uint16_t volatile g_plan_width   = 0U;
+static uint16_t volatile g_plan_need    = 0U;
+static uint8_t volatile g_plan_status   = 0U;
+static uint8_t volatile g_plan_side     = 0U;
+static uint8_t volatile g_plan_start    = 0U;
+static bool volatile g_plan_wall        = false;
+
+/* Servo angle (low 16 bits) and body offset (high 16 bits), deci-degrees,
+ * stored whole each step. */
+static uint32_t volatile g_aim   = 0U;
+static uint8_t volatile g_flags  = 0U;
+
+/* Pings per echo class since boot. The obstacle task is the only writer. */
+static uint32_t volatile g_class_count[OBSTACLE_ECHO_CLASSES];
 
 static uint8_t volatile g_cmd_ring[OBSTACLE_CMD_RING_LEN];
 static uint8_t volatile g_cmd_head  = 0U;
@@ -240,6 +260,36 @@ bool obstacle_comms_pop_cmd (uint8_t * p_cmd)
 }
 
 /*!
+ * @brief Mirror the statechart fault bits into the shared system register.
+ *
+ * NO_ECHO is bit 8, a stuck or noisy ECHO line is bit 10, and any fault that leaves
+ * the car stopped in the statechart is bit 13 (the car is already stopped).
+ *
+ * @param[in] faults The OBSTACLE_FAULT_* bits.
+ */
+static void share_faults (uint16_t faults)
+{
+    uint16_t active = 0U;
+
+    if (0U != (faults & OBSTACLE_FAULT_NO_ECHO))
+    {
+        active |= FAULT_SONAR_NO_ECHO_BIT;
+    }
+    if (0U != (faults & (OBSTACLE_FAULT_ECHO_STUCK | OBSTACLE_FAULT_ECHO_NOISE)))
+    {
+        active |= FAULT_ECHO_LINE_BIT;
+    }
+    if (0U != (faults & OBSTACLE_FAULTS_STOPPING))
+    {
+        active |= FAULT_OBSTACLE_STOPPED_BIT;
+    }
+    system_fault_assign((uint16_t)(FAULT_SONAR_NO_ECHO_BIT |
+                                   FAULT_ECHO_LINE_BIT |
+                                   FAULT_OBSTACLE_STOPPED_BIT),
+                        active);
+}
+
+/*!
  * @brief Publish one statechart step: emergency stop, status, faults,
  *        profile, events and steering, in that order of urgency.
  *
@@ -257,6 +307,10 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
 
     g_status = obstacle_statechart_status(p_fsm);
     g_faults = p_fsm->faults;
+    g_flags  = obstacle_statechart_flags(p_fsm);
+    g_aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
+               (uint32_t)(uint16_t)obstacle_statechart_servo_deci(p_fsm);
+    share_faults(p_fsm->faults);
 
     if (p_out->b_profile_changed)
     {
@@ -363,11 +417,11 @@ uint32_t obstacle_comms_status (void)
 }
 
 /*!
- * @brief Latest fault byte.
+ * @brief Latest fault word.
  *
  * @return The OBSTACLE_FAULT_* bits.
  */
-uint8_t obstacle_comms_faults (void)
+uint16_t obstacle_comms_faults (void)
 {
     return (g_faults);
 }
@@ -416,6 +470,93 @@ ER obstacle_comms_copy_profile (uint16_t * p_profile)
     }
 
     return (result);
+}
+
+/*!
+ * @brief Copy the plan summary that goes with the profile.
+ *
+ * @param[out] p_plan Destination.
+ *
+ * @return E_OK, or E_BUSY if the obstacle task was writing it.
+ */
+ER obstacle_comms_copy_plan (obstacle_plan_summary_t * p_plan)
+{
+    ER      result = E_BUSY;
+    uint8_t tries  = 0U;
+
+    for (tries = 0U; (tries < PROFILE_TRIES) && (E_OK != result); tries++)
+    {
+        uint8_t const before = g_profile_seq;
+
+        if (0U == (before & 1U))
+        {
+            memory_barrier();
+            p_plan->closest_mm = g_plan_closest;
+            p_plan->width_mm   = g_plan_width;
+            p_plan->need_mm    = g_plan_need;
+            p_plan->status     = g_plan_status;
+            p_plan->side       = g_plan_side;
+            p_plan->start_deg  = g_plan_start;
+            p_plan->b_wall     = g_plan_wall;
+            memory_barrier();
+
+            if (before == g_profile_seq)
+            {
+                result = E_OK;
+            }
+        }
+    }
+
+    return (result);
+}
+
+/*!
+ * @brief Servo angle and body offset, stored whole at each step.
+ *
+ * @return Servo deci-degrees in the low 16 bits, body deci-degrees in the high 16.
+ */
+uint32_t obstacle_comms_aim (void)
+{
+    return (g_aim);
+}
+
+/*!
+ * @brief Warning flags of the last step.
+ *
+ * @return OBSTACLE_FLAG_* bits.
+ */
+uint8_t obstacle_comms_flags (void)
+{
+    return (g_flags);
+}
+
+/*!
+ * @brief Count one ping in its echo class. Call from the obstacle task only.
+ *
+ * @param[in] cls Echo class (OBSTACLE_CLASS_*).
+ */
+void obstacle_comms_count_class (uint8_t cls)
+{
+    if (cls < OBSTACLE_ECHO_CLASSES)
+    {
+        g_class_count[cls] = g_class_count[cls] + 1U;
+    }
+}
+
+/*!
+ * @brief Copy the ping counts per echo class. Each count is read whole; the
+ *        counts are not read at one instant, which is enough for a rate.
+ *
+ * @param[out] p_counts OBSTACLE_ECHO_CLASSES counts.
+ */
+void obstacle_comms_class_counts (uint32_t * p_counts)
+{
+    uint8_t idx = 0U;
+
+    for (idx = 0U; idx < OBSTACLE_ECHO_CLASSES; idx++)
+    {
+        p_counts[idx] = g_class_count[idx];
+    }
 }
 
 /* ------------------------------------------------------------------ *
@@ -591,6 +732,14 @@ static void publish_profile (obstacle_statechart_t const * p_fsm)
     {
         g_profile[idx] = p_fsm->scan.profile[idx];
     }
+
+    g_plan_closest = p_fsm->plan.closest_mm;
+    g_plan_width   = p_fsm->plan.width_mm;
+    g_plan_need    = p_fsm->plan.need_mm[p_fsm->plan.side];
+    g_plan_status  = p_fsm->plan.status;
+    g_plan_side    = p_fsm->plan.side;
+    g_plan_start   = p_fsm->plan.start_deg;
+    g_plan_wall    = p_fsm->plan.b_wall;
 
     memory_barrier();
 

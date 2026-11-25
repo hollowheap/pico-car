@@ -36,7 +36,6 @@
 #define DEFAULT_ENTER_SAMPLES      (3U)
 #define DEFAULT_EXIT_SAMPLES       (10U)
 #define DEFAULT_MAX_HUMP_SAMPLES   (500U)
-#define DEFAULT_IMPACT_G           (0.7f)
 #define DEFAULT_MIN_SPEED_MPS      (0.08f)
 #define DEFAULT_MAX_MOTION_AGE_S   (0.025f)
 #define DEFAULT_CAL_SAMPLES        (50U)
@@ -152,6 +151,23 @@ static void reset_hump (hump_ctx_t * p_ctx)
     p_ctx->height_valid = true;
 }
 
+bool hump_rest_gravity (const hump_ctx_t * p_ctx, float * p_g0)
+{
+    bool b_ok = (NULL != p_ctx) && (NULL != p_g0) && p_ctx->calibrated && (p_ctx->cal_count > 0U);
+
+    if (b_ok)
+    {
+        uint8_t axis = 0U;
+
+        for (axis = 0U; axis < HUMP_AXIS_COUNT; axis++)
+        {
+            p_g0[axis] = p_ctx->cal_sum[axis] / (float)p_ctx->cal_count;
+        }
+    }
+
+    return b_ok;
+}
+
 static void cal_restart (hump_ctx_t * p_ctx)
 {
     p_ctx->cal_count = 0U;
@@ -234,7 +250,6 @@ void hump_default_config (hump_config_t * p_cfg)
         p_cfg->enter_samples = DEFAULT_ENTER_SAMPLES;
         p_cfg->exit_samples = DEFAULT_EXIT_SAMPLES;
         p_cfg->max_hump_samples = DEFAULT_MAX_HUMP_SAMPLES;
-        p_cfg->impact_g = DEFAULT_IMPACT_G;
         p_cfg->min_speed_mps = DEFAULT_MIN_SPEED_MPS;
         p_cfg->max_motion_age_s = DEFAULT_MAX_MOTION_AGE_S;
         p_cfg->cal_samples = DEFAULT_CAL_SAMPLES;
@@ -261,7 +276,6 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg)
              && (p_cfg->enter_deg > p_cfg->exit_band_deg)
              && (p_cfg->enter_samples >= 1U) && (p_cfg->exit_samples >= 1U)
              && (p_cfg->max_hump_samples >= 1U)
-             && is_finite (p_cfg->impact_g) && (p_cfg->impact_g > 0.0f)
              && is_finite (p_cfg->min_speed_mps)
              && (p_cfg->min_speed_mps >= 0.0f)
              && is_finite (p_cfg->max_motion_age_s)
@@ -578,7 +592,6 @@ bool hump_update (hump_ctx_t * p_ctx,
         reset_hump (p_ctx);
     }
     p_out->state = p_ctx->state;
-    p_out->impact = (fabsf (magnitude - 1.0f) > p_cfg->impact_g);
 
     return true;
 }
