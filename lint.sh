@@ -148,8 +148,14 @@ nix shell nixpkgs#clang-tools -c clang-tidy \
 
 # Findings: warnings/errors in reported project paths, plus compiler errors
 # elsewhere (for example a missing header). Notes are not counted.
-project_count="$(grep -Ec "${finding_re}" "${log}" || true)"
-other_errors="$(grep -E 'fatal error: |\[clang-diagnostic-error\]' "${log}" | grep -Evc "${other_re}" || true)"
+# grep exits 1 for no match and 2 when it cannot read the log; only 2 is a failure.
+grep_failed() {
+    printf 'lint: grep could not read %s\n' "${log}" >&2
+    exit 2
+}
+project_count="$(grep -Ec "${finding_re}" "${log}")" || (($? == 1)) || grep_failed
+error_lines="$(grep -E 'fatal error: |\[clang-diagnostic-error\]' "${log}")" || (($? == 1)) || grep_failed
+other_errors="$(printf '%s' "${error_lines}" | grep -Evc "${other_re}")" || (($? == 1)) || grep_failed
 count=$((project_count + other_errors))
 
 printf 'lint: %d finding(s), log %s\n' "${count}" "${log}"
