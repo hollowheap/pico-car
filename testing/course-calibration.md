@@ -6,7 +6,7 @@ Use independent measurements of the axle midpoint and chassis heading. Tape give
 
 | Fixture | What it measures |
 | --- | --- |
-| Stationary mount and flat sonar target | Center, backlash, rear clearance, echo timing and range at known distances. Use the [servo procedure](obstacle.md#qualify-sonar-center-and-travel). |
+| Stationary mount and flat sonar target | Center, backlash, rear clearance, echo timing and range at known distances. Use the [servo procedure](#qualify-sonar-center-and-travel). |
 | Stationary timing fixture | Sensor capture and task latency under load, including GP21-to-output cutoff. Physical braking distance requires a moving run. |
 | Straight line with start and finish 1 m apart | Left and right wheel scale, signed wheel travel, odometer change, lateral drift and rest after braking. Use `car_bench` ODO for a straight push with the motors off, then validate on driven forward and reverse trials. |
 | Taped right-angle cross | Independent pivot yaw and repeatability. The current PIVOT bench runs one direction. Measure the opposite direction in a separately recorded, externally observed turn. |
@@ -26,7 +26,7 @@ The straight and cross can share the same tape setup on level continuous floor. 
 Summarize the USB log to identify ODO endpoints and PIVOT results:
 
 ```sh
-python3 tools/bench_summary.py bench.log
+python3 testing/bench_summary.py bench.log
 ```
 
 Copy the trial's bridge JSONL receipts. Create `checkpoints.json` with the start as the first entry. Coordinates are in millimetres with +x to the right, +y forward at 0° and headings increasing clockwise. Use the observed pose and the corresponding status `seq` for each checkpoint. Heading is required for the start and optional thereafter.
@@ -59,3 +59,21 @@ Select TIME in `car_bench` to record a stationary trial. Keep the serial capture
 `release` marks the start of the bench pass. `capture` marks its successful motion snapshot read. `complete` marks the end of the measured work before sleep. Trial and build identify the capture. A nonzero `dropped` means the RAM buffer filled. A file without its `end` row is an interrupted export. Use a board trace of the actual task and pins for control-task and GPIO latency qualification.
 
 The device trace format also supports `scheduler` records with a `contention` marker, `servo` and `trigger` records, and `reply` records with the echo class and range in millimetres. Device rows share `seq`, `timeUs` and optional `cue`. Servo, trigger and reply bearings use deci-degrees in `requestedDeci` and `effectiveDeci`. Servo rows include `pwmUs`. Reply rows include `echo` (`valid`, `open`, `too_close`, `no_echo`, `glitch` or `stuck`) and `rangeMm`. Use the [servo fixture](../tests/fixtures/bench-trace.jsonl) for the `reference` row that joins independent measurement by trial and cue.
+
+## Qualify sonar center and travel
+
+The current firmware cap is ±20°. Qualify ±30° first on the installed mount. With the servo axis 10 mm from the rear wall, the board rear plane 5 mm forward of the axis and 22.5 mm to either board edge, near-corner clearance is `10 + 5 cos(θ) − 22.5 sin(|θ|)` mm. Check those dimensions and anything protruding behind the board.
+
+| Command magnitude | Nominal wall gap |
+| --- | ---: |
+| 20° | 7.00 mm |
+| 30° | 3.08 mm |
+| 35° | 1.19 mm |
+| 37° | 0.45 mm |
+| 38° | 0.09 mm |
+
+With propulsion disabled, mark the chassis forward centerline using the axle midpoint and a second chassis reference. Mark the board normal by placing a square against the face. Command 0° and compare the lines with an overhead camera or angle gauge. Record signed yaw error at cold boot and after returning from each wing. Aim for a repeatable error within 1°. Adjust the horn or center pulse if zero is consistently offset, then repeat. The current nominal center pulse is 1494 µs. A difference between return directions exposes backlash or compliance. A 1° centering error consumes about 0.37 mm of one side's nominal clearance near 35°.
+
+Use a bench-only servo command to increase angle in small increments on both sides and watch the minimum rear gap. Include powered reversals and settling overshoot, with the cable routed as it will be on the course. Record the smallest gap and the measurement uncertainty. Stop increasing travel if any part touches or the measurement cannot distinguish the gap from zero. Keep the course firmware at ±20° pending qualification of both ±30° endpoints. Consider ±35° after that pass. Enabling the wider candidate in the course image also needs one spare bit in the internal ping reply.
+
+A bench trace can capture timestamped PWM, requested and effective commanded angle, trigger, reply, range and echo class. Join camera or gauge measurements by trial and cue and label physical angle and gap separately. The servo provides no physical-angle feedback. Capture to RAM and export after the fixture stops so console output does not alter timing. The standalone bench currently writes USB logs. A separate read-only Bench replay is planned.

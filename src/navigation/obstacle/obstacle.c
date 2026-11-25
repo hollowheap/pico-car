@@ -4,8 +4,7 @@
  *        forwards to obstacle_comms, which owns the queues and published copies.
  *
  * NOTE: The kernel API types ID, ER, TMO and T_CTSK are used where the
- * kernel functions require them (deviation from BARR-C 5.2.a, see
- * docs/obstacle.md).
+ * kernel functions require them (deviation from BARR-C 5.2.a).
  */
 
 #include <stdbool.h>
