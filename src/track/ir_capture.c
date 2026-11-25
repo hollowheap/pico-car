@@ -5,6 +5,7 @@
 #include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
+#include "platform/alarm.h"
 #include "platform/isr.h"
 #include "track/track.h"
 #include "ir_pins.h"
@@ -12,6 +13,7 @@
 #define IO_IRQ_BANK0 13U
 #define BARCODE_EDGE_RING 64U
 #define BARCODE_LEVEL_MASK 1U
+#define LINE_SAMPLE_PERIOD_US 5000U
 
 /**
  * Barcode edge ring, written by `ir_isr` and read by `ir_barcode_pop`, which
@@ -24,7 +26,15 @@ static volatile uint32_t g_barcode_tail;
 static volatile uint32_t g_barcode_drops;
 
 /**
- * After the isr has been initialised, this can only be written to by `ir_isr`.
+ * Line sensor TIMER alarm state (D88, S31).
+ */
+static volatile uint32_t g_line_alarm_target;
+static volatile uint32_t g_line_timestamp_us;
+static volatile uint32_t g_line_overruns;
+
+/**
+ * After the isr has been initialised, this can only be written to by `ir_isr`
+ * (for barcode) and `line_alarm_isr` (for left/right line sensors).
  */
 LOCAL volatile ir_sensors_state_t g_state = {0};
 LOCAL ID                          g_line_sem;
@@ -58,15 +68,60 @@ LOCAL ir_sensors_state_t current_state (void)
     return state;
 }
 
+/**
+ * 5 ms RP2040 TIMER alarm ISR on Core 0 (D88, S31).
+ * Re-arms from previous target without drift, samples left and right pins,
+ * records the timer timestamp, and signals the line task.
+ */
+LOCAL void line_alarm_isr (UINT intno)
+{
+    (void)intno;
+
+    /* Acknowledge raw interrupt in hardware timer. */
+    out_w(TIMER_INTR, (1U << LINE_TIMER_ALARM_NUM));
+
+    /* Re-arm from target without phase drift. */
+    uint32_t       target = g_line_alarm_target + LINE_SAMPLE_PERIOD_US;
+    uint32_t const now    = in_w(TIMER_TIMERAWL);
+
+    while ((int32_t)(target - now) <= 0)
+    {
+        target += LINE_SAMPLE_PERIOD_US;
+        g_line_overruns++;
+    }
+    g_line_alarm_target = target;
+    out_w(TIMER_ALARM0, target);
+
+    /* Sample left and right sensors in one GPIO_IN read. */
+    uint32_t const     gpio  = in_w(GPIO_IN);
+    ir_sensors_state_t state = load_state(&g_state);
+    state.left               = (0U != ((gpio >> IR_LEFT_PIN) & 1U));
+    state.right              = (0U != ((gpio >> IR_RIGHT_PIN) & 1U));
+
+    g_line_timestamp_us = now;
+    mp_memory_barrir();
+    store_state(&g_state, state);
+
+    /* Signal line task every 5 ms sample. */
+    (void)tk_sig_sem(g_line_sem, 1);
+}
+
+/**
+ * Barcode GPIO edge ISR. Line sensors are sampled via TIMER alarm, so this
+ * handler only processes barcode transitions.
+ */
 LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
 {
-    ir_sensors_state_t old_state = load_state(&g_state);
-    mp_memory_barrir();
-    ir_sensors_state_t new_state = current_state();
-    store_state(&g_state, new_state);
+    uint32_t const           gpio      = in_w(GPIO_IN);
+    bool const               barcode   = (0U != ((gpio >> IR_BARCODE_PIN) & 1U));
+    ir_sensors_state_t const old_state = load_state(&g_state);
 
-    if (old_state.barcode != new_state.barcode)
+    if (old_state.barcode != barcode)
     {
+        ir_sensors_state_t new_state = old_state;
+        new_state.barcode            = barcode;
+        store_state(&g_state, new_state);
+
         uint32_t const now  = p_snapshot->timestamp_us;
         uint32_t const next = (g_barcode_head + 1U) % BARCODE_EDGE_RING;
 
@@ -74,7 +129,7 @@ LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
         {
             g_barcode_edges[g_barcode_head] =
                 (now & ~BARCODE_LEVEL_MASK) |
-                (new_state.barcode ? BARCODE_LEVEL_MASK : 0U);
+                (barcode ? BARCODE_LEVEL_MASK : 0U);
             mp_memory_barrir();
             g_barcode_head = next;
         }
@@ -84,11 +139,6 @@ LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
         }
 
         (void)tk_sig_sem(g_barcode_sem, 1);
-    }
-    if ((old_state.left != new_state.left) ||
-        (old_state.right != new_state.right))
-    {
-        (void)tk_sig_sem(g_line_sem, 1);
     }
 }
 
@@ -125,15 +175,50 @@ EXPORT ER ir_capture_init (void)
     (void)ir_sensor_init(IR_RIGHT_PIN);
     store_state(&g_state, current_state());
 
+    /* Set up 5 ms line sampling TIMER alarm on Core 0 (D88, S31). */
+    uint32_t const start_now = in_w(TIMER_TIMERAWL);
+    g_line_alarm_target      = start_now + LINE_SAMPLE_PERIOD_US;
+    g_line_timestamp_us      = start_now;
+    g_line_overruns          = 0U;
+
+    out_w(TIMER_INTR, (1U << LINE_TIMER_ALARM_NUM));
+    out_w(TIMER_ALARM0, g_line_alarm_target);
+    out_w(TIMER_INTE, in_w(TIMER_INTE) | (1U << LINE_TIMER_ALARM_NUM));
+
+    DisableInt(LINE_TIMER_ALARM_IRQ);
+    result = tk_def_int(LINE_TIMER_ALARM_IRQ, &(T_DINT){
+                                                   .intatr = TA_HLNG,
+                                                   .inthdr = (FP)line_alarm_isr,
+                                               });
+    if (result != E_OK)
+    {
+        return result;
+    }
+    ClearInt(LINE_TIMER_ALARM_IRQ);
+    EnableInt(LINE_TIMER_ALARM_IRQ, LINE_TIMER_ALARM_PRI);
+
+    /* Barcode edges stay on GPIO edges; line sensors removed from edge mask. */
     return gpio_irq_add_handler(tk_get_prc(),
-                                (1U << IR_BARCODE_PIN) | (1U << IR_LEFT_PIN) |
-                                    (1U << IR_RIGHT_PIN),
+                                (1U << IR_BARCODE_PIN),
                                 ir_isr);
 }
 
 EXPORT ir_sensors_state_t ir_get_state (void)
 {
     return load_state(&g_state);
+}
+
+EXPORT line_sample_t ir_get_line_sample (void)
+{
+    line_sample_t sample;
+    sample.timestamp_us = g_line_timestamp_us;
+    sample.state        = load_state(&g_state);
+    return sample;
+}
+
+EXPORT uint32_t ir_line_overruns (void)
+{
+    return g_line_overruns;
 }
 
 EXPORT bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
