@@ -48,6 +48,7 @@
 #define COURSE_CLEAR_TICK 162U
 #define START_CALIBRATION_RELEASE_TICK 110U
 #define START_CHECK_WAIT_TICKS 100U
+#define START_STUCK_FAIL_TICK 620U
 #define COURSE_CALIBRATION_TICK 160U
 #define COURSE_CALIBRATED_TICK 186U
 #define COURSE_LAST_TICK 320U
@@ -311,6 +312,7 @@ static bool g_start_noisy_baseline;
 static bool g_start_no_clearance;
 static bool g_start_clearance_lost;
 static bool g_start_calibrating;
+static bool g_start_stuck;
 static bool g_start_probe_seen;
 static bool g_start_follow_seen;
 static unsigned g_start_failures;
@@ -853,7 +855,7 @@ int motion_status(motion_status_t * p_status)
           (g_tick > g_route_sim.start_tick)));
     *p_status = (motion_status_t){.ready = true,
         .hold_mask = b_calibrating ? MOTION_HOLD_CALIBRATE : (b_route_hold ? MOTION_HOLD_OPERATOR : 0U)};
-    if (g_start_calibrating && g_tick < START_CALIBRATION_RELEASE_TICK)
+    if (g_start_calibrating && (g_start_stuck || g_tick < START_CALIBRATION_RELEASE_TICK))
     {
         p_status->hold_mask = MOTION_HOLD_CALIBRATE;
     }
@@ -1089,7 +1091,7 @@ ER ir_wait_change(uint8_t type, TMO timeout)
         if (g_left_target == 0) g_start_speed = 0;
         g_left_travel += (int64_t)g_start_speed * TICK_MS / 1000;
         g_right_travel = g_left_travel;
-        if (g_tick == 520U || g_start_follow_seen) longjmp(g_finished, 1);
+        if (g_tick == (g_start_stuck ? 800U : 520U) || g_start_follow_seen) longjmp(g_finished, 1);
         return E_TMOUT;
     }
     if (g_stripe_case && g_tick == 40U) longjmp(g_finished, 1);
@@ -1244,7 +1246,8 @@ void supervisor_start_check_failed(uint8_t generation)
 {
     assert(generation == 1U && g_start_check);
     assert(g_left_target == 0 && g_right_target == 0);
-    assert(!g_start_calibrating || g_tick + 1U >= START_CALIBRATION_RELEASE_TICK + START_CHECK_WAIT_TICKS);
+    assert(g_start_stuck ? g_tick <= START_STUCK_FAIL_TICK
+                         : (!g_start_calibrating || g_tick + 1U >= START_CALIBRATION_RELEASE_TICK + START_CHECK_WAIT_TICKS));
     g_start_failures++;
 }
 
@@ -2160,12 +2163,13 @@ int main(int argc, char * argv[])
         g_start_no_clearance = strcmp(argv[1], "startup-check-blocked") == 0;
         g_start_clearance_lost = strcmp(argv[1], "startup-check-clearance-lost") == 0;
         g_start_calibrating = strncmp(argv[1], "startup-check-calibration", 25U) == 0;
+        g_start_stuck = strcmp(argv[1], "startup-check-calibration-stuck") == 0;
         g_start_no_clearance |= strcmp(argv[1], "startup-check-calibration-blocked") == 0;
         if (setjmp(g_finished) == 0) line_task_run();
         bool const passes = !g_start_airborne && !g_start_bad_imu && !g_start_no_clearance &&
                             !g_start_late_imu && !g_start_no_wheel && !g_start_clearance_lost &&
-                            !g_start_noisy_baseline;
-        assert(g_start_probe_seen == !g_start_no_clearance);
+                            !g_start_noisy_baseline && !g_start_stuck;
+        assert(g_start_probe_seen == (!g_start_no_clearance && !g_start_stuck));
         assert(g_start_follow_seen == passes && g_start_failures == (passes ? 0U : 1U));
         if (!passes) assert(g_left_target == 0 && g_right_target == 0);
         return EXIT_SUCCESS;

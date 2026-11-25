@@ -91,6 +91,7 @@ static line_turn_kind_t line_turn_of (uint8_t opcode)
  * validates it and latches MOTION_FAULT_COMMAND. Keep the lease below
  * max_command_ttl_us (200 ms). */
 #define LINE_US_PER_MS           (1000U)
+#define START_CHECK_CALIBRATION_MAX_US (5000000U) /* CALHOLD_MAX_PASSES x 20 ms in the supervisor */
 #define LINE_LEASE_US            (PILOT_COMMAND_LEASE_MS * LINE_US_PER_MS)
 
 static bool          g_line_lost;
@@ -1057,6 +1058,7 @@ static bool line_start_clearance (uint8_t * p_seq, uint32_t * p_since_us,
 static bool line_start_check (bool b_line_fresh)
 {
     static start_check_t s_check;
+    static uint32_t s_arm_us;
     static uint32_t s_ping_us;
     static uint8_t s_ping_seq;
     static uint8_t s_generation;
@@ -1071,7 +1073,8 @@ static bool line_start_check (bool b_line_fresh)
     }
     if (!s_armed || s_generation != generation)
     {
-        start_check_begin(&s_check, now_us());
+        s_arm_us = now_us();
+        start_check_begin(&s_check, s_arm_us);
         s_ping_seq = obstacle_pack_ping_seq(obstacle_ping_read());
         s_clear = false;
         s_generation = generation;
@@ -1097,8 +1100,10 @@ static bool line_start_check (bool b_line_fresh)
         physics.calibrated && physics.attitude_sample_valid && !physics.attitude_unknown &&
         physics.attitude_state == TELEMETRY_ATTITUDE_STATE_OK;
     uint32_t const sample_us = now_us();
-    /* The calibration hold lasts about as long as the wait window, so count it from the release. */
-    if (((motion.hold_mask & MOTION_HOLD_CALIBRATE) != 0U) && (s_check.phase == START_CHECK_WAITING))
+    /* The calibration hold lasts about as long as the wait window, so count it from the release.
+       The restart stops at the supervisor's calibration timeout so a stuck hold still fails the check. */
+    if (((motion.hold_mask & MOTION_HOLD_CALIBRATE) != 0U) && (s_check.phase == START_CHECK_WAITING) &&
+        (sample_us - s_arm_us < START_CHECK_CALIBRATION_MAX_US))
     {
         start_check_begin(&s_check, sample_us);
     }
