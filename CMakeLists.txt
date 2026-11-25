@@ -453,8 +453,12 @@ add_library(pilot STATIC
     src/pilot/avoidance.c
     src/pilot/contour.c
     src/pilot/drive.c
-    src/pilot/hug.c
-    src/pilot/bypass.c
+    src/pilot/hug/hug.c
+    src/pilot/hug/motion.c
+    src/pilot/hug/scan.c
+    src/pilot/bypass/bypass.c
+    src/pilot/bypass/geometry.c
+    src/pilot/bypass/rejoin.c
     src/pilot/look.c
     src/pilot/pilot_log.c
 )
