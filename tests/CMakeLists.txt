@@ -295,9 +295,9 @@ add_test(NAME line_task_contract_pending_obstacle COMMAND test_line_task_contrac
 add_test(NAME line_task_contract_pending_stale COMMAND test_line_task_contract pending-stale)
 add_test(NAME pilot_stale_line_capture COMMAND test_line_task_contract stale-line-capture)
 add_test(NAME pilot_turn_stale_line_capture COMMAND test_line_task_contract turn-stale-line-capture)
-# Combinations that fail on the current fixture and line task; the cases stay in the binary.
+# These plain square corners exceed the track-width bound at the modeled
+# barcode reader. They stay available in the replay binary.
 set(CORNER_REPLAY_KNOWN_FAILING
-    line_pending_straight_square_left_matched_-5.5_0
     line_plain_square_left_matched_0_30
     line_plain_square_left_matched_5.5_30
     line_plain_square_left_nov16_-5.5_30
@@ -306,30 +306,12 @@ set(CORNER_REPLAY_KNOWN_FAILING
     line_plain_square_left_nov20_-5.5_30
     line_plain_square_left_nov20_0_30
     line_plain_square_left_nov20_5.5_30
-    line_pending_straight_square_right_matched_-5.5_-30
-    line_pending_straight_square_right_matched_-5.5_0
     line_plain_square_right_matched_-5.5_30
-    line_pending_straight_square_right_matched_-5.5_30
-    line_pending_straight_square_right_matched_0_-30
-    line_pending_straight_square_right_matched_0_0
     line_plain_square_right_matched_0_30
-    line_pending_straight_square_right_matched_0_30
-    line_pending_straight_square_right_matched_5.5_-30
-    line_pending_straight_square_right_matched_5.5_0
     line_plain_square_right_matched_5.5_30
-    line_pending_straight_square_right_matched_5.5_30
-    line_pending_straight_square_right_nov16_-5.5_-30
-    line_pending_straight_square_right_nov16_-5.5_0
     line_plain_square_right_nov16_-5.5_30
-    line_pending_straight_square_right_nov16_-5.5_30
-    line_pending_straight_square_right_nov16_0_-30
-    line_pending_straight_square_right_nov16_0_0
     line_plain_square_right_nov16_0_30
-    line_pending_straight_square_right_nov16_0_30
-    line_pending_straight_square_right_nov16_5.5_-30
-    line_pending_straight_square_right_nov16_5.5_0
     line_plain_square_right_nov16_5.5_30
-    line_pending_straight_square_right_nov16_5.5_30
     line_plain_square_right_nov20_-5.5_30
     line_plain_square_right_nov20_0_30
     line_plain_square_right_nov20_5.5_30
@@ -368,6 +350,8 @@ endforeach ()
 add_test(NAME line_route_right_nov20 COMMAND test_line_task_contract route-right -5.5 -30 nov20)
 add_test(NAME line_route_t_left_matched COMMAND test_line_task_contract route-t-left 5.5 -30 matched)
 add_test(NAME line_route_t_right_matched COMMAND test_line_task_contract route-t-right 5.5 -30 matched)
+add_test(NAME line_route_t_straight_later_nov16 COMMAND test_line_task_contract route-t-straight-later 5.5 -30 nov16)
+add_test(NAME line_route_t_straight_later_nov20 COMMAND test_line_task_contract route-t-straight-later 5.5 -30 nov20)
 add_test(NAME line_route_single_left_matched_back COMMAND test_line_task_contract route-single-left 5.5 -30 matched)
 add_test(NAME line_route_single_left_matched_inline COMMAND test_line_task_contract route-single-left 5.5 0 matched)
 

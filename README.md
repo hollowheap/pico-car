@@ -252,11 +252,13 @@ sweep returns to its approach heading and it continues forward.
 During a run, a barcode L, R or S requests the left, right or through exit
 at the next junction. The car follows ordinary bends with the instruction
 pending through an obstacle bypass or a temporary sensor hold. The fixed
-barcode reader is left of the line. The car uses that
-reader and the line sensors to locate a possible junction. A brief pause of
-the inside wheel preserves the approach while the outside wheel advances.
-The car then checks the outgoing tape with an encoder-guided pivot. Distinct tape directions with
-clear floor between them establish a choice. A T can offer left and right
+barcode reader is left of the line. The car uses it and the front line
+sensors to measure a transverse stripe. It drives until the axle is over
+the stripe centre, using the measured 130 mm from the front sensors to the
+axle. The wheels then turn in opposite directions. L and R start the pivot
+toward the requested side. S checks the observed side for a choice, then
+aligns with the through tape if present. Distinct tape directions with clear
+floor between them establish a choice. A T can offer left and right
 with no forward tape. When the requested exit is present the car aligns
 with it. When it is missing the car follows an observed exit and keeps the
 instruction for another junction. It prefers through tape when available.

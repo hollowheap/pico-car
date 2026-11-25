@@ -3,6 +3,7 @@
  */
 
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -1860,6 +1861,79 @@ static line_turn_status_t probe_at(line_route_t * route, int yaw, bool tape,
     return line_route_probe(route, -pivot, pivot, tape, targets);
 }
 
+static void test_junction_first_pivot(void)
+{
+    for (int sign = -1; sign <= 1; sign += 2)
+    {
+        line_route_t route = {0};
+        line_targets_t targets;
+        line_turn_kind_t const kind = sign > 0 ? LINE_TURN_KIND_LEFT : LINE_TURN_KIND_RIGHT;
+        assert(approach_stripe(&route, kind, sign > 0, sign > 0, LINE_WIDTH_MM, 0));
+        assert(probe_at(&route, 0, false, &targets) == LINE_TURN_TURNING);
+        assert(targets.right_um_s * sign > 0);
+        assert(targets.left_um_s == -targets.right_um_s);
+    }
+}
+
+/* A 6 mm axle offset shifts the forward tape hit outside the first few
+ * degrees of a pivot that already starts 6.4 degrees toward the branch. */
+static bool junction_tape_at(int yaw, int sign)
+{
+    double const rad = (double)yaw * 3.141592653589793 / 1800.0;
+    double const half_width = LINE_WIDTH_MM / 2.0;
+    for (int sensor = -1; sensor <= 1; sensor += 2)
+    {
+        double const lateral = sensor * LINE_SENSOR_SPACING_MM / 2.0;
+        double const x = LINE_SENSOR_LEAD_MM * cos(rad) - lateral * sin(rad);
+        double const y = sign * 6.0 + LINE_SENSOR_LEAD_MM * sin(rad) + lateral * cos(rad);
+        if ((fabs(y) <= half_width) || ((sign * y >= 0.0) && (fabs(x) <= half_width)))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_junction_revisits_through(void)
+{
+    for (int sign = -1; sign <= 1; sign += 2)
+    {
+        line_turn_kind_t const side = sign > 0 ? LINE_TURN_KIND_LEFT : LINE_TURN_KIND_RIGHT;
+        line_turn_kind_t const choices[] = {side, LINE_TURN_KIND_STRAIGHT};
+        for (size_t i = 0; i < sizeof(choices) / sizeof(choices[0]); ++i)
+        {
+            line_route_t route = {0};
+            line_targets_t targets;
+            int yaw = 64 * sign;
+            unsigned selections = 0U;
+            line_turn_status_t status = LINE_TURN_TURNING;
+            assert(approach_stripe(&route, choices[i], sign > 0, sign > 0, LINE_WIDTH_MM, yaw));
+            for (unsigned step = 0U; step < 2400U; ++step)
+            {
+                status = probe_at(&route, yaw, junction_tape_at(yaw, sign), &targets);
+                if (step == 0U)
+                {
+                    assert(status == LINE_TURN_TURNING && targets.right_um_s * sign > 0);
+                }
+                if (status == LINE_TURN_BRANCH_SELECTED)
+                {
+                    ++selections;
+                }
+                else if (status != LINE_TURN_TURNING)
+                {
+                    break;
+                }
+                assert(targets.left_um_s == -targets.right_um_s && targets.left_um_s != 0);
+                yaw += targets.right_um_s > 0 ? 2 : -2;
+            }
+            assert(selections == 1U && status == LINE_TURN_DONE);
+            int const expected = choices[i] == LINE_TURN_KIND_STRAIGHT ? 0 : sign * LINE_TURN_QUARTER_DECI;
+            assert(abs(yaw - expected) <= 60);
+            expect_targets(&targets, 0, 0);
+        }
+    }
+}
+
 static void test_junction_sector_limits(void)
 {
     int const edges[] = {599, 600, 1199, 1200};
@@ -1976,6 +2050,8 @@ int main(int argc, char * argv[])
         {"wide-corroborated-corner", test_wide_left_crossing_needs_corroboration},
         {"deferred-corner-survey", test_deferred_route_keeps_corner_survey},
         {"junction-overlap", test_transverse_stripe_with_overlapping_left_readers},
+        {"junction-first-pivot", test_junction_first_pivot},
+        {"junction-revisits-through", test_junction_revisits_through},
         {"junction-sweeps", test_junction_sweeps},
         {"junction-sector-limits", test_junction_sector_limits},
         {"flat-gap-limit", test_flat_gap_limit},
@@ -2019,6 +2095,8 @@ int main(int argc, char * argv[])
     test_stripe_reported_once();
     test_deferred_route_keeps_corner_survey();
     test_transverse_stripe_with_overlapping_left_readers();
+    test_junction_first_pivot();
+    test_junction_revisits_through();
     test_junction_sweeps();
     test_junction_sector_limits();
     test_corner_wheel_demands();

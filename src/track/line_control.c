@@ -131,8 +131,9 @@ typedef enum
     ROUTE_WAIT_EDGE = 0,
     ROUTE_ON_EDGE,
     ROUTE_APPROACH,
-    ROUTE_PROBE_START,
+    ROUTE_PIVOT_START,
     ROUTE_PROBE_OUT,
+    ROUTE_REVISIT_THROUGH,
     ROUTE_PROBE_OPPOSITE,
     ROUTE_RECHECK_BRANCH,
     ROUTE_ALIGN_BRANCH,
@@ -184,8 +185,22 @@ static uint16_t route_right_stripe(line_route_t * p_route, uint16_t mm, bool b_r
     uint16_t const width = (uint16_t)(mm - p_route->right_begin_mm);
     bool const b_ended = !b_right && p_route->right_on_tape;
     p_route->right_on_tape = b_right;
-    bool const b_supported = (width >= ROUTE_FULL_STRIPE_MIN_MM) || p_route->left_recent || p_route->side_recent;
+    uint16_t const left_width = (uint16_t)(p_route->left_at_mm - p_route->left_begin_mm);
+    bool const b_left_stripe = p_route->left_recent && (left_width >= ROUTE_FULL_STRIPE_MIN_MM) &&
+                               (left_width <= ROUTE_STRIPE_MAX_MM);
+    bool const b_supported = (width >= ROUTE_FULL_STRIPE_MIN_MM) || p_route->side_recent || b_left_stripe;
     return (b_ended && b_supported && width >= SINGLE_STRIPE_MIN_MM && width <= ROUTE_STRIPE_MAX_MM) ? width : 0U;
+}
+
+/* Use the front detector's stripe midpoint. The barcode reader only
+ * corroborates the stripe because its fore/aft station can differ. */
+static void route_anchor_left(line_route_t * p_route, int64_t travel_um, int32_t heading_deci,
+                              uint16_t since_mm, uint16_t width_mm)
+{
+    p_route->start_um = travel_um - ((int64_t)since_mm + width_mm / ROUTE_MIDPOINT_DIVISOR) * UM_PER_MM;
+    p_route->heading_deci = heading_deci;
+    p_route->phase = ROUTE_APPROACH;
+    p_route->full_width_anchor = width_mm >= ROUTE_FULL_STRIPE_MIN_MM;
 }
 
 /* A turn needs evidence of two routes. A hit alone is also consistent with
@@ -200,37 +215,43 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
     uint16_t const mm = (uint16_t)(travel / UM_PER_MM);
     bool const b_crossing = route_left_crossing(p_route, mm, b_left, b_side_tape);
     uint16_t const right_width = route_right_stripe(p_route, mm, b_right);
+    uint16_t const left_width = (uint16_t)(p_route->left_at_mm - p_route->left_begin_mm);
+    uint16_t const since_left = (uint16_t)(mm - p_route->left_at_mm);
 
-    /* A second left hit can still be near the previous barcode-reader pulse.
-     * Refining a full-width paired anchor needs tape under that reader again. */
-    bool const b_refine = (ROUTE_APPROACH == p_route->phase) && (!p_route->left_stripe_anchored || b_side_tape);
+    /* Keep a full-width anchor when only one reader revisits the tape.
+     * A simultaneous hit can establish a better anchor on the left. */
+    bool const b_refine = (ROUTE_APPROACH == p_route->phase) &&
+                          (!p_route->full_width_anchor || (b_left && b_side_tape));
     if (((ROUTE_WAIT_EDGE == p_route->phase) || b_refine) && b_crossing && !p_route->was_crossing && (0U == right_width))
     {
         p_route->start_um = travel;
         p_route->heading_deci = heading;
         p_route->phase = ROUTE_ON_EDGE;
-        p_route->left_stripe_anchored = false;
-        p_route->probe_eligible = false;
+        p_route->full_width_anchor = false;
         p_route->right_branch = LINE_TURN_KIND_RIGHT == kind;
         p_route->kind = (uint8_t)kind;
+        if (!b_left && (left_width >= ROUTE_FULL_STRIPE_MIN_MM) && route_paired_stripe_width(left_width))
+        {
+            route_anchor_left(p_route, travel, heading, since_left, left_width);
+        }
     }
     else if (((ROUTE_WAIT_EDGE == p_route->phase) || (ROUTE_ON_EDGE == p_route->phase)) && (0U != right_width))
     {
         p_route->start_um = travel - (int64_t)right_width * UM_PER_MM / ROUTE_MIDPOINT_DIVISOR;
         p_route->heading_deci = heading;
         p_route->phase = ROUTE_APPROACH;
-        p_route->left_stripe_anchored = false;
-        p_route->probe_eligible = true;
+        p_route->full_width_anchor = right_width >= ROUTE_FULL_STRIPE_MIN_MM;
         /* The left detector can stay on the approach tape into a T. The
          * right detector's clean crossing still fixes the axle position. */
         p_route->right_branch = (LINE_TURN_KIND_RIGHT == kind) ||
                                 ((LINE_TURN_KIND_STRAIGHT == kind) && !b_crossing);
         p_route->kind = (uint8_t)kind;
     }
-    /* After measuring the stripe, retire its projected axle position if the
-     * subsequent steering moves that position by more than a tape width. */
+    /* Retire the projected axle position if steering moves it out of the
+     * crossing. Include half a tape width for the sampled entry and exit. */
     else if ((progress < 0) || ((ROUTE_APPROACH == p_route->phase) &&
-             (abs_i64(yaw) * LINE_SENSOR_LEAD_MM > LINE_WIDTH_MM * DECI_PER_RAD)))
+             (abs_i64(yaw) * LINE_SENSOR_LEAD_MM >
+              (LINE_WIDTH_MM + LINE_WIDTH_MM / ROUTE_MIDPOINT_DIVISOR) * DECI_PER_RAD)))
     {
         p_route->phase = ROUTE_WAIT_EDGE;
     }
@@ -240,40 +261,23 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
         {
             p_route->phase = ROUTE_WAIT_EDGE;
         }
-        else if (!b_crossing)
+        else if (!b_crossing && !b_left)
         {
-            p_route->phase = ROUTE_APPROACH;
-            uint16_t const width = (uint16_t)(p_route->left_at_mm - p_route->left_begin_mm);
-            uint16_t const since = (uint16_t)(mm - p_route->left_at_mm);
-            if (!b_left && route_paired_stripe_width(width) &&
-                (since <= ROUTE_MAX_CROSS_MM + LINE_SENSOR_SPACING_MM))
+            if (route_paired_stripe_width(left_width) && (since_left <= ROUTE_MAX_CROSS_MM + LINE_SENSOR_SPACING_MM))
             {
-                /* Anchor a transverse stripe at the known line-detector lead.
-                 * GP26 can see it earlier or later. Beyond it a centered car
-                 * can see clear with both line detectors until the sweep. */
-                p_route->start_um = travel - ((int64_t)since + width / ROUTE_MIDPOINT_DIVISOR) * UM_PER_MM;
-                p_route->heading_deci = heading;
-                p_route->left_stripe_anchored = width >= ROUTE_FULL_STRIPE_MIN_MM;
-                p_route->probe_eligible = true;
+                route_anchor_left(p_route, travel, heading, since_left, left_width);
             }
             else
             {
-                p_route->start_um += (progress - LINE_SENSOR_SPACING_MM * UM_PER_MM) / ROUTE_MIDPOINT_DIVISOR;
+                p_route->phase = ROUTE_WAIT_EDGE;
             }
         }
     }
     else if (ROUTE_APPROACH == p_route->phase)
     {
-        /* A broad crossing on a bend can leave the approach heading bare.
-         * A later tape sighting can qualify this otherwise ambiguous crossing
-         * before the axle reaches the candidate. */
-        if ((b_left || b_right) && (progress > LINE_WIDTH_MM * UM_PER_MM))
-        {
-            p_route->probe_eligible = true;
-        }
         if (progress >= LINE_SENSOR_LEAD_MM * UM_PER_MM)
         {
-            p_route->phase = p_route->probe_eligible ? ROUTE_PROBE_START : ROUTE_WAIT_EDGE;
+            p_route->phase = ROUTE_PIVOT_START;
             p_route->through_seen = false;
             p_route->clear_seen = false;
             p_route->opposite_seen = false;
@@ -281,7 +285,7 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
         }
     }
     p_route->was_crossing = b_crossing;
-    return ROUTE_PROBE_START == p_route->phase;
+    return ROUTE_PIVOT_START == p_route->phase;
 }
 
 bool line_route_has_candidate(line_route_t const * p_route)
@@ -345,17 +349,13 @@ static line_turn_status_t route_align(line_route_t * p_route, int32_t yaw, bool 
 static bool route_probe_out(line_route_t * p_route, int32_t yaw, bool b_tape)
 {
     bool const b_straight = p_route->kind == (uint8_t)LINE_TURN_KIND_STRAIGHT;
-    if (ROUTE_PROBE_OUT == p_route->phase && abs_i64(yaw) <= ROUTE_STRAIGHT_DECI)
-    {
-        p_route->through_seen |= b_tape;
-    }
     if (!b_tape && (yaw > ROUTE_STRAIGHT_DECI) && (yaw < ROUTE_BRANCH_MIN_DECI))
     {
         p_route->clear_seen = true;
     }
     if ((ROUTE_PROBE_OUT == p_route->phase) && !p_route->through_seen && (yaw > ROUTE_STRAIGHT_DECI))
     {
-        p_route->phase = ROUTE_PROBE_OPPOSITE;
+        p_route->phase = ROUTE_REVISIT_THROUGH;
         p_route->clear_seen = false;
         p_route->extended = true;
     }
@@ -436,9 +436,22 @@ line_turn_status_t line_route_probe(line_route_t * p_route, int64_t left_um, int
     bool b_selected = false;
     int32_t speed = 0;
     set_targets(p_targets, 0, 0);
-    if ((ROUTE_PROBE_START == p_route->phase) && (yaw <= -ROUTE_STRAIGHT_DECI))
+    /* Begin toward the chosen side as soon as the axle is at the stripe. */
+    if (ROUTE_PIVOT_START == p_route->phase)
     {
         p_route->phase = ROUTE_PROBE_OUT;
+    }
+    /* An axle already angled toward the branch can start past the through
+     * tape. Sample the full forward sector on the return before deciding
+     * whether a second side exit is needed to establish a junction. */
+    if (((ROUTE_PROBE_OUT == p_route->phase) || (ROUTE_REVISIT_THROUGH == p_route->phase)) &&
+        (abs_i64(yaw) <= ROUTE_STRAIGHT_DECI))
+    {
+        p_route->through_seen |= b_tape;
+    }
+    if ((ROUTE_REVISIT_THROUGH == p_route->phase) && (yaw < -ROUTE_STRAIGHT_DECI))
+    {
+        p_route->phase = p_route->through_seen ? ROUTE_RECHECK_BRANCH : ROUTE_PROBE_OPPOSITE;
     }
     if ((ROUTE_PROBE_OUT == p_route->phase) || (ROUTE_RECHECK_BRANCH == p_route->phase))
     {

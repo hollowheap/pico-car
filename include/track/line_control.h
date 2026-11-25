@@ -265,10 +265,10 @@ typedef struct
     uint8_t kind;
     bool    left_on_tape : 1;
     bool    left_recent : 1;
-    bool    left_stripe_anchored : 1;
+    bool    full_width_anchor : 1;
     bool    side_recent : 1;
     bool    was_crossing : 1;
-    bool    probe_eligible : 1;
+    bool    : 1; /* Reserved to preserve the flag positions. */
     bool    through_seen : 1;
     bool    clear_seen : 1;
     bool    right_on_tape : 1;
@@ -406,8 +406,7 @@ uint8_t line_watch_step(line_watch_t * p_watch, bool b_follow, bool b_hug,
 
 /**
  * Turn state. Set up with line_turn_start(). side holds a line_side_t and
- * kind a line_turn_kind_t; phase is internal to line_control.c and is not
- * for the caller to read or write.
+ * kind a line_turn_kind_t. The phase is internal to the controller.
  */
 typedef struct
 {

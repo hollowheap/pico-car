@@ -176,6 +176,9 @@ typedef struct
     unsigned stopped_frames;
     bool early;
     bool early_scan;
+    bool first_pivot;
+    double pivot_x_mm;
+    double pivot_y_mm;
     bool wrong_way;
     bool departed_past_end;
     bool pending_on_exit;
@@ -719,6 +722,14 @@ int motion_set_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
         if (0U != g_route_sim.blocked_tick)
         {
             assert(!b_moving);
+        }
+        if (!route_is_plain() && !g_route_sim.uturn && !g_route_sim.first_pivot && g_turning &&
+            ((left_um_s < 0 && right_um_s > 0) || (left_um_s > 0 && right_um_s < 0)))
+        {
+            assert(left_um_s == -right_um_s);
+            g_route_sim.first_pivot = true;
+            g_route_sim.pivot_x_mm = g_route_sim.x_mm;
+            g_route_sim.pivot_y_mm = g_route_sim.y_mm;
         }
         if ((1U == g_route_sim.turns) && (0U == g_route_sim.done) && (0U == g_route_sim.aborts) &&
             (g_route_sim.straight ? ((0 != left_um_s) && (right_um_s == -left_um_s)) :
@@ -1983,6 +1994,9 @@ static void route_check_junction(void)
             assert((0U == p_sim->turns) && (0U == p_sim->done) && (0U == p_sim->aborts));
             return;
         }
+        (void)fprintf(stderr, "first pivot at axle (%.1f, %.1f) mm\n", p_sim->pivot_x_mm, p_sim->pivot_y_mm);
+        assert(p_sim->first_pivot);
+        assert(hypot(p_sim->pivot_x_mm - ROUTE_THROUGH_X_MM, p_sim->pivot_y_mm - ROUTE_JUNCTION_Y_MM) < LINE_WIDTH_MM);
         assert(!p_sim->departed_past_end);
         if ((ROUTE_LAYOUT_OPPOSITE_BRANCH == p_sim->layout) || (ROUTE_LAYOUT_SINGLE_SIDE == p_sim->layout))
         {
@@ -2226,13 +2240,10 @@ int main(int argc, char * argv[])
         line_route_t route = {0};
         line_targets_t targets;
         assert(!line_route_observe(&route, LINE_TURN_KIND_LEFT, true, false, true, 0, 0));
-        assert(!line_route_observe(&route, LINE_TURN_KIND_LEFT, false, false, false, 26000, 26000));
+        assert(!line_route_observe(&route, LINE_TURN_KIND_LEFT, true, false, true, 15000, 15000));
+        assert(!line_route_observe(&route, LINE_TURN_KIND_LEFT, false, false, false, 41000, 41000));
         assert(line_route_observe(&route, LINE_TURN_KIND_LEFT, false, true, false, 140000, 140000));
-        for (int32_t travel = 0; travel <= 16000; travel += 1000)
-        {
-            assert(line_route_probe(&route, travel, -travel, true, &targets) == LINE_TURN_TURNING);
-        }
-        for (int32_t travel = -16000; travel <= 120000; travel += 1000)
+        for (int32_t travel = 0; travel <= 120000; travel += 1000)
         {
             assert(line_route_probe(&route, -travel, travel, true, &targets) == LINE_TURN_TURNING);
         }
