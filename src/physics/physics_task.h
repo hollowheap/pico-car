@@ -108,7 +108,7 @@ bool physics_task_sample_recent (const SYSTIM * p_sample, const SYSTIM * p_now);
 uint32_t physics_task_request_new_run (void);
 
 /* The car's settings: the mount axis, the hump limits and the motion reader.
- * physics_init() and the bring-up check both use them, so a bench sees what the
+ * physics_setup() and the bring-up check both use them, so a bench sees what the
  * car sees. */
 void physics_car_config (physics_task_config_t * p_cfg);
 

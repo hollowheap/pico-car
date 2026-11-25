@@ -201,7 +201,7 @@ static void restore_run_token (void)
     }
 }
 
-ER supervisor_init (const supervisor_config_t * p_config)
+ER supervisor_setup (const supervisor_config_t * p_config)
 {
     ER result = E_PAR;
 

@@ -73,5 +73,5 @@ static ER sonar_travel (obstacle_travel_t * p_travel)
 ER obstacle_line_init (void)
 {
     obstacle_links_t const links = {.p_get_distance_mm = sonar_travel};
-    return obstacle_init(&links);
+    return obstacle_setup(&links);
 }

@@ -16,7 +16,7 @@ static obstacle_links_t installed;
 static motion_feedback_t feedback;
 static ER init_result;
 
-ER obstacle_init (obstacle_links_t const * p_links)
+ER obstacle_setup (obstacle_links_t const * p_links)
 {
     installed = *p_links;
     return init_result;

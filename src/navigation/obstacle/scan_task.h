@@ -1,6 +1,6 @@
 /** @file scan_task.h
  *
- * @brief Buddy 5 task body. obstacle_init() creates the task; nothing else
+ * @brief Buddy 5 task body. obstacle_setup() creates the task; nothing else
  *        calls it.
  */
 

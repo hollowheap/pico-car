@@ -17,7 +17,7 @@
 #define MM_PER_M             (1000.0f)
 #define ROUND_HALF           (0.5f)
 
-ER physics_init (ID task_id)
+ER physics_setup (ID task_id)
 {
     physics_task_config_t cfg;
 

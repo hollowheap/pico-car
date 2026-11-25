@@ -51,7 +51,7 @@ static obstacle_state_t g_obstacle = {false};
  *         on the wrong core; E_SYS if the 1 MHz TIMER is not ticking; or
  *         a kernel error.
  */
-ER obstacle_init (obstacle_links_t const * p_links)
+ER obstacle_setup (obstacle_links_t const * p_links)
 {
     ER result = E_OK;
 

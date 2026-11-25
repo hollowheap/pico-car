@@ -57,9 +57,17 @@ typedef struct
 STATIC_ASSERT (sizeof(supervisor_config_t) == (3U * sizeof(void *)) + 4U,
                "supervisor_config_t size");
 
+/* Register the task stack. */
+void supervisor_init (void);
+
+/* Create the supervisor task and the cyclic handler that wakes it, then start
+   the task. Returns false when either could not be created or the task could
+   not start. */
+bool supervisor_start (void);
+
 /* Prepare the supervisor. Call once from the startup task, before the task
    runs. */
-ER supervisor_init (const supervisor_config_t * p_config);
+ER supervisor_setup (const supervisor_config_t * p_config);
 
 /* Task body. Never returns. The composition root creates the task and the
    cyclic handler that wakes it. */

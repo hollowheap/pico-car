@@ -6,7 +6,7 @@
  * LSM303 driver, the filters, the packed hump word and the task are
  * private to src/physics/.
  *
- * `physics_init()` sets up the 20 ms task and binds the motion service's motion
+ * `physics_setup()` sets up the 20 ms task and binds the motion service's motion
  * service as the speed and odometry source. Telemetry reads
  * `physics_snapshot()`; it does not unpack the wire word.
  */
@@ -67,12 +67,21 @@ typedef struct
 /* Fixed-size supervisor and telemetry snapshot. */
 STATIC_ASSERT (sizeof(physics_status_t) == 56U, "physics_status_t size");
 
+/* Register the task stack. */
+void physics_init (void);
+
+/* Create and start the physics task. Returns false when it could not. */
+bool physics_start (void);
+
+/* The ID of the physics task, or 0 before physics_start() created it. */
+ID physics_task_id (void);
+
 /* Set up the task's message buffers and cyclic handler. The composition
  * root creates the task named by task_id and calls physics_run() from it,
  * so create the task before calling this. Call once, after
  * motion_service_init(), because the default configuration reads the motion service's
  * motion service. */
-ER physics_init (ID task_id);
+ER physics_setup (ID task_id);
 
 /* Task body. Never returns. */
 void physics_run (void);

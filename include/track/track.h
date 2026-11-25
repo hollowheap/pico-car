@@ -41,6 +41,12 @@ typedef struct
 STATIC_ASSERT(sizeof(line_sample_t) == 8U,
               line_sample_must_be_8_bytes);
 
+/** Register the line task stack. */
+void track_init (void);
+
+/** Create and start the line task. Returns false when it could not. */
+bool track_start (void);
+
 /**
  * Initialise line sampling and barcode edge capture. Returns the setup error
  * on failure, after releasing semaphores and interrupt resources.

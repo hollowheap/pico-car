@@ -49,8 +49,9 @@ All C and C++ code in this repository must comply with the
 ## Layout
 
 Public subsystem headers live in `include/<subsystem>/`; implementations live in
-`src/<subsystem>/`. `src/main.c` is the composition root: it creates every task
-and starts one startup task that initialises the shared hardware.
+`src/<subsystem>/`. `src/main.c` is the composition root: it calls every `<subsystem>_init()`
+and then every `<subsystem>_start()`, which creates that subsystem's tasks. One
+startup task initialises the shared hardware.
 
 | Path                                        | Contents                                                             |
 | ------------------------------------------- | -------------------------------------------------------------------- |

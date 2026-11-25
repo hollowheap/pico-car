@@ -1902,7 +1902,7 @@ int main (int argc, char ** argv)
     g_physics.level_still = true;
     g_physics.attitude_unknown = (0 == strcmp (argv[1], "retry-calibration"));
     g_physics.calibrated = !g_physics.attitude_unknown;
-    CHECK (E_OK == supervisor_init (&config));
+    CHECK (E_OK == supervisor_setup (&config));
     one_pass ();
     CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
 

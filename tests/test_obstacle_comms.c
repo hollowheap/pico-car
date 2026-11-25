@@ -241,7 +241,7 @@ static void test_pilot_echo_stop_needs_usable_ping (void)
 
 int main (void)
 {
-    CHECK(E_OK == obstacle_init(NULL));
+    CHECK(E_OK == obstacle_setup(NULL));
     test_scalars_read_as_published();
     test_full_command_queue_counts_drop();
     test_parked_echo_faults();

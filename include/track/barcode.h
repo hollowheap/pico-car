@@ -38,6 +38,13 @@ uint8_t barcode_progress_count (uint8_t * p_prefix_mm);
 /* Last measured element and parser phase packed for the status line byte. */
 uint8_t barcode_status_bits (void);
 
+/* Register the task stack. */
+void barcode_init (void);
+
+/* Create and start the barcode task. The task is optional: returns true when it
+   was created, even if it then failed to start. */
+bool barcode_start (void);
+
 /* Task body. Never returns. */
 void barcode_task_run (void);
 

@@ -634,7 +634,7 @@ int main (int argc, char ** argv)
         g_now_ms = 200U;
     }
     if (E_OK != ((g_attitude_events || g_hump_events || g_start_witness)
-                 ? physics_init (1) : physics_task_init (&cfg, 1)))
+                 ? physics_setup (1) : physics_task_init (&cfg, 1)))
     {
         return 1;
     }
