@@ -441,6 +441,18 @@ uint32_t physics_time_us (void)
     return g_cycle * 20000U + (g_witness_motion_read ? 500U : 0U);
 }
 
+static bool read_parked_wheels (motion_reading_t * p_reading)
+{
+    *p_reading = (motion_reading_t){
+        .available = true,
+        .timestamp_us = physics_time_us (),
+        .velocity_um_s = {0, 0},
+        .speed_valid = {true, true},
+        .odometry_valid = {true, true},
+    };
+    return true;
+}
+
 bool motion_glue_read (motion_reading_t * p_reading)
 {
     if (g_start_witness)
@@ -459,7 +471,8 @@ bool motion_glue_read (motion_reading_t * p_reading)
         uint32_t const travel_cycles = (g_cycle >= start_cycle) ? g_cycle - start_cycle : 0U;
         int64_t const distance = 100000 + ((int64_t)speed * travel_cycles * SAMPLE_PERIOD_MS) / 1000;
         /* The expiry probe calibrates first, then receives a running encoder. */
-        bool const available = (!g_attitude_events || g_cycle < 95U)
+        /* The set-down trace restores stationary feedback with the IMU. */
+        bool const available = (!g_attitude_events || g_cycle < 95U || g_cycle >= 100U)
                                && (!g_snapshot_case || g_cycle >= start_cycle);
 
         *p_reading = (motion_reading_t){.available = available,
@@ -680,6 +693,10 @@ int main (int argc, char ** argv)
     g_calibration_gap = (2 == argc) && (0 == strcmp (argv[1], "calibration-gap"));
     g_repeated_loss = (2 == argc) && (0 == strcmp (argv[1], "repeated-read-loss"));
     g_start_witness = (2 == argc) && (0 == strcmp (argv[1], "start-witness"));
+    if (g_stationary_start || g_stationary_setdown || g_repeated_loss)
+    {
+        cfg.read_motion = read_parked_wheels;
+    }
     if (g_snapshot_case)
     {
         cfg.hump.cal_samples = 1U;

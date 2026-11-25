@@ -301,7 +301,8 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
         float const rest_g = measure (p_in, p_out, &up_g);
         bool const b_level = (p_out->tilt_deg < p_ctx->cfg.clear_tilt_deg) &&
                              (fabsf (p_out->amag_g - rest_g) < p_ctx->cfg.clear_dev_g);
-        if (!b_level || p_in->b_wheels_free)
+        /* START uses this live proof even after the lift itself clears. */
+        if (!b_level || p_in->b_wheels_free || !p_in->b_wheels_still)
         {
             p_ctx->clear_count = 0U;
         }

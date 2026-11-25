@@ -10,6 +10,7 @@
 #include "command_ring.h"
 #include "supervisor/edge_events.h"
 #include "health_core.h"
+#include "imu/attitude.h"
 #include "obstacle/obstacle_cmd.h"
 #include "platform/liveness.h"
 #include "comms/telemetry/wire_schema.h"
@@ -760,6 +761,98 @@ static void test_lift_reading_holds_on_first_tick (void)
     run_state_tick (&ctx, &in, &out);
     CHECK ((MOTION_HOLD_OPERATOR | MOTION_HOLD_LIFT) == out.hold_mask);
     CHECK (RUN_STATE_STOPPED == run_state_of (&ctx));
+}
+
+static void observe_attitude (attitude_ctx_t * p_ctx, const attitude_input_t * p_sample,
+                              unsigned count, run_inputs_t * p_inputs)
+{
+    attitude_output_t out = {0};
+
+    for (unsigned i = 0U; i < count; ++i)
+    {
+        CHECK (attitude_update (p_ctx, p_sample, &out));
+    }
+    const run_physics_t physics = {
+        .b_ready = true,
+        .b_calibrated = out.calibrated,
+        .attitude_state = (uint8_t)out.state,
+        .b_level_still = out.level_still,
+    };
+    run_state_read_physics (p_inputs, &physics);
+}
+
+static void test_set_down_requires_stationary_wheels (void)
+{
+    attitude_ctx_t pose;
+    attitude_config_t cfg;
+    attitude_input_t sample = {
+        .az_g = 1.0f,
+        .calibrated = true,
+        .b_wheels_still = true,
+        .g0 = {0.0f, 0.0f, 1.0f},
+        .fwd = {1.0f, 0.0f, 0.0f},
+    };
+    run_ctx_t ctx;
+    run_result_t out;
+    run_inputs_t in = {0};
+    const vehicle_cmd_t start = cmd_of (VEHICLE_CMD_START, VEHICLE_SRC_TELEMETRY);
+
+    attitude_default_config (&cfg);
+    CHECK (attitude_init (&pose, &cfg));
+    run_state_init (&ctx);
+    observe_attitude (&pose, &sample, cfg.clear_samples, &in);
+    run_state_tick (&ctx, &in, &out);
+    CHECK (out.hold_mask == MOTION_HOLD_OPERATOR);
+    run_state_command (&ctx, start, &in, &out);
+    CHECK (out.b_accepted && run_state_of (&ctx) == RUN_STATE_RUNNING);
+
+    sample.az_g = 1.2f;
+    sample.b_wheels_still = false;
+    observe_attitude (&pose, &sample, cfg.lift_samples, &in);
+    run_state_tick (&ctx, &in, &out);
+    CHECK (in.b_lifted && (out.hold_mask & MOTION_HOLD_LIFT) != 0U);
+
+    /* Level gravity is insufficient when the wheels move or cannot be read. */
+    sample.az_g = 1.0f;
+    observe_attitude (&pose, &sample, cfg.clear_samples, &in);
+    run_state_tick (&ctx, &in, &out);
+    run_state_command (&ctx, start, &in, &out);
+    CHECK (out.b_rejected && out.reason == RUN_REJECT_LIFTED);
+    CHECK (run_state_of (&ctx) == RUN_STATE_STOPPED &&
+           (out.hold_mask & MOTION_HOLD_LIFT) != 0U);
+
+    unsigned const almost_settled = cfg.clear_samples - 1U;
+    sample.b_wheels_still = true;
+    observe_attitude (&pose, &sample, almost_settled, &in);
+    CHECK (in.b_lifted && !in.b_upright);
+    sample.b_wheels_still = false;
+    observe_attitude (&pose, &sample, 1U, &in);
+    sample.b_wheels_still = true;
+    observe_attitude (&pose, &sample, almost_settled, &in);
+    run_state_command (&ctx, start, &in, &out);
+    CHECK (in.b_lifted && out.b_rejected && out.reason == RUN_REJECT_LIFTED);
+
+    observe_attitude (&pose, &sample, 1U, &in);
+    CHECK (!in.b_lifted && in.b_upright);
+    run_state_tick (&ctx, &in, &out);
+    CHECK (run_state_of (&ctx) == RUN_STATE_STOPPED &&
+           (out.hold_mask & MOTION_HOLD_LIFT) != 0U);
+
+    /* The recovery still needs current wheel evidence when START arrives. */
+    sample.b_wheels_still = false;
+    observe_attitude (&pose, &sample, 1U, &in);
+    run_state_command (&ctx, start, &in, &out);
+    CHECK (!in.b_upright && out.b_rejected && out.reason == RUN_REJECT_LIFTED);
+    CHECK (run_state_of (&ctx) == RUN_STATE_STOPPED &&
+           (out.hold_mask & MOTION_HOLD_LIFT) != 0U);
+    sample.b_wheels_still = true;
+    observe_attitude (&pose, &sample, almost_settled, &in);
+    CHECK (!in.b_upright);
+    observe_attitude (&pose, &sample, 1U, &in);
+    CHECK (in.b_upright);
+    run_state_command (&ctx, start, &in, &out);
+    CHECK (out.b_accepted && out.b_physics_recal && out.hold_mask == 0U);
+    CHECK (run_state_of (&ctx) == RUN_STATE_RUNNING);
 }
 
 /* RESET reads the overturn now, not only the latch: a car that turned over
@@ -1822,6 +1915,7 @@ static const test_case_t cases[] = {
     CASE(remote_stop_after_silent_run),
     CASE(single_estop_sample_survives_release),
     CASE(lift_reading_holds_on_first_tick),
+    CASE(set_down_requires_stationary_wheels),
 };
 
 int main (int argc, char ** argv)

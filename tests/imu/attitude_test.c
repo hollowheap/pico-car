@@ -127,6 +127,7 @@ static void test_lift_carry_level (void)
     CHECK (ATTITUDE_LIFTED == rig.out.state);
 
     /* Set down. Level and still for 1 s clears it, not before. */
+    rig.in.b_wheels_still = true;
     for (idx = 0U; idx < (rig.ctx.cfg.clear_samples - 1U); idx++)
     {
         sample (&rig, 1.0f, 0.0f, 0.0f, 0.01f);
@@ -307,6 +308,7 @@ static void test_tip_on_side (void)
     CHECK (fabsf (rig.out.roll_deg) < 1.0f && !rig.out.level_still);
     run (&rig, rig.ctx.cfg.clear_samples, 1.2f, 0.0f, 0.0f, 0.0f);
     CHECK (!rig.out.level_still);
+    rig.in.b_wheels_still = true;
     run (&rig, rig.ctx.cfg.clear_samples - 1U, 1.0f, 0.0f, 0.0f, 0.0f);
     CHECK (!rig.out.level_still);
     sample (&rig, 1.0f, 0.0f, 0.0f, 0.0f);
@@ -393,6 +395,7 @@ static void test_zero_reference_keeps_lift (void)
     rig.in.g0[2] = 1.0f;
     sample (&rig, 0.0f, 0.0f, 0.0f, 0.0f);
     CHECK (ATTITUDE_LIFTED == rig.out.state && rig.out.amag_g == 0.0f);
+    rig.in.b_wheels_still = true;
     run (&rig, rig.ctx.cfg.clear_samples, 1.0f, 0.0f, 0.0f, 0.0f);
     CHECK (ATTITUDE_OK == rig.out.state);
 }

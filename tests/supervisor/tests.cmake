@@ -10,11 +10,15 @@ set(SUPERVISOR_TEST_INCLUDES
     ${SUPERVISOR_SRC}
     ${CMAKE_CURRENT_SOURCE_DIR}/../app_program
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/fakes)
-add_executable(test_supervisor supervisor/supervisor_test.c ${SUPERVISOR_TEST_CORE})
+add_executable(test_supervisor supervisor/supervisor_test.c ${SUPERVISOR_TEST_CORE}
+    ${PHYSICS_SRC}/attitude.c)
 target_include_directories(test_supervisor PRIVATE ${SUPERVISOR_TEST_INCLUDES})
 target_compile_options(test_supervisor PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_supervisor PRIVATE m)
 add_test(NAME supervisor.supervisor.default COMMAND test_supervisor)
+add_test(NAME supervisor.supervisor.set_down_requires_stationary_wheels
+    COMMAND test_supervisor set_down_requires_stationary_wheels)
 
 add_executable(test_supervisor_start_contract supervisor/supervisor_start_contract_test.c
     ${SUPERVISOR_TEST_CORE}
