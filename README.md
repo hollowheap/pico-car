@@ -68,6 +68,28 @@ startup task initialises the shared hardware.
 Build the optional IMU bring-up image with `make physics_check` inside
 `build/`.
 
+## Car dimensions
+
+`include/platform/chassis.h` holds every measured dimension, and all
+subsystems read it from there. Distances along the car are from the drive axle.
+
+| Dimension | Value | Macro |
+|---|---|---|
+| Wheel track, centre to centre | 107 mm | `CHASSIS_WHEEL_TRACK_MM` |
+| Outer width, tyre face to tyre face | 126 mm | `CHASSIS_OUTER_WIDTH_MM` |
+| Wheel diameter | 65 mm | `CHASSIS_WHEEL_TRAVEL_UM` |
+| Encoder edges per wheel turn | 2530 | `CHASSIS_EDGES_PER_REV` |
+| Axle to caster contact | 120 mm | `CHASSIS_AXLE_TO_CASTER_MM` |
+| Axle to line sensors | 130 mm | `CHASSIS_LINE_SENSOR_LEAD_MM` |
+| Line sensor spacing | 25 mm | `CHASSIS_LINE_SENSOR_SPACING_MM` |
+| Axle to barcode reader corner | 45 mm | `CHASSIS_BARCODE_FORWARD_MM` |
+| Barcode corner beyond left tyre | 44 mm | `CHASSIS_LEFT_REACH_MM` |
+| Axle to sonar | 70 mm | `CHASSIS_SONAR_FORWARD_MM` |
+| Axle to nose / IR tip | 110 / 130 mm | `CHASSIS_NOSE_FORWARD_MM`<br>`CHASSIS_FRONT_TIP_MM` |
+| Nose width / IR width | 90 / 45 mm | `CHASSIS_NOSE_WIDTH_MM`<br>`CHASSIS_IR_WIDTH_MM` |
+| Body envelope radius | 119 mm | `CHASSIS_BODY_RADIUS_MM` |
+| IMU above / behind axle | 80 / 15 mm | `CHASSIS_IMU_ABOVE_AXLE_MM`<br>`CHASSIS_IMU_BEHIND_AXLE_MM` |
+
 ## Ground station
 
 From the repository root, use Node.js 24, npm and Mosquitto. The Nix
@@ -112,16 +134,21 @@ The station uses the local broker on TCP 1883, starting Mosquitto with
 listener over Wi-Fi. Set `MQTT_URL` to use another broker. Only a broker
 started by the station is stopped on exit.
 
-Native history is stored in `host/bridge/history.jsonl`. To carry over a
-container recording, stop the old recorder and copy its `/data/history.jsonl`
-to that path before the first native start, or set `BRIDGE_HISTORY_PATH` to
-the existing file. Keep a single writer for each history file.
+Native history is stored in `host/bridge/history.jsonl`. Set
+`BRIDGE_HISTORY_PATH` to use another file. Keep a single writer for each
+history file.
 
-An optional Compose deployment runs the station and broker with the existing
-`bridge-data` volume. When upgrading the former three-container setup,
-use `podman-compose -f deploy/compose.yaml down --remove-orphans` before
-`podman-compose -f deploy/compose.yaml up -d --build`. The named volume
-survives this shutdown.
+An optional Compose deployment runs the station and broker with the
+`bridge-data` volume for history:
+
+```sh
+podman-compose -f deploy/compose.yaml up -d --build
+```
+
+The broker publishes `BROKER_PORT` (default 1883) on every interface and the
+dashboard listens on `127.0.0.1:${DASHBOARD_LOCAL_PORT:-5281}`. Set either in
+`deploy/.env`. The bridge reconnects to the broker, so start order does not
+matter.
 
 ## Telemetry
 

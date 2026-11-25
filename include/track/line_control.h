@@ -62,15 +62,13 @@ STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
 #define LINE_BUMPER_MIN_UM_S (120000)
 
 /**
- * Geometry of the sensors, measured on the car (2026-11-12): 25 mm between the
- * sensor midpoints, 130 mm from the axle to the sensors. The sensors are now
- * fixed at that spacing. The line is solid black and 15 mm wide, so a centred
- * car sees it with neither sensor. The route probe and square-corner
- * search use the measured tape width and the sensor lead.
+ * Sensor geometry comes from platform/chassis.h. The line is solid black and
+ * 15 mm wide, so a centred car sees it with neither sensor. The route probe and
+ * square-corner search use the measured tape width and the sensor lead.
  */
-#define LINE_SENSOR_SPACING_MM (25)
+#define LINE_SENSOR_SPACING_MM CHASSIS_LINE_SENSOR_SPACING_MM
 #define LINE_SENSOR_COUNT      (2U)
-#define LINE_SENSOR_LEAD_MM    (130)
+#define LINE_SENSOR_LEAD_MM    CHASSIS_LINE_SENSOR_LEAD_MM
 #define LINE_WIDTH_MM          (15)
 
 /**

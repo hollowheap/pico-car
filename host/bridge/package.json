@@ -11,13 +11,13 @@
   "dependencies": {
     "mqtt": "^5.10.1",
     "sirv": "^3.0.2",
+    "tsx": "^4.20.0",
     "ws": "^8.22.1",
     "yaml": "^2.8.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.2",
-    "tsx": "^4.20.0",
     "typescript": "~6.0.3",
     "vitest": "^4.0.0"
   }

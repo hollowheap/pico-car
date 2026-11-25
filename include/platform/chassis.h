@@ -35,6 +35,11 @@
 /* Axle-centred envelope of the nominal 200 × 126 mm body (sensors excluded). */
 #define CHASSIS_BODY_RADIUS_MM   (119)
 
+/* [Measured 2026-11-12] Line sensors: 25 mm between the sensor midpoints and
+ * 130 mm ahead of the drive axle. */
+#define CHASSIS_LINE_SENSOR_SPACING_MM (25)
+#define CHASSIS_LINE_SENSOR_LEAD_MM    (130)
+
 /* Nominal sonar offset ahead of the axle. */
 #define CHASSIS_SONAR_FORWARD_MM (70)
 
@@ -48,9 +53,13 @@
 /* [Measured] Wheel diameter 65 mm: pi x 65 mm of travel per wheel turn. */
 #define CHASSIS_WHEEL_TRAVEL_UM  (204204U)
 
-/* [Measured] Wheel axle to caster contact, along the car. The IMU sits 80 mm
- * above and 15 mm behind the axle; that offset is small enough to ignore. */
+/* [Measured] Wheel axle to caster contact, along the car. */
 #define CHASSIS_AXLE_TO_CASTER_MM (120)
+
+/* [Measured] IMU position from the axle. The pipeline ignores this small
+ * offset. */
+#define CHASSIS_IMU_ABOVE_AXLE_MM  (80)
+#define CHASSIS_IMU_BEHIND_AXLE_MM (15)
 
 /* Encoder edges per wheel turn, both channels, both edges. */
 #define CHASSIS_EDGES_PER_REV    (2530U)
