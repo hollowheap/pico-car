@@ -43,7 +43,7 @@ npm --prefix host/dashboard test
 
 ## Bench checks
 
-Build the images with `./build.sh`. Build the optional physics image with `cmake --build build --target physics_check`. To flash, hold BOOTSEL, plug in the USB cable and copy the `.uf2` file to the drive. Save the whole USB console to a file.
+Build the images with `./build.sh`. Build the optional physics image with `cmake --build build --target physics_check`. To flash, hold BOOTSEL, plug in the USB cable and copy the `.uf2` file to the drive. Save the whole USB console under `testing/logs/`.
 
 | Image | Subsystem | Checks | Summary |
 |---|---|---|---|
@@ -59,6 +59,13 @@ On `car_bench`, a short press on GP20 selects the next item. Hold GP20 for 1 s t
 2. The bridge records every packet to `host/bridge/history.jsonl` while it runs.
 3. Note the setup, start the run and note the wall-clock time.
 4. Write the record below, including the time, so the run can be found in the recording.
+
+## Run logs
+
+Keep captures for a run together in `testing/logs/<date>-<subsystem>-<run>/`.
+Save the USB console log and any exported bridge recording there. Put the
+capture path and the run's wall-clock time in the test record. Git ignores
+the capture files.
 
 ## Record template
 

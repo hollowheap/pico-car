@@ -18,8 +18,10 @@ __pycache__/
 # local opal UI review configuration
 .opal/
 
-# local dev-stack logs
-logs/
+# Local test and bench captures
+/logs/
+/testing/logs/*
+!/testing/logs/.gitkeep
 
 # Local ground station deployment settings
 /deploy/.env
