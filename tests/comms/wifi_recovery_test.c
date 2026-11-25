@@ -199,15 +199,44 @@ static void check_rssi_refresh(void)
     }
 }
 
+static void check_lease_without_dns(wifi_lease_t lease)
+{
+    if (!supplied) {
+        assert(lease == WIFI_LEASE_PENDING);
+        return;
+    }
+    assert(netif_is_link_up(netif_default));
+    if (ip4_addr_isany_val(netif_default->ip_addr)) {
+        assert(lease == WIFI_LEASE_PENDING && "DHCP requires an address");
+        IP4_ADDR(&netif_default->ip_addr, 192, 0, 2, 8);
+        ip4_addr_set_zero(&netif_default->netmask);
+    } else if (ip4_addr_isany_val(netif_default->netmask)) {
+        assert(lease == WIFI_LEASE_PENDING && "DHCP requires a netmask");
+        IP4_ADDR(&netif_default->netmask, 255, 255, 255, 0);
+        ip4_addr_set_zero(&netif_default->gw);
+    } else if (ip4_addr_isany_val(netif_default->gw)) {
+        assert(lease == WIFI_LEASE_PENDING && "DHCP requires a gateway");
+        IP4_ADDR(&netif_default->gw, 192, 0, 2, 1);
+    } else {
+        assert(lease == WIFI_LEASE_READY && "complete IPv4 lease waited for DNS");
+        assert(adoptions == 1U);
+        longjmp(done, 1);
+    }
+}
+
 int32_t tk_dly_tsk(uint32_t delay)
 {
     T_CYW43_UTK_STATUS st;
-    bool leased = wifi_link_lease() == WIFI_LEASE_READY;
+    wifi_lease_t lease = wifi_link_lease();
+    bool leased = lease == WIFI_LEASE_READY;
 
     assert(!in_driver);
     cyw43_utk_get_status(&st);
     assert(st.status_retries == 0U);
     assert(st.poll_count == mqtt_polls + 1U);
+    if (is_case("lease-without-dns")) {
+        check_lease_without_dns(lease);
+    }
     if (leased) {
         assert(supplied && netif_is_link_up(netif_default) && st.link_up);
         if (is_case("rssi-refresh") && recovered && !dropped) {
@@ -265,7 +294,11 @@ int main(int argc, char **argv)
     IP4_ADDR(&netif_default->ip_addr, 192, 0, 2, 8);
     IP4_ADDR(&netif_default->netmask, 255, 255, 255, 0);
     IP4_ADDR(&netif_default->gw, 192, 0, 2, 1);
-    dns = netif_default->gw;
+    if (is_case("lease-without-dns")) {
+        ip4_addr_set_zero(&netif_default->ip_addr);
+    } else {
+        dns = netif_default->gw;
+    }
     if (setjmp(done) == 0) cyw43_utk_task(0, NULL);
     return 0;
 }

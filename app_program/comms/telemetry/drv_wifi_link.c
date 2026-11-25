@@ -3,7 +3,7 @@
 #include <tk/smp.h>
 
 #include "cyw43.h"
-#include "lwip/dns.h"
+#include "lwip/dhcp.h"
 #include "lwip/ip4_addr.h"
 #include "lwip/netif.h"
 #include "lwip/opt.h"
@@ -74,13 +74,11 @@ lease_reset (void)
 static bool
 lease_usable (struct netif * netif)
 {
-    const ip_addr_t * dns = dns_getserver(0u);
-
+    /* The MQTT session resolves broker names after the IPv4 lease is ready. */
     return (dhcp_supplied_address(netif) != 0u) &&
            !ip4_addr_isany_val(*netif_ip4_addr(netif)) &&
            !ip4_addr_isany_val(*netif_ip4_netmask(netif)) &&
-           !ip4_addr_isany_val(*netif_ip4_gw(netif)) &&
-           (dns != 0) && !ip4_addr_isany_val(*ip_2_ip4(dns));
+           !ip4_addr_isany_val(*netif_ip4_gw(netif));
 }
 
 static void

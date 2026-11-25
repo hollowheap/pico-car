@@ -96,5 +96,6 @@ foreach(reason async request timeout late-link renumber)
     add_test(NAME comms.wifi_recovery.wifi_join_${reason} COMMAND test_wifi_recovery ${reason})
 endforeach()
 add_test(NAME comms.wifi_recovery.wifi_rssi_refresh COMMAND test_wifi_recovery rssi-refresh)
+add_test(NAME comms.wifi_recovery.wifi_lease_without_dns COMMAND test_wifi_recovery lease-without-dns)
 
 add_test(NAME comms.cmd.telemetry_reserved_stationary_opcode COMMAND test_cmd reserved-stationary-opcode)
