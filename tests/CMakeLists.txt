@@ -560,7 +560,9 @@ add_test(NAME supervisor COMMAND test_supervisor)
 
 add_executable(test_supervisor_start_contract test_supervisor_start_contract.c
     ${SUPERVISOR_TEST_CORE}
-    ${SUPERVISOR_SRC}/supervisor.c
+    ${SUPERVISOR_SRC}/supervisor/loop.c
+    ${SUPERVISOR_SRC}/supervisor/admission.c
+    ${SUPERVISOR_SRC}/supervisor/telem.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/faults.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/assemble.c)
 target_include_directories(test_supervisor_start_contract PRIVATE ${SUPERVISOR_TEST_INCLUDES})

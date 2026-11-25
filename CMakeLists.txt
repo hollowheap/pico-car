@@ -376,7 +376,9 @@ add_library(supervisor STATIC
     src/supervisor/health_core.c
     src/supervisor/edge_events.c
     src/supervisor/run_state.c
-    src/supervisor/supervisor.c
+    src/supervisor/supervisor/loop.c
+    src/supervisor/supervisor/admission.c
+    src/supervisor/supervisor/telem.c
 )
 target_include_directories(supervisor PUBLIC include PRIVATE src/supervisor)
 target_link_libraries(supervisor PUBLIC platform telemetry motion_service obstacle physics mtk3smp)
