@@ -42,8 +42,8 @@ static obstacle_state_t g_obstacle = {false};
 /*!
  * @brief Start Buddy 5: links, event flag and hardware.
  *
- * Must run on processor 1 after gpio_irq_init(). The composition root
- * creates the task and calls obstacle_run() from it.
+ * Must run on processor 1 after gpio_irq_init(). obstacle_start() creates
+ * the task that calls obstacle_run().
  *
  * @param[in] p_links Links to Buddy 2 and Navigation; NULL means none.
  *
@@ -51,7 +51,7 @@ static obstacle_state_t g_obstacle = {false};
  *         on the wrong core; E_SYS if the 1 MHz TIMER is not ticking; or
  *         a kernel error.
  */
-ER obstacle_init (obstacle_links_t const * p_links)
+ER obstacle_setup (obstacle_links_t const * p_links)
 {
     ER result = E_OK;
 
@@ -81,7 +81,7 @@ ER obstacle_init (obstacle_links_t const * p_links)
 
     if ((E_OK == result) && (!g_obstacle.b_ready))
     {
-        /* The composition root creates the task and calls obstacle_run();
+        /* obstacle_start() creates the task that calls obstacle_run();
          * init only prepares the links, flag, ISR and servo. */
         g_obstacle.b_ready = true;
     }
@@ -268,7 +268,7 @@ ID obstacle_flag_id (void)
 }
 
 /*!
- * @brief Task body. The composition root creates the task and calls this.
+ * @brief Task body. The task created by obstacle_start() calls this.
  *
  * Never returns.
  */

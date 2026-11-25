@@ -472,6 +472,15 @@ target_compile_options(barcode PRIVATE ${FIRMWARE_WARNINGS})
 
 add_executable(main
     src/main.c
+    src/platform/platform.c
+    src/platform/stack.c
+    src/motion/motion_start.c
+    src/physics/physics_start.c
+    src/navigation/obstacle/obstacle_start.c
+    src/track/track_start.c
+    src/track/barcode_start.c
+    src/supervisor/supervisor_start.c
+    src/telemetry/telemetry_start.c
 )
 target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 

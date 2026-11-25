@@ -106,9 +106,16 @@ typedef struct
 
 STATIC_ASSERT (sizeof(obstacle_plan_summary_t) == 12U, "obstacle_plan_summary_t size");
 
+/* Register the task stack. */
+void obstacle_init (void);
+
+/* Create and start the obstacle task. Returns false when it could not. */
+bool obstacle_start (void);
+
 /* Initialize obstacle while parked. Uses the motion-service links and the
- * obstacle outbox. The composition root calls this after gpio_irq_init() and
- * motion_service_init(), then creates the task and calls obstacle_run(). */
+ * obstacle outbox. The startup task calls this after gpio_irq_init() and
+ * motion_service_init(); the task created by obstacle_start() runs
+ * obstacle_run(). */
 ER obstacle_line_init (void);
 
 /* Optionally observe the initial center and subsequent commanded sonar angles.
@@ -146,10 +153,10 @@ void obstacle_run (void);
 bool obstacle_line_step (bool b_line_left, bool b_line_right);
 
 /* Lower-level API used when the caller needs its own links. */
-ER obstacle_init (obstacle_links_t const * p_links);
+ER obstacle_setup (obstacle_links_t const * p_links);
 ER obstacle_post_cmd (uint8_t cmd);
 
-/* Copy the latest status. Returns E_OBJ before obstacle_init(). */
+/* Copy the latest status. Returns E_OBJ before obstacle_setup(). */
 ER obstacle_snapshot (obstacle_status_t * p_status);
 
 /* The OBSTACLE_FAULT_* bits for stop faults and active echo faults. */

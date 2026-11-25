@@ -5,6 +5,7 @@
 #ifndef MOTION_MOTOR_SETUP_H
 #define MOTION_MOTOR_SETUP_H
 
+#include <stdbool.h>
 #include <tk/tkernel.h>
 
 /** Cap on every wheel speed target the controller accepts (um/s). */
@@ -21,9 +22,18 @@
  */
 ER motion_setup (ID motion_tid);
 
+/** Hold the motor bridge inputs low and register the task stack. Call first. */
+void motion_init (void);
+
+/** Create and start the motion task. Returns false when it could not. */
+bool motion_start (void);
+
+/** The ID of the motion task, or 0 before motion_start() created it. */
+ID motion_task_id (void);
+
 /**
- * Task body of the motion service. The composition root creates the task and
- * calls this; the task owns the motors until reboot. Never returns.
+ * Task body of the motion service. The task created by motion_start() calls
+ * this; the task owns the motors until reboot. Never returns.
  */
 void motion_service_run (void);
 

@@ -17,7 +17,7 @@ typedef enum
 
 STATIC_ASSERT (sizeof(connection_state_t) <= 4U, "connection_state_t size");
 
-/* Injected by the composition root so telemetry never calls mission or
+/* Passed in through telemetry_init() so the connection task never calls mission or
  * motion directly. */
 typedef void (*connection_cmd_dispatch_t)(const telemetry_cmd_t * cmd,
                                           void * context);

@@ -50,7 +50,7 @@ target_include_directories(physics_glue PRIVATE
 target_link_libraries(physics_glue PUBLIC physics_core motion_service)
 target_compile_options(physics_glue PRIVATE ${FIRMWARE_WARNINGS})
 
-# Public facade: physics_init()/physics_snapshot(). Keeps the packed hump
+# Public facade: physics_setup()/physics_snapshot(). Keeps the packed hump
 # word and the LSM303 driver private.
 add_library(physics STATIC
     ${PHYSICS_SRC}/physics.c)
