@@ -2,7 +2,7 @@
 """Summarise a physics_check console capture for the car-day checks.
 
 Usage:
-    python3 tools/physics_log_summary.py LOGFILE [--from S] [--to S] [--checks]
+    python3 testing/physics_log_summary.py LOGFILE [--from S] [--to S] [--checks]
 
 LOGFILE is the raw console capture. Only lines starting with "B4," (CSV
 rows) and "PHYS_S," (5 s counters) are used, so other text is ignored. A leading
