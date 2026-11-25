@@ -4,14 +4,15 @@
  *        only the car can give. Standalone application with its own usermain.
  *
  * The bench starts the motion service and the line sensors, nothing else: no
- * obstacle task, no supervisor, no telemetry. Output goes to the USB console.
+ * obstacle task, no supervisor, no telemetry. Hold GP20 and GP21 at boot
+ * to run the motor-free obstacle scanner bench instead. Output goes to USB.
  * Copy the lines that start with a tag in capitals (STEP, SENS, LINE, DRV,
  * ENC, ODO, PIV) into a file and give the file to the analysis scripts.
  *
  *   GP20 short press = next item (the item is printed)
  *   GP20 long press (1 s) = run it (3 s countdown, a press stops the run)
  *
- * GP21 is not used: it is the emergency-stop input of the motion service, and a
+ * In the measurement menu GP21 is the motion service's emergency stop. A
  * press latches the stop until the board reboots.
  *
  * Items:
@@ -44,6 +45,7 @@
 #include <tm/tmonitor.h>
 
 #include "bench/drv_bench_gpio.h"
+#include "bench/obstacle_extras_bench.h"
 
 #include "bench/trace.h"
 #include "motion/motion.h"
@@ -51,6 +53,7 @@
 #include "platform/drv_timer.h"
 #include "platform/drv_gpio_irq.h"
 #include "platform/log.h"
+#include "platform/platform.h"
 #include "platform/units.h"
 #include "platform/usb_console_compat.h"
 #include "platform/drv_watchdog.h"
@@ -796,8 +799,13 @@ EXPORT INT usermain (void)
 {
     ID motion_tid = 0;
 
+    if (extras_bench_requested())
+    {
+        extras_bench_start();
+        platform_park();
+        return 0;
+    }
     log_init ();
-    drv_bench_gpio_input(BTN_NEXT_PIN);
     if (E_OK != drv_gpio_irq_init ())
     {
         LOG_ERROR (LOG_TASK_BOOT, LOG_MOD_NONE, "drv_gpio_irq_init failed");

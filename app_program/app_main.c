@@ -1,113 +1,39 @@
+/** @file app_main.c
+ * @brief Run the obstacle-extras controller on the shared Pico W platform.
+ */
+
 #include <tk/tkernel.h>
 
-#include "app.h"
-#include "platform/drv_start_button.h"
-
+#include "ir/ir.h"
+#include "ir/line/extras_line.h"
+#include "motion/motion.h"
+#include "motion/obstacle_extras/navigation.h"
+#include "motion/obstacle_extras/setup.h"
+#include "obstacle/extras/extras.h"
 #include "platform/drv_gpio_irq.h"
-#include "platform/liveness.h"
 #include "platform/log.h"
 #include "platform/platform.h"
 #include "platform/static_assert.h"
 
-/* Kernel objects the firmware creates, against the limits in
-   the pinned kernel config/config.h. Tasks: the nine started by the
-   subsystems, plus the kernel's init, USB console and CYW43 tasks. Cyclic
-   handlers: supervisor, motion and physics. Past a limit, tk_cre_* fails
-   at boot with E_LIMIT. */
-#define FIRMWARE_TASKS   (12U)
-#define FIRMWARE_CYCLICS (3U)
+#define EXTRAS_BOOT_SETTLE_MS (3000)
+
+/* Four application tasks plus the kernel init, console and radio tasks. */
+#define FIRMWARE_TASKS (7U)
+#define FIRMWARE_CYCLICS (1U)
 STATIC_ASSERT(FIRMWARE_TASKS <= CNF_MAX_TSKID, "task limit");
 STATIC_ASSERT(FIRMWARE_CYCLICS <= CNF_MAX_CYCID, "cyclic handler limit");
 
-/*!
- * @brief Give the supervisor the tasks that must show a pulse. A task that did
- *        not start is left out.
- */
-LOCAL bool configure_supervisor (uint16_t optional_mask)
-{
-    supervisor_config_t config = {0};
-    ER const button_result = drv_start_button_init();
-
-    config.required_mask = (uint16_t)((1U << LIVE_MOTION) | (1U << LIVE_LINE) |
-                                      (1U << LIVE_OBSTACLE) | (1U << LIVE_PHYSICS));
-    config.required_mask |= optional_mask;
-    config.p_line_edges = ir_line_edges;
-    config.p_telemetry_seen = connection_mqtt_seen;
-    if (E_OK == button_result)
-    {
-        config.p_start_pressed = drv_start_button_pressed;
-    }
-    else
-    {
-        LOG_WARN(LOG_TASK_BOOT, LOG_MOD_NONE, "GP20 START input setup failed, er=%d", (int)button_result);
-    }
-    if (E_OK != supervisor_setup(&config))
-    {
-        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "supervisor_setup failed");
-        return false;
-    }
-
-    return true;
-}
-
-/*!
- * @brief Start every subsystem except the startup task. Returns false when a
- *        required task failed. The optional tasks that exist are added to
- *        the supervisor mask.
- */
-LOCAL bool start_tasks (uint16_t * p_optional_mask)
-{
-    bool b_ok = motion_start();
-    b_ok = b_ok && physics_start();
-    b_ok = b_ok && obstacle_start();
-    b_ok = b_ok && track_start();
-    b_ok = b_ok && supervisor_start();
-    if (!b_ok)
-    {
-        return false;
-    }
-    telemetry_start();
-    *p_optional_mask = telemetry_live_mask();
-    if (barcode_start())
-    {
-        *p_optional_mask |= (uint16_t)(1U << LIVE_BARCODE);
-    }
-
-    return b_ok;
-}
-
-/*!
- * @brief Hand a telemetry command to the supervisor.
- *
- * The supervisor decides. The emergency stop also acts here, at once: it
- * never waits for the next supervisor pass. The latch needs a reboot.
- */
-LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
-{
-    (void)context;
-
-    if ((uint8_t)TELEMETRY_CMD_ESTOP == cmd->opcode)
-    {
-        (void)motion_request_stop();
-    }
-    (void)vehicle_command_post_ids(cmd->opcode, VEHICLE_SRC_TELEMETRY,
-                                   cmd->cmd_id, cmd->run_id);
-}
-
 LOCAL void startup_task (INT stacd, void * exinf)
 {
-    ER result = drv_gpio_irq_init();
+    ER result = E_OK;
 
     (void)stacd;
     (void)exinf;
-
+    (void)tk_slp_tsk(EXTRAS_BOOT_SETTLE_MS);
+    result = drv_gpio_irq_init();
     if (E_OK == result)
     {
-        result = motion_setup(motion_task_id());
-    }
-    if (E_OK == result)
-    {
-        result = physics_setup(physics_task_id());
+        result = extras_motion_setup(motion_task_id());
     }
     if (E_OK == result)
     {
@@ -115,59 +41,41 @@ LOCAL void startup_task (INT stacd, void * exinf)
     }
     if (E_OK == result)
     {
-        /* Obstacle avoidance. If it fails, line following still
-         * runs, but this build stops instead of driving blind. */
-        result = obstacle_line_init();
-    }
+        ER const sonar_result = extras_nav_init();
 
-    if (E_OK == result)
-    {
+        if (E_OK != sonar_result)
+        {
+            /* Keep the original line-only fallback when sonar setup fails. */
+            LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE,
+                      "obstacle-extras sonar setup failed, er=%d", (int)sonar_result);
+            log_flush();
+        }
         platform_startup_ready();
     }
     else
     {
-        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "startup failed, er=%d",
-                  (int)result);
-        /* The telemetry task parks on a failed startup, so print now. */
-        log_flush();
         platform_startup_failed();
+        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "obstacle-extras setup failed, er=%d",
+                  (int)result);
+        log_flush();
     }
-
     (void)tk_exd_tsk();
 }
 
 EXPORT INT usermain (void)
 {
-    uint16_t optional_mask = 0U;
-    bool     b_ok          = false;
-
     motion_init();
     platform_init();
-    telemetry_init(command_dispatch);
-    physics_init();
-    obstacle_init();
-    track_init();
-    barcode_init();
-    supervisor_init();
+    obstacle_extras_init();
+    extras_line_init();
 
-    /* The startup task goes last: it reads the IDs of the tasks started
-     * before it, and releases them from the startup barrier. */
-    b_ok = start_tasks(&optional_mask) && configure_supervisor(optional_mask) &&
-           platform_start(startup_task);
-    if (!b_ok)
+    if (!(motion_start() && obstacle_extras_start() && extras_line_start() &&
+          platform_start(startup_task)))
     {
-        /* Tasks that already started wait on the startup barrier. */
         platform_startup_failed();
-        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE,
-                  "task creation or start failed, system stays stopped");
+        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "task creation or start failed");
         log_flush();
-        platform_park();
     }
-
-    /* The initial task has nothing left to do.  It must not return: on
-       return the kernel shuts the system down. */
-    (void)tk_slp_tsk(TMO_FEVR);
+    platform_park();
     return 0;
 }
-
-/*** end of file ***/

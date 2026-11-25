@@ -347,12 +347,9 @@ add_executable(main
     app_program/platform/platform.c
     app_program/platform/stack.c
     app_program/motion/motion_start.c
-    app_program/imu/physics_start.c
-    app_program/obstacle/obstacle_start.c
-    app_program/ir/line/track_start.c
-    app_program/ir/barcode/barcode_start.c
-    app_program/supervisor/supervisor_start.c
-    app_program/comms/telemetry/telemetry_start.c
+    app_program/motion/obstacle_extras/navigation.c
+    app_program/motion/obstacle_extras/setup.c
+    app_program/ir/line/extras_line_start.c
 )
 target_include_directories(main PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
 
@@ -362,8 +359,7 @@ foreach(app_target IN ITEMS main)
         motion_service
         track
         platform
-        telemetry
-        barcode
+        obstacle_extras_runtime
         mtk3smp
     )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset
@@ -388,9 +384,6 @@ foreach(app_target IN ITEMS main)
     target_compile_options(${app_target} PRIVATE ${FIRMWARE_WARNINGS})
 endforeach()
 
-target_link_libraries(main PRIVATE obstacle_motion supervisor physics)
 target_link_libraries(track PUBLIC pilot)
 
 include(cmake/bench.cmake)
-
-include(cmake/obstacle_extras.cmake)

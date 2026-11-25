@@ -28,25 +28,24 @@ LOCAL T_CTSK g_ctsk_sim = {
 #endif
 };
 
-LOCAL bool extras_sim_start (void)
+void extras_bench_start (void)
 {
-    ID const tid = tk_cre_tsk(&g_ctsk_sim);
+    ID tid = 0;
 
-    return platform_task_made("tsk(extras-sim)", tid) &&
-           platform_task_started("tsk(extras-sim)", tid);
-}
-
-EXPORT INT usermain (void)
-{
     platform_init();
     obstacle_extras_init();
     platform_stack_register(PLATFORM_STACK_LINE, g_sim_stack, SIM_STACK);
 
-    if (!(obstacle_extras_start() && extras_sim_start()))
+    if (obstacle_extras_start())
     {
-        platform_startup_failed();
-        log_flush();
+        tid = tk_cre_tsk(&g_ctsk_sim);
+        if (platform_task_made("tsk(extras-sim)", tid) &&
+            platform_task_started("tsk(extras-sim)", tid))
+        {
+            return;
+        }
     }
-    platform_park();
-    return 0;
+
+    platform_startup_failed();
+    log_flush();
 }

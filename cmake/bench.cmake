@@ -1,8 +1,15 @@
 # Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
 # part of main.uf2.
-add_executable(car_bench app_program/bench/car_bench.c app_program/bench/trace.c)
+add_executable(car_bench
+    app_program/bench/car_bench.c
+    app_program/bench/trace.c
+    app_program/bench/obstacle_extras_bench.c
+    app_program/bench/obstacle_extras_bench_start.c
+    app_program/platform/platform.c
+    app_program/platform/stack.c)
 target_include_directories(car_bench PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
-target_link_libraries(car_bench PRIVATE track motion_service platform supervisor mtk3smp)
+target_link_libraries(car_bench PRIVATE
+    track motion_service platform supervisor obstacle_extras_runtime mtk3smp)
 if(PICO_CAR_GIT_HASH_RESULT EQUAL 0)
     set(CAR_BENCH_BUILD "${PICO_CAR_GIT_HASH}")
     if(PICO_CAR_BUILD_DIRTY)

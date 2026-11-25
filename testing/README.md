@@ -6,7 +6,7 @@ This folder records how each subsystem was tested and what happened. Each test i
 |---|---|---|
 | Host tests | Your computer, against shims | CTest output |
 | Bench checks | The car, with a check image | USB console log |
-| Behaviour runs | The car on the course, with `main.uf2` | Bridge recording, notes and video |
+| Behaviour runs | The car on the course, with `main.uf2` | USB console log, notes and video |
 
 ## Subsystems
 
@@ -55,36 +55,30 @@ On `car_bench`, a short press on GP20 selects the next item. Hold GP20 for 1 s t
 
 ## Obstacle extras
 
-Build the two optional obstacle-extras images in the configured firmware build.
+The standard build's `main.uf2` runs the obstacle-extras controller.
+It uses the original 200 mm/s wheel target limit and 25% duty cap.
+Verify that the mount clears the physical sweep from −48° to +48° around
+the 1450 μs center pulse. The dev-stack mount was qualified from −20° to +20°.
+
+For the motor-free scanner bench, hold **GP20 and GP21** while booting
+`car_bench.uf2`, then release both. GP20 selects a menu item and GP21 sends
+it. AUTO-RUN starts at boot and simulates navigation in software. Boot
+without the two-button hold to return to the standard measurement menu.
+
+Run the recorded scan and navigation regressions with:
 
 ```sh
-cmake --build build --target obstacle_extras obstacle_extras_bench
 ctest --test-dir build-tests --no-tests=error -R '^obstacle[.]extras_' --output-on-failure
 ```
 
-- `obstacle_extras.uf2` runs the original line-following, sweep, bypass and
-  rejoin controller on the shared motion and GPIO drivers with the original
-  200 mm/s wheel target limit and 25% duty cap. GP21 is the emergency stop.
-  Diagnostics use USB. GP7 stays available for I²C.
-- `obstacle_extras_bench.uf2` drives the sonar and simulates navigation in
-  software. GP20 selects a menu item and GP21 sends it. The motor task is
-  absent and the AUTO-RUN simulation starts at boot.
-
-Use these images with a mount that clears the original physical sweep
-from −48° to +48° around the 1450 μs center pulse. The dev-stack mount was
-qualified only from −20° to +20°. The normal build still produces `main.uf2`
-for that narrower range.
-
-The host tests replay the recorded scan profiles and navigation events from
-`obstacle-extras` at `eeb8177`. Three recorded flat-face profiles return
-`NO_SAFE_PATH` at that revision and retain that expected outcome here.
+Three flat-face recordings return `NO_SAFE_PATH` at `eeb8177` and preserve
+that outcome here.
 
 ## Behaviour runs
 
-1. Flash `main.uf2` and start the ground station (`npm start`).
-2. The bridge records every packet to `host/bridge/history.jsonl` while it runs.
-3. Note the setup, start the run and note the wall-clock time.
-4. Write the record below, including the time, so the run can be found in the recording.
+1. Flash `main.uf2` and open the USB console.
+2. Note the setup and the wall-clock time before powering the car.
+3. Save the USB log and fill out the record below.
 
 ## Run logs
 

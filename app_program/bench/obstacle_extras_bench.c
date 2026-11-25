@@ -440,8 +440,8 @@ static void sim_nav_loop (void)
     uint32_t last_steer  = 0U;
     uint32_t last_state  = STATUS_UNSEEN;
     uint32_t loops       = 0U;
-    bool     b_next_down = false;
-    bool     b_send_down = false;
+    bool     b_next_down = drv_bench_gpio_pressed(BTN_NEXT_PIN);
+    bool     b_send_down = drv_bench_gpio_pressed(BTN_SEND_PIN);
 
     for (;;)
     {
@@ -511,6 +511,15 @@ static void sim_nav_loop (void)
     }
 }
 
+/* Both buttons must be held at boot to select this motor-free mode. */
+bool extras_bench_requested (void)
+{
+    drv_bench_gpio_input(BTN_NEXT_PIN);
+    drv_bench_gpio_input(BTN_SEND_PIN);
+    return drv_bench_gpio_pressed(BTN_NEXT_PIN) &&
+           drv_bench_gpio_pressed(BTN_SEND_PIN);
+}
+
 /*!
  * @brief Wait for USB and run the bench simulation.
  *
@@ -536,9 +545,6 @@ void extras_bench_run (INT stacd, void * exinf)
     LOG_CONT("\n=== obstacle-extras bench ===\n");
     LOG_CONT("GP20 = next menu item, GP21 = send."
                           " AUTO-RUN is ON.\n");
-
-    drv_bench_gpio_input(BTN_NEXT_PIN);
-    drv_bench_gpio_input(BTN_SEND_PIN);
 
     result = drv_gpio_irq_init();
     LOG_CONT("[init] drv_gpio_irq_init -> %d\n", (int)result);

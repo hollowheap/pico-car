@@ -1,7 +1,8 @@
 # Team responsibilities
 
-`app_program/app_main.c` assembles the firmware through `app_program/app.h`.
-Each subsystem owns its lifecycle and exposes the public header in the table.
+`app_program/app_main.c` assembles the obstacle-extras firmware. Each
+subsystem owns its lifecycle. The table also covers the dev-stack services
+retained in the source tree.
 
 | Subsystem | Owns | Public header |
 | --- | --- | --- |
@@ -27,8 +28,8 @@ work, and unknowntitan12 the motion work.
 | GP10, GP11 | Right motor inputs | Motion |
 | GP12 | Sonar servo PWM | Obstacle |
 | GP16, GP17 | Right encoder A and B | Motion |
-| GP20 | Active-low START input | Platform and supervisor |
-| GP21 | Active-low emergency stop | Motion |
+| GP20 | Scanner bench menu | Bench |
+| GP21 | Active-low emergency stop, scanner bench send | Motion or bench |
 | GP23–25, GP29 | On-board CYW43 radio signals | Pico W and kernel |
 | GP26 | Barcode input | IR |
 | GP27, GP28 | Left and right line inputs | IR |
@@ -61,18 +62,13 @@ used by the firmware. Distances along the car are from the drive axle.
 
 ## Firmware tasks
 
-| Task | Priority | Affinity with SMP | Stack bytes |
+| Task in `main.uf2` | Priority | Affinity with SMP | Stack bytes |
 | --- | ---: | --- | ---: |
 | Startup | 1 | Core 0 | 2048 |
 | Motion | 1 | Core 0 | 2560 |
-| Supervisor | 2 | Core 0 | 2560 |
-| Line | 3 | Core 0 | 2560 |
-| Obstacle | 4 | Core 0 | 2048 |
+| Line | 3 | Core 0 | 4096 |
+| Obstacle | 4 | Core 0 | 4096 |
 | CYW43 and lwIP | 4 | Core 0 | Kernel configuration |
-| IMU | 5 | Core 0 | 2816 |
-| Connection | 6 | Core 1 | 2048 |
-| Telemetry | 7 | Unpinned | 2816 |
-| Barcode | 7 | Unpinned | 2304 |
 
 Host tests are arranged by subsystem. The shared bench sources in
 `app_program/bench/` build the existing `car_bench`, `wdt_check` and

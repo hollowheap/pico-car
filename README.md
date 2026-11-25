@@ -1,7 +1,7 @@
 # Pico Car
 
-Pico W firmware for a line-following car with barcode routing, sonar obstacle
-navigation, and a LAN ground station.
+Pico W firmware for the obstacle-extras line follower, sonar scan, bypass,
+and rejoin. This branch reports through the USB console.
 
 ## Build and flash
 
@@ -20,13 +20,10 @@ Reconfigure when changing build settings or refreshing the embedded commit ID.
 Hold BOOTSEL while connecting USB to mount the Pico W as `RPI-RP2`. The flash
 script also supports `picotool` and accepts an image path.
 
-The car uses 2.4 GHz Wi-Fi with WPA2-PSK or an open network. The configure script
-can detect the network and broker address through NetworkManager. Override them
-with `PICO_CAR_WIFI_SSID`, `PICO_CAR_WIFI_PASSWORD`, and `PICO_CAR_MQTT_HOST`
-as local CMake settings. The car needs the broker's LAN address. Keep
-credentials in the environment or local build cache.
-
 ## Ground station
+
+The dashboard, bridge, and CLI are available for working with dev-stack
+recordings. This branch's firmware uses USB for diagnostics.
 
 The Nix shell provides Node.js 24, npm, and Mosquitto.
 
@@ -39,9 +36,7 @@ Open <http://127.0.0.1:5281>. The bridge serves the dashboard, HTTP API, and
 WebSocket on the same port. Use `npm run serve` to reuse the current web export.
 
 - **Broker.** The station starts Mosquitto on TCP 1883 when needed. Set
-  `MQTT_URL` to use a different broker. Match the firmware's
-  `PICO_CAR_TOPIC_PREFIX` to the bridge's `MQTT_TOPIC_PREFIX`. Both default to
-  `car/PICO-CAR`.
+  `MQTT_URL` to use a different broker.
 - **Recordings.** The bridge records to `host/bridge/history.jsonl` and saves
   course geometry in a `.course` sidecar. Set `BRIDGE_HISTORY_PATH` to select
   another file. Use one writer per recording.
@@ -63,23 +58,13 @@ build option in `deploy/.env`. The dashboard binds to loopback and the
 
 ## Run the car
 
-- **START.** Use GP20, the dashboard, or the CLI. Set the car upright and still
-  for IMU calibration. With no MQTT session, the car can start automatically
-  after a power-up wait of at least 10 seconds once its checks pass. An armed
-  run can also resume after a watchdog reset when the forward path is clear.
-- **Course.** START defaults to continuous supporting floor. Use **Stop at
-  obstacles** in the dashboard for courses with possible drop-offs.
-- **E-STOP.** GP21 or an accepted E-STOP command latches the drive inhibit.
-  Reboot to clear it. Use the bench procedure to measure electrical cutoff and
-  stopping distance.
-- **Barcodes.** L, R, and S request the left, right, or through exit at the
-  next junction. The car moves the axle over the measured stripe before
-  pivoting. It keeps the instruction if the requested exit is unavailable.
-  U turns back at the marker.
+- The car begins following the line after a three-second boot delay.
+- GP21 latches the emergency stop until a reboot.
+- The scanner uses a ±48° servo sweep around the 1450 μs center pulse.
+  Verify clearance across that range before running this branch on the car.
 
-See [TEAM.md](TEAM.md) for wiring, pin ownership, and task priorities. The
-[car dimensions](TEAM.md#car-dimensions) use values from
-[chassis.h](app_program/platform/chassis.h).
+See [TEAM.md](TEAM.md) for wiring and
+[car dimensions](TEAM.md#car-dimensions).
 
 ## Development and testing
 
