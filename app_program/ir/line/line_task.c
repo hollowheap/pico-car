@@ -1087,7 +1087,7 @@ static bool line_start_check (bool b_line_fresh)
         return true;
     }
 
-    motion_status_t motion;
+    motion_status_t motion = {0};
     motion_feedback_t wheels = {0};
     physics_status_t physics = {0};
     bool const motion_valid = (E_OK == motion_snapshot(&motion, &wheels, NULL)) &&
@@ -1097,6 +1097,11 @@ static bool line_start_check (bool b_line_fresh)
         physics.calibrated && physics.attitude_sample_valid && !physics.attitude_unknown &&
         physics.attitude_state == TELEMETRY_ATTITUDE_STATE_OK;
     uint32_t const sample_us = now_us();
+    /* The calibration hold lasts about as long as the wait window, so count it from the release. */
+    if (((motion.hold_mask & MOTION_HOLD_CALIBRATE) != 0U) && (s_check.phase == START_CHECK_WAITING))
+    {
+        start_check_begin(&s_check, sample_us);
+    }
     bool const clear = line_start_clearance(&s_ping_seq, &s_ping_us, &s_clear, sample_us);
     bool const ready = b_line_fresh && clear && motion_valid && imu_valid &&
         sample_us - physics.forward_sample_us <= START_CHECK_IMU_AGE_US;

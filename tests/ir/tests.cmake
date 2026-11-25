@@ -47,7 +47,7 @@ target_compile_options(test_line_task_contract PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_line_task_contract PRIVATE m)
 add_test(NAME ir.line_task_contract.line_task_slope_left COMMAND test_line_task_contract left)
-foreach(startup_case grounded airborne no-imu late-imu no-wheel blocked clearance-lost noisy-baseline)
+foreach(startup_case grounded airborne no-imu late-imu no-wheel blocked clearance-lost noisy-baseline calibration calibration-blocked)
     add_test(NAME ir.line_task_contract.startup_check_${startup_case} COMMAND test_line_task_contract startup-check-${startup_case})
 endforeach()
 add_test(NAME ir.line_task_contract.line_task_slope_right COMMAND test_line_task_contract right)
