@@ -296,6 +296,7 @@ add_test(NAME line_task_contract_pending_stale COMMAND test_line_task_contract p
 add_test(NAME pilot_stale_line_capture COMMAND test_line_task_contract stale-line-capture)
 add_test(NAME pilot_turn_stale_line_capture COMMAND test_line_task_contract turn-stale-line-capture)
 add_test(NAME line_route_plain_square_left COMMAND test_line_task_contract route-plain-square-left -5.5 0 nov20)
+add_test(NAME line_route_plain_round_left COMMAND test_line_task_contract route-plain-round-left -5.5 30 nov20)
 
 add_executable(test_pilot_observations test_pilot_observations.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c

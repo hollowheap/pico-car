@@ -1,3 +1,4 @@
+import { Link } from 'expo-router';
 import { useState } from 'react';
 import {
   Platform,
@@ -35,6 +36,43 @@ export function Brand({ iconOnly = false }: { iconOnly?: boolean }) {
         PICO-CAR
       </Text>}
     </View>
+  );
+}
+
+export function BenchLink({ active = false }: { active?: boolean }) {
+  const theme = useTheme();
+  const { colors } = theme;
+  const [focused, setFocused] = useState(false);
+  const [pressed, setPressed] = useState(false);
+
+  return (
+    <Link asChild href="/bench" prefetch>
+      <Pressable
+        accessibilityLabel="Bench"
+        accessibilityRole="link"
+        aria-current={active ? 'page' : undefined}
+        onBlur={() => setFocused(false)}
+        onFocus={() => setFocused(true)}
+        onPressIn={() => setPressed(true)}
+        onPressOut={() => setPressed(false)}
+        style={{
+          ...(focused ? webFocusRing(theme) : undefined),
+          alignItems: 'center',
+          backgroundColor: active || pressed ? colors.elevated : colors.card,
+          borderColor: active ? colors.accent : colors.border,
+          borderRadius: theme.radii.control,
+          borderWidth: 1,
+          height: 44,
+          justifyContent: 'center',
+          minWidth: 44,
+          opacity: pressed ? 0.8 : 1,
+          paddingHorizontal: 10,
+        }}
+        testID="nav-bench"
+      >
+        <Text style={[theme.typography.label, { color: colors.text }]}>Bench</Text>
+      </Pressable>
+    </Link>
   );
 }
 
