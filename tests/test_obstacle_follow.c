@@ -2,8 +2,7 @@
  *
  * @brief Host tests for the Bug2 face follow: the leg, the
  *        glance toward the face, the slant update, the outer and inner
- *        corners and the leave on the tape. The pose is set by hand; the
- *        full drive is in test_obstacle_bypass_sim.c.
+ *        corners and the leave on the tape. Each step supplies an explicit axle pose.
  */
 
 #include <stdbool.h>

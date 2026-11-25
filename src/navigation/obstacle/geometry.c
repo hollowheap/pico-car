@@ -1,6 +1,6 @@
 /** @file geometry.c
  *
- * @brief Integer trigonometry, dead-reckoned pose and local frames.
+ * @brief Integer trigonometry and vector arithmetic.
  *        Pure C99, no libm and no kernel calls.
  */
 
@@ -18,8 +18,6 @@
 #define DECI_TAN_MAX  (TAN_TABLE_MAX * OBSTACLE_DECI_PER_DEG)
 #define ISQRT_TOP_BIT (1UL << 30U)
 #define ISQRT_STEP    (2U)
-#define HALF_DIVISOR    (2)
-#define UM_PER_MM       (1000)
 #define OCTANT_DEG_MAX  (45)
 #define OCTANT_DECI_MAX (450)
 
@@ -256,147 +254,6 @@ uint32_t geom_isqrt (uint32_t value)
     }
 
     return (root);
-}
-
-/*!
- * @brief Reset the dead-reckoned pose to the origin at the current wheel
- *        displacements.
- *
- * @param[out] p_pose   Pose to reset.
- * @param[in]  left_um  Left wheel displacement in um.
- * @param[in]  right_um Right wheel displacement in um.
- */
-void geom_pose_reset (geom_pose_t * p_pose, int64_t left_um, int64_t right_um)
-{
-    p_pose->base_um[GEOM_WHEEL_LEFT]  = left_um;
-    p_pose->base_um[GEOM_WHEEL_RIGHT] = right_um;
-    p_pose->prev_um[GEOM_WHEEL_LEFT]  = left_um;
-    p_pose->prev_um[GEOM_WHEEL_RIGHT] = right_um;
-    p_pose->x_um                      = 0;
-    p_pose->y_um                      = 0;
-    p_pose->head_deci                 = 0;
-}
-
-/*!
- * @brief Advance the dead-reckoned pose from the latest wheel displacements.
- *
- * Heading comes from the total wheel difference since geom_pose_reset(), so
- * rounding never accumulates across steps.
- *
- * @param[in,out] p_pose   Pose to update.
- * @param[in]     left_um  Left wheel displacement in um.
- * @param[in]     right_um Right wheel displacement in um.
- */
-void geom_pose_update (geom_pose_t * p_pose, int64_t left_um, int64_t right_um)
-{
-    int64_t const dl_um   = left_um - p_pose->prev_um[GEOM_WHEEL_LEFT];
-    int64_t const dr_um   = right_um - p_pose->prev_um[GEOM_WHEEL_RIGHT];
-    int64_t const ds_um   = (dl_um + dr_um) / HALF_DIVISOR;
-    int64_t const tot_l   = left_um - p_pose->base_um[GEOM_WHEEL_LEFT];
-    int64_t const tot_r   = right_um - p_pose->base_um[GEOM_WHEEL_RIGHT];
-    int64_t const diff_um = tot_r - tot_l;
-    int64_t const den_um  = (int64_t)CHASSIS_WHEEL_TRACK_MM * (int64_t)UM_PER_MM;
-    int32_t const new_head =
-        (int32_t)((diff_um * (int64_t)OBSTACLE_NAV_DECI_PER_RAD) / den_um);
-    int32_t const mid_head = (p_pose->head_deci + new_head) / HALF_DIVISOR;
-
-    p_pose->prev_um[GEOM_WHEEL_LEFT]  = left_um;
-    p_pose->prev_um[GEOM_WHEEL_RIGHT] = right_um;
-    p_pose->head_deci                 = new_head;
-    p_pose->x_um += (ds_um * (int64_t)geom_sin_q14(mid_head)) / (int64_t)GEOM_Q14_ONE;
-    p_pose->y_um += (ds_um * (int64_t)geom_cos_q14(mid_head)) / (int64_t)GEOM_Q14_ONE;
-}
-
-/*!
- * @brief Sideways position of the pose in mm (positive = left).
- *
- * @param[in] p_pose Pose.
- *
- * @return x in mm.
- */
-int32_t geom_pose_x_mm (geom_pose_t const * p_pose)
-{
-    return ((int32_t)(p_pose->x_um / (int64_t)UM_PER_MM));
-}
-
-/*!
- * @brief Forward position of the pose in mm.
- *
- * @param[in] p_pose Pose.
- *
- * @return y in mm.
- */
-int32_t geom_pose_y_mm (geom_pose_t const * p_pose)
-{
-    return ((int32_t)(p_pose->y_um / (int64_t)UM_PER_MM));
-}
-
-/*!
- * @brief Mean wheel travel since geom_pose_reset(), in um.
- *
- * @param[in] p_pose Pose.
- *
- * @return Mean displacement in um.
- */
-int64_t geom_pose_travel_um (geom_pose_t const * p_pose)
-{
-    int64_t const dl = p_pose->prev_um[GEOM_WHEEL_LEFT] - p_pose->base_um[GEOM_WHEEL_LEFT];
-    int64_t const dr = p_pose->prev_um[GEOM_WHEEL_RIGHT] - p_pose->base_um[GEOM_WHEEL_RIGHT];
-
-    return ((dl + dr) / HALF_DIVISOR);
-}
-
-/*!
- * @brief Capture the current pose as a local reference frame.
- *
- * @param[out] p_frame Frame to set.
- * @param[in]  p_pose  Current pose.
- */
-void geom_frame_set (geom_frame_t * p_frame, geom_pose_t const * p_pose)
-{
-    p_frame->x_mm      = geom_pose_x_mm(p_pose);
-    p_frame->y_mm      = geom_pose_y_mm(p_pose);
-    p_frame->head_deci = p_pose->head_deci;
-}
-
-/*!
- * @brief Convert a world point (mm) into a local frame's (lat, along) coordinates.
- *
- * @param[in]  p_frame    Local frame.
- * @param[in]  world_x_mm World x (mm, positive = left).
- * @param[in]  world_y_mm World y (mm, positive = ahead).
- * @param[out] p_lat_mm   Sideways offset in the frame (mm, positive = left).
- * @param[out] p_along_mm Forward offset in the frame (mm, positive = ahead).
- */
-void geom_to_local (geom_frame_t const * p_frame, int32_t world_x_mm, int32_t world_y_mm,
-                    int32_t * p_lat_mm, int32_t * p_along_mm)
-{
-    int32_t const dx  = world_x_mm - p_frame->x_mm;
-    int32_t const dy  = world_y_mm - p_frame->y_mm;
-    int32_t const sin = geom_sin_q14(p_frame->head_deci);
-    int32_t const cos = geom_cos_q14(p_frame->head_deci);
-
-    *p_lat_mm   = geom_mul_q14(dx, cos) - geom_mul_q14(dy, sin);
-    *p_along_mm = geom_mul_q14(dx, sin) + geom_mul_q14(dy, cos);
-}
-
-/*!
- * @brief Convert a local frame's (lat, along) point into world coordinates (mm).
- *
- * @param[in]  p_frame      Local frame.
- * @param[in]  lat_mm       Sideways offset in the frame (mm, positive = left).
- * @param[in]  along_mm     Forward offset in the frame (mm, positive = ahead).
- * @param[out] p_world_x_mm World x (mm).
- * @param[out] p_world_y_mm World y (mm).
- */
-void geom_to_world (geom_frame_t const * p_frame, int32_t lat_mm, int32_t along_mm,
-                    int32_t * p_world_x_mm, int32_t * p_world_y_mm)
-{
-    int32_t const sin = geom_sin_q14(p_frame->head_deci);
-    int32_t const cos = geom_cos_q14(p_frame->head_deci);
-
-    *p_world_x_mm = p_frame->x_mm + geom_mul_q14(lat_mm, cos) + geom_mul_q14(along_mm, sin);
-    *p_world_y_mm = p_frame->y_mm - geom_mul_q14(lat_mm, sin) + geom_mul_q14(along_mm, cos);
 }
 
 /*!

@@ -7,6 +7,7 @@
 #ifndef SHIM_TK_TKERNEL_H
 #define SHIM_TK_TKERNEL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define LOCAL  static
@@ -46,6 +47,27 @@ typedef int          ID;
 typedef int32_t      TMO;
 typedef int32_t      SZ;
 typedef unsigned int ATR;
+
+#define TSS_DDSP 0x01U
+#define TSS_DINT 0x02U
+#define TSS_INDP 0x04U
+
+typedef struct
+{
+    UINT sysstat;
+    ID   runtskid;
+    ID   schedtskid;
+} T_RSYS;
+
+#ifdef PICO_TEST_FAULT_CONTEXT
+ER tk_ref_sys (T_RSYS * p_state);
+#else
+static inline ER tk_ref_sys (T_RSYS * p_state)
+{
+    *p_state = (T_RSYS){0U, 1, 1};
+    return E_OK;
+}
+#endif
 
 #define E_PAR   (-17)
 #define E_CTX   (-25)

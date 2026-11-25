@@ -12,8 +12,7 @@
 #include "nav_core.h"
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
-
-#define UM_PER_MM (1000)
+#include "platform/units.h"
 
 /* A status word with a ping class, a distance and a sequence. */
 static uint32_t status_word(uint8_t cls, uint16_t dist_mm, uint8_t seq)
@@ -76,7 +75,7 @@ static void test_pose_left_turn(void)
     int64_t    wheel[NAV_CORE_WHEELS] = {0, 0};
     /* Wheel travel of a pivot by 90 degrees: track * (pi / 2) / 2. */
     int64_t const quarter_um = ((int64_t)CHASSIS_WHEEL_TRACK_MM * UM_PER_MM * 900) /
-                               (2 * OBSTACLE_NAV_DECI_PER_RAD);
+                               (2 * DECI_PER_RAD);
     follow_in_t in;
     int32_t     head = 0;
 

@@ -15,8 +15,7 @@
  *                   on the plan side while moving, ask for the servo angle,
  *                   and send LINE_FOUND once the car is back on the tape past
  *                   the hit point and faces the original heading.
- *   - FAULT         hold the car; retry RESET + START every 3 s for the
- *                   transient causes only.
+ *   - FAULT         hold the car until the supervisor accepts operator START.
  *   - MONITOR       release the hold and let the line follower drive,
  *                   except while Buddy 5's latest reading is a VALID echo
  *                   within the detection distance.
@@ -122,7 +121,6 @@ typedef struct
     uint32_t pause_ms;
     uint32_t last_drive;
     uint32_t hold_ms;
-    uint32_t retry_ms;
     uint32_t trace_ms;
     uint32_t motion_word;
     int16_t  need_mm;  /* side offset of the plan, for the log      */
@@ -152,7 +150,6 @@ static nav_state_t g_nav = {
     .pause_ms           = 0U,
     .last_drive         = NAV_DRIVE_UNSEEN,
     .hold_ms            = 0U,
-    .retry_ms           = 0U,
     .trace_ms           = 0U,
     .motion_word        = UINT32_MAX,
     .need_mm            = 0,
@@ -180,7 +177,7 @@ static void     update_pivoting (uint32_t state);
 static void     update_pose (void);
 static void     note_turned (bool b_turned, uint32_t now);
 static void     drive_wheels (uint8_t steer, int32_t left_um_s,
-                              int32_t right_um_s);
+                              int32_t right_um_s, bool b_scan_pivot);
 static bool     is_reverse_pause (int32_t const p_speed[WHEELS]);
 static void     step_pivot (uint32_t now);
 static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now);
@@ -204,7 +201,7 @@ static ER      nav_stop (void);
 static ER      nav_distance_mm (obstacle_travel_t * p_travel);
 
 /*!
- * @brief Start Buddy 5 with the motion links, then RESET and START it.
+ * @brief Initialize Buddy 5 with the motion links and leave it parked.
  *
  * Call once from the line task on processor 1, after gpio_irq_init(),
  * motion_service_init() and ir_capture_init(). If it fails, obstacle_nav_step()
@@ -230,9 +227,6 @@ ER obstacle_nav_init (void)
     if (E_OK == result)
     {
         g_nav.b_enabled = true;
-        g_nav.retry_ms  = now_ms();
-        post(OBSTACLE_CMD_RESET, 0U);
-        post(OBSTACLE_CMD_START, 0U);
     }
 
     return (result);
@@ -314,17 +308,6 @@ bool obstacle_nav_step (bool b_line_left, bool b_line_right)
 
             case OBSTACLE_STATE_STOPPED:
                 hold_car(true);
-                /* Retry policy: only a start after boot or a transient cause
-                 * restarts by itself. A collision, a scan with no safe path, a
-                 * sensor fault and a STOP wait for an explicit RESET and START. */
-                if (obstacle_pack_cause_may_auto_restart(
-                        obstacle_pack_get(status, OBSTACLE_ST_CAUSE_SH, OBSTACLE_ST_CAUSE_MK)) &&
-                    ((now - g_nav.retry_ms) >= OBSTACLE_NAV_RETRY_MS))
-                {
-                    g_nav.retry_ms = now;
-                    post(OBSTACLE_CMD_RESET, 0U);
-                    post(OBSTACLE_CMD_START, 0U);
-                }
                 b_in_charge = true;
             break;
 
@@ -392,7 +375,7 @@ static void step_scan_body (uint32_t status, uint32_t now)
     else
     {
         hold_car(false);
-        drive_wheels(steer, left, right);
+        drive_wheels(steer, left, right, true);
     }
 }
 
@@ -464,7 +447,7 @@ static void step_reacquire (uint32_t status, bool b_line_seen, uint32_t now)
         }
         else
         {
-            drive_wheels(out.steer, out.left_um_s, out.right_um_s);
+            drive_wheels(out.steer, out.left_um_s, out.right_um_s, false);
             look_for_line(FOLLOW_LINE == out.result, now);
         }
     }
@@ -665,8 +648,10 @@ static void note_turned (bool b_turned, uint32_t now)
  * @param[in] steer      Steering (OBSTACLE_STEER_*).
  * @param[in] left_um_s  Left wheel speed (um/s).
  * @param[in] right_um_s Right wheel speed (um/s).
+ * @param[in] b_scan_pivot Use the scan-aiming duty limit.
  */
-static void drive_wheels (uint8_t steer, int32_t left_um_s, int32_t right_um_s)
+static void drive_wheels (uint8_t steer, int32_t left_um_s, int32_t right_um_s,
+                         bool b_scan_pivot)
 {
     int32_t speed[WHEELS] = {0, 0};
 
@@ -698,8 +683,16 @@ static void drive_wheels (uint8_t steer, int32_t left_um_s, int32_t right_um_s)
         }
     }
 
-    (void)motion_set_speed(speed[WHEEL_LEFT], speed[WHEEL_RIGHT],
-                           OBSTACLE_NAV_TTL_US);
+    if (b_scan_pivot)
+    {
+        (void)motion_set_scan_pivot(speed[WHEEL_LEFT], speed[WHEEL_RIGHT],
+                                    OBSTACLE_NAV_TTL_US);
+    }
+    else
+    {
+        (void)motion_set_speed(speed[WHEEL_LEFT], speed[WHEEL_RIGHT],
+                               OBSTACLE_NAV_TTL_US);
+    }
 }
 
 /*!
@@ -779,7 +772,7 @@ static void step_pivot (uint32_t now)
     obstacle_plan_wheel_pivot(heading_deci(), target_head,
                               &left_um_s, &right_um_s, &steer, &b_done);
     note_turned(b_done, now);
-    drive_wheels(steer, left_um_s, right_um_s);
+    drive_wheels(steer, left_um_s, right_um_s, false);
 }
 
 /*!
@@ -1040,16 +1033,13 @@ static void handle_event (uint32_t evt, uint32_t now)
         uint32_t const faults =
             obstacle_pack_get(evt, OBSTACLE_EV_FAULTS_SH, OBSTACLE_EV_FAULTS_MK);
 
-        LOG_NOW("ERROR", "line:nav", "FAULT cause=%d: holding, %s\n", (INT)cause,
-                  obstacle_pack_cause_may_auto_restart(cause) ? "retry in 3 s"
-                                                              : "needs RESET and START");
+        LOG_NOW("ERROR", "line:nav", "FAULT cause=%d: holding for operator START\n", (INT)cause);
 
         /* Casts are safe: the cause is 4 bits. The flight log keeps the low 8
          * fault bits. */
         log_rec(OBSTACLE_LOG_FAULT, (uint8_t)cause, 0U, (uint8_t)faults, 0, 0, 0);
         hold_car(true);
         g_nav.b_scan_pending = false;
-        g_nav.retry_ms       = now;
     }
     else if (OBSTACLE_EVT_SCAN_RESULT == type)
     {
@@ -1325,7 +1315,7 @@ static int64_t true_wheel_um (motion_feedback_t const * p_feedback,
 }
 
 /*!
- * @brief Public facade: start Buddy 5 with the motion links.
+ * @brief Public facade: initialize Buddy 5 with the motion links.
  *
  * @return The result of obstacle_nav_init().
  */

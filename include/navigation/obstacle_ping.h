@@ -14,6 +14,9 @@
 
 #include "pilot/look.h"
 
+/* Physical travel from straight ahead, in either direction. */
+#define OBSTACLE_SERVO_LIMIT_DECI (200)
+
 /* Echo class, 3 bits. A missing echo is never OPEN, and no class means
  * "unknown": each class has its own reaction. */
 #define OBSTACLE_CLASS_VALID     (0U) /* rise + fall, 116..23500 us         */
@@ -22,6 +25,15 @@
 #define OBSTACLE_CLASS_NO_ECHO   (3U) /* nothing on ECHO within the wait    */
 #define OBSTACLE_CLASS_GLITCH    (4U) /* one edge missing, or a tiny pulse  */
 #define OBSTACLE_CLASS_STUCK     (5U) /* ECHO high before the trigger       */
+
+/* Two VALID samples from the same point agree within this range. */
+#define OBSTACLE_AGREE_MM          (15U)
+
+/* Range plausibility defaults for two VALID readings. After this much
+ * straight travel, their range change should agree with the wheel travel. */
+#define OBSTACLE_CONSIST_TRAVEL_MM (100U)
+#define OBSTACLE_CONSIST_RANGE_MM  (600U)
+#define OBSTACLE_CONSIST_TOL_MM    (40U)
 
 /* Ping (u32, one store by the scan task): seq 6 | class 3 | dist 12 |
  * servo 6. The servo field is the servo angle in whole degrees plus 30. */
@@ -39,7 +51,7 @@
 #define OBSTACLE_PING_REPLY_SH (27U)
 #define OBSTACLE_PING_REPLY_MK (0x1U)
 
-/* Servo field offset: whole degrees plus 30 (the servo limit). */
+/* Servo field encoding adds 30 to the angle in whole degrees. */
 #define OBSTACLE_PING_SERVO_OFFSET (30)
 
 /* Deci-degrees per degree, and the range a TOO_CLOSE echo reads as. The
@@ -178,6 +190,11 @@ static inline uint8_t obstacle_pack_ping_seq (uint32_t word)
     /* Cast is safe: the field is 6 bits wide. */
     return ((uint8_t)((word >> OBSTACLE_PING_SEQ_SH) & OBSTACLE_PING_SEQ_MK));
 }
+
+/* Record one measured ray in a 37-slot scan profile. Off-grid angles leave
+ * the profile unchanged. Unsampled slots are left clear by the caller. */
+void obstacle_profile_record_ray (uint16_t * p_slots, int32_t angle_deci,
+                                  uint16_t range_mm, uint8_t echo);
 
 #endif /* NAVIGATION_OBSTACLE_PING_H */
 

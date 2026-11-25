@@ -44,7 +44,9 @@ static void test_classify(void)
                              false) == OBSTACLE_CLASS_VALID);
     CHECK(scan_algo_classify(OBSTACLE_ECHO_DONE | OBSTACLE_ECHO_RISE | 25000U, false, false,
                              false) == OBSTACLE_CLASS_OPEN);
-    CHECK(scan_algo_classify(OBSTACLE_ECHO_RISE, true, true, false) == OBSTACLE_CLASS_OPEN);
+    /* The rise may have arrived just before the deadline. Without its
+     * falling edge even a fresh ping cannot establish forward clearance. */
+    CHECK(scan_algo_classify(OBSTACLE_ECHO_RISE, true, true, false) == OBSTACLE_CLASS_NO_ECHO);
 }
 
 /* every outcome has its own class. */
@@ -299,11 +301,8 @@ static void test_receding_edge(void)
 
     scan_algo_start(&ctx);
 
-    /* Coarse pass over the servo window (every slot): the obstacle
-     * at the centre, then a surface that recedes by 60 mm per 5-degree slot
-     * on the left. It must not be mistaken for an edge: no slot is far
-     * beyond the last hit, so the walk steps over them and runs on past the
-     * servo window, which needs the first body pivot. */
+    /* The obstacle starts at the centre and recedes by 60 mm per slot on
+     * the left. Continue the surface after the first body pivot. */
     while ((scan_algo_target(&ctx) != SCAN_ALGO_NO_SLOT) && (0 == ctx.body_deci) && (guard < 100U))
     {
         const uint8_t  slot = scan_algo_target(&ctx);
@@ -316,9 +315,17 @@ static void test_receding_edge(void)
         guard++;
     }
     CHECK(ctx.closest_mm == 200U);
-    CHECK(ctx.edge_hit[SCAN_ALGO_LEFT] == 22U); /* slots 23 and 24 (500, 560 mm) are stepped over, not hits */
+    CHECK(ctx.edge_hit[SCAN_ALGO_LEFT] == 22U);
     CHECK(ctx.body_deci == OBSTACLE_SCAN_PIVOT_DECI);
     CHECK(scan_algo_target(&ctx) == (OBSTACLE_SLOT_CENTRE + (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI) + 1U));
+
+    /* The next readings are beyond the region but close enough to the last
+     * hit that the walk must keep looking for the edge. */
+    (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 500U);
+    CHECK(scan_algo_target(&ctx) == 24U);
+    (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 560U);
+    CHECK(scan_algo_target(&ctx) == 25U);
+    CHECK(ctx.edge_hit[SCAN_ALGO_LEFT] == 22U);
 }
 
 static void test_partial_scan_keeps_unmeasured_edges_open(void)
@@ -337,6 +344,33 @@ static void test_partial_scan_keeps_unmeasured_edges_open(void)
     CHECK(SCAN_ALGO_NO_SLOT == scan_algo_target(&ctx));
     CHECK(SCAN_ALGO_EDGE_UNBOUNDED == ctx.edge_state[SCAN_ALGO_LEFT]);
     CHECK(SCAN_ALGO_EDGE_UNBOUNDED == ctx.edge_state[SCAN_ALGO_RIGHT]);
+}
+
+static void test_wide_scan_stays_within_servo_window(void)
+{
+    scan_algo_ctx_t ctx;
+    bool b_within_window = true;
+    unsigned sample;
+
+    scan_algo_start(&ctx);
+    for (sample = 0U; sample < OBSTACLE_SLOT_COUNT &&
+                      SCAN_ALGO_NO_SLOT != scan_algo_target(&ctx); ++sample)
+    {
+        uint8_t const slot  = scan_algo_target(&ctx);
+        int16_t const servo = scan_algo_servo_deci(&ctx);
+
+        b_within_window = b_within_window && (servo >= -200) && (servo <= 200);
+        CHECK(scan_algo_body_deci(&ctx) + servo == scan_algo_slot_deci(slot));
+        (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 300U);
+    }
+    CHECK(b_within_window);
+    CHECK(SCAN_ALGO_NO_SLOT == scan_algo_target(&ctx));
+    CHECK(SCAN_ALGO_EDGE_UNBOUNDED == ctx.edge_state[SCAN_ALGO_LEFT]);
+    CHECK(SCAN_ALGO_EDGE_UNBOUNDED == ctx.edge_state[SCAN_ALGO_RIGHT]);
+    for (sample = 0U; sample < OBSTACLE_SLOT_COUNT; ++sample)
+    {
+        CHECK(obstacle_pack_slot_is_measured(ctx.profile[sample]));
+    }
 }
 
 int main(int argc, char * argv[])
@@ -376,6 +410,7 @@ int main(int argc, char * argv[])
     test_region_scan();
     test_receding_edge();
     test_partial_scan_keeps_unmeasured_edges_open();
+    test_wide_scan_stays_within_servo_window();
 
     if (g_failures == 0)
     {

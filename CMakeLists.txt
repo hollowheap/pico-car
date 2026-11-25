@@ -67,6 +67,12 @@ if (NOT EXISTS "${MTK3SMP_PATH}/include/tk/tkernel.h")
     message(FATAL_ERROR "mtk3smp-rp2040 missing. Run 'git submodule update --init --recursive'.")
 endif()
 
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/mtk3smp_config.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/config.h
+    @ONLY
+)
+
 # Create compile_commands.json for Clangd to analyze the project and report errors in the editor
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -157,8 +163,9 @@ set(PICO_SDK_INCLUDES
 )
 
 target_include_directories(mtk3smp PUBLIC
-    ${MTK3SMP_PATH}/include
+    # The project config supplies the object budget to the kernel and its callers.
     ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${MTK3SMP_PATH}/include
     ${MTK3SMP_PATH}/config
     ${MTK3SMP_PATH}/kernel/knlinc
     ${MTK3SMP_PATH}/kernel/tkernel
@@ -395,33 +402,36 @@ add_library(motion_service STATIC
     src/motion/quadrature.c
 )
 target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(motion_service PUBLIC platform motion_core motion_pio mtk3smp)
+target_link_libraries(motion_service PUBLIC platform motion_core motion_pio mtk3smp
+    PRIVATE telemetry)
 target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
+
+add_library(line_control STATIC src/track/line_control.c)
+target_include_directories(line_control PUBLIC include)
+target_compile_options(line_control PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(track STATIC
     src/track/ir_capture.c
     src/track/barcode_task.c
     src/track/barcode_width.c
-    src/track/line_control.c
     src/track/line_filter.c
     src/track/line_task.c
 )
 target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
-target_link_libraries(track PUBLIC platform barcode motion_service telemetry supervisor obstacle_nav mtk3smp)
+target_link_libraries(track PUBLIC line_control platform barcode motion_service telemetry supervisor obstacle_nav mtk3smp)
 target_compile_options(track PRIVATE ${FIRMWARE_WARNINGS})
 
-# The pilot: one owner of the wheels. Pure logic, not linked into main.uf2 yet.
+# The default firmware runs this controller from the line task.
 add_library(pilot STATIC
     src/pilot/pilot.c
     src/pilot/drive.c
     src/pilot/hug.c
     src/pilot/look.c
     src/pilot/pilot_log.c
-    src/track/line_control.c
 )
 target_include_directories(pilot PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include
     ${CMAKE_CURRENT_LIST_DIR}/src/navigation/obstacle)
-target_link_libraries(pilot PUBLIC platform obstacle)
+target_link_libraries(pilot PUBLIC line_control platform obstacle)
 target_compile_options(pilot PRIVATE ${FIRMWARE_WARNINGS})
 
 add_library(barcode STATIC
@@ -510,7 +520,7 @@ target_link_options(obstacle_bench PRIVATE
 )
 pico_add_extra_outputs(obstacle_bench)
 
-# Phase 2: main.uf2 runs Buddy 5 through the line task (src/main.c).
+# The line task uses the Buddy 5 navigator when PICO_CAR_PILOT is off.
 add_library(obstacle_nav STATIC
     src/navigation/obstacle/obstacle_nav.c
     src/navigation/obstacle/flight_log.c
@@ -534,6 +544,8 @@ endif()
 target_compile_definitions(track PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 target_compile_definitions(obstacle PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 target_compile_definitions(obstacle_nav PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(main PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
+target_compile_definitions(supervisor PRIVATE PICO_CAR_PILOT=${PICO_CAR_PILOT_VALUE})
 
 # Measurement benches (build/car_bench.uf2, build/wdt_check.uf2). They are not
 # part of main.uf2.

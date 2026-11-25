@@ -181,6 +181,52 @@ static void test_reject_reasons (void)
     CHECK (BARCODE_REJECT_DELIMITER == info.reject);
 }
 
+static void test_rejects_excess_wide_elements_as_parity (void)
+{
+    static const struct
+    {
+        uint16_t widths[5];
+        uint8_t count;
+        uint8_t reason;
+    } cases[] = {
+        {{WIDE_UM, NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM}, 5U, BARCODE_REJECT_PARITY},
+        {{NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM}, 4U, BARCODE_REJECT_PARITY},
+        {{NARROW_UM, 2U * NARROW_UM}, 2U, BARCODE_REJECT_ELEMENT},
+    };
+
+    for (uint8_t reverse = 0U; reverse < 2U; reverse++)
+    {
+        uint8_t const space = (reverse != 0U) ? 7U : 1U;
+        uint8_t const bar1  = (reverse != 0U) ? 2U : 4U;
+        uint8_t const bar2  = (reverse != 0U) ? 4U : 6U;
+
+        for (size_t c = 0U; c < sizeof(cases) / sizeof(cases[0]); c++)
+        {
+            barcode_parser_t parser = BARCODE_PARSER_INIT;
+            barcode_info_t   info;
+
+            CHECK (BARCODE_NO_CHAR == feed_char (&parser, space, bar1, bar2, &info));
+            feed_gap (&parser, &info);
+            for (uint8_t i = 0U; i < cases[c].count; i++)
+            {
+                uint8_t const reason = (i + 1U == cases[c].count) ? cases[c].reason : BARCODE_REJECT_NONE;
+                CHECK (BARCODE_NO_CHAR == barcode_parser_input_info(
+                    &parser, (i % 2U) != 0U, cases[c].widths[i], &info));
+                CHECK (info.reject == reason);
+                CHECK (info.in_progress && (info.is_reverse == (reverse != 0U)));
+            }
+            CHECK (parser.elem_index == 0U && parser.char_index == 0U);
+
+            CHECK (BARCODE_NO_CHAR == feed_char (&parser, space, bar1, bar2, &info));
+            feed_gap (&parser, &info);
+            CHECK (BARCODE_NO_CHAR == feed_char (&parser, (reverse != 0U) ? 3U : 5U, 0U, 8U, &info));
+            feed_gap (&parser, &info);
+            CHECK (0U == feed_char (&parser, space, bar1, bar2, &info));
+            CHECK (info.reject == BARCODE_REJECT_NONE && (info.is_reverse == (reverse != 0U)));
+        }
+    }
+}
+
 int main (void)
 {
     test_letter_map ();
@@ -188,6 +234,7 @@ int main (void)
     test_suppression_window ();
     test_info_forward_and_reverse ();
     test_reject_reasons ();
+    test_rejects_excess_wide_elements_as_parity ();
 
     if (g_fail != 0U)
     {

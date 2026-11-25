@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 
+#include "navigation/obstacle_ping.h"
 #include "platform/chassis.h"
 
 /* C99 has no _Static_assert, so a negative array size stops the build when
@@ -44,10 +45,13 @@
  * Ping timing [Spec] [HC-SR04 datasheet].
  * ------------------------------------------------------------------ */
 
-/* The datasheet asks for 60 ms between triggers so old echoes die out. 50 ms
- * still leaves 10 ms after the longest echo wait; an echo that returns later
- * comes from more than 8 m away, which no indoor track has. */
+/* The pilot keeps its forward and requested ping spacing. The legacy scan
+ * uses the 60 ms interval recommended for the sensor. */
+#if defined(PICO_CAR_PILOT) && (PICO_CAR_PILOT != 0)
 #define OBSTACLE_PING_PERIOD_MS (50U)
+#else
+#define OBSTACLE_PING_PERIOD_MS (60U)
+#endif
 
 /* The task waits at most this long for the end of an echo. */
 #define OBSTACLE_ECHO_WAIT_MS (40U)
@@ -125,8 +129,8 @@
  * checklist step H2.
  * ------------------------------------------------------------------ */
 
-/* FILL: pulse width that points the sensor straight ahead. */
-#define OBSTACLE_SERVO_CENTRE_US (1500U)
+/* FILL: nominal +1 degree mechanical correction for the observed boot aim. */
+#define OBSTACLE_SERVO_CENTRE_US (1494U)
 
 /* FILL: microseconds per 10 degrees (a safe 5.6 us per degree guess). */
 #define OBSTACLE_SERVO_US_PER_10DEG (56U)
@@ -137,11 +141,6 @@
  * other way from where the sonar looked, so the plan took the wrong side.
  * The servo must turn the same way as the wheels count a turn. */
 #define OBSTACLE_SERVO_DIR (-1)
-
-/* The servo turns at most +-30 degrees from the car's front (user, 2026-11-15;
- * the first mounting allowed only +-15). Nothing may ask for more; the scan
- * task and scan_hw.c clamp it. */
-#define OBSTACLE_SERVO_LIMIT_DECI (300)
 
 /* Never command a pulse outside the datasheet range. */
 #define OBSTACLE_SERVO_MIN_US (500U)
@@ -164,8 +163,7 @@
 /* ------------------------------------------------------------------ *
  * Scan [Chat]. The profile has one slot per 5 degrees of bearing from the
  * car's heading when the scan started (body heading + servo angle):
- * -90..+90 degrees, 37 slots, slot 18 straight ahead. The servo reaches
- * +-30 degrees, a body pivot of 60 degrees moves that window to 30..90.
+ * -90..+90 degrees, 37 slots, slot 18 straight ahead.
  * ------------------------------------------------------------------ */
 
 #define OBSTACLE_SLOT_COUNT      (37U)
@@ -173,16 +171,14 @@
 #define OBSTACLE_SLOT_STEP_DECI  (50)
 #define OBSTACLE_SLOT_FIRST_DECI (-900)
 
-/* Coarse sweep: every 5 degrees over the +-30 degree servo range (13 pings).
+/* Coarse sweep: every 5 degrees over the centre servo window.
  * The fine walk uses the same 5 degree grid. */
 #define OBSTACLE_COARSE_STEP_DECI (50)
 
-/* The body pivots in steps of this size toward a side whose edge is not yet
- * found, up to OBSTACLE_SCAN_PIVOT_MAX_DECI. Each step shifts the +-30 degree
- * servo window by its full width, so the windows meet: 0, then 60 degrees,
- * which reaches 90 degrees with one body turn per side. */
-#define OBSTACLE_SCAN_PIVOT_DECI     (600)
-#define OBSTACLE_SCAN_PIVOT_MAX_DECI (600)
+/* Shift by one servo window at a time, with the last heading placing the
+ * servo's outer edge on the last profile slot. */
+#define OBSTACLE_SCAN_PIVOT_DECI     (2 * OBSTACLE_SERVO_LIMIT_DECI)
+#define OBSTACLE_SCAN_PIVOT_MAX_DECI (-OBSTACLE_SLOT_FIRST_DECI - OBSTACLE_SERVO_LIMIT_DECI)
 
 /* [Spec 3c] The region is the closest VALID return within 600 mm plus
  * neighbouring readings within closest + 250 mm. */
@@ -206,22 +202,13 @@
 #define OBSTACLE_BEAM_CHECK_PINGS (8U)
 #define OBSTACLE_BEAM_CHECK_HITS  (6U)
 
-/* [Default] P2: after the car has moved at least OBSTACLE_CONSIST_TRAVEL_MM between
- * two VALID readings under OBSTACLE_CONSIST_RANGE_MM, the range must have changed by
- * the travel, within OBSTACLE_CONSIST_TOL_MM. Otherwise echo_inconsistent is raised. */
-#define OBSTACLE_CONSIST_TRAVEL_MM (100U)
-#define OBSTACLE_CONSIST_RANGE_MM  (600U)
-#define OBSTACLE_CONSIST_TOL_MM    (40U)
-
 /* [Default] P4: read the TRIG pad back during the pulse. If it does not read high, the
  * ping counts as NO_ECHO and the 40 ms wait is skipped. Set 0 if the readback does not
  * work on the car (checklist H7e). */
 #define OBSTACLE_TRIG_READBACK (1U)
 #define OBSTACLE_RETRY_PINGS     (3U) /* a slot that needed this many pings was retried */
 
-/* [Spec 3e] Two pings agree when within 15 mm; four pings without
- * agreement make the slot a GLITCH (unresolved). */
-#define OBSTACLE_AGREE_MM  (15U)
+/* [Spec 3e] Four pings without agreement make the slot a GLITCH (unresolved). */
 #define OBSTACLE_MAX_PINGS (4U)
 
 /* [Chat][Default] The car's path: +-30 degrees of straight ahead. CLEAR
@@ -236,27 +223,22 @@
  * obstacle: the side is then treated as a wall. */
 #define OBSTACLE_EDGE_TRUST_DECI (300)
 
-/* [Measured] Half of the sensor cone. A power bank 300 mm ahead dropped
- * out with its near edge 50 mm left and 65 mm right of the centre line:
- * atan(50 / 300) = 9.5 and atan(65 / 300) = 12.2 degrees. The smaller
- * value is used, because a narrower cone gives the car more room. */
-#define OBSTACLE_BEAM_HALF_DECI (95)
+/* [Measured] Half of the sensor cone. */
+#define OBSTACLE_BEAM_HALF_DECI CHASSIS_SONAR_BEAM_HALF_DECI
 
 /* ------------------------------------------------------------------ *
  * Car geometry. All distances are from the middle of the wheel axle.
  * ------------------------------------------------------------------ */
 
-/* [Measured] Widest point of the car is 126 mm (outside of wheel to
- * outside of wheel), so half is 63 mm. */
-#define OBSTACLE_CAR_HALF_W_MM (63U)
+/* Round the outside tire edge away from the axle midpoint for clearance. */
+#define OBSTACLE_CAR_HALF_W_MM ((CHASSIS_OUTER_WIDTH_MM + 1U) / 2U)
 
 /* FILL: servo shaft to the front bumper, and to the tail of the car. */
 #define OBSTACLE_SERVO_TO_FRONT_MM (30U)
 #define OBSTACLE_SERVO_TO_REAR_MM  (170U)
 
-/* FILL: sonar ahead of the wheel axle. [Default] 70 mm puts the axle in the
- * middle of the 200 mm body. */
-#define OBSTACLE_SONAR_FWD_MM (70U)
+/* [Default] Sonar offset ahead of the wheel axle. */
+#define OBSTACLE_SONAR_FWD_MM ((uint32_t)CHASSIS_SONAR_FORWARD_MM)
 
 /* Front bumper and tail, from the axle. */
 #define OBSTACLE_CAR_FRONT_MM (OBSTACLE_SONAR_FWD_MM + OBSTACLE_SERVO_TO_FRONT_MM)
@@ -265,7 +247,7 @@
 /* Radius of the circle the car sweeps when it spins on the spot: the
  * farthest corner from the axle middle, sqrt(100^2 + 63^2) = 118.2,
  * rounded up. */
-#define OBSTACLE_PIVOT_RADIUS_MM (119U)
+#define OBSTACLE_PIVOT_RADIUS_MM ((uint32_t)CHASSIS_BODY_RADIUS_MM)
 
 /* ------------------------------------------------------------------ *
  * Planning and the bypass [Chat] [Default].
@@ -449,9 +431,6 @@
  * and stay within the motion service limit (200 ms in main.c). */
 #define OBSTACLE_NAV_TTL_US (100000U)
 
-/* After a fault, RESET and START are retried this often. */
-#define OBSTACLE_NAV_RETRY_MS (3000U)
-
 /* Hold brake time before sending SCAN_REQ. */
 #define OBSTACLE_NAV_BRAKE_MS (100U)
 
@@ -476,8 +455,7 @@
  * motion_pins.h (swapped back on the car, way A). */
 #define OBSTACLE_ENCODERS_CROSSED (0)
 
-/* Deci-degrees per radian, and per degree. */
-#define OBSTACLE_NAV_DECI_PER_RAD (573)
+/* Deci-degrees per degree. */
 #define OBSTACLE_DECI_PER_DEG     (10)
 
 /* ------------------------------------------------------------------ *
@@ -570,16 +548,14 @@ OBSTACLE_CT_ASSERT(slot_grid_symmetric,
 OBSTACLE_CT_ASSERT(slot_grid_ends,
              (OBSTACLE_SLOT_FIRST_DECI +
               (((int32_t)OBSTACLE_SLOT_COUNT - 1) * OBSTACLE_SLOT_STEP_DECI)) == -OBSTACLE_SLOT_FIRST_DECI);
-OBSTACLE_CT_ASSERT(servo_limit_30, OBSTACLE_SERVO_LIMIT_DECI == 300);
-OBSTACLE_CT_ASSERT(view_reaches_90,
-             (OBSTACLE_SCAN_PIVOT_MAX_DECI + OBSTACLE_SERVO_LIMIT_DECI) == -OBSTACLE_SLOT_FIRST_DECI);
-OBSTACLE_CT_ASSERT(windows_meet, OBSTACLE_SCAN_PIVOT_DECI == (2 * OBSTACLE_SERVO_LIMIT_DECI));
+OBSTACLE_CT_ASSERT(servo_limit_20, OBSTACLE_SERVO_LIMIT_DECI == 200);
 OBSTACLE_CT_ASSERT(coarse_on_grid, 0 == (OBSTACLE_COARSE_STEP_DECI % OBSTACLE_SLOT_STEP_DECI));
 OBSTACLE_CT_ASSERT(coarse_divides_range,
              0 == (OBSTACLE_SERVO_LIMIT_DECI % OBSTACLE_COARSE_STEP_DECI));
 OBSTACLE_CT_ASSERT(ping_after_wait, OBSTACLE_ECHO_WAIT_MS < OBSTACLE_PING_PERIOD_MS);
 OBSTACLE_CT_ASSERT(fwd_guard_above_detect, OBSTACLE_FWD_GUARD_MM > OBSTACLE_DETECT_MM);
 OBSTACLE_CT_ASSERT(fwd_guard_above_collision, OBSTACLE_FWD_GUARD_MM > OBSTACLE_COLLISION_MM);
+OBSTACLE_CT_ASSERT(footprint_covers_wheel_track, CHASSIS_OUTER_WIDTH_MM >= CHASSIS_WHEEL_TRACK_MM);
 OBSTACLE_CT_ASSERT(pivot_radius_covers_car,
              (OBSTACLE_PIVOT_RADIUS_MM * OBSTACLE_PIVOT_RADIUS_MM) >=
                  ((OBSTACLE_CAR_FRONT_MM * OBSTACLE_CAR_FRONT_MM) +

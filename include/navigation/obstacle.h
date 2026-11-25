@@ -9,7 +9,7 @@
  * Start-up order (on processor 1, which is RP2040 core 0):
  *   1. gpio_irq_init()            shared dispatcher
  *   2. motion_service_init()      by the composition root
- *   3. obstacle_line_init()       pins, servo, ISR, task, RESET and START
+ *   3. obstacle_line_init()       pins, servo, ISR and obstacle resources
  *
  * The line follower then calls obstacle_line_step() every pass. Telemetry
  * reads obstacle_snapshot() whenever it needs the latest state; it does
@@ -74,7 +74,7 @@ STATIC_ASSERT (sizeof(obstacle_links_t) == (3U * sizeof(void *)),
 typedef struct
 {
     uint16_t distance_mm;   /* Latest range: VALID, or 20 for TOO_CLOSE. */
-    uint16_t faults;        /* Latched OBSTACLE_FAULT_* bits (9) only.  */
+    uint16_t faults;        /* Stop faults and active echo faults.     */
     int16_t  servo_deci;    /* Sonar servo angle, 0.1 degree.           */
     int16_t  body_deci;     /* Body offset asked for, 0.1 degree.       */
     uint8_t  state;         /* STOPPED, MONITOR, WAIT_STOP, ...         */
@@ -105,11 +105,34 @@ typedef struct
 
 STATIC_ASSERT (sizeof(obstacle_plan_summary_t) == 12U, "obstacle_plan_summary_t size");
 
-/* Start obstacle. Call once from the line task, after gpio_irq_init() and
- * motion_service_init(). Uses the default links: motion-service stop and
- * odometer, obstacle outbox. The composition root creates the task and
- * calls obstacle_run() from it. */
+/* Initialize obstacle while parked. Uses the motion-service links and the
+ * obstacle outbox. The composition root calls this after gpio_irq_init() and
+ * motion_service_init(), then creates the task and calls obstacle_run(). */
 ER obstacle_line_init (void);
+
+/* Optionally observe the initial center and subsequent commanded sonar angles.
+ * Bind once before the scanner task starts. The observer runs in that task
+ * before settling and must return without waiting. There is no shaft readback. */
+typedef void (*obstacle_sonar_aim_fn_t)(int16_t commanded_deci);
+void obstacle_bind_sonar_aim (obstacle_sonar_aim_fn_t p_observe);
+
+typedef struct
+{
+    obstacle_plan_summary_t plan;
+    const uint16_t * p_completed_profile;
+    uint16_t distance_mm;
+    uint8_t  state;
+    uint8_t  cause;
+    uint8_t  echo_class;
+    uint8_t  stop_reason;
+} obstacle_legacy_transition_t;
+
+/* Bind before starting the legacy scanner. The task calls the observer after
+ * publishing a transition and before notifying navigation. The profile is
+ * present only at scan completion. All pointers are borrowed for the call.
+ * The observer must return without waiting. */
+typedef void (*obstacle_legacy_transition_fn_t)(const obstacle_legacy_transition_t * p_transition);
+void obstacle_bind_legacy_transition (obstacle_legacy_transition_fn_t p_observe);
 
 /* Task body. Never returns. */
 void obstacle_run (void);
@@ -125,7 +148,7 @@ ER obstacle_post_cmd (uint8_t cmd);
 /* Copy the latest status. Returns E_OBJ before obstacle_init(). */
 ER obstacle_snapshot (obstacle_status_t * p_status);
 
-/* The latched OBSTACLE_FAULT_* bits. */
+/* The OBSTACLE_FAULT_* bits for stop faults and active echo faults. */
 uint16_t obstacle_get_faults (void);
 
 /* Copy of the scan profile: OBSTACLE_SLOT_COUNT packed slots. Never waits.

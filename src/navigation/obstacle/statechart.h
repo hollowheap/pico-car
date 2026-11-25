@@ -47,11 +47,12 @@ typedef struct
     uint8_t                state;
     uint8_t                cause;
     uint8_t                reason; /* FOLLOW_REASON_* for BYPASS_GAVE_UP */
+    uint8_t                seq;
     uint16_t               faults;
     uint8_t                req_id;
     uint8_t                last_class;
     uint16_t               last_dist;
-    uint8_t                seq;
+    uint16_t               echo_faults; /* Current qualified echo faults. */
     uint32_t               ping;      /* last face ping: obstacle_pack_ping() */
     int16_t                look_deci; /* servo angle of the next ping        */
     uint8_t                steer;

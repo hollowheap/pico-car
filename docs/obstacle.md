@@ -5,7 +5,10 @@ planning and the obstacle statechart. The code is in
 `src/navigation/obstacle/`. Buddy 5 never writes the motors: it only sends events and
 steering words to the line task.
 
-This page describes the code.
+The default firmware runs the mobile pilot on a continuous floor. The Start
+popup also offers a stationary obstacle survey for courses with possible
+drop-offs. See [Hug (pilot path)](#hug-pilot-path). The Buddy 5 bench and
+legacy navigation sections describe the separate statechart configuration.
 
 Other Buddy 5 docs:
 
@@ -14,13 +17,13 @@ Other Buddy 5 docs:
 
 ## Status
 
-Last updated 12 November 2026.
+Buddy 5 integration status recorded on 12 November 2026.
 
 | Step | Work | Current position |
 |---|---|---|
 | 1 | Design (pins, statechart, scan, bypass) | Done. |
 | 2 | Code in `src/navigation/obstacle/` | Done: six echo classes, the 2-of-3 hit rule, the retry policy, and the plan, flags and class counts in telemetry. |
-| 3 | Host tests | Done: `ctest -R obstacle_` (scan, plan, statechart, bypass simulation). |
+| 3 | Host tests | Done: `ctest -R obstacle_` (scan, plan, statechart and face following). |
 | 4 | BARR-C:2018 pass | Done; `bash tools/lint.sh src/navigation/obstacle include/navigation` reports 0 findings. |
 | 5 | Bench build in the normal team build | Done; `./build.sh` makes `build/obstacle_bench.uf2`. |
 | 6 | Car measurements (**FILL** values) | Pending; see [Numbers to fill in](#numbers-to-fill-in). The sonar edge and incidence measurement (Q56) comes first. |
@@ -66,6 +69,16 @@ or GP20/21 (buttons).
 
 ## Build and run
 
+With **Stop at obstacles** selected, a fresh centered valid range of 100 mm or less
+from the sonar face or a fresh centered TOO_CLOSE return starts an obstacle
+hold. The line task publishes `obstacle_seen` with the measured range for a
+valid contact. Once stationary, the pilot samples the front of the obstacle,
+then uses a second three-angle sweep to examine a visible edge. With no
+edge identified, the second sweep samples both sides. Each completed sweep
+publishes `scan_done` with clearance unverified and tries to queue the
+accumulated readings from that stationary pose for display. Once the sweep budget is spent, the
+servo stays centered. See [hold and release behavior](#hug-pilot-path).
+
 **Bench firmware** (the normal team build, no extra flags):
 
 ```sh
@@ -75,9 +88,9 @@ nix develop
 # build/obstacle_bench.uf2  -> hold BOOTSEL, plug in, copy it to the Pico
 ```
 
-Open the USB serial port to see the output. The Buddy 5 targets are the
-"Buddy 5" block at the end of the team `CMakeLists.txt`. `main.uf2` does not
-link Buddy 5 yet, so it is byte-for-byte the same as without that block.
+Open the USB serial port to see the bench output. The default `main.uf2`
+uses the obstacle sonar server and gives the pilot ownership of route decisions.
+The legacy navigation configuration selects `PICO_CAR_PILOT=OFF`.
 
 **Bench buttons.** USB input isn't implemented in `libtm`, so there is no
 serial menu.
@@ -101,7 +114,7 @@ serial menu.
 | `statechart.c/.h` | Statechart (no kernel calls; the task carries out its requests) | yes |
 | `comms.c/.h` | Command queue, event outbox, published copies, links to Buddy 2 (private) | no |
 | `scan_hw.c/.h` | GP0/GP1/GP12 set-up, servo PWM, TIMER check, echo ISR, trigger | no |
-| `scan_task.c/.h` | The task: commands → time limits → servo/settle → 60 ms ping | no |
+| `scan_task.c/.h` | Commands, time limits, servo settling, and ping scheduling | no |
 | `include/navigation/obstacle.h` | Public facade: links, commands, event wait, telemetry snapshot, line glue | — |
 | `obstacle.c/.h` | Start-up order, then forwards to `obstacle_comms`; `obstacle.h` is private (flags and packed accessors) | no |
 | `obstacle_nav.c/.h` | Phase 2 glue: line task ↔ Buddy 5 ↔ motion service (hold, STEER → speed, odometer) | no |
@@ -123,7 +136,11 @@ block at the end of the team `CMakeLists.txt`. The
 | Kernel objects created | **1 event flag**; no message buffer, cyclic handler or mutex |
 | PWM | slice 6 channel A (GP12), 125 MHz / 125 = 1 MHz, TOP 19999 = 50 Hz |
 
-### One ping (60 ms)
+### Ping timing
+
+The pilot schedules pings at least 50 ms apart. The legacy navigation build
+uses 60 ms. The same spacing applies to scheduled and requested pings within
+each build, and both use the 40 ms echo wait.
 
 1. Empty the echo result with interrupts paused. If ECHO is already high,
    the ping is **STUCK** and no trigger is sent.
@@ -134,7 +151,9 @@ block at the end of the team `CMakeLists.txt`. The
    VALID, OPEN, TOO_CLOSE, NO_ECHO, GLITCH or STUCK. The table, and what
    each class does, is in `src/navigation/obstacle/scan_algo.c`.
 
-A missing echo is **never** OPEN. There is no UNKNOWN class.
+A completed pulse beyond the valid range gives OPEN. A pulse still high at
+the 40 ms deadline gives NO_ECHO and the scanner retries at the next ping.
+Such a pulse could have risen just before the deadline.
 
 ### Statechart
 
@@ -161,20 +180,22 @@ apply in every state:
 
 - **Grid:** 37 slots, -90 to +90 degrees in 5 degree steps, positive = left.
   Slot 18 is straight ahead.
-- **Servo:** never beyond +-15 degrees (the board has about 10 mm of room
-  behind it). The scan reaches the rest of the grid by turning the car body in
-  30 degree steps up to 75 degrees.
-- **Coarse:** every 2nd slot (10 degrees) in the centre window.
+- **Servo:** the pilot and legacy scan share a physical limit of ±20 degrees.
+  The pilot's side looks use the whole servo range. The legacy scan turns the
+  body to 40 degrees and then 70 degrees toward a side as needed to reach the
+  rest of the grid.
+- **Coarse:** every slot (5 degrees) in the centre window.
 - **Region:** the closest hit within 600 mm, plus coarse neighbours within
   closest + 250 mm. The closest reading is looked for inside the car's path
-  (+-15 degrees) first.
+  (±30 degrees) first.
 - **Fine:** walk outward from each edge, one slot at a time, up to the first
   real miss (OPEN, or VALID beyond the last hit on that edge + 250 mm).
   - A NO_ECHO, GLITCH or STUCK slot proves nothing, so the walk assumes the
     obstacle goes on and steps past it.
   - TOO_CLOSE is a hit at 20 mm and never a miss.
-  - An edge with no miss inside the window gets one more body-pivot sweep.
-    An edge still unbounded after that makes the side unsafe.
+  - An edge with no miss inside the current window continues through the
+    shifted windows. An edge still unbounded at the end of the grid makes
+    the side unsafe.
 - **Per slot:** settle for 3 ms per degree plus 20 ms. Ping until two pings
   agree (same class, within 15 mm for VALID) and keep the closer distance.
   After 4 pings without agreement the slot is stored as GLITCH.
@@ -183,111 +204,389 @@ apply in every state:
 
 ### Hug (pilot path)
 
-With `PICO_CAR_PILOT=ON` the pilot drives round an obstacle with the hug, not
-the planner below.
+The track is 300 mm wide. A bypass may use adjacent floor and must rejoin
+the original tape beyond the obstacle in the original direction. The full
+vehicle outline must clear the box, and the drive wheels and caster must
+have continuous support through the maneuver. Normal Start, the GP20 button
+and offline power-up use the continuous-floor policy in this build. The
+pilot chooses a side, turns along the obstacle, measures travel with the
+wheel encoders and scans the face again from the new position.
 
+For a course with possible drop-offs, select **Stop at obstacles** in the
+Start popup. The car holds at the obstacle and surveys with the servo. The
+installed downward IR sensors still lack floor-edge measurements for the
+wheel and caster paths. The selection applies to one run. Stop the current
+run before changing it.
+
+A planned stop immediately sets both wheel targets to zero. The scanner waits
+for fresh feedback showing both wheels at rest before requesting a ray.
+During an active hug, three seconds is the maximum intended interval between
+measured wheel movements. Settling, servo requests and retries share that
+interval. After 1.8 s at one pose the pilot can finish an optional close-up
+from its previously measured edges, or use the chassis to aim the remaining
+rays of a longer sweep. A wheel command alone cannot confirm movement.
+If the encoders stay fixed through the deadline the pilot reports a hug
+timeout. An operator stop, pickup, or sensor fault keeps its own hold.
+Thirty seconds for the entire bypass remains a cue to inspect the run.
+
+On the physical log, correlate the accepted command with `obstacle_seen`,
+the obstacle frame's hug state and side, and the wheel targets and speeds.
+The pilot emits `bypass_start` when it first commands forward travel along
+the chosen face. Check the wheel feedback for actual travel and
+`bypass_end` for optical rejoin.
+
+With **Stop at obstacles** selected, the pilot holds both wheel targets at zero and records each requested sonar
+return in a local frame anchored to both stationary wheel encoders. The first
+three bearings are −20°, 0° and +20°, with left positive. The pilot fits a
+near face from at least two distinct return points, including one within the
+100 mm contact distance. An OPEN ray or a sufficiently distant return just
+past the fitted face can locate its edge within the sonar incidence limit.
+If both ends are visible, the nearer lateral edge determines the provisional
+side, with left winning an exact tie. The second sweep probes 5°, 10° and 15°
+on that side. With an unresolved edge it samples +10°, 0° and −10°.
+This discovery also works with both line sensors clear.
+
+A reply must match the requested sequence and angle and arrive at the
+pilot before the 300 ms request deadline. The sonar mailbox has no capture
+timestamp. A timeout skips the sample, including a matching late reply. One completed sweep retains the preceding
+sweep’s observations while both encoder totals stay fixed. A change to either
+total, loss of stationary feedback, or an independent safety hold discards
+the anchor and its provisional side. An interrupted sweep counts toward the
+same two-attempt budget. Between sweeps and after the budget is spent, the regular
+centered stream can release the hold with three consecutive fresh OPEN returns
+or valid ranges greater than 100 mm from the sonar face. A blocked or invalid
+forward reading restarts the count. If a regular ping is missed, the next
+clear reading starts a new count at one. A normal sequence wrap from 63 to 0
+preserves the count. Requested and off-center rays and cached
+readings cannot advance it. The car must be stationary, the run must remain
+armed, and other motion holds must clear under their own rules. After release,
+the next obstruction gets its own sweep budget. An apparent stall or slip
+has a separate hold in this stationary mode. The pilot brakes before reversing and refuses
+a pivot. Clear the obstruction and send START to retry the original route.
+Three fresh centered clear pings with the car stationary are still required.
+
+An encoder feedback fault also brakes both wheels. After 500 ms of braking
+the motor controller requires two fresh captures forming a valid measurement
+interval on both wheels before it reports ready. It discards commands sent
+during the fault and waits for a fresh command. Counts accumulated while
+braked do not change the reported odometer.
+
+The dashboard's polar scan plot decodes the 37 range and echo-class slots in
+the `profile` packet. A bounded pilot profile fills the measured slots from its
+current stationary pose. The provisional side locates a sector worth probing. The unseen rear edge, box depth and supporting floor still require evidence. Legacy profiles can show supported surfaces
+and measured endpoints. The course view draws a separate estimate from
+the hug's reported face distance, width, and breadth. The host anchors that
+estimate to the contact heading and uses dashed edges for missing sizes.
+The Edges instrument plots the axle as a dot in that coordinate frame. A
+reported width places the near edge, and a reported breadth completes the
+rectangular estimate. The hug packet carries no lateral center offset or
+face normal, so the estimate is centered across the approach heading. The
+connector shows estimated axle-to-edge distance. A survey without a known
+starting pose shows the recorded scan and its own axle origin.
+
+A host-computed detour needs pose-linked sonar returns and a surveyed area of supporting floor. The host should fit the obstacle and evaluate candidate routes.
+The pilot retains wheel control, clearance and freshness checks, and local
+recovery when telemetry is unavailable. Display placeholders cannot supply
+clearance evidence.
+
+The host planner supports a surveyed area with one straight, tape-aligned
+rectangle. It fits all four faces from calibrated sonar returns linked to
+capture-time poses. It checks the full vehicle outline, tracking uncertainty,
+obstacle clearance and independent supporting-floor bounds throughout the rounded route. A
+front-only scan, missing or incompatible face evidence, or an unsafe sweep
+leaves the planner without a route. The survey must establish clear space
+around the box independently of sonar OPEN readings.
+
+The experimental executor accepts the host's integer arc and straight
+segments from a stationary pre-surveyed start. The planner applies the pilot's
+limits of seven segments, 1,500 mm per segment, 3,500 mm overall, and 50°/s at
+100 mm/s. Its rounded return can align one sensor with the surveyed tape,
+keeping the car parallel to the tape. The experimental pilot entry point
+binds the route to the local odometry at that start. It waits for fresh
+forward clearance before each segment and checks position and heading while
+braking between segments. It brakes if the route is withdrawn, feedback
+leaves the checked envelope, or local safety takes control. A stopped route
+requires a fresh survey and an explicitly reset executor. At the endpoint,
+the pilot stays stopped until it sees tape and new centered sonar clearance
+after settling. Direct host tests exercise this executor through the pilot interface. The installed pilot requires a verified route admission path before
+it can use these segments, and the present planner needs an approach anchor
+with enough room for its lead-in and the executor's forward clearance checks.
+
+The four-face survey happens before the route benchmark. An initial
+encounter still requires its own acquisition and timing evidence.
+
+At a 100 mm centered sonar return, a flat face is about 170 mm ahead of the
+axle in the planning model. A centered 60 mm box leaves 120 mm on either
+side of a hypothetical 300 mm-wide area of supporting floor. The 126 mm-wide car exceeds either passage
+before adding the 50 mm obstacle clearance. In the surveyed planner tests,
+the same close anchor also holds in a wider area. The rounded route needs
+more room ahead of the face before it can turn out. A separate synthetic
+300 mm-wide patch of surveyed floor does admit a route when the tape leaves a 210 mm passing side,
+the box is on the other side, and the surveyed face is 850 mm ahead of the
+start axle. That fit uses a 5 mm tracking bound and still needs vehicle
+evidence before use on the installed course.
+
+The earlier Buddy 5 reference (`9654e50`) backs up 58 mm from a 100 mm sonar
+return, pivots 90° on a stopped wheel, then moves at least 147 mm sideways.
+With the 107 mm track and the current 130 mm forward footprint, the pivot and
+sideways leg move the outer edge to 330.5 mm from the original tape. Including
+the 63 mm on the other side of the initial footprint, the maneuver needs at
+least 393.5 mm of strip width before adding clearance. That reference
+assumes up to 500 mm of lateral floor and a ±60° servo. The installed servo
+reaches ±20°. [Surveyed planning tests](../host/bridge/src/detour.test.ts)
+
+Non-scan pivots with equal and opposite wheel targets can request up to 500
+permille with valid encoder progress. Scan-aiming pivots and straight driving
+keep the 450 permille ceiling. The 400 permille base still applies when the
+wheel stalls or its feedback is invalid. Confirm the trial limit on the car.
+
+#### Continuous-floor hug
+
+Normal Start selects these maneuvers.
+If the IMU loses its reference during a run, the wheels wait for upright
+attitude, fresh stationary wheel feedback and a new centered sonar return.
+A nearby return or an interrupted hug starts a stationary survey from the
+current position. If two surveys miss a required ray, a new usable forward
+ping after the 320 ms retry interval allows another survey. The wheels stay
+at zero while the scanner reacquires both side bearings and the center.
+
+The plant uses a 119 mm radius around the axle for collision checks. The
+installed front sensors extend 130 mm ahead of the axle and the caster
+contacts the floor 120 mm behind it. Qualifying a physical route requires
+the installed outline, wheel paths and braking distance.
+
+- **Obstacle priority on a tape bend.** Two of the last three forward returns
+  at or below 250 mm normally start a survey. On a sustained left or right
+  bend the car can keep tracing if the IR, wheel targets and measured wheel
+  speeds agree on the turn. Each pair of wheel speeds gives an axle-midpoint
+  radius of `107 mm × (left + right) / (2 × |right − left|)`. The pilot uses
+  the wider of the requested and measured arcs. The collision check extends
+  63 mm on each side of the axle midpoint using the measured 126 mm outside
+  tire width. It includes the front sensor and rear caster reach, a ±13°
+  sonar beam, 15 mm of range uncertainty and a 25 mm clearance margin.
+  For example, at inner and outer wheel speeds of 86 and 100 mm/s, a return
+  225 mm directly ahead of the sonar lies 58.8 mm outside the axle midpoint's
+  arc. The outer tire would cross that point if the turn continued.
+  Returns at or below 180 mm from the sonar go through the ordinary trigger.
+  For a return outside the turning path, the car allows up to 60 mm of outer
+  wheel travel or 800 ms from the first hit, whichever comes first. Two fresh
+  clear readings end the check. A persistent return, an echo in the turning
+  path or loss of evidence for the turn restores the ordinary trigger.
+  A single forward beam can miss an obstacle at the side of the car.
+  These limits await a physical bend run.
 - **Looks.** The car stops and looks with the servo and with body pivots. The
   first look of a hit is coarse: 19 rays, 5 degrees apart within 35 degrees of
   the heading of the hit and farther apart beyond it (`HUG_CONTACT_RAYS`).
   The rays beyond 35 degrees only measure the room beside the face. The pivot
-  before a look goes straight to the first body step, and the sweep of a look
-  after a leg ends on the side the next leg goes to.
+  before a look goes straight to the first body step. When the last fit
+  showed the measured face extending ahead of the new pose despite the
+  allowed aiming error, the pilot checks three bearings from one stationary
+  heading, starting on the side it is travelling toward. Matching ranges
+  confirm the existing face for another short leg. A fresh centred echo must
+  clear the forward guard after the car turns back to the travel heading. For a
+  measured, aligned side leg, the guard accounts for the remaining drive
+  distance, the 145 mm turning radius, a 120 mm forward reserve and a settling
+  allowance. A fresh TOO_CLOSE reply always interrupts the leg.
+  If the prior fit lacks coverage or the check cannot confirm the face, a
+  fresh full side look covers all 15 bearings from two stationary headings,
+  15 degrees either side of the expected face normal. The full sweep ends
+  toward the next leg.
+- **Measured corners.** After the axle passes a measured endpoint by the
+  planned gap, the pilot checks three bearings along its next heading. A
+  close return triggers a wider survey. A missing, late or unusable reply
+  starts one fresh three-bearing check from the same pose. A second
+  inconclusive check holds both wheels. With clearance the car drives to a
+  side-looking position alongside the saved endpoint. At least four fresh
+  returns must fit a surface that meets that endpoint within 45 mm. An
+  independent wheel takeover during this side survey discards its readings
+  and holds both wheels when control returns. Where
+  the chosen side has no measured far edge yet, the car advances in short
+  steps that keep successive looks overlapping.
+- **Oblique corners.** An observed side surface may miss the saved endpoint.
+  The pilot can then check the return corridor and turn the car to drive
+  forward to its midpoint, where the sonar has a better view of a possible
+  connecting face. A measured oblique face that passes through the endpoint
+  permits another step. The car measures each following endpoint and seeks
+  a connecting surface. A confirmed rear plane can then support the return
+  to the original lateral coordinate. If the rear cannot be qualified, the
+  wheels stop. A mirrored eight-face host case exercises both a visible and
+  an acoustically invisible rear. Measured paths and limits
 - **Face fit and edge test.** Echoes on a face are fitted to a line. A hit is
   trusted up to 25 degrees off the face normal. The edge test applies the
   9.5 degree beam correction described under the planner.
-- **Back-off.** The hug reverses only on the first contact of a hug, and only
-  when the body is nearer than the 120 mm wrap gap (the axle under 239 mm from
-  the face), or on a wheel stall, which counts as face range 0. The car turns
-  back to the contact heading, backs straight off by the 250 mm standoff minus
-  the face range (the range is from the sonar, 70 mm ahead of the axle), and
-  looks again before it picks a side. The wire state is `backoff`. It does not
-  measure width, and it has the usual move timeout. On a normal approach the
-  face shows at the standoff, so there is no back-off. Past it the hug never
-  reverses; only the pilot's own stall back-off does. The car looks from where
-  it stands, so a face wider than the look
-  trusts (about 70 mm each side of the car at 250 mm) shows no edge and the
-  width is 0 until a look sees both. A first look with no usable face lets go
-  of the wheels: the hit is gone.
-- **Side.** The side with the nearer edge. A single edge seen means that side.
-  A tie (within 30 mm) goes left, as does a narrow face whose second edge is
-  lost. With no edge the side with more open room in the wide rays wins by 500
+- **Narrow obstacles on continuous floor.** After an inconclusive front survey,
+  the chassis returns to the approach heading and waits for a new centered
+  reading. A recurring close range that matches the survey can start a 60 mm
+  sideways inspection leg. The pilot attempts all 19 bearings. The center and
+  the chosen side must have usable readings and room for the turning body
+  and the leg. A missing return on the opposite side rules out that side. A close obstacle
+  inside the turning clearance first triggers the existing measured back-off.
+  After the pivot the wheels must settle and sonar must confirm clearance
+  straight down the leg. If the chassis coasted outside the 2° tolerance,
+  the pilot corrects the heading once and checks a new reading. It measures
+  the leg with both encoders and looks back toward the contact from the new
+  position. A usable face continues the hug. If the first look misses the
+  face, the pilot looks once more from that station. Two inconclusive looks
+  end the probe with a hug timeout. Width and depth stay unknown until measured.
+- **Repeated contact after a clear handoff.** If a new contact matches the
+  recent inconclusive survey, the pilot can recheck nine bearings across
+  ±20° with the chassis stationary. Both wheel encoders must stay within 10 mm of their original
+  readings and their differential within the 2° aiming tolerance. The
+  handback may be at most 800 ms old and the full survey at most 15 s old.
+  A new return inside the 300 mm forward guard, a widened close face or
+  an incomplete check starts a fresh full survey. Safety ownership discards
+  a partial contact survey. A successful recheck waits for a fresh,
+  centered OPEN or VALID over 300 mm after settling before handing the
+  wheels back. These limits await car measurement.
+- **Back-off.** A measured close face can require room to turn. The hug
+  aligns with the contact heading and reverses by the difference between
+  the sonar range and its 250 mm standoff. It looks again before choosing a
+  side. A wheel stall during an active obstacle maneuver also permits a
+  bounded 40 mm recovery reverse. The normal line follower uses the
+  stationary survey below when wheel progress fails.
+- **Side.** The pilot chooses the nearer visible edge and checks the space
+  beside it. With sparse returns, it fits the nearby face separately from a
+  deeper corner when at least four close returns agree. If the face is narrow
+  and only one edge is visible, the car can hold the body still and sweep the
+  servo in 2° steps from −20° to +20°. A complete sweep can distinguish the
+  nearer side from the distribution of face returns. Side-wall clearance from
+  the wide scan retains priority. Equal edge estimates on a broad face
+  (within 30 mm) favor the left. With no edge the side with more open room in the wide rays wins by 500
   mm of reading, else left. A side with less than 340 mm between the edge and
   a wall beside it is passed over. A box 300 mm wide and about 35 mm off the
   line shows neither edge from the hit, so it can go the farther way round.
-- **Gap.** The car keeps 120 mm between its body and the face
-  (`HUG_BODY_GAP_MM`), so the axle runs 239 mm off it. The first approach
-  drives along the normal to that. After each look the next leg leans toward
-  or away from the face (at most 30 degrees) to end there. A leg that ends
-  past a corner ends a body radius and the gap past it.
-- **Stall.** A wheel stall while the follower drives is a contact: the hug
-  starts from the pose after the pilot's back-off (40 mm short of the stall),
-  looks, backs straight off by the 250 mm standoff (a stall is a face at range
-  0) and looks again. When that look has no usable face (the fit fails or
-  fewer than four valid rays), the hug ends: the block went away, or the face
-  is one the sonar cannot see, and the follower goes on. The hug keeps a note
-  of that stall. A second stall is the same place, and wraps an assumed face,
-  while the note stands: the car has not gone 150 mm (`HUG_STALL_PAST_MM`)
-  along the heading of the first hit, counted from the pose where the first
-  hug began, and no more than 15 s (`HUG_NOTE_MS`) have passed since that hug
-  ended. The pose is tracked by the wheels while the hug is idle. Releases
-  are counted too, and once two (`HUG_RELEASES_MAX`) have passed, any stall
-  takes the assumed face, note or not, until the tape, 15 s with no hug, or
-  a hug the sonar starts clears the count. The count is not tied to place on
-  purpose: wheel slip counts as travel, so a count tied to travel would be
-  cleared by slip, and recurring slip against a box would loop without
-  bound. A wrap that was not needed costs only time. So slip that keeps
-  ending in a stall costs at most two looks and releases before the wrap.
-  Both numbers are guesses. In the hug that wraps the car backs off at once,
-  without the look at the stall pose, and when the look after the back-off
-  again has no usable face, the car takes a face across its heading, one body
-  radius (`HUG_BODY_MM`) ahead of the stall pose. That face has no edges, so
-  it gives no width or breadth; the car drives the short no-edge leg along it
-  and looks again. A face found by the look after a stall is approached no
-  nearer than the body gap to the stall point. A hug that ends at the tape
-  clears the note and the count. Wheel slip against a face counts as travel
-  and can clear the note by distance; the wheels turn and the encoders count,
-  so these sensors cannot tell slip from travel, and a car run must check it.
-  Slip that goes on with no stall is not seen at all: the simulation reports
-  it and asserts only a slip that ends in a stall, at every contact.
-  A leg that ends in a stall with no face ahead in the look takes the same
-  assumed face and turns the other way round, since the way on its side is
-  blocked by a face the sonar cannot see.
+- **Next observation.** On an unbounded measured face the pilot adapts Buddy 5’s
+  side-scan rule. Each valid echo is projected onto and along the measured
+  face from its sonar pose. The furthest on-face return toward travel guides
+  the next encoder-measured leg. The extra advance is limited by both the half
+  lane and the observed coverage behind the axle. When searching for the third
+  vertex the pilot omits that extra advance. Minimum drive increments still
+  apply. A measured endpoint uses the corner routine. [Buddy 5 side-scan planner](https://github.com/hollowheap/pico-car/blob/9654e50b5c202c00ef23f34fa75e68a773eab37b/src/obstacle/b5_plan.c#L466)
+- **Gap around a small obstacle.** If two observed front endpoints span at
+  most 63 mm and the front is within 15° of square to the approach, the
+  pilot can pass the nearer corner on a straight 25° diagonal. The axle
+  path runs 103 mm perpendicular to the measured corner. Subtracting the
+  63 mm body half-width gives a nominal 40 mm gap. For a centered 40–50 mm
+  round post whose measured edges match its extents, the calculated closest
+  body clearance is about 47–49 mm. These are geometric targets awaiting a
+  physical run.
+- The car pivots upstream, checks three bearings along the diagonal, and
+  holds that heading past the obstacle. It brakes once odometry puts the
+  axle at least 170 mm beyond the measured side plane. That station allows
+  the 145 mm chassis sweep plus a 25 mm margin for the next sonar look.
+  A blocked diagonal triggers a new look before departure. An obstruction
+  during the close pass stops the wheels.
+- **Other faces.** Wider fronts, incomplete edges and stall recovery use
+  the ordinary wrap. Its 195 mm axle target includes the full turning
+  radius and a 50 mm margin. Subsequent observations guide each leg and
+  allow up to 30° of steering correction.
+- **Stall during a hug.** When an obstacle maneuver stalls, the pilot can
+  back off up to 40 mm, with a two-second limit. The hug then rechecks from
+  the backed-off pose. Its repeat-stall memory can retain the location for
+  15 s and limit the next approach to 70 mm/s. This recovery requires an
+  active obstacle encounter.
+- **Possible slip on approach.** When both wheels advance at least 100 mm
+  while following straight, a centered range between 250 and 600 mm that
+  stays within 15 mm of the first reading can indicate slip. Encoder heading
+  must agree within 2°. The pilot stops and surveys from rest. A near
+  reading in a completed survey starts the hug.
 - **Legs.** It drives legs round the faces of the obstacle, looking at each
   corner. Every corner is turned, as many as there are: 90, 180 and 270
   degrees round, or a full turn and more. A look that loses the face first
   drives on a body radius and the gap, then turns, since the corner may be
   just behind the car.
-- **Rejoin.** Tape under a line sensor during a drive ends the hug, unless the
-  car is on the line it came on (axle within 150 mm along the hit heading
-  and 250 mm across it). The line may run at any angle there, and may turn
-  under the obstacle. The car drives 130 mm so the axle is over the tape and
-  turns away from the obstacle, 90 degrees from its heading, until a sensor
-  sees the tape; then the follower takes the wheels. Tape that a sensor
-  crossed in a pivot or look, within reach of the axle, ends the hug in the
-  same way: a turn out of the way where the car stands would leave the sensors
-  off the tape when the car had not yet reached it. The width, breadth and face
-  fields clear when the hug ends.
+- **Rejoin.** Outside the approach zone (150 mm along the hit heading and
+  250 mm to either side), the unrestricted pilot records where a line sensor
+  crosses tape. This also covers tape seen while the body turns during a
+  scan. Parallel tape can run 300 mm to either side of the entry line.
+  Within 80 mm of those positions, a lone hit is ambiguous and the hug
+  continues. Both readers may identify a transverse exit there if their
+  lateral separation exceeds the 15 mm tape width. This check uses the
+  projected IR position. The car may use adjacent clear floor for the bypass.
+  The 80 mm tolerance is an initial allowance for odometry error.
+  On the next drive it projects the observed point onto the heading
+  and advances up to the 130 mm sensor lead. A stall or a fresh obstacle
+  inside the forward guard interrupts that drive.
+  The chassis then sweeps away from the obstacle through up to 135 degrees
+  at its low pivot rate. The leading detector must enter and leave a stripe
+  after both line detectors read clear in that sweep. Wheel travel must be consistent
+  with crossing a stripe between half and twice the configured tape width.
+  After braking, the pilot checks that the axle and heading stayed near the
+  crossing before handing control to the follower. A safety interruption
+  requires a fresh crossing. Exhausting the sweep without one stops the
+  wheels with `HUG_TIMEOUT`.
 - **Walls.** A wall is followed for ever. The hug stops only for a sensor fault,
   STOP or a move timeout.
 - **Move timeout.** Each hug pivot or drive must end within three times its
   planned time, and never sooner than the 1 s stuck window. A move that takes
   longer ends the hug and stops the car with reason HUG_TIMEOUT, which latches
-  until an accepted RESET.
-- **Safety stop.** A SAFETY stop sets the wheels to 0 at once; it skips the
-  drive acceleration limit that smooths normal speed changes.
+  until an accepted START or RESET.
+
+#### Returning to the line behind a measured box
+
+On continuous supporting floor, the pilot follows the selected side of a box
+until sonar observations locate its far vertex. It checks that the next
+measured face is the rear and that the vehicle can traverse it with room to
+pivot. The clearance calculation includes the 130 mm forward sensor reach,
+120 mm rear caster reach and 126 mm vehicle width. With no incoming tape
+observation, a stripe encountered beside the box cannot trigger a handoff
+before the vehicle envelope has cleared the measured side endpoint.
+
+Wheel odometry places the axle back at its original lateral coordinate behind
+the box. In the pilot's coordinate frame the contact heading is forward and
+the entry lateral coordinate is zero. The pilot restores that heading and
+checks both wheels are stationary, the estimated lateral error is within
+half a stripe and centered sonar is fresh and clear. Before the rear traverse
+and again before the tape search, a missed echo leaves both wheels at zero
+while the 800 ms reply window runs. A fresh clear ping inside that window
+permits the next movement. A measured obstruction or an expired window ends
+the maneuver. The local tape search pivots up to 30° each way. An observed stripe can return
+control to line following. The dashboard records one bypass completion on
+that optical transfer.
+
+An empty local sweep returns to the entry heading. If the pilot saw incoming
+tape shortly before contact, it may follow the remaining measured edges once
+to find an exit that bends under the box. The car must still be stationary
+at the return pose with fresh forward clearance. The normal contact back-off
+preserves the incoming tape observation. A safety interruption, E-stop or
+new START invalidates the offer to continue. Finding the entry face again
+without an exit ends the attempt. With no incoming tape, the first empty
+sweep ends it. Both outcomes hold the motor targets at zero.
+
+Qualify the selected side, nearest gap and optical handoff using the car’s
+wheel, sonar and tape readings alongside an observation of the physical course.
+The bounded-floor option holds at the obstacle on courses with possible drop-offs.
+
+#### Shared pilot and line-task behavior
+
+- **Failed forward progress on continuous floor.** After one second, each
+  wheel commanded above its deadband must have advanced at least 2 mm.
+  A tight turn may intentionally stop the inner wheel. Displacement across
+  an invalid encoder interval is discarded. At startup or later in the
+  run, a failed progress check brakes both wheels. Once stationary, the
+  car scans left, center and right. A completed scan with a near return
+  starts the obstacle survey. A clear scan and three fresh centered clear
+  readings permit a forward retry. Two incomplete attempts hold the wheels
+  for a new START. A commanded wheel that stays silent for a second window
+  while its peer moves can latch the encoder fault without a diagnostic reverse.
+- **Safety stop.** The pilot sets both wheel targets to zero immediately and
+  bypasses the normal acceleration limit. Confirm rest from fresh, valid wheel
+  feedback and measure the braking distance on the car.
 - **Pings.** Each 10 ms tick the line task reads the latest ping word with
   `obstacle_ping_read()` and gives the pilot its distance, servo angle, echo
   class, sequence and reply flag. NO_ECHO, GLITCH and STUCK give no reading
   (`LOOK_ECHO_NONE`); they are never OPEN. A STUCK, NO_ECHO or ECHO_NOISE
-  fault of the sonar task stops the pilot with reason SONAR. The fault's bit
-  clears at the first ping that no longer fits it, and the statechart goes back
-  to MONITOR when no fault is left. If the stop lasts no longer than
-  PILOT_SONAR_RESUME_MS (1 s, a guess to be measured on the car), the pilot
+  fault of the sonar task stops the pilot with reason SONAR. Once a forward
+  ping has been seen, 250 ms without a new forward sequence also stops it
+  with SONAR. The forward timer waits while a hug request uses the servo.
+  A different failing echo class keeps the fault active. A usable ping clears
+  it, and an echo-induced stop returns to MONITOR. If the stop lasts no longer
+  than PILOT_SONAR_RESUME_MS (1 s, a guess to be measured on the car), the pilot
   drives on by itself. A longer stop latches: the reason then reads
-  SONAR_LATCHED (wire 9), or STALE_LATCHED (wire 10) when no sonar fault was
-  present at the moment of the latch, and keeps that reason until released.
-  START (pilot_release_sonar) releases it, and RESET (pilot_clear_latches)
-  clears it too, but RESET leaves the wheels held, so START must follow. The
+  SONAR_LATCHED (wire 9) for sonar or STALE_LATCHED (wire 10) for wheel
+  feedback. Three consecutive usable forward pings with fresh wheel
+  feedback and released motion holds clear the latch. START or RESET
+  also clears it. RESET leaves the wheels held, so START must follow. The
   same rule applies to stale feedback, which means the wheel feedback is older
   than PILOT_STALE_MS (100 ms) and says nothing about the sonar. While a hold
   is on, a STALE_LATCHED shows as HELD; a SONAR_LATCHED does not. An operator
@@ -298,17 +597,47 @@ the planner below.
 - **Ping requests.** When the pilot asks for a ping, the line task calls
   `obstacle_ping_request()` once for each new (sequence, angle) pair, not
   every tick. A refused request is logged once with `LOG_WARN` and tried again.
+- **Corner speed.** The straight request is 163.364 mm/s. On a sustained
+  single-reader hit the heading target slews by one radian per 107 mm of
+  requested outer-wheel travel, the curvature of Buddy 5's one-wheel turn.
+  The outer target drops to 100 mm/s at 2° of heading error. The inner target
+  falls progressively to zero if the heading continues to lag. From 100 mm/s
+  the 80 mm/s² recovery takes about 0.79 s of clear straight running to reach
+  cruise. Matching front readings during a barcode hold the current outer
+  target and anchor the next correction. These are command targets. Wheel
+  speed and tape retention through successive 270° bends need a physical run.
 - **Line events.** The line task raises `line_lost`, `line_found` and the
   line-lost fault only while the follower has the wheels. While the hug drives,
   the line is off the sensors and that is not a lost line; a lost state that
   is open when the hug takes over ends without a `line_found`. For 250 ms after
-  a barcode edge the follower drives straight at cruise speed, under the sonar
-  speed cap, and its search state does not change. The straight is only for a
-  follower that follows or bridges a gap: a searching follower, whose retry
-  reverses, ignores the barcode flag.
-- **Lost line.** With no sensor hit the follower holds its heading for
-  `LINE_GAP_MM` (150 mm; `LINE_HUMP_GAP_MM`, 400 mm, while the physics reports
-  a hump, because the sensors lift off the floor at the crest). Then it turns
+  a qualified barcode edge the follower can drive straight under the sonar
+  speed cap when both front detectors agree. A single detector on tape steers
+  through the bend. The follower records tape crossings during either action.
+  An ambiguous edge or ring overflow
+  restores line tracking immediately. A new edge qualifies after 250 ms of
+  quiet. On a gap, the follower relaxes its prior correction and holds the
+  settled heading over the first part of blind travel. It then returns to
+  relaxed steering. If both sensors still read clear after 100 mm of flat
+  travel, the car steers about 4.4° while driving forward to bring one
+  sensor across the blind strip between the detectors. A tape hit resumes
+  ordinary steering. At an unmarked square corner the front detectors can
+  cross the outgoing strip while the axle is still approaching it. If the
+  tape stays clear, forward travel to that remembered crossing triggers a pivot.
+  Gaps without this evidence retain the 150 mm search limit. The heading hold,
+  search position and probe need checking on the car.
+- **Commanded maneuvers.** The pilot checks sonar and wheel feedback before
+  each wheel command during a pivot or straight junction crossing. A close
+  centered return ends the maneuver at the same standoff used by the hug.
+  The line task brakes, reports the abort and lets the pilot check course
+  clearance. A sonar fault or stale feedback can also abort the maneuver.
+- **Slope compensation.** On a straight forward line-following pass, the
+  pilot compares both fresh wheel speeds with the calibrated roll. When
+  the uphill wheel is slower, it adds demand to that wheel and subtracts the
+  same amount from the other. The trim has a 2° roll deadband and a 12 mm/s
+  limit per wheel. The roll sign and trim values still need a car run.
+- **Lost line.** With no sensor hit the follower bridges up to
+  `LINE_GAP_MM` (150 mm). On a hump it skips the flat-ground probe and
+  allows `LINE_HUMP_GAP_MM` (400 mm) for the sensors to clear the crest. Then it turns
   on the spot toward the side that saw the line last, and back the other way.
   A failed search is retried up to `LINE_RETRY_COUNT` (3) times: the car turns
   back to the heading it had when the search began, reverses `LINE_REVERSE_MM`
@@ -322,12 +651,10 @@ the planner below.
   `line_lost` event with p2 = `0x8000 | retry`. The retry count clears once a
   sensor hit comes past the point where the line was lost. The constants are
   guesses, not measured on the car.
-- **Hug fields of the frame.** The line task packs the hug state, side, face
-  distance, width and breadth, and the servo angle of the latest ping, into
-  two words under one spinlock (`telemetry/hug_word.h`). The telemetry task
-  reads both words together, so one frame never mixes two ticks. Idle shows
-  side none. With the pilot on, `servo_deci` is the servo of the latest ping
-  and `body_deci` is the body heading from the heading at the hit, in
+- **Hug fields of the frame.** The line task publishes hug phase and geometry
+  under one spinlock (`telemetry/hug_word.h`). The telemetry task reads the
+  hug fields together. Idle shows side none. With the pilot on, `body_deci`
+  is the body heading from the heading at the hit, in
   deci-degrees, left positive; it is packed into word 1 with an offset of 1800.
   `face_mm` is the last measured axle-to-face distance while the hug is
   active, not the drive distance the hug plans from it. An idle hug shows 0
@@ -341,6 +668,14 @@ breadth_mm, face_mm (all u16, 0 until seen), servo_deci and body_deci (i16).
 Faults bits 12 to 14 are not set on the wire. The `bypass_start` event gives
 the side in p1; `bypass_end` gives the width in p1 and the breadth in p2.
 
+Both firmware modes read `echo_class`, `dist_mm`, `servo_deci` and `seq`
+from one published sonar sample. The angle is the servo bearing relative to
+the chassis during that ping, reported in deci-degrees at whole-degree
+resolution. A requested ping carries its request sequence. Before the first
+sample the frame reports NO_ECHO and zero distance, angle and sequence. Hug
+phase, geometry and body heading come from the separate hug publication when
+available.
+
 ### Plan and bypass
 
 This is the old path, used when `PICO_CAR_PILOT=OFF`. The telemetry frame no longer carries its plan fields.
@@ -351,9 +686,10 @@ m - β. This assumes the sonar returns an echo when only the edge of its beam
 is on the obstacle. That assumption is not measured (Q56), and the
 simulation does not follow it.
 
-**Choosing a side.** A side is usable when the sideways offset it needs (edge
-+ `OBSTACLE_BOX_GAP_MM`) fits on the free floor, and no other reading on that
-side falls in the swept band. The smaller offset wins; on a tie, left. An
+**Choosing a side.** The legacy planner accepts a sideways offset (edge
++ `OBSTACLE_BOX_GAP_MM`) within its assumed 500 mm lateral allowance when
+no other reading on that side falls in the swept band. The smaller offset
+wins, with ties going left. An
 edge that is not bounded, or lies beyond `OBSTACLE_EDGE_TRUST_DECI` (30
 degrees), plans a wall pass on the left. With no usable side the plan is
 NO_SAFE_PATH and the car holds. The navigation answers a NO_SAFE_PATH or
@@ -425,7 +761,7 @@ obstacle_echo_counts(counts);       /* pings per echo class since boot */
 | | SCAN_RESULT: status, side, width, angle, wall | 4, 2, 0-1023 mm, 0-127 deg, flag | 2 + 1 + 10 + 7 + 1 | bits 7-27 |
 | | FAULT: cause, faults | 15, 9 bits | 4 + 9 | bits 7-19 |
 | | STEER: action, seq | 4, 0-63 | 2 + 6 | bits 7-14 |
-| Ping `u32` (one store) | seq, class, dist_mm, servo | 0-63, 6, 0-4095, -30..+30 deg | 6 + 3 + 12 + 6 | bits 0-26; face pings only |
+| Ping `u32` (one store) | seq, class, dist_mm, servo | 0-63, 6, 0-4095, -20..+20 deg | 6 + 3 + 12 + 6 | bits 0-26; face pings only; servo stored as whole degrees plus 30 |
 | Counters (task-private) | `obstacle_counters_t`: seven `uint8_t` | runs and 3-bit histories | 56 | no packed word |
 
 Compile-time checks in `obstacle_config.h` stop the build if a field can't hold
@@ -515,28 +851,28 @@ Search `obstacle_config.h` for **FILL**. Status:
 | Setting | Status |
 |---|---|
 | Car half-width `OBSTACLE_CAR_HALF_W_MM` | **Done:** 63 mm (car is 126 mm wide) |
-| Free floor `OBSTACLE_FREE_FLOOR_MM` | **Done:** 500 mm cap; the course has no side boundary, and the planner always uses the smaller offset |
-| Servo direction `OBSTACLE_SERVO_DIR` | **Confirmed** on the bench (+1) |
+| Lateral planning limit `OBSTACLE_FREE_FLOOR_MM` | The legacy planner caps the offset at 500 mm. Actual supporting floor beside the track must be established from onboard evidence. |
+| Servo direction `OBSTACLE_SERVO_DIR` | Configured for the car (−1) |
 | Bypass speed `OBSTACLE_BYPASS_SPEED_MM_S` | 40 mm/s, matches `main.c` (40.8 mm/s) |
 | Beam half-angle `OBSTACLE_BEAM_HALF_DECI` | **Done:** 9.5° (95). Power bank at 300 mm dropped out with its near edge 50 mm left / 65 mm right of centre (9.5° / 12.2°); the smaller value gives more room. The left/right difference comes from the two transducers sitting either side of the centre. |
 | Wheel diameter | **Done:** 65 mm (already in the motion service scale) |
 | Wheel track `CHASSIS_WHEEL_TRACK_MM` | **Done:** 107 mm (measured) |
 | Servo→tail `OBSTACLE_SERVO_TO_REAR_MM` | Pending (170 mm); sets when the car turns back |
 | Servo→front | Pending (optional) |
-| Servo centre / scale | Looks right by eye; protractor check optional |
+| Servo centre / scale | 1494 µs nominal center compensates the observed −1° boot aim using the configured 5.6 µs/° scale. Check straight-ahead aim on cold boot and clearance at both ±20° limits on the car. |
 | Power source | Pending (settle time on a low LiPo, H2d) |
 
-## Phase 2 (integration) — in main.uf2
+## Phase 2 integration in the legacy firmware
 
-Buddy 5 now runs inside the normal `main.uf2`, driven by the existing line
-task (`line_task` in `src/main.c`) through the glue module
+With `PICO_CAR_PILOT=OFF`, the line task uses the Buddy 5 statechart through
 `src/navigation/obstacle/obstacle_nav.c`.
 
 **Start-up** (in the startup task, processor 1): `gpio_irq_init()` →
 `motion_service_init()` → `physics_init()` → `ir_capture_init()` →
-**`obstacle_line_init()`**. That calls `obstacle_init()` with these links,
-then sends RESET and START. `src/main.c` creates every task; the subsystems
-only prepare resources and expose their task body.
+**`obstacle_line_init()`**. That calls `obstacle_init()` with these links and
+leaves the car parked. The scan task keeps sampling sonar while parked. The
+supervisor posts RESET and START to the obstacle statechart when it accepts
+operator START. `src/main.c` creates every task.
 
 | Link | Wired to | Why |
 |---|---|---|
@@ -557,7 +893,7 @@ Buddy 5 is in charge, and the line follower then sends nothing.
 | WAIT_STOP, SCANNING, PLAN | holds the car; 300 ms after OBSTACLE sends SCAN_REQ(id); on SCAN_RESULT OK/CLEAR sends ACCEPT(id); on NO_SAFE_PATH/FAILED sends REJECT(id) | paused |
 | BYPASS | releases the hold; pivots away (STEER word) until Buddy 5 sees the way ahead is clear | paused |
 | REACQUIRE | TURN (pivot to the start angle) and OUT (straight to the side offset) from the wheel odometry, then HUG: a proportional controller holds a 300 mm look-ray target by slowing the wheel next to the obstacle by up to 80% of the outer wheel. One ping under 250 mm forces a turn away, clamped at 60° from the line. OUT drives straight. IR gate: armed when the offset is reached, opens once both IR sensors have been off the line; the next line contact sends LINE_FOUND(id) (at most every 100 ms) | paused |
-| STOPPED (fault) | holds the car. Sends RESET + START every 3 s only after BOOT or a transient cause (`obstacle_pack_cause_may_auto_restart`). After a collision, NO_SAFE_PATH, a sensor fault or a STOP it waits for an explicit RESET and START | paused |
+| STOPPED (boot or fault) | holds the car until the supervisor accepts operator START | paused |
 
 **Speeds** (`motion_service_set_speed()`, lease 100 ms). The car stands
 still while the servo turns (entering BYPASS, REACQUIRE or MONITOR): a
@@ -568,22 +904,22 @@ servo swing while a motor drives can disturb the wheel encoders.
 | Escape spin, TURN | — | −40 000 / +40 000 µm/s |
 | OUT, ALONG, BACK | 40 000 / 40 000 µm/s | 40 000 / 60 000 µm/s |
 
-NOTE: The inside wheel never runs between 0 and 40 mm/s. The motors only
-get up to 25 % duty. A driven wheel that makes no encoder edges no longer
-faults the motion service. The pilot checks instead: after 1 s with both
-wheels still it backs off and tries again, and a wheel that stays still
-while the other moves stops the car with reason ENCODER until an accepted
-RESET. RESET (pilot_clear_latches) clears the ENCODER, HUG_TIMEOUT,
-SONAR_LATCHED and STALE_LATCHED latches and starts the follower afresh, keeping
-the recorded side of the line; the emergency stop stays until reboot. The hug's
-own lost-replies SONAR stop is not latched: it ends at the next reply. A RESET
-of a running car also holds the wheels like a STOP, so a cleared latch does not
-set the car going again: START releases the hold and, through
-pilot_release_sonar(), the SONAR_LATCHED and STALE_LATCHED latches. A RESET of a
-car held by a lift keeps the lift hold. RESET is refused while the car is
-overturned and not upright, where upright means calibrated with roll within 60
-deg. The car holds the wheels after boot, a watchdog reset, a lapsed motion
-permit and every lift until an operator START, however long it stands level.
+NOTE: The inside wheel never runs between 0 and 40 mm/s. Each wheel's speed
+controller has a 40% base duty limit. Fresh feedback showing a wheel moving
+slower than requested in the commanded direction raises that wheel's limit
+in proportion to the speed shortfall, up to a 45% (450 permille) trial
+ceiling. A stationary wheel or an invalid encoder sample stays within the
+base limit. The trial ceiling has host coverage and needs vehicle measurement
+under load. A driven wheel that
+makes no encoder edges no longer faults the motion service. The pilot backs
+off and tries again if both wheels stay still for 1 s. A wheel that stays
+still while the other moves stops the car with reason ENCODER. Once the
+operator checks the wheels and clears the path, one accepted START clears
+recoverable pilot latches, including ENCODER and HUG_TIMEOUT. Emergency
+stop stays latched until reboot. The hug's own lost-replies SONAR stop
+ends at the next reply. A CLI RESET acknowledges faults and leaves the
+wheels held. After a pickup or overturn, set the car down level and still
+before START. The supervisor holds the wheels during level-ground calibration.
 If the motors cannot reach 60 mm/s, the outside wheel runs at its top
 speed, which still curves the car.
 
@@ -598,7 +934,7 @@ kinematic car), from detection to rejoining the line: obstacles 60/105/160 mm wi
 real beam 9.5°/15°/25°, true track 90/100/115 mm, obstacle centred or
 35 mm off-centre: 81 of 81 runs pass without contact (closest gap
 57–150 mm), rejoin the line at about 30° and resume line following. A
-bypass takes about 20–30 s at these speeds.
+bypass took about 20–30 s in this legacy fixture.
 
 The glue logs `[INFO](line:nav) state N cause N`, `plan: ...`, `phase N: ...`,
 `steer N: ...`, `escape turned N deg`, motion changes and every `SCAN_RESULT`
@@ -644,15 +980,8 @@ The speeds, lease, brake wait, retry time and LINE_FOUND rate are the
 
 No IR or `sys` file was changed. The only motion change is the glitch tolerance above.
 
-**Before driving on the floor:**
-
-1. Run the [hardware checklist](obstacle_hardware_checklist.md) H1–H8 with
-   `obstacle_bench.uf2`, especially the servo direction (H2b). A wrong
-   direction makes the car pass on the wrong side.
-2. Fill in the **FILL** values in `obstacle_config.h`.
-3. Flash `main.uf2` with the wheels off the floor and put a hand in front
-   of the sensor: the wheels must stop.
-4. Then H9 on the floor.
+The hardware checklist distinguishes the supported-chassis bench, installed
+obstacle hold and future bypass trial. [Hardware checklist](obstacle_hardware_checklist.md)
 
 Known points for the team:
 

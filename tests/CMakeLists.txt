@@ -45,6 +45,34 @@ target_include_directories(test_drivers PRIVATE ${PHYSICS_SRC}
 target_compile_options(test_drivers PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_drivers PRIVATE m)
 add_test(NAME drivers COMMAND test_drivers)
+add_test(NAME physics_lift_settled_gap COMMAND test_drivers pipeline_lift_settled_gap)
+add_test(NAME physics_sustained_lift_cues COMMAND test_drivers pipeline_sustained_lift_cues)
+
+add_executable(test_physics_connection test_physics_connection.c
+    ${PHYSICS_SRC}/physics.c
+    ${PHYSICS_SRC}/physics_task.c
+    ${PHYSICS_SRC}/attitude.c
+    ${PHYSICS_SRC}/hump_detect.c
+    ${PHYSICS_SRC}/imu_motion.c
+    ${PHYSICS_SRC}/hump_msg.c
+    ${PHYSICS_SRC}/motion_adapter.c
+    ${PHYSICS_SRC}/pipeline.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/faults.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/liveness.c)
+target_include_directories(test_physics_connection PRIVATE ${PHYSICS_SRC}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_options(test_physics_connection PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/physics_task_kernel.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_physics_connection PRIVATE m)
+add_test(NAME physics_connection COMMAND test_physics_connection)
+add_test(NAME physics_snapshot_expiry COMMAND test_physics_connection snapshot-expiry)
+add_test(NAME physics_attitude_events COMMAND test_physics_connection attitude-events)
+add_test(NAME physics_hump_events COMMAND test_physics_connection hump-events)
+add_test(NAME physics_stationary_start COMMAND test_physics_connection stationary-start)
+add_test(NAME physics_stationary_setdown COMMAND test_physics_connection stationary-setdown)
+add_test(NAME physics_calibration_gap COMMAND test_physics_connection calibration-gap)
+add_test(NAME physics_repeated_read_loss COMMAND test_physics_connection repeated-read-loss)
 
 # RP2040 I2C1 polling driver against a register model in the test.
 add_executable(test_i2c_rp2040 test_i2c_rp2040.c ${PHYSICS_SRC}/i2c_rp2040.c)
@@ -57,6 +85,31 @@ add_test(NAME i2c_rp2040 COMMAND test_i2c_rp2040)
 # Obstacle avoidance pure modules
 set(OBSTACLE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/obstacle)
 set(APP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
+add_executable(test_obstacle_servo test_obstacle_servo.c ${OBSTACLE_SRC}/scan_hw.c)
+target_include_directories(test_obstacle_servo PRIVATE
+    ${OBSTACLE_SRC} ${APP_INCLUDE} shim shim_obstacle_servo)
+target_compile_options(test_obstacle_servo PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME obstacle_servo_boot_center COMMAND test_obstacle_servo)
+
+foreach(pilot RANGE 0 1)
+    add_executable(test_obstacle_aim_${pilot} test_obstacle_aim.c
+        ${OBSTACLE_SRC}/scan_task.c ${OBSTACLE_SRC}/statechart.c
+        ${OBSTACLE_SRC}/geometry.c ${OBSTACLE_SRC}/planner.c ${OBSTACLE_SRC}/scan_algo.c)
+    target_include_directories(test_obstacle_aim_${pilot} PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE} shim)
+    target_compile_definitions(test_obstacle_aim_${pilot} PRIVATE PICO_CAR_PILOT=${pilot})
+    target_compile_options(test_obstacle_aim_${pilot} PRIVATE
+        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/sonar_task_kernel.h"
+        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+    add_test(NAME obstacle_aim_${pilot} COMMAND test_obstacle_aim_${pilot})
+endforeach()
+
+add_test(NAME obstacle_aim_pilot_mirrored COMMAND test_obstacle_aim_1 mirror)
+add_test(NAME obstacle_aim_stop_settle COMMAND test_obstacle_aim_1 stop-settle)
+add_test(NAME obstacle_aim_stop_spacing COMMAND test_obstacle_aim_1 stop-spacing)
+add_test(NAME obstacle_aim_stop_echo COMMAND test_obstacle_aim_1 stop-echo)
+add_test(NAME obstacle_aim_stop_pending COMMAND test_obstacle_aim_1 stop-pending)
+add_test(NAME obstacle_aim_legacy_stop_settle COMMAND test_obstacle_aim_0 stop-settle)
 
 add_executable(test_obstacle_scan test_obstacle_scan.c
     ${OBSTACLE_SRC}/scan_algo.c)
@@ -84,19 +137,6 @@ target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC} ${AP
 target_compile_options(test_obstacle_statechart PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
-
-add_executable(test_obstacle_bypass_sim test_obstacle_bypass_sim.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/follow.c
-    ${OBSTACLE_SRC}/nav_core.c
-    ${OBSTACLE_SRC}/statechart.c
-    ${OBSTACLE_SRC}/planner.c
-    ${OBSTACLE_SRC}/scan_algo.c)
-target_include_directories(test_obstacle_bypass_sim PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
-target_compile_options(test_obstacle_bypass_sim PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-target_link_libraries(test_obstacle_bypass_sim PRIVATE m)
-add_test(NAME obstacle_bypass_sim COMMAND test_obstacle_bypass_sim)
 
 add_executable(test_obstacle_nav_core test_obstacle_nav_core.c
     ${OBSTACLE_SRC}/geometry.c
@@ -135,16 +175,31 @@ add_executable(test_obstacle_comms test_obstacle_comms.c
     ${OBSTACLE_SRC}/scan_algo.c)
 target_include_directories(test_obstacle_comms PRIVATE
     ${OBSTACLE_SRC} ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_definitions(test_obstacle_comms PRIVATE PICO_CAR_PILOT=0)
 target_compile_options(test_obstacle_comms PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tk/flg_fake.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_comms COMMAND test_obstacle_comms)
+add_test(NAME obstacle_legacy_plan_source COMMAND test_obstacle_comms legacy-plan-source)
 
-# The STEER-word hug law and everything only it used are gone.
-add_test(NAME obstacle_hug_law_removed
-    COMMAND ${CMAKE_COMMAND}
-        -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/check_removed_symbols.cmake)
+# Exercise the real startup facade and stopped-state navigation adapter in both modes.
+foreach(pilot IN ITEMS 0 1)
+    set(target test_obstacle_start_${pilot})
+    add_executable(${target} test_obstacle_start_contract.c
+        ${OBSTACLE_SRC}/obstacle_nav.c
+        ${OBSTACLE_SRC}/nav_core.c
+        ${OBSTACLE_SRC}/follow.c
+        ${OBSTACLE_SRC}/geometry.c
+        ${OBSTACLE_SRC}/planner.c
+        ${OBSTACLE_SRC}/scan_algo.c)
+    target_include_directories(${target} PRIVATE
+        ${OBSTACLE_SRC} ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+    target_compile_definitions(${target} PRIVATE PICO_CAR_PILOT=${pilot})
+    target_compile_options(${target} PRIVATE
+        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_line/line_task_ports.h"
+        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+    add_test(NAME obstacle_start_${pilot} COMMAND ${target})
+endforeach()
 
 add_executable(test_barcode_parser test_barcode_parser.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
@@ -214,24 +269,70 @@ target_compile_options(test_line_control PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_line_control PRIVATE m)
 add_test(NAME line_control COMMAND test_line_control)
+add_test(NAME line_controller_unit COMMAND test_line_control unit)
+add_test(NAME line_corner_wheel_demands COMMAND test_line_control corner-wheel-demands)
 
-add_executable(test_pilot_sim test_pilot_sim.c pilot_sim.c
+add_executable(test_line_task_contract test_line_slope_contract.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_task.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot_log.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
+    ${OBSTACLE_SRC}/geometry.c
+    ${OBSTACLE_SRC}/scan_algo.c
+    ${TELEMETRY_SRC}/packet.c)
+target_include_directories(test_line_task_contract PRIVATE
+    ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/shim ../src/motion)
+target_compile_definitions(test_line_task_contract PRIVATE PICO_CAR_PILOT=1)
+target_compile_options(test_line_task_contract PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_line/line_task_ports.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_line_task_contract PRIVATE m)
+add_test(NAME line_task_slope_left COMMAND test_line_task_contract left)
+add_test(NAME line_task_slope_right COMMAND test_line_task_contract right)
+add_test(NAME line_task_retry_events COMMAND test_line_task_contract retry-events)
+add_test(NAME bounded_course_hold COMMAND test_line_task_contract bounded-course-hold)
+add_test(NAME bounded_course_probe_left COMMAND test_line_task_contract bounded-course-probe-left)
+add_test(NAME bounded_course_probe_right COMMAND test_line_task_contract bounded-course-probe-right)
+add_test(NAME bounded_course_clear_distance COMMAND test_line_task_contract bounded-course-clear-distance)
+add_test(NAME bounded_course_cutoff COMMAND test_line_task_contract bounded-course-cutoff)
+add_test(NAME bounded_course_ping_gap COMMAND test_line_task_contract bounded-course-ping-gap)
+add_test(NAME bounded_course_slow_clear COMMAND test_line_task_contract bounded-course-slow-clear)
+add_test(NAME pilot_coherent_motion_snapshot COMMAND test_line_task_contract coherent-motion-snapshot)
+add_test(NAME line_resume_clear COMMAND test_line_task_contract pose-clear)
+add_test(NAME line_resume_near COMMAND test_line_task_contract pose-near)
+add_test(NAME line_cancel_turn_after_pose_loss COMMAND test_line_task_contract pose-during-turn)
+add_test(NAME barcode_route_ambiguous COMMAND test_line_task_contract probe-solid)
+add_test(NAME junction_left_wheel_pause COMMAND test_line_task_contract junction-left-pause)
+add_test(NAME junction_right_wheel_pause COMMAND test_line_task_contract junction-right-pause)
+add_test(NAME pilot_turn_obstacle COMMAND test_line_task_contract turn-obstacle)
+add_test(NAME pilot_turn_sonar_fault COMMAND test_line_task_contract turn-sonar-fault)
+add_test(NAME pilot_straight_obstacle COMMAND test_line_task_contract straight-obstacle)
+add_test(NAME line_task_contract_invalid_launch COMMAND test_line_task_contract invalid-launch)
+add_test(NAME line_task_contract_pending_obstacle COMMAND test_line_task_contract pending-obstacle)
+add_test(NAME line_task_contract_pending_stale COMMAND test_line_task_contract pending-stale)
+add_test(NAME pilot_stale_line_capture COMMAND test_line_task_contract stale-line-capture)
+add_test(NAME pilot_turn_stale_line_capture COMMAND test_line_task_contract turn-stale-line-capture)
+
+add_executable(test_pilot_observations test_pilot_observations.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
-target_include_directories(test_pilot_sim PRIVATE
+target_include_directories(test_pilot_observations PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${OBSTACLE_SRC}
     ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(test_pilot_sim PRIVATE
+target_compile_options(test_pilot_observations PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-target_link_libraries(test_pilot_sim PRIVATE m)
-add_test(NAME pilot_sim COMMAND test_pilot_sim)
+target_link_libraries(test_pilot_observations PRIVATE m)
+add_test(NAME pilot_observations COMMAND test_pilot_observations)
 
-add_executable(test_pilot_line test_pilot_line.c pilot_sim.c
+add_executable(test_pilot_line test_pilot_line.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/hug.c
@@ -246,6 +347,11 @@ target_compile_options(test_pilot_line PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_pilot_line PRIVATE m)
 add_test(NAME pilot_line COMMAND test_pilot_line)
+add_test(NAME pilot_course_reply_deadline COMMAND test_pilot_line course-reply-deadline)
+add_test(NAME pilot_stationary_course_edge COMMAND test_pilot_line stationary-course-edge)
+add_test(NAME pilot_bounded_course_contact_boundary COMMAND test_pilot_line bounded-course-contact-boundary)
+add_test(NAME pilot_bounded_course_scan_budget COMMAND test_pilot_line bounded-course-scan-budget)
+add_test(NAME pilot_interrupted_course_scan_budget COMMAND test_pilot_line interrupted-course-scan-budget)
 
 add_executable(test_pilot_drive test_pilot_drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
@@ -302,6 +408,7 @@ add_executable(test_faults test_faults.c
 target_include_directories(test_faults PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_definitions(test_faults PRIVATE PICO_TEST_FAULT_CONTEXT=1)
 target_compile_options(test_faults PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME faults COMMAND test_faults)
@@ -354,19 +461,74 @@ add_test(NAME tcp_transport COMMAND test_tcp_transport)
 
 # The command ring, the run state and the health checks.
 set(SUPERVISOR_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/supervisor)
-add_executable(test_supervisor test_supervisor.c
+set(SUPERVISOR_TEST_CORE
     ${SUPERVISOR_SRC}/command_ring.c
     ${SUPERVISOR_SRC}/run_state.c
     ${SUPERVISOR_SRC}/health_core.c
     ${SUPERVISOR_SRC}/edge_events.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/liveness.c)
-target_include_directories(test_supervisor PRIVATE
+set(SUPERVISOR_TEST_INCLUDES
     ${SUPERVISOR_SRC}
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+add_executable(test_supervisor test_supervisor.c ${SUPERVISOR_TEST_CORE})
+target_include_directories(test_supervisor PRIVATE ${SUPERVISOR_TEST_INCLUDES})
 target_compile_options(test_supervisor PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME supervisor COMMAND test_supervisor)
+
+add_executable(test_supervisor_start_contract test_supervisor_start_contract.c
+    ${SUPERVISOR_TEST_CORE}
+    ${SUPERVISOR_SRC}/supervisor.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/faults.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/assemble.c)
+target_include_directories(test_supervisor_start_contract PRIVATE ${SUPERVISOR_TEST_INCLUDES})
+target_compile_definitions(test_supervisor_start_contract PRIVATE PICO_CAR_PILOT=1)
+target_compile_options(test_supervisor_start_contract PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/supervisor_kernel.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME barcode_route_supervisor_slot COMMAND test_supervisor_start_contract route-slot)
+add_test(NAME supervisor_estop_before_report COMMAND test_supervisor_start_contract estop-before-report)
+add_test(NAME supervisor_estop_full_stop_inbox COMMAND test_supervisor_start_contract estop-full-stop-inbox)
+add_test(NAME supervisor_stop_before_report COMMAND test_supervisor_start_contract stop-before-report)
+add_test(NAME supervisor_calibrating_floor COMMAND test_supervisor_start_contract calibrating-floor)
+add_test(NAME supervisor_continuous_floor COMMAND test_supervisor_start_contract continuous-floor)
+add_test(NAME supervisor_start_calibration_handoff COMMAND test_supervisor_start_contract start-calibration-handoff)
+add_test(NAME supervisor_delayed_upright_start COMMAND test_supervisor_start_contract delayed-upright-start)
+foreach(pending_case stationary start stop timeout loss wheel fault settling tilted stale interrupted)
+    add_test(NAME supervisor_calibrating_${pending_case} COMMAND test_supervisor_start_contract calibrating-${pending_case})
+endforeach()
+add_test(NAME supervisor_settling_pickup COMMAND test_supervisor_start_contract settling-pickup)
+add_test(NAME supervisor_settling_tilted COMMAND test_supervisor_start_contract settling-tilted)
+add_test(NAME supervisor_pickup_during_run COMMAND test_supervisor_start_contract running-pickup)
+add_test(NAME supervisor_watchdog_gap COMMAND test_supervisor_start_contract watchdog-gap)
+add_test(NAME supervisor_watchdog_physics COMMAND test_supervisor_start_contract watchdog-physics)
+add_test(NAME supervisor_drive_feedback_validity COMMAND test_supervisor_start_contract drive-feedback-validity)
+add_test(NAME supervisor_lost_reference COMMAND test_supervisor_start_contract lost-reference)
+add_test(NAME supervisor_lost_reference_stop COMMAND test_supervisor_start_contract lost-reference-stop)
+add_test(NAME supervisor_lost_reference_near COMMAND test_supervisor_start_contract lost-reference-near)
+add_test(NAME supervisor_lost_reference_pickup COMMAND test_supervisor_start_contract lost-reference-pickup)
+add_test(NAME supervisor_lost_reference_overturn COMMAND test_supervisor_start_contract lost-reference-overturn)
+add_test(NAME supervisor_lost_reference_estop COMMAND test_supervisor_start_contract lost-reference-estop)
+add_test(NAME supervisor_watchdog_expired COMMAND test_supervisor_start_contract watchdog-expired)
+add_test(NAME supervisor_watchdog_gap_after_estop COMMAND test_supervisor_start_contract watchdog-gap-after-estop)
+add_test(NAME supervisor_watchdog_expired_after_estop COMMAND test_supervisor_start_contract watchdog-expired-after-estop)
+add_test(NAME supervisor_offline_power_up COMMAND test_supervisor_start_contract offline-start)
+add_test(NAME supervisor_offline_watchdog_reset COMMAND test_supervisor_start_contract watchdog-offline)
+add_test(NAME supervisor_offline_other_reset COMMAND test_supervisor_start_contract other-reset-offline)
+add_test(NAME supervisor_start_button COMMAND test_supervisor_start_contract start-button)
+add_test(NAME supervisor_start_button_gates COMMAND test_supervisor_start_contract start-button-gates)
+
+# RP2040 reset reasons from the application watchdog adapter.
+add_executable(test_watchdog_reset test_watchdog_reset.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/watchdog.c)
+target_include_directories(test_watchdog_reset PRIVATE
+    ${APP_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}/shim ${CMAKE_CURRENT_SOURCE_DIR}/shim_motion)
+target_compile_options(test_watchdog_reset PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+foreach(reset_case IN ITEMS timer forced both_watchdog power run debug unknown mixed)
+    add_test(NAME watchdog_reset_${reset_case} COMMAND test_watchdog_reset ${reset_case})
+endforeach()
 
 # Lift and overturn from the gravity direction.
 add_executable(test_attitude test_attitude.c ${PHYSICS_SRC}/attitude.c)
@@ -385,6 +547,17 @@ target_compile_options(test_barcode_action PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME barcode_action COMMAND test_barcode_action)
 
+add_executable(test_barcode_task_reject test_barcode_task_reject.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/barcode_task.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/barcode_width.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/action.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
+target_include_directories(test_barcode_task_reject PRIVATE ${APP_INCLUDE} shim)
+target_compile_options(test_barcode_task_reject PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/supervisor_kernel.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME barcode_task_reject COMMAND test_barcode_task_reject)
+
 add_executable(test_motion_controller test_motion_controller.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/controller.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/motion/pid.c
@@ -396,6 +569,25 @@ target_include_directories(test_motion_controller PRIVATE
 target_compile_options(test_motion_controller PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME motion_controller COMMAND test_motion_controller)
+
+add_executable(test_motion_feedback test_motion_feedback.c
+    ../src/motion/controller.c ../src/motion/pid.c ../src/motion/odometry.c
+    ../src/motion/encoder_math.c ../src/motion/motion_inbox.c
+    ../src/platform/faults.c ../src/platform/liveness.c
+    ../src/telemetry/assemble.c ../src/telemetry/packet.c)
+target_include_directories(test_motion_feedback PRIVATE
+    ${APP_INCLUDE} ../src/motion shim shim_motion)
+target_compile_options(test_motion_feedback PRIVATE
+    -Wall -Wextra -Werror -ffunction-sections -fdata-sections)
+target_link_options(test_motion_feedback PRIVATE -Wl,--gc-sections)
+foreach(case signed-snapshot feedback-age-boundary reject-delayed-feedback
+             estop-brake-failure boot-estop-brake-failure estop-remote-wake
+             estop-gpio-wake estop-gpio-queued estop-final-admission
+             estop-unavailable-irq normal-output-admission state-events)
+    string(REPLACE "-" "_" test_name "${case}")
+    add_test(NAME motion_${test_name} COMMAND test_motion_feedback ${case})
+endforeach()
+add_test(NAME telemetry_estop_request_status COMMAND test_motion_feedback estop-request-status)
 
 # The bounded wait on the encoder RX FIFO (header-only, no PIO driver).
 add_executable(test_encoder_pio_wait test_encoder_pio_wait.c)
@@ -414,6 +606,25 @@ target_compile_options(test_ir_edge PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME ir_edge COMMAND test_ir_edge)
 
+add_executable(test_ir_capture_contract test_ir_capture_startup_contract.c
+    ../src/track/ir_capture.c ../src/track/line_filter.c ../src/track/line_control.c
+    ../src/barcode/action.c ../src/pilot/pilot.c ../src/pilot/drive.c
+    ../src/pilot/hug.c ../src/pilot/look.c ${OBSTACLE_SRC}/geometry.c)
+target_include_directories(test_ir_capture_contract PRIVATE
+    ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/shim_ir_capture ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_definitions(test_ir_capture_contract PRIVATE TEST_CAPTURE_PILOT)
+target_compile_options(test_ir_capture_contract PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/ir_capture_kernel.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_ir_capture_contract PRIVATE m)
+add_test(NAME barcode_route_capture COMMAND test_ir_capture_contract route-capture)
+add_test(NAME ir_capture_contract_late_arm COMMAND test_ir_capture_contract late-arm)
+add_test(NAME ir_capture_line_pins COMMAND test_ir_capture_contract line-capture)
+add_test(NAME ir_capture_barcode_pulse_noise COMMAND test_ir_capture_contract barcode-pulse-noise)
+add_test(NAME ir_capture_barcode_overflow_noise COMMAND test_ir_capture_contract barcode-overflow-noise)
+add_test(NAME ir_capture_barcode_timer_wrap COMMAND test_ir_capture_contract barcode-timer-wrap)
+add_test(NAME pilot_barcode_noise COMMAND test_ir_capture_contract pilot-barcode-noise)
+
 add_executable(test_pilot_latches test_pilot_latches.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
@@ -429,3 +640,25 @@ target_compile_options(test_pilot_latches PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 target_link_libraries(test_pilot_latches PRIVATE m)
 add_test(NAME pilot_latches COMMAND test_pilot_latches)
+add_test(NAME pilot_latches_steering_handoff COMMAND test_pilot_latches steering-handoff)
+add_test(NAME pilot_latches_inner_wheel_stop COMMAND test_pilot_latches inner-wheel-stop)
+add_test(NAME pilot_latches_unconfirmed_marker COMMAND test_pilot_latches unconfirmed-marker)
+add_test(NAME pilot_marker_between_bends COMMAND test_pilot_latches marker-between-bends)
+foreach(hug_case short-leg slow-scan frozen-pivot recorded-face adjacent-tape front-edge line-bend)
+    add_test(NAME pilot_hug_${hug_case} COMMAND test_pilot_latches hug-${hug_case})
+endforeach()
+add_test(NAME pilot_startup_stall_scan COMMAND test_pilot_latches startup-stall-scan)
+add_test(NAME pilot_course_stall_floor COMMAND test_pilot_latches course-stall-floor)
+add_test(NAME pilot_course_held_contact COMMAND test_pilot_latches course-held-contact)
+add_test(NAME pilot_course_slip_floor COMMAND test_pilot_latches course-slip-floor)
+add_test(NAME pilot_course_movement_breaks_clear_streak COMMAND test_pilot_latches course-movement-breaks-clear-streak)
+add_test(NAME pilot_forward_startup_deadline COMMAND test_pilot_latches never-seen-forward-startup-deadline)
+
+add_executable(test_liveness test_liveness.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/platform/liveness.c)
+target_include_directories(test_liveness PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+target_compile_definitions(test_liveness PRIVATE PICO_TEST_LIVENESS_ATOMICS)
+target_compile_options(test_liveness PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME liveness COMMAND test_liveness)

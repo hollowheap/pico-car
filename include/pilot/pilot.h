@@ -26,12 +26,13 @@
 #include "track/line_control.h"
 
 /** Wheel feedback (stamp_ms) older than this gives a stop with reason STALE
- *  (ms). The ping has no time stamp, so the sonar is not checked for age. */
+ *  (ms). */
 #define PILOT_STALE_MS            (100U)
-/** A sonar fault or stale wheel feedback that ends within this time lets the
- *  pilot drive on by itself; one that lasts longer latches the stop until
- *  pilot_release_sonar() or pilot_clear_latches() (ms). [Default] a guess, to
- *  be measured on the car. */
+/** A free-running forward ping normally arrives every 50 ms. Allow up to
+ *  250 ms between observed sequences before stopping with reason SONAR. */
+#define PILOT_FORWARD_PING_STALE_MS (250U)
+/** A longer dropout needs a confirmed recovery before the pilot drives
+ *  again. The time threshold is a trial value (ms). */
 #define PILOT_SONAR_RESUME_MS     (1000U)
 /** A command never exceeds these. The turn limit is both wheels at 300 mm/s
  *  (MOTOR_MAX_TARGET_UM_S), opposite. */
@@ -39,8 +40,7 @@
 #define PILOT_TURN_MAX_DECI_S     (3300)
 
 /* All of these are guesses until measured on the car. */
-/** Both wheels without travel for this long while the pilot commands motion
- *  count as stuck (ms). */
+/** Maximum wait for progress on each wheel commanded above its deadband (ms). */
 #define PILOT_STUCK_MS            (1000U)
 /** A wheel that travels less than this over a window shows no travel (um). */
 #define PILOT_MOVE_MIN_UM         (2000)
@@ -49,8 +49,8 @@
  *  of the drive layer is the least speed it gives a wheel from rest. This is
  *  a guess, to be tuned on the car. */
 #define PILOT_WHEEL_MIN_MM_S      (DRIVE_START_MM_S)
-/** A stuck car backs off this far (um, the farther wheel) at this speed
- *  (mm/s), and gives up the back-off after PILOT_BACKOFF_MAX_MS. */
+/** A stall during a confirmed obstacle maneuver permits this much back-off
+ *  (um, the farther wheel) at this speed (mm/s). */
 #define PILOT_BACKOFF_UM          (40000)
 #define PILOT_BACKOFF_MM_S        (60)
 #define PILOT_BACKOFF_MAX_MS      (2000U)
@@ -60,13 +60,14 @@ STATIC_ASSERT(HUG_MOVE_FLOOR_MS >= PILOT_STUCK_MS, "hug move floor below the stu
 
 /** Why the command is a stop or a back-off. ESTOP, ENCODER and HUG_TIMEOUT
  *  latch until pilot_init(), which runs at boot only, except that
- *  pilot_clear_latches() (RESET) clears ENCODER and HUG_TIMEOUT; the others end
+ *  An accepted START or RESET clears ENCODER and HUG_TIMEOUT; the others end
  *  when the cause clears, except SONAR and STALE below. SONAR is raised while
- *  the sonar task reports a fault. STALE is raised while the wheel feedback is
- *  older than PILOT_STALE_MS; it says nothing of the sonar. Either one that
- *  lasts PILOT_SONAR_RESUME_MS latches: the stop then reads SONAR_LATCHED or
- *  STALE_LATCHED, with the cause of the moment the latch sets, until
- *  pilot_release_sonar() (START) or pilot_clear_latches() (RESET). A latched
+ *  the sonar task reports a fault or the forward ping sequence stops changing.
+ *  STALE is raised while the wheel feedback is older than PILOT_STALE_MS.
+ *  Either one that lasts PILOT_SONAR_RESUME_MS latches as SONAR_LATCHED or
+ *  STALE_LATCHED, with the cause of the moment the latch sets. The pilot clears
+ *  a data latch after consecutive usable forward pings with fresh feedback
+ *  while the wheels are released. START or RESET also clears it. A latched
  *  STALE shows as HELD while motion holds the wheels. HELD is raised while
  *  motion holds the wheels; the stuck check starts again when the hold ends.
  *  HUG_TIMEOUT: a pivot or a drive of the hug ran past HUG_MOVE_TIMES times its
@@ -84,7 +85,11 @@ typedef enum
     PILOT_REASON_HELD,
     PILOT_REASON_HUG_TIMEOUT,
     PILOT_REASON_SONAR_LATCHED,
-    PILOT_REASON_STALE_LATCHED
+    PILOT_REASON_STALE_LATCHED,
+    PILOT_REASON_COURSE_CLEARANCE, /* obstacle recovery lacks verified clearance */
+    PILOT_REASON_COURSE_RECOVERY,
+    PILOT_REASON_REJOIN_SEARCH,
+    PILOT_REASON_REJOIN_STOP
 } pilot_reason_t;
 
 STATIC_ASSERT(sizeof(pilot_reason_t) <= 4U, "pilot_reason_t size");
@@ -95,13 +100,14 @@ typedef enum
     PILOT_BEHAVIOUR_NONE = 0,
     PILOT_BEHAVIOUR_SAFETY,
     PILOT_BEHAVIOUR_HUG,
-    PILOT_BEHAVIOUR_FOLLOW_LINE
+    PILOT_BEHAVIOUR_FOLLOW_LINE,
+    PILOT_BEHAVIOUR_REJOIN_SEARCH
 } pilot_behaviour_t;
 
 STATIC_ASSERT(sizeof(pilot_behaviour_t) <= 4U, "pilot_behaviour_t size");
 
-/** Phase of the stuck check. A try drives and watches the wheel travel; a
- *  stuck try backs off, and the try after a back-off is a retry. A back-off
+/** Phase of the stuck check. A stall while following calls for a survey.
+ *  A stall during an active hug can back off and retry. A back-off
  *  after a try in which one wheel alone showed no travel ends in ENCODER when
  *  that wheel shows none in the back-off either. */
 typedef enum
@@ -135,11 +141,18 @@ typedef struct
     int16_t  ping_servo_deci; /* servo angle of the ping, left positive   */
     uint8_t  ping_echo;     /* LOOK_ECHO_VALID, _OPEN or _TOO_CLOSE       */
     uint8_t  ping_seq;      /* 6 bits                                     */
+    bool     b_bounded_course : 1; /* use the bounded course stop and sweep */
+    bool     b_marker_progress : 1; /* verified barcode stream advanced this pass */
+    bool     b_stationary : 1;  /* both wheels report fresh zero speed       */
+    bool     b_commanded_turn : 1; /* the turn executor supplies nominal wheel targets */
+    uint8_t  marker_prefix_mm; /* measured elements of the current tentative start */
+    int16_t  wheel_radius_mm; /* measured forward arc, left positive, zero if unavailable or straight */
 } pilot_meas_t;
 
 STATIC_ASSERT(sizeof(pilot_meas_t) == 40U, "pilot_meas_t size");
 
 /** The command of one tick. behaviour and reason are for the decision log.
+ *  During a commanded turn, NONE allows the turn executor to run that tick.
  *  While b_ping_req is set the sonar task moves the servo to ping_servo_deci
  *  and answers once with sequence ping_seq; without a request it pings
  *  straight ahead. */
@@ -152,9 +165,15 @@ typedef struct
     int16_t ping_servo_deci;
     uint8_t ping_seq;       /* 6 bits */
     uint8_t b_ping_req;
+    uint16_t contact_mm;   /* measured forward range on entry to an obstacle hold or hug */
+    bool     b_scan_pivot : 1;
+    bool     b_stop_left : 1;   /* exact zero from the wheel-space follower */
+    bool     b_stop_right : 1;
+    bool     b_rejoined : 1; /* IR confirmed the exit tape on this tick */
+    uint8_t  course_scan_samples; /* at completion: usable rays at this encoder anchor, plus one */
 } pilot_cmd_t;
 
-STATIC_ASSERT(sizeof(pilot_cmd_t) == 10U, "pilot_cmd_t size");
+STATIC_ASSERT(sizeof(pilot_cmd_t) == 14U, "pilot_cmd_t size");
 
 typedef struct
 {
@@ -162,18 +181,42 @@ typedef struct
     uint32_t      ref_left_um;   /* travel at the start of the window, low 32 bits */
     uint32_t      ref_right_um;
     uint32_t      since_ms;      /* start of the window                            */
+    uint32_t      forward_ping_ms; /* grace start, last forward observation or requested look */
+    uint32_t      slip_left_um;   /* travel at the first stable forward range */
+    uint32_t      slip_right_um;
     uint8_t       phase;         /* pilot_phase_t                                  */
     uint8_t       b_estop;       /* latched until pilot_init()                     */
     uint8_t       b_encoder;     /* latched until pilot_init() or pilot_clear_latches() */
-    /* The last command: moving, slow wheels, reverse. Also the sonar run, its
-     * latch and the cause of the latch. */
+    /* Last command and the open or latched data stop. */
     uint8_t       flags;
     hug_t         hug;
     look_t        look;          /* the one look, used by the hug */
     uint8_t       b_timeout;     /* as b_encoder; in the padding                 */
+    uint8_t       forward_ping_seq;
+    uint16_t      slip_range_mm;
+    bool          b_slip_forward : 1;
+    bool          b_course_hold : 1;
+    bool          b_check_left : 1;  /* wheel showed no travel through a commanded window */
+    bool          b_check_right : 1;
+    uint32_t      course_scan_ms;
+    uint32_t      course_left_um; /* low wheel totals at the stationary survey origin */
+    uint32_t      course_right_um;
+    uint8_t       course_scan_step;
+    uint8_t       course_scan_seq;
+    uint8_t       course_clear_count;
+    uint8_t       course_scan_attempts;
+    uint8_t       data_recovery_pings;
+    bool          b_forward_timer_started;
+    int8_t        course_side; /* provisional surveyed side: left +1, right -1, unknown 0 */
+    bool          b_course_anchor;
+    bool          b_course_stuck; /* stall recovery needs operator clearance */
+    bool          b_follow_forward; /* forward line command during the measured interval */
+    uint16_t      exit_width_mm; /* measured before giving up the active hug frame */
+    uint16_t      exit_breadth_mm;
+    int16_t       line_radius_mm; /* prior forward line-steering request, left positive */
 } pilot_state_t;
 
-STATIC_ASSERT(sizeof(pilot_state_t) == 384U, "pilot_state_t size");
+STATIC_ASSERT(sizeof(pilot_state_t) == 416U, "pilot_state_t size");
 
 /** Clear the state: no latch, follower at its start. The line task calls it
  *  once, at boot. */
@@ -189,6 +232,69 @@ void pilot_init(pilot_state_t * p_state);
 void pilot_step(pilot_state_t * p_state, pilot_meas_t const * p_meas,
                 pilot_cmd_t * p_cmd);
 
+/* Experimental verified contour input. The local caller binds a host-verified
+ * route to the stopped axle pose which defines its origin and heading. */
+#define PILOT_CONTOUR_STEPS (7U)
+
+typedef struct
+{
+    uint16_t length_mm; /* zero only for a verified on-the-spot pivot */
+    int16_t turn_deci;  /* signed total change of heading, left positive */
+} pilot_contour_step_t;
+
+typedef struct
+{
+    uint32_t id;             /* nonzero evidence generation */
+    uint32_t issued_ms;
+    uint32_t left_um;        /* low bits of the wheel counts at the anchor */
+    uint32_t right_um;
+    pilot_contour_step_t steps[PILOT_CONTOUR_STEPS];
+    uint8_t count;
+} pilot_contour_plan_t;
+
+typedef enum
+{
+    PILOT_CONTOUR_IDLE = 0,
+    PILOT_CONTOUR_WAIT,
+    PILOT_CONTOUR_MOVE,
+    PILOT_CONTOUR_LINE,
+    PILOT_CONTOUR_DONE,
+    PILOT_CONTOUR_STOPPED
+} pilot_contour_status_t;
+
+/* Caller-owned state, zeroed before first use. Production line-task state
+ * need not allocate a contour while it has no verified geometry provider. */
+typedef struct
+{
+    pilot_contour_plan_t plan;
+    uint32_t last_left_um;
+    uint32_t last_right_um;
+    uint32_t step_ms;
+    int32_t x_um;
+    int32_t y_um;
+    int32_t diff_um;
+    int32_t progress_um;
+    int32_t route_x_mm;
+    int32_t route_y_mm;
+    int16_t route_head_deci;
+    uint8_t index;
+    uint8_t status;
+    bool b_terminal_stationary;
+} pilot_contour_t;
+
+STATIC_ASSERT(sizeof(pilot_contour_step_t) == 4U, "contour step size");
+STATIC_ASSERT(sizeof(pilot_contour_plan_t) == 48U, "contour plan size");
+STATIC_ASSERT(sizeof(pilot_contour_t) == 92U, "contour state size");
+
+/* Local prototype seam. An ineligible offer leaves ordinary pilot behavior in
+ * control. After takeover, keep the same state object until it finishes. A
+ * cancelled or unsafe route holds the wheels until the caller explicitly
+ * reinitializes at a surveyed pose. The installed bounded course never takes
+ * a contour from this seam. */
+void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_meas,
+                             pilot_contour_t * p_contour,
+                             pilot_contour_plan_t const * p_offer, pilot_cmd_t * p_cmd);
+
 /** Operator emergency stop. The stop holds until pilot_init(): the motion
  *  service latches the emergency stop until reboot as well. */
 void pilot_estop(pilot_state_t * p_state);
@@ -200,18 +306,24 @@ void pilot_estop(pilot_state_t * p_state);
  *  holds the wheels (PILOT_REASON_HELD) until START. */
 void pilot_clear_latches(pilot_state_t * p_state);
 
-/** START: release the SONAR and STALE latches and end the open run, so that
- *  the next fault or stale feedback gets a full window. ENCODER, HUG_TIMEOUT
- *  and the emergency stop stay: only RESET clears the first two. */
+/** Release the sonar and stale-data latches after fresh feedback recovers. */
 void pilot_release_sonar(pilot_state_t * p_state);
+
+/** Clear recoverable pilot latches on operator START. A stall hold may resume the original route once
+ * new forward clearance is confirmed with the wheels stationary. */
+void pilot_start_run(pilot_state_t * p_state);
+/* Discard obstacle geometry and route motion when the selected floor changes. */
+void pilot_change_floor(pilot_state_t * p_state, bool b_continuous_floor);
+/* Replan at the recovered stationary pose. An interrupted hug or a near
+ * front observation needs a new survey before the wheels move. */
+void pilot_recover_pose(pilot_state_t * p_state, bool clear, uint32_t now_ms);
 
 /** True when a supervisor count (RESET or START) differs from the value last
  *  seen, which it then records. Each count keeps its own last-seen value. */
 bool pilot_count_moved(uint8_t * p_seen, uint8_t count);
 
 /**
- * Wheel targets for one command, as the line task sends them. The car and the
- * host sim both call it, so the sim drives through the same limits.
+ * Wheel targets for one command, as the line task sends them.
  *
  * @param[in,out] p_drive      Drive state.
  * @param[in]     p_cmd        The command of this pass.

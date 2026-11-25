@@ -32,6 +32,10 @@ static inline void mp_memory_barrir (void)
 
 /** Single-threaded host stand-ins for the kernel atomics. Each returns the
  *  value held before the update, as the kernel does. */
+#ifdef PICO_TEST_LIVENESS_ATOMICS
+UW atomic_bitset (UW * addr, UW bits);
+UW atomic_xchg (UW * addr, UW value);
+#else
 static inline UW atomic_bitset (UW * addr, UW bits)
 {
     const UW old = *addr;
@@ -39,6 +43,15 @@ static inline UW atomic_bitset (UW * addr, UW bits)
     *addr = old | bits;
     return old;
 }
+
+static inline UW atomic_xchg (UW * addr, UW value)
+{
+    const UW old = *addr;
+
+    *addr = value;
+    return old;
+}
+#endif
 
 static inline UW atomic_bitclr (UW * addr, UW bits)
 {

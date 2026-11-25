@@ -1,20 +1,17 @@
 /** @file scan_algo.c
  *
- * @brief Echo classification, ping agreement and the ±30° servo scan with
+ * @brief Echo classification, ping agreement and the servo scan with
  *        body-pivot windows. Pure C99 and integer only.
  *
  * Scan order:
- *   1. Coarse centre window: 10 degree steps over +-30 degrees (slots 12,
- *      14, ... 24, from right to left).
+ *   1. Coarse centre window: 5 degree steps across the servo's travel.
  *   2. Region: the closest VALID reading within 600 mm inside the path
  *      (+-30 degrees), grown over coarse neighbours within closest + 250 mm.
  *   3. Fine: walk the left edge outward in 5 degree steps, then the right
- *      edge. If an edge reaches the end of the centre servo window (+-30 deg)
- *      without a miss, pivot the body toward that side by
- *      OBSTACLE_SCAN_PIVOT_DECI (+-60 deg) once and continue walking in the
- *      shifted servo window (+-30 deg around the pivoted body, covering up
- *      to +-90 deg). All readings merge into the 37-slot profile in the
- *      original frame.
+ *      edge. If a walk reaches the end of its servo window without a miss,
+ *      pivot the body toward that side and continue to the edge or the
+ *      90 degree profile limit. All readings merge into the 37-slot profile
+ *      in the original frame.
  */
 
 #include <stdbool.h>
@@ -29,10 +26,10 @@
 #define PHASE_FINE_RIGHT (2U)
 #define PHASE_DONE       (3U)
 
-/* Coarse stride in slots: 100 deci / 50 deci = 2 slots. */
+/* Coarse stride in profile slots. */
 #define COARSE_STRIDE ((uint8_t)(OBSTACLE_COARSE_STEP_DECI / OBSTACLE_SLOT_STEP_DECI))
 
-/* Centre window slot bounds (-30 deg = slot 12, +30 deg = slot 24). */
+/* Centre window slot bounds. */
 #define CENTRE_FIRST_SLOT                                                        \
     ((uint8_t)((-OBSTACLE_SERVO_LIMIT_DECI - OBSTACLE_SLOT_FIRST_DECI) /         \
                OBSTACLE_SLOT_STEP_DECI))
@@ -56,6 +53,23 @@ static bool    slot_in_servo_window (int16_t body_deci, int32_t slot);
 static uint8_t walk_edge (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first,
                           uint8_t * p_miss);
 static void    run_fine (scan_algo_ctx_t * p_ctx, uint8_t side, int32_t first);
+
+void obstacle_profile_record_ray (uint16_t * p_slots, int32_t angle_deci,
+                                  uint16_t range_mm, uint8_t echo)
+{
+    int32_t const minimum = OBSTACLE_SLOT_FIRST_DECI;
+    int32_t const maximum = minimum + (((int32_t)OBSTACLE_SLOT_COUNT - 1) * OBSTACLE_SLOT_STEP_DECI);
+
+    if ((angle_deci >= minimum) && (angle_deci <= maximum))
+    {
+        int32_t const offset = angle_deci - minimum;
+
+        if ((offset % OBSTACLE_SLOT_STEP_DECI) == 0)
+        {
+            p_slots[offset / OBSTACLE_SLOT_STEP_DECI] = obstacle_pack_slot(range_mm, echo);
+        }
+    }
+}
 
 /*!
  * @brief Convert an echo width to a distance (integer maths, 343 m/s).
@@ -85,8 +99,8 @@ uint16_t scan_algo_dist_mm (uint32_t width_us)
  *
  * VALID and OPEN need a clean rise and fall. A clean echo shorter than the
  * VALID range is TOO_CLOSE (an object in the blind zone), or a GLITCH when
- * it is too short to be a reflection. One missing edge is a GLITCH. Nothing
- * on ECHO within the wait is NO_ECHO.
+ * it is too short to be a reflection. A pulse still high at the deadline
+ * or an empty wait gives NO_ECHO. Inconsistent edges give GLITCH.
  *
  * @param[in] echo_result Echo result word written by the echo ISR.
  * @param[in] b_timed_out True if the 40 ms wait ended without DONE.
@@ -128,8 +142,9 @@ uint8_t scan_algo_classify (uint32_t echo_result, bool b_timed_out, bool b_echo_
     }
     else if (b_timed_out && b_rise && b_echo_high)
     {
-        /* Still high after 40 ms: nothing within 4 m. */
-        cls = OBSTACLE_CLASS_OPEN;
+        /* The deadline runs from the trigger. A late rise or a stuck line
+         * has no measured pulse width. Retry on the next scheduled ping. */
+        cls = OBSTACLE_CLASS_NO_ECHO;
     }
     else if (b_rise || b_done || b_echo_high)
     {
@@ -168,7 +183,7 @@ int16_t scan_algo_slot_deci (uint8_t slot)
  *
  * @param[in] p_ctx Scan engine state.
  *
- * @return Body pivot angle in deci-degrees (0, +600, or -600).
+ * @return Body pivot angle in deci-degrees.
  */
 int16_t scan_algo_body_deci (scan_algo_ctx_t const * p_ctx)
 {
@@ -176,11 +191,11 @@ int16_t scan_algo_body_deci (scan_algo_ctx_t const * p_ctx)
 }
 
 /*!
- * @brief Servo angle for the current scan target, clamped to +-30 degrees.
+ * @brief Servo angle for the current scan target, clamped to the servo window.
  *
  * @param[in] p_ctx Scan engine state.
  *
- * @return Servo angle in deci-degrees (-300..+300).
+ * @return Servo angle in deci-degrees.
  */
 int16_t scan_algo_servo_deci (scan_algo_ctx_t const * p_ctx)
 {
@@ -199,7 +214,7 @@ int16_t scan_algo_servo_deci (scan_algo_ctx_t const * p_ctx)
         }
         else
         {
-            /* Already within +-30 degrees. */
+            /* Already within the servo window. */
         }
     }
 
@@ -341,7 +356,7 @@ bool scan_algo_is_miss (uint16_t slot_val, uint16_t ref_mm)
 }
 
 /*!
- * @brief Start a new scan in the centre servo window (-30..+30 deg).
+ * @brief Start a new scan in the centre servo window.
  *
  * @param[out] p_ctx Scan engine state.
  */
@@ -636,7 +651,7 @@ static void finish_coarse (scan_algo_ctx_t * p_ctx)
 }
 
 /*!
- * @brief Tell whether a slot's bearing is reachable within +-30 degrees of
+ * @brief Tell whether a slot's bearing is reachable within the servo window from
  *        the current body heading.
  *
  * @param[in] body_deci Body heading offset in deci-degrees.
@@ -662,8 +677,8 @@ static bool slot_in_servo_window (int16_t body_deci, int32_t slot)
 
 /*!
  * @brief Walk one edge outward, starting at slot first. If the walk reaches
- *        the end of the centre servo window without a real miss, pivot the
- *        body once toward that side so the servo window shifts to 30..90 deg.
+ *        the end of a servo window without a real miss, pivot the body
+ *        toward that side to reach the next window.
  *
  * @param[in,out] p_ctx  Scan engine state.
  * @param[in]     side   SCAN_ALGO_LEFT or SCAN_ALGO_RIGHT.

@@ -1,0 +1,400 @@
+/** Replay timestamped IR edges through the production barcode task and parser. */
+#include <assert.h>
+#include <setjmp.h>
+#include <string.h>
+
+#include "barcode/action.h"
+#include "barcode/parser.h"
+#include "platform/liveness.h"
+#include "platform/log.h"
+#include "supervisor/command.h"
+#include "telemetry/assemble.h"
+#include "telemetry/emit.h"
+#include "telemetry/wire_schema.h"
+#include "track/barcode.h"
+#include "track/track.h"
+
+static jmp_buf g_finish;
+static uint8_t const g_delimiter[] = {1U, 3U, 1U, 1U, 3U, 1U, 3U, 1U, 1U, 1U};
+static uint8_t const g_reverse_delimiter[] = {1U, 1U, 3U, 1U, 3U, 1U, 1U, 3U, 1U, 1U};
+static uint8_t const g_parity[] = {3U, 1U, 3U, 1U, 3U};
+static uint8_t const g_element[] = {1U, 2U};
+static uint8_t const g_a[] = {3U, 1U, 1U, 1U, 1U, 3U, 1U, 1U, 3U, 1U};
+static uint8_t const g_l[] = {1U, 1U, 3U, 1U, 1U, 1U, 1U, 3U, 3U, 1U};
+static uint8_t const g_reverse_a[] = {3U, 1U, 1U, 3U, 1U, 1U, 1U, 1U, 3U, 1U};
+static uint8_t const g_blocks[] = {60U, 1U, 61U};
+static uint8_t const g_abort_block[] = {60U};
+static uint8_t const * gp_delimiter;
+static uint8_t const * gp_widths;
+static size_t g_count;
+static size_t g_edge;
+static uint32_t g_timestamp_us;
+static uint32_t g_odometer_mm;
+static uint32_t g_speed_mm_s;
+static uint32_t g_start_us;
+static uint32_t g_start_mm;
+static uint32_t g_tick_remainder;
+static bool g_b_drop_phase;
+static unsigned g_command_count;
+static unsigned g_idle_waits;
+static size_t g_invalid_speed_stripe = SIZE_MAX;
+static size_t g_loss_edge = SIZE_MAX;
+static bool g_follow_with_clean_marker;
+static size_t g_odometer_jump_edge = SIZE_MAX;
+static size_t g_invalid_odometer_edge = SIZE_MAX;
+static uint8_t g_status_at_edge[31];
+static uint8_t g_prefix_mm[31];
+static uint8_t g_progress[31];
+
+typedef struct
+{
+    uint8_t type;
+    int16_t p1;
+    uint16_t p2;
+    size_t stripe;
+    uint32_t timestamp_us;
+    uint32_t odometer_mm;
+} event_t;
+
+static event_t g_events[8];
+static size_t g_event_count;
+
+static void travel_mm (uint32_t distance)
+{
+    /* The capture ring timestamps have 2 µs resolution. Carry the fractional
+     * tick across elements so a constant physical speed gives the correct total. */
+    uint32_t const ticks = distance * 500000U + g_tick_remainder;
+    g_timestamp_us += 2U * (ticks / g_speed_mm_s);
+    g_tick_remainder = ticks % g_speed_mm_s;
+    g_odometer_mm += distance;
+}
+
+ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
+{
+    size_t const delimiter_count = gp_delimiter == NULL ? 0U : sizeof(g_delimiter);
+
+    if (g_edge != 0U)
+    {
+        assert(g_edge <= sizeof(g_status_at_edge));
+        g_status_at_edge[g_edge - 1U] = barcode_status_bits();
+        g_progress[g_edge - 1U] = barcode_progress_count(&g_prefix_mm[g_edge - 1U]);
+    }
+    if (g_edge > delimiter_count + g_count)
+    {
+        if (!g_follow_with_clean_marker)
+        {
+            return IR_BARCODE_EMPTY;
+        }
+        /* The next opening bar arrives after a 51 mm white gap. */
+        g_follow_with_clean_marker = false;
+        travel_mm(51U);
+        g_loss_edge = SIZE_MAX;
+        g_edge = 0U;
+    }
+    if (g_edge != 0U)
+    {
+        size_t const stripe = g_edge - 1U;
+        size_t const data_index = stripe - delimiter_count;
+        uint8_t width;
+
+        if (stripe < delimiter_count)
+        {
+            width = gp_delimiter[stripe];
+        }
+        else if (gp_delimiter != NULL && data_index >= sizeof(g_a))
+        {
+            width = gp_delimiter[data_index - sizeof(g_a)];
+        }
+        else
+        {
+            width = gp_widths[data_index];
+        }
+        travel_mm(width);
+        if (g_edge == g_odometer_jump_edge)
+        {
+            g_odometer_mm += 60U;
+        }
+    }
+    *p_timestamp_us = g_timestamp_us;
+    *p_level = (g_edge % 2U) != 0U;
+    g_edge++;
+    return (g_edge - 1U == g_loss_edge) ? IR_BARCODE_EDGE_AFTER_LOSS : IR_BARCODE_EDGE;
+}
+
+ER ir_wait_change (uint8_t type, TMO timeout)
+{
+    assert(type == IR_TYPE_BARCODE && timeout > 0);
+    if (g_idle_waits > 0U)
+    {
+        g_idle_waits--;
+        return E_TMOUT;
+    }
+    longjmp(g_finish, 1);
+}
+
+int motion_feedback_snapshot (motion_feedback_t * p_feedback)
+{
+    bool const b_speed_valid = g_edge - 1U != g_invalid_speed_stripe;
+    bool const b_odometer_valid = g_edge - 1U != g_invalid_odometer_edge;
+
+    *p_feedback = (motion_feedback_t){
+        .fresh = true, .speed_valid = {b_speed_valid, b_speed_valid}, .timestamp_us = g_timestamp_us,
+        .odometry_valid = {b_odometer_valid, b_odometer_valid},
+        .left_speed_um_s = (int32_t)(g_speed_mm_s * 1000U),
+        .right_speed_um_s = (int32_t)(g_speed_mm_s * 1000U),
+    };
+    return E_OK;
+}
+
+uint32_t telemetry_odometer_mm (const motion_feedback_t * p_feedback)
+{
+    assert(p_feedback->timestamp_us == g_timestamp_us);
+    return g_odometer_mm;
+}
+
+static void record_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
+                          uint32_t odometer_mm)
+{
+    assert(source == TELEMETRY_EVENT_SOURCE_BARCODE);
+    assert(odometer_mm == g_odometer_mm);
+    assert(g_event_count < sizeof(g_events) / sizeof(g_events[0]));
+    g_events[g_event_count++] = (event_t){type, p1, p2, g_edge - 1U, g_timestamp_us, odometer_mm};
+}
+
+ER telemetry_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
+                         uint32_t odometer_mm)
+{
+    assert(type != TELEMETRY_EVT_BARCODE_PHASE);
+    record_event(source, type, p1, p2, odometer_mm);
+    return E_OK;
+}
+
+ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
+                             uint32_t odometer_mm)
+{
+    assert(type == TELEMETRY_EVT_BARCODE_PHASE);
+    record_event(source, type, p1, p2, odometer_mm);
+    return g_b_drop_phase ? E_TMOUT : E_OK;
+}
+
+ER vehicle_command_post (uint8_t opcode, uint8_t source)
+{
+    assert(opcode == VEHICLE_CMD_LEFT && source == VEHICLE_SRC_BARCODE);
+    g_command_count++;
+    return E_OK;
+}
+
+void liveness_kick (uint8_t task) { (void)task; }
+
+void log_write (log_sev_t sev, log_task_t task, log_mod_t mod, const char * p_fmt, ...)
+{
+    (void)sev;
+    (void)task;
+    (void)mod;
+    (void)p_fmt;
+}
+
+static void replay (uint8_t const * p_delimiter, uint8_t const * p_widths, size_t count)
+{
+    gp_delimiter   = p_delimiter;
+    gp_widths      = p_widths;
+    g_count        = count;
+    g_edge         = 0U;
+    g_timestamp_us += 5000000U;
+    g_odometer_mm += 500U;
+    g_start_us = g_timestamp_us;
+    g_start_mm = g_odometer_mm;
+    g_tick_remainder = 0U;
+    g_event_count  = 0U;
+    if (setjmp(g_finish) == 0)
+    {
+        barcode_task_run();
+    }
+}
+
+static void expect_event (size_t index, uint8_t type, int16_t p1, uint16_t p2, size_t stripe)
+{
+    assert(index < g_event_count);
+    assert(g_events[index].type == type);
+    assert(g_events[index].p1 == p1);
+    assert(g_events[index].p2 == p2);
+    assert(g_events[index].stripe == stripe);
+}
+
+static void expect_phase (size_t index, int16_t phase, uint16_t details, size_t stripe)
+{
+    expect_event(index, TELEMETRY_EVT_BARCODE_PHASE, phase, details, stripe);
+}
+
+static void expect_status (uint8_t bits, uint8_t element, uint8_t phase)
+{
+    assert((bits & 7U) == 0U);
+    assert(((bits >> 3U) & 3U) == element);
+    assert((bits >> 5U) == phase);
+}
+
+static void test_active_reject (uint8_t const * p_delimiter, uint8_t const * p_widths, size_t count,
+                                uint8_t reason, uint16_t width_um, uint16_t reverse)
+{
+    replay(p_delimiter, p_widths, count);
+    assert(g_event_count == 4U);
+    expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, reverse, 10U);
+    expect_phase(1U, TELEMETRY_BARCODE_PHASE_DECODING, reverse, 11U);
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_ABORTED, (uint16_t)((reason << 8U) | reverse), 10U + count);
+    expect_event(3U, TELEMETRY_EVT_BARCODE_BAD, reason, width_um, 10U + count);
+}
+
+static void test_complete (uint8_t const * p_delimiter, uint8_t const * p_data, uint16_t reverse)
+{
+    replay(p_delimiter, p_data, 19U);
+    assert(g_event_count == 4U);
+    expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, reverse, 10U);
+    expect_phase(1U, TELEMETRY_BARCODE_PHASE_DECODING, reverse, 11U);
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_COMPLETE, reverse, 29U);
+    expect_event(3U, TELEMETRY_EVT_BARCODE, 'A',
+                 (uint16_t)((250U << 4U) | ((uint32_t)reverse << 3U) | BARCODE_ACTION_REJECTED), 29U);
+    expect_status(g_status_at_edge[10], TELEMETRY_BARCODE_ELEMENT_SPACE, TELEMETRY_BARCODE_PHASE_START);
+    expect_status(g_status_at_edge[11], TELEMETRY_BARCODE_ELEMENT_BAR, TELEMETRY_BARCODE_PHASE_DECODING);
+    expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_BAR, TELEMETRY_BARCODE_PHASE_COMPLETE);
+}
+
+static void test_full_sized_marker (uint32_t speed_mm_s, bool reverse)
+{
+    uint8_t delimiter[10];
+    uint8_t data[10];
+    /* Reverse the nine elements in each symbol. The separator stays last. */
+    for (unsigned i = 0; i < 10U; ++i)
+    {
+        unsigned const source = (reverse && i < 9U) ? 8U - i : i;
+        delimiter[i] = (uint8_t)(3U * g_delimiter[source]);
+        data[i] = (uint8_t)(3U * g_l[source]);
+    }
+    unsigned const commands = g_command_count;
+    g_speed_mm_s = speed_mm_s;
+    g_follow_with_clean_marker = true;
+    replay(delimiter, data, 19U);
+    assert(g_command_count == commands + 2U && g_event_count == 8U);
+    assert(g_prefix_mm[5] >= 20U && g_prefix_mm[10] == 0U);
+    assert(g_progress[5] == g_progress[1] && g_progress[11] != g_progress[10]);
+    for (size_t marker = 0; marker < 2U; ++marker)
+    {
+        size_t const event = marker * 4U;
+        uint16_t const orientation = reverse ? 1U : 0U;
+        expect_phase(event, TELEMETRY_BARCODE_PHASE_START, orientation, 10U);
+        expect_phase(event + 1U, TELEMETRY_BARCODE_PHASE_DECODING, orientation, 11U);
+        expect_phase(event + 2U, TELEMETRY_BARCODE_PHASE_COMPLETE, orientation, 29U);
+        event_t const * decoded = &g_events[event + 3U];
+        assert(decoded->type == TELEMETRY_EVT_BARCODE && decoded->p1 == 'L' && decoded->stripe == 29U);
+        assert((decoded->p2 & 15U) == (BARCODE_ACTION_LEFT | (orientation << 3U)));
+        unsigned const narrow_um = (decoded->p2 >> 4U) * 4U;
+        assert(narrow_um >= 2996U && narrow_um <= 3000U);
+        /* A second complete marker follows 51 mm of clear floor in the same run. */
+        uint32_t const distance_mm = (marker == 0U) ? 141U : 333U;
+        uint32_t const elapsed_us = decoded->timestamp_us - g_start_us;
+        uint32_t const expected_us = distance_mm * 1000000U / speed_mm_s;
+        assert(decoded->odometer_mm == g_start_mm + distance_mm);
+        assert(elapsed_us <= expected_us && elapsed_us + 2U > expected_us);
+    }
+}
+
+static void test_full_sized_markers (void)
+{
+    test_full_sized_marker(120U, false);
+    test_full_sized_marker(180U, false);
+    test_full_sized_marker(120U, true);
+    test_full_sized_marker(180U, true);
+}
+
+int main (int argc, char ** argv)
+{
+    if (argc == 2 && strcmp(argv[1], "full-sized") == 0)
+    {
+        test_full_sized_markers();
+        return 0;
+    }
+    assert(argc == 1);
+    expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_UNKNOWN, TELEMETRY_BARCODE_PHASE_UNKNOWN);
+    g_speed_mm_s = 100U;
+    replay(NULL, g_element, sizeof(g_element));
+    assert(g_event_count == 1U);
+    expect_event(0U, TELEMETRY_EVT_BARCODE_BAD, BARCODE_REJECT_ELEMENT, 2000U, 2U);
+    expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_SPACE, TELEMETRY_BARCODE_PHASE_UNKNOWN);
+
+    test_active_reject(g_delimiter, g_parity, sizeof(g_parity), BARCODE_REJECT_PARITY, 3000U, 0U);
+    test_active_reject(g_reverse_delimiter, g_element, sizeof(g_element), BARCODE_REJECT_ELEMENT, 2000U, 1U);
+    test_complete(g_delimiter, g_a, 0U);
+    g_b_drop_phase = true;
+    test_complete(g_reverse_delimiter, g_reverse_a, 1U);
+    g_b_drop_phase = false;
+
+    g_idle_waits = 5U;
+    replay(g_reverse_delimiter, NULL, 0U);
+    assert(g_event_count == 3U);
+    expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, 1U, 10U);
+    expect_phase(1U, TELEMETRY_BARCODE_PHASE_ABORTED, (BARCODE_REJECT_DELIMITER << 8U) | 1U, 10U);
+    expect_event(2U, TELEMETRY_EVT_BARCODE_BAD, BARCODE_REJECT_DELIMITER, 0U, 10U);
+    expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_SPACE, TELEMETRY_BARCODE_PHASE_ABORTED);
+
+    g_invalid_speed_stripe = 11U;
+    replay(g_delimiter, g_a, 1U);
+    g_invalid_speed_stripe = SIZE_MAX;
+    assert(g_event_count == 3U);
+    expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, 0U, 10U);
+    expect_phase(1U, TELEMETRY_BARCODE_PHASE_ABORTED, BARCODE_REJECT_SPEED << 8U, 11U);
+    expect_event(2U, TELEMETRY_EVT_BARCODE_BAD, BARCODE_REJECT_SPEED, 0U, 11U);
+    expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_SPACE, TELEMETRY_BARCODE_PHASE_ABORTED);
+
+    replay(NULL, g_blocks, sizeof(g_blocks));
+    assert(g_event_count == 1U);
+    expect_event(0U, TELEMETRY_EVT_BARCODE_BLOCK, 60, 0U, 1U);
+    /* A rate-limited second block still updates last measured element. */
+    expect_status(g_status_at_edge[2], TELEMETRY_BARCODE_ELEMENT_SPACE, TELEMETRY_BARCODE_PHASE_ABORTED);
+    expect_status(barcode_status_bits(), TELEMETRY_BARCODE_ELEMENT_BLOCK, TELEMETRY_BARCODE_PHASE_ABORTED);
+
+    /* An in-window measured block cancels before any payload is accepted. */
+    g_speed_mm_s = 200U;
+    replay(g_delimiter, g_abort_block, sizeof(g_abort_block));
+    assert(g_event_count == 3U);
+    expect_phase(0U, TELEMETRY_BARCODE_PHASE_START, 0U, 10U);
+    expect_event(1U, TELEMETRY_EVT_BARCODE_BLOCK, 60, 0U, 11U);
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_ABORTED, 0U, 11U);
+
+    g_speed_mm_s = 100U;
+    g_odometer_jump_edge = 11U;
+    replay(g_delimiter, g_a, 1U);
+    g_odometer_jump_edge = SIZE_MAX;
+    assert(g_event_count == 3U);
+    expect_event(1U, TELEMETRY_EVT_BARCODE_BLOCK, 63, 0U, 11U);
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_ABORTED, 0U, 11U);
+
+    /* Invalid displacement cannot veto an otherwise valid speed-based width. */
+    g_odometer_jump_edge = 11U;
+    g_invalid_odometer_edge = 11U;
+    replay(g_delimiter, g_a, 1U);
+    g_invalid_odometer_edge = SIZE_MAX;
+    g_odometer_jump_edge = SIZE_MAX;
+    assert(g_event_count == 2U);
+    expect_phase(1U, TELEMETRY_BARCODE_PHASE_DECODING, 0U, 11U);
+
+    static const uint8_t non_letter[] = {3U, 1U, 1U, 3U, 1U, 1U, 1U, 1U, 3U, 1U};
+    test_active_reject(g_delimiter, non_letter, 19U, BARCODE_REJECT_SYMBOL, 1000U, 0U);
+
+    /* A lost pulse in the final delimiter must prevent posting this L. */
+    g_loss_edge = 29U;
+    replay(g_delimiter, g_l, 19U);
+    g_loss_edge = SIZE_MAX;
+    assert(g_event_count == 4U);
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_ABORTED, BARCODE_REJECT_CAPTURE << 8U, 29U);
+    expect_event(3U, TELEMETRY_EVT_BARCODE_BAD, BARCODE_REJECT_CAPTURE, 0U, 29U);
+    assert(g_command_count == 0U);
+    g_loss_edge = 29U;
+    g_follow_with_clean_marker = true;
+    replay(g_delimiter, g_l, 19U);
+    assert(g_event_count == 8U);
+    expect_phase(2U, TELEMETRY_BARCODE_PHASE_ABORTED, BARCODE_REJECT_CAPTURE << 8U, 29U);
+    expect_phase(6U, TELEMETRY_BARCODE_PHASE_COMPLETE, 0U, 29U);
+    assert(g_events[7U].type == TELEMETRY_EVT_BARCODE && g_events[7U].p1 == 'L');
+    assert(g_command_count == 1U);
+    test_full_sized_markers();
+    return 0;
+}

@@ -17,7 +17,11 @@
 
 #define IO_IRQ_BANK0 13U
 #define BARCODE_EDGE_RING 64U
+#define BITS_PER_GAP_WORD 32U
 #define BARCODE_LEVEL_MASK 1U
+#define BARCODE_IDLE 0U
+#define BARCODE_CLEAN 1U
+#define BARCODE_NOISY 2U
 #define LINE_SAMPLE_PERIOD_US 5000U
 
 /**
@@ -26,17 +30,22 @@
  * level in bit 0, so the timestamp resolution is 2 us.
  */
 static volatile uint32_t g_barcode_edges[BARCODE_EDGE_RING];
+/* Only the ISR writes these bits, before publishing the corresponding slot. */
+static volatile uint32_t g_barcode_gaps[BARCODE_EDGE_RING / BITS_PER_GAP_WORD];
+STATIC_ASSERT((BARCODE_EDGE_RING % BITS_PER_GAP_WORD) == 0U, barcode_gap_words_cover_ring);
+static bool g_barcode_gap_pending;
 static volatile uint32_t g_barcode_head;
 static volatile uint32_t g_barcode_tail;
 static volatile uint32_t g_barcode_drops;
 static volatile uint32_t g_barcode_last_us;
-static volatile bool     g_barcode_seen;
+static volatile uint8_t  g_barcode_quality;
 
 /**
  * Line sensor TIMER alarm state (D88, S31).
  */
 static volatile uint32_t g_line_alarm_target;
 static volatile uint32_t g_line_timestamp_us;
+static volatile ir_sensors_state_t g_sample_state;
 static volatile uint32_t g_line_overruns;
 
 /**
@@ -96,6 +105,25 @@ LOCAL ir_sensors_state_t current_state (void)
     return state;
 }
 
+/* A past comparison does not fire until the low timer word wraps.
+ * Retry a missed write unless hardware already latched the interrupt. */
+LOCAL void arm_line_alarm (uint32_t target)
+{
+    for (;;)
+    {
+        out_w(TIMER_ALARM0, target);
+        uint32_t const now = in_w(TIMER_TIMERAWL);
+        if (((int32_t)(target - now) > 0) || (0U != (in_w(TIMER_INTR) & (1U << LINE_TIMER_ALARM_NUM))))
+        {
+            g_line_alarm_target = target;
+            return;
+        }
+        uint32_t missed = 0U;
+        target = ir_alarm_next(target, now, LINE_SAMPLE_PERIOD_US, &missed);
+        g_line_overruns += missed + 1U;
+    }
+}
+
 /**
  * 5 ms RP2040 TIMER alarm ISR on Core 0 (D88, S31).
  * Re-arms from previous target without drift, samples left and right pins,
@@ -115,8 +143,15 @@ LOCAL void line_alarm_isr (UINT intno)
         ir_alarm_next(g_line_alarm_target, now, LINE_SAMPLE_PERIOD_US, &missed);
 
     g_line_overruns += missed;
-    g_line_alarm_target = target;
-    out_w(TIMER_ALARM0, target);
+    arm_line_alarm(target);
+
+    /* The same-core, equal-priority GPIO ISR cannot interleave here. Forget
+     * expired quality before the low timer word can make an old edge recent. */
+    if ((BARCODE_IDLE != g_barcode_quality) &&
+        !barcode_suppress_active(true, now, g_barcode_last_us))
+    {
+        g_barcode_quality = BARCODE_IDLE;
+    }
 
     /* Sample left and right sensors in one GPIO_IN read. The raw bits pass
      * through the 3-sample debounce (15 ms), so one bad sample never reaches
@@ -138,9 +173,13 @@ LOCAL void line_alarm_isr (UINT intno)
     g_prev_raw_left  = raw_left;
     g_prev_raw_right = raw_right;
 
-    g_line_timestamp_us = now;
-    mp_memory_barrir();
+    /* A missing barcode IRQ must not give a fresh line sample an old side
+     * reading. Later barcode edges can still update the live status byte. */
+    state.barcode = (gpio >> IR_BARCODE_PIN) & 1U;
     store_state(&g_state, state);
+    store_state(&g_sample_state, state);
+    mp_memory_barrir();
+    g_line_timestamp_us = now;
 
     /* Signal line task every 5 ms sample. */
     (void)tk_sig_sem(g_line_sem, 1);
@@ -161,15 +200,15 @@ LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
     }
 
     uint32_t const now = p_snapshot->timestamp_us;
-
-    /* Every edge counts for the line-lost suppression, also a dropped one.
-     * The time is the ISR sample timestamp. */
+    bool const b_qualified = (BARCODE_NOISY != g_barcode_quality) ||
+                            !barcode_suppress_active(true, now, g_barcode_last_us);
     g_barcode_last_us = now;
-    g_barcode_seen    = true;
 
     if (IR_BARCODE_PULSE == event)
     {
         /* A pulse shorter than the ISR latency has no known order or level. */
+        g_barcode_gap_pending = true;
+        g_barcode_quality = BARCODE_NOISY;
         g_barcode_drops++;
         return;
     }
@@ -183,22 +222,28 @@ LOCAL void ir_isr (const gpio_edge_snapshot_t * p_snapshot)
 
     if (next != g_barcode_tail)
     {
+        uint32_t const word = g_barcode_head / BITS_PER_GAP_WORD;
+        uint32_t const bit = 1UL << (g_barcode_head % BITS_PER_GAP_WORD);
+        g_barcode_gaps[word] = (g_barcode_gaps[word] & ~bit) | (g_barcode_gap_pending ? bit : 0U);
+        g_barcode_gap_pending = false;
         g_barcode_edges[g_barcode_head] =
             (now & ~BARCODE_LEVEL_MASK) | (barcode ? BARCODE_LEVEL_MASK : 0U);
         mp_memory_barrir();
         g_barcode_head = next;
+        if (b_qualified)
+        {
+            /* Continuous traffic after a loss cannot keep steering disabled. */
+            g_barcode_quality = BARCODE_CLEAN;
+        }
     }
     else
     {
+        g_barcode_gap_pending = true;
+        g_barcode_quality = BARCODE_NOISY;
         g_barcode_drops++;
     }
 
     (void)tk_sig_sem(g_barcode_sem, 1);
-}
-
-LOCAL ER ir_sensor_init (UINT pin)
-{
-    return gpio_set_pin(pin, GPIO_MODE_IN);
 }
 
 LOCAL void ir_line_pull (UINT pin)
@@ -216,7 +261,21 @@ EXPORT ER ir_capture_init (void)
         .maxsem  = 1,
     };
 
-    ER result = tk_cre_sem(&sem_def);
+    ER result = gpio_set_pin(IR_BARCODE_PIN, GPIO_MODE_IN);
+    if (E_OK == result)
+    {
+        result = gpio_set_pin(IR_LEFT_PIN, GPIO_MODE_IN);
+    }
+    if (E_OK == result)
+    {
+        result = gpio_set_pin(IR_RIGHT_PIN, GPIO_MODE_IN);
+    }
+    if (E_OK != result)
+    {
+        return result;
+    }
+
+    result = tk_cre_sem(&sem_def);
     if (result < 0)
     {
         return result;
@@ -226,13 +285,12 @@ EXPORT ER ir_capture_init (void)
     result = tk_cre_sem(&sem_def);
     if (result < 0)
     {
+        (void)tk_del_sem(g_line_sem);
+        g_line_sem = 0;
         return result;
     }
     g_barcode_sem = (ID)result;
 
-    (void)ir_sensor_init(IR_BARCODE_PIN);
-    (void)ir_sensor_init(IR_LEFT_PIN);
-    (void)ir_sensor_init(IR_RIGHT_PIN);
     /* A line sensor that is unplugged must read as no line, so the car stops
      * instead of following a floating pin. */
     ir_line_pull(IR_LEFT_PIN);
@@ -240,6 +298,7 @@ EXPORT ER ir_capture_init (void)
     clr_w(GPIO(IR_BARCODE_PIN), IR_PAD_PULL_BAR);
     set_w(GPIO(IR_BARCODE_PIN), IR_PAD_PULL_SPACE);
     store_state(&g_state, current_state());
+    store_state(&g_sample_state, load_state(&g_state));
     /* Start the filters at the first raw level so the output is right from
      * the first sample. */
     line_debounce_init(&g_left_filter, load_state(&g_state).left);
@@ -260,23 +319,37 @@ EXPORT ER ir_capture_init (void)
                                                    .intatr = TA_HLNG,
                                                    .inthdr = (FP)line_alarm_isr,
                                                });
-    if (result != E_OK)
+    if (E_OK == result)
     {
-        return result;
+        /* The other core may share TIMER_INTE. */
+        out_w(TIMER_INTR, (1U << LINE_TIMER_ALARM_NUM));
+        arm_line_alarm(g_line_alarm_target);
+        set_w(TIMER_INTE, (1U << LINE_TIMER_ALARM_NUM));
+        ClearInt(LINE_TIMER_ALARM_IRQ);
+        EnableInt(LINE_TIMER_ALARM_IRQ, LINE_TIMER_ALARM_PRI);
+
+        result = gpio_irq_add_handler((UW)tk_get_prc(), (1U << IR_BARCODE_PIN),
+                                      ir_isr);
+        if (E_OK != result)
+        {
+            /* Stop the ISR before deleting the semaphore it can signal. */
+            DisableInt(LINE_TIMER_ALARM_IRQ);
+            clr_w(TIMER_INTE, (1U << LINE_TIMER_ALARM_NUM));
+            out_w(TIMER_ARMED, (1U << LINE_TIMER_ALARM_NUM));
+            out_w(TIMER_INTR, (1U << LINE_TIMER_ALARM_NUM));
+            ClearInt(LINE_TIMER_ALARM_IRQ);
+            (void)tk_def_int(LINE_TIMER_ALARM_IRQ, NULL);
+        }
     }
 
-    /* Enable the alarm only once its handler is defined and nothing is latched.
-     * The SET alias is atomic: the other core may share TIMER_INTE. */
-    out_w(TIMER_INTR, (1U << LINE_TIMER_ALARM_NUM));
-    out_w(TIMER_ALARM0, g_line_alarm_target);
-    set_w(TIMER_INTE, (1U << LINE_TIMER_ALARM_NUM));
-    ClearInt(LINE_TIMER_ALARM_IRQ);
-    EnableInt(LINE_TIMER_ALARM_IRQ, LINE_TIMER_ALARM_PRI);
-
-    /* Barcode edges stay on GPIO edges; line sensors removed from edge mask. */
-    return gpio_irq_add_handler(tk_get_prc(),
-                                (1U << IR_BARCODE_PIN),
-                                ir_isr);
+    if (E_OK != result)
+    {
+        (void)tk_del_sem(g_barcode_sem);
+        (void)tk_del_sem(g_line_sem);
+        g_barcode_sem = 0;
+        g_line_sem    = 0;
+    }
+    return result;
 }
 
 EXPORT ir_sensors_state_t ir_get_state (void)
@@ -295,7 +368,7 @@ EXPORT line_sample_t ir_get_line_sample (void)
     {
         stamp = g_line_timestamp_us;
         mp_memory_barrir();
-        sample.state = load_state(&g_state);
+        sample.state = load_state(&g_sample_state);
         mp_memory_barrir();
     } while (stamp != g_line_timestamp_us);
     sample.timestamp_us = stamp;
@@ -317,9 +390,9 @@ EXPORT uint32_t ir_line_overruns (void)
     return g_line_overruns;
 }
 
-EXPORT bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
+EXPORT ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
 {
-    bool b_popped = false;
+    ir_barcode_read_t result = IR_BARCODE_EMPTY;
 
     if ((NULL != p_timestamp_us) && (NULL != p_level))
     {
@@ -331,17 +404,19 @@ EXPORT bool ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level)
         if (tail != head)
         {
             uint32_t const entry = g_barcode_edges[tail];
+            uint32_t const bit = 1UL << (tail % BITS_PER_GAP_WORD);
+            result = ((g_barcode_gaps[tail / BITS_PER_GAP_WORD] & bit) != 0U)
+                         ? IR_BARCODE_EDGE_AFTER_LOSS : IR_BARCODE_EDGE;
 
             *p_timestamp_us = entry & ~BARCODE_LEVEL_MASK;
             *p_level        = (0U != (entry & BARCODE_LEVEL_MASK));
             /* Finish reading the entry before the ISR may reuse its slot. */
             mp_memory_barrir();
             g_barcode_tail = (tail + 1U) % BARCODE_EDGE_RING;
-            b_popped       = true;
         }
     }
 
-    return (b_popped);
+    return result;
 }
 
 EXPORT uint32_t ir_barcode_drops (void)
@@ -351,7 +426,10 @@ EXPORT uint32_t ir_barcode_drops (void)
 
 EXPORT bool ir_barcode_recent (void)
 {
-    return barcode_suppress_active(g_barcode_seen, in_w(TIMER_TIMERAWL), g_barcode_last_us);
+    uint32_t const edge_us = g_barcode_last_us;
+    uint32_t const now = in_w(TIMER_TIMERAWL);
+
+    return (BARCODE_CLEAN == g_barcode_quality) && barcode_suppress_active(true, now, edge_us);
 }
 
 EXPORT ER ir_wait_change (uint8_t type, TMO tmout)

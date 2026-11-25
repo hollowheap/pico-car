@@ -162,7 +162,7 @@ ER scan_hw_init (ID h_echo_flag)
 }
 
 /*!
- * @brief Point the servo, clamped to +-30 degrees.
+ * @brief Point the servo, clamped to its physical travel limit.
  *
  * @param[in] deci Angle in deci-degrees, positive = left.
  */

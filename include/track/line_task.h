@@ -20,11 +20,10 @@
 typedef struct
 {
     uint16_t lost_count; /* line-lost entries since boot */
-    uint16_t search_mm;  /* longest stretch driven while lost */
     bool     b_turning;  /* a one-shot turn is running */
 } line_task_stats_t;
 
-STATIC_ASSERT (sizeof(line_task_stats_t) <= 6U, "line_task_stats_t size");
+STATIC_ASSERT (sizeof(line_task_stats_t) <= 4U, "line_task_stats_t size");
 
 /* Consistent enough for telemetry: each field is read whole. */
 void line_task_stats (line_task_stats_t * p_stats);

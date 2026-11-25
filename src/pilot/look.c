@@ -9,6 +9,7 @@
 #include "pilot/look.h"
 
 #include "geometry.h"
+#include "platform/units.h"
 
 #define DECI_STRAIGHT  (1800)
 #define DECI_RIGHT     (900)
@@ -47,6 +48,8 @@ typedef struct
     uint32_t past;
 } look_hits_t;
 
+STATIC_ASSERT(LOOK_RAYS_MAX <= 32U, "look rays fit the hit masks");
+
 static int16_t clamp_mm(int32_t value);
 static void    ray_point(look_ray_t const * p_ray, int32_t * p_x_mm, int32_t * p_y_mm);
 static bool    hit_face(look_face_t const * p_face, look_axes_t const * p_axes, int32_t ox_mm,
@@ -78,7 +81,8 @@ bool look_add(look_t * p_look, look_pose_t const * p_pose, int32_t servo_deci,
 
             p_ray->x_mm       = clamp_mm(sx);
             p_ray->y_mm       = clamp_mm(sy);
-            p_ray->angle_deci = (int16_t)geom_wrap_deci(p_pose->head_deci + servo_deci);
+            p_ray->angle_echo = (uint16_t)((uint32_t)echo << LOOK_RAY_ECHO_SHIFT);
+            look_ray_set_angle(p_ray, geom_wrap_deci(p_pose->head_deci + servo_deci));
             if (LOOK_ECHO_OPEN == echo)
             {
                 p_ray->range_mm = 0U;
@@ -88,8 +92,6 @@ bool look_add(look_t * p_look, look_pose_t const * p_pose, int32_t servo_deci,
                 p_ray->range_mm = (range_mm > (int32_t)UINT16_MAX) ? UINT16_MAX
                                                                    : (uint16_t)range_mm;
             }
-            p_ray->echo  = echo;
-            p_ray->spare = 0U;
             p_look->count++;
             stored = true;
         }
@@ -99,6 +101,12 @@ bool look_add(look_t * p_look, look_pose_t const * p_pose, int32_t servo_deci,
 
 bool look_face(look_t const * p_look, look_pose_t const * p_from,
                look_face_t * p_face)
+{
+    return look_face_near(p_look, p_from, UINT16_MAX, p_face);
+}
+
+bool look_face_near(look_t const * p_look, look_pose_t const * p_from,
+                    uint16_t max_range_mm, look_face_t * p_face)
 {
     int64_t sum_x  = 0;
     int64_t sum_y  = 0;
@@ -110,7 +118,7 @@ bool look_face(look_t const * p_look, look_pose_t const * p_from,
 
     for (uint8_t i = 0U; i < p_look->count; i++)
     {
-        if (look_echo_is_point(p_look->rays[i].echo))
+        if ((p_look->rays[i].range_mm <= max_range_mm) && look_echo_is_point(look_ray_echo(&p_look->rays[i])))
         {
             int32_t x = 0;
             int32_t y = 0;
@@ -170,6 +178,34 @@ bool look_face(look_t const * p_look, look_pose_t const * p_from,
     return (found);
 }
 
+int32_t look_face_reach_mm(look_t const * p_look, look_pose_t const * p_from,
+                           look_face_t const * p_face, look_side_t side)
+{
+    int32_t const normal = p_face->normal_deci;
+    int32_t const sign = (LOOK_SIDE_LEFT == side) ? 1 : -1;
+    int32_t const along = normal + sign * DECI_RIGHT;
+    int32_t reach_mm = 0;
+
+    for (uint8_t i = 0U; i < p_look->count; i++)
+    {
+        look_ray_t const * const p_ray = &p_look->rays[i];
+        if (LOOK_ECHO_VALID == look_ray_echo(p_ray))
+        {
+            int32_t const offset = geom_wrap_deci(look_ray_angle_deci(p_ray) - normal);
+            int32_t const hit = offset - clamp_i32(offset, -LOOK_BEAM_DECI, LOOK_BEAM_DECI);
+            int32_t const dx = p_ray->x_mm - p_from->x_mm;
+            int32_t const dy = p_ray->y_mm - p_from->y_mm;
+            int32_t const depth = geom_dot_mm(normal, dx, dy) + geom_mul_q14(p_ray->range_mm, geom_cos_q14(hit));
+            int32_t const ahead = geom_dot_mm(along, dx, dy) + sign * geom_mul_q14(p_ray->range_mm, geom_sin_q14(hit));
+            if ((geom_abs(depth - p_face->dist_mm) <= LOOK_FACE_MATCH_MM) && (ahead > reach_mm))
+            {
+                reach_mm = ahead;
+            }
+        }
+    }
+    return reach_mm;
+}
+
 /* The rays that meet the face on one side, nearest to the face centre first;
  * the edge is the ray after the last one on the face. */
 static bool side_edge(look_t const * p_look, look_face_t const * p_face,
@@ -185,7 +221,7 @@ static bool side_edge(look_t const * p_look, look_face_t const * p_face,
     {
         int32_t const out = (LOOK_SIDE_LEFT == side) ? p_hits->t_mm[i] : -p_hits->t_mm[i];
 
-        if ((0U != (p_hits->hit & (1UL << i))) && (out > 0))
+        if ((0U != (p_hits->hit & (UINT32_C(1) << i))) && (out > 0))
         {
             uint8_t j = n;
 
@@ -204,7 +240,7 @@ static bool side_edge(look_t const * p_look, look_face_t const * p_face,
      * among rays on the face is a dropout, not the end of the face. */
     for (uint8_t k = 0U; k < n; k++)
     {
-        if (0U == (p_hits->past & (1UL << cand[k].idx)))
+        if (0U == (p_hits->past & (UINT32_C(1) << cand[k].idx)))
         {
             last_on = k;
         }
@@ -212,14 +248,14 @@ static bool side_edge(look_t const * p_look, look_face_t const * p_face,
     if ((NO_RAY != last_on) && ((uint8_t)(last_on + 1U) < n))
     {
         look_ray_t const * const p_ray = &p_look->rays[cand[last_on + 1U].idx];
+        int32_t const ed_deci = incidence_deci(p_face, look_ray_angle_deci(p_ray));
 
-        if (incidence_deci(p_face, p_ray->angle_deci) <= LOOK_TRUST_DECI)
+        if (ed_deci <= LOOK_TRUST_DECI)
         {
             /* The beam sees the nearest face inside its half-angle, so the
              * edge lies half a beam nearer the face centre than each ray. */
             int32_t const on_deci = incidence_deci(p_face,
-                                                   p_look->rays[cand[last_on].idx].angle_deci);
-            int32_t const ed_deci = incidence_deci(p_face, p_ray->angle_deci);
+                                                   look_ray_angle_deci(&p_look->rays[cand[last_on].idx]));
             int32_t const mid     = (on_deci + ed_deci - (TWICE * LOOK_BEAM_DECI)) / HALVES;
             int32_t const world   = p_face->normal_deci
                                   + ((LOOK_SIDE_LEFT == side) ? mid : -mid);
@@ -252,14 +288,14 @@ void look_edges(look_t const * p_look, look_face_t const * p_face,
         int32_t                  hy    = 0;
 
         hits.t_mm[i] = 0;
-        if (hit_face(p_face, &axes, p_ray->x_mm, p_ray->y_mm, p_ray->angle_deci, &hx, &hy))
+        if (hit_face(p_face, &axes, p_ray->x_mm, p_ray->y_mm, look_ray_angle_deci(p_ray), &hx, &hy))
         {
-            hits.hit |= 1UL << i;
+            hits.hit |= UINT32_C(1) << i;
             hits.t_mm[i] = geom_dot_q14(axes.cos_t, axes.sin_t, hx - p_face->x_mm,
                                         hy - p_face->y_mm);
             if (reads_past_face(p_face, &axes, p_ray))
             {
-                hits.past |= 1UL << i;
+                hits.past |= UINT32_C(1) << i;
             }
         }
     }
@@ -295,8 +331,10 @@ bool look_echo_is_point(uint8_t echo)
 
 static void ray_point(look_ray_t const * p_ray, int32_t * p_x_mm, int32_t * p_y_mm)
 {
-    *p_x_mm = p_ray->x_mm + geom_mul_q14((int32_t)p_ray->range_mm, geom_cos_q14(p_ray->angle_deci));
-    *p_y_mm = p_ray->y_mm + geom_mul_q14((int32_t)p_ray->range_mm, geom_sin_q14(p_ray->angle_deci));
+    int32_t const angle_deci = look_ray_angle_deci(p_ray);
+
+    *p_x_mm = p_ray->x_mm + geom_mul_q14((int32_t)p_ray->range_mm, geom_cos_q14(angle_deci));
+    *p_y_mm = p_ray->y_mm + geom_mul_q14((int32_t)p_ray->range_mm, geom_sin_q14(angle_deci));
 }
 
 /* Where a ray from (ox, oy) at angle_deci meets the face line. */
@@ -329,7 +367,7 @@ static bool reads_past_face(look_face_t const * p_face, look_axes_t const * p_ax
 {
     bool past = true;
 
-    if (look_echo_is_point(p_ray->echo))
+    if (look_echo_is_point(look_ray_echo(p_ray)))
     {
         int32_t x = 0;
         int32_t y = 0;

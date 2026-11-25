@@ -1,10 +1,8 @@
 /** @file action.h
- * @brief What a decoded barcode asks the car to do (D130). Pure C.
+ * @brief Map decoded letters to vehicle commands.
  *
- * A barcode is one letter. S, L, R and U mean stop, turn left, turn right and
- * U-turn. Any other letter is rejected. Two helpers belong with it: the 100 mm
- * re-arm gate, which stops one marker from acting twice, and the 250 ms
- * window after a barcode edge in which the line follower ignores the stripes.
+ * H requests a halt, S straight, L left, R right and U a U-turn.
+ * Other decoded letters are reported without a driving action.
  */
 
 #ifndef BARCODE_ACTION_H
@@ -27,11 +25,12 @@
 /* Extra reasons for a rejected barcode, beside BARCODE_REJECT_* of the parser. */
 #define BARCODE_REJECT_SPEED     (4U) /* the speed was stale, zero or negative */
 #define BARCODE_REJECT_DUPLICATE (5U) /* the same marker, inside the re-arm gate */
+#define BARCODE_REJECT_CAPTURE   (7U) /* one or more IR transitions were lost */
 
 /* The car must travel this far after a barcode before the next one counts. */
 #define BARCODE_REARM_MM (100U)
 
-/* The line follower ignores the line sensors this long after a barcode edge. */
+/* Steering suppression window after a qualified barcode edge. */
 #define BARCODE_SUPPRESS_US (250000U)
 
 typedef struct

@@ -95,6 +95,7 @@ void obstacle_statechart_init (obstacle_statechart_t * p_fsm,
     p_fsm->state            = OBSTACLE_STATE_STOPPED;
     p_fsm->cause            = OBSTACLE_CAUSE_BOOT;
     p_fsm->faults           = 0U;
+    p_fsm->echo_faults      = 0U;
     p_fsm->req_id           = 0U;
     p_fsm->last_class       = OBSTACLE_CLASS_NO_ECHO;
     p_fsm->last_dist        = 0U;
@@ -431,7 +432,7 @@ void obstacle_statechart_tick (obstacle_statechart_t * p_fsm, uint32_t now_ms,
  *
  * @param[in] p_fsm Statechart.
  *
- * @return Angle in deci-degrees, clamped to +-OBSTACLE_SERVO_LIMIT_DECI (+-30 deg).
+ * @return Angle in deci-degrees, clamped to the physical travel limit.
  */
 int16_t obstacle_statechart_servo_deci (obstacle_statechart_t const * p_fsm)
 {
@@ -863,11 +864,12 @@ static uint8_t health_cause (obstacle_statechart_t * p_fsm, uint8_t cls)
 {
     obstacle_counters_t * const p_cnt = &p_fsm->counts;
     uint8_t                     cause = OBSTACLE_CAUSE_NONE;
+    bool const                  b_unresolved = obstacle_pack_class_is_unresolved(cls);
 
     p_cnt->no_echo = run_count(p_cnt->no_echo, OBSTACLE_CLASS_NO_ECHO == cls);
     p_cnt->stuck   = run_count(p_cnt->stuck, OBSTACLE_CLASS_STUCK == cls);
     p_cnt->glitch  = run_count(p_cnt->glitch, OBSTACLE_CLASS_GLITCH == cls);
-    p_cnt->fail    = run_count(p_cnt->fail, obstacle_pack_class_is_unresolved(cls));
+    p_cnt->fail    = run_count(p_cnt->fail, b_unresolved);
 
     if (p_cnt->no_echo >= OBSTACLE_NO_ECHO_COUNT)
     {
@@ -886,6 +888,13 @@ static uint8_t health_cause (obstacle_statechart_t * p_fsm, uint8_t cls)
         /* The echo line is healthy enough. */
     }
 
+    /* State changes can reset counters. Keep a known fault through
+     * unresolved pings until a reply proves recovery. */
+    if (!b_unresolved || (OBSTACLE_CAUSE_NONE != cause))
+    {
+        p_fsm->echo_faults = fault_bit(cause);
+    }
+
     return (cause);
 }
 
@@ -902,10 +911,8 @@ static bool check_health (obstacle_statechart_t * p_fsm, uint8_t cls,
     return (OBSTACLE_CAUSE_NONE != cause);
 }
 
-/* The health checks of a pilot-driven car. An echo fault stops the car once,
- * and ends when its own run count falls below its limit; only a stop that an
- * echo fault caused ends with it, so the operator stop and a boot or start-up
- * stop stay latched. */
+/* Only a stop caused by echo health can end with a usable ping. An operator
+ * stop or a startup stop still waits for the explicit restart sequence. */
 static void follow_health (obstacle_statechart_t * p_fsm, uint8_t cls,
                            uint32_t now_ms, obstacle_statechart_out_t * p_out)
 {
@@ -927,24 +934,12 @@ static void follow_health (obstacle_statechart_t * p_fsm, uint8_t cls,
     }
     else
     {
-        obstacle_counters_t const * const p_cnt = &p_fsm->counts;
         bool const b_health_stop = p_fsm->b_reset_ok &&
                                    ((OBSTACLE_CAUSE_NO_ECHO == p_fsm->cause) ||
                                     (OBSTACLE_CAUSE_ECHO_STUCK == p_fsm->cause) ||
                                     (OBSTACLE_CAUSE_ECHO_NOISE == p_fsm->cause));
 
-        if (p_cnt->no_echo < OBSTACLE_NO_ECHO_COUNT)
-        {
-            p_fsm->faults &= (uint16_t)~OBSTACLE_FAULT_NO_ECHO;
-        }
-        if (p_cnt->stuck < OBSTACLE_STUCK_COUNT)
-        {
-            p_fsm->faults &= (uint16_t)~OBSTACLE_FAULT_ECHO_STUCK;
-        }
-        if ((p_cnt->glitch < OBSTACLE_GLITCH_COUNT) && (p_cnt->fail < OBSTACLE_FAIL_COUNT))
-        {
-            p_fsm->faults &= (uint16_t)~OBSTACLE_FAULT_ECHO_NOISE;
-        }
+        p_fsm->faults = (uint16_t)((p_fsm->faults & ~OBSTACLE_FAULTS_ECHO) | p_fsm->echo_faults);
 
         if (b_health_stop && (0U == p_fsm->faults))
         {
