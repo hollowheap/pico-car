@@ -88,7 +88,6 @@ function pointInSegment(trail: TrailPoint[], points: CoursePoint[], k: number, t
 const RAMP_DEFAULT_LENGTH_MM = 200;
 const RAMP_WIDTH_MM = 160;
 const HUMP_MIN_PEAK_MM = 8;
-const HUMP_MIN_SPAN_MM = 40;
 const HUMP_ROLL_DEADBAND_DEG = 2.5;
 const HUMP_ROLL_FULL_DEG = 12;
 
@@ -171,8 +170,7 @@ export function placeCourseEvents(
           const ev = humpEndEvents[matchIdx]!;
           peakMm = ev.p2 === 1 && ev.p1 > 0 ? ev.p1 : null;
         }
-        const meetsThreshold = (peakMm !== null && peakMm >= HUMP_MIN_PEAK_MM) ||
-          (runEnd - runStart >= 1 && spanMm >= HUMP_MIN_SPAN_MM);
+        const meetsThreshold = peakMm !== null && peakMm >= HUMP_MIN_PEAK_MM;
         if (meetsThreshold) {
           let rollSum = 0;
           let rollCount = 0;

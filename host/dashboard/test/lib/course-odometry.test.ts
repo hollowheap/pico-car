@@ -306,6 +306,20 @@ it('projects 2D tape to front IR sensors, detects slip, and places 2D hump footp
   expect(humpCourse.humps[0]!.y).toBeCloseTo(100, 0);
   expect(humpCourse.bounds.maxX).toBeGreaterThanOrEqual(53);
 
+  // A hump-state run without a valid height is not drawn, however far the car travelled in it.
+  const invalidStore = fold([
+    frame('physics', 0, { flags: 8, pitch_cdeg: 1200, roll_cdeg: 0, hump_state: 1 }),
+    status(1, 0, 0, 0),
+    frame('physics', 200, { flags: 8, pitch_cdeg: 1400, roll_cdeg: 0, hump_state: 2 }),
+    status(2, 200, 100, 0),
+    frame('physics', 400, { flags: 8, pitch_cdeg: 1400, roll_cdeg: 0, hump_state: 2 }),
+    status(3, 400, 200, 0),
+    frame('event', 420, { event_id: 1, event_type: ENUMS.eventType.humpEnd, p1: 0, p2: 0, odometer_mm: 200 }),
+    frame('physics', 600, { flags: 8, pitch_cdeg: 0, roll_cdeg: 0, hump_state: 0 }),
+    status(4, 600, 240, 0),
+  ]);
+  expect(buildCourse(invalidStore.trail, invalidStore.events).humps).toHaveLength(0);
+
   // Calibrated floor pivot (pivot_scale_pct: 50) does not falsely trigger slip.
   const pivotStore = fold([
     status(1, 0, 0, 0),
