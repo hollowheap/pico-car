@@ -20,7 +20,6 @@
 #include "run_state.h"
 #include "motion/motion.h"
 #include "navigation/obstacle.h"
-#include "navigation/obstacle_flags.h"
 #include "navigation/obstacle_ping.h"
 #include "physics/physics.h"
 #include "pilot/hug.h"
@@ -49,7 +48,6 @@
 /* Failed checks in the p2 of the boot event. */
 #define SELFTEST_IMU   (1U)
 #define SELFTEST_SONAR (2U)
-#define SELFTEST_BEAM  (4U)
 #define SELFTEST_IMU_CAL (8U) /* no rest calibration in the first 2 s */
 #define PHYSICS_FAULT_I2C_BIT (1U)
 
@@ -986,10 +984,9 @@ static void report_build (void)
 /* The boot self-test: what can be checked without moving the car. */
 static void selftest (void)
 {
-    physics_status_t  physics;
-    obstacle_status_t obstacle;
-    uint32_t          echo[OBSTACLE_ECHO_CLASSES] = { 0U };
-    uint16_t          failed = 0U;
+    physics_status_t physics;
+    uint32_t         echo[OBSTACLE_ECHO_CLASSES] = { 0U };
+    uint16_t         failed = 0U;
 
     if ((E_OK != physics_snapshot (&physics)) || !physics.ready ||
         (0U != (physics.faults & PHYSICS_FAULT_I2C_BIT)))
@@ -1009,10 +1006,6 @@ static void selftest (void)
          echo[OBSTACLE_ECHO_IDX_TOO_CLOSE]) == 0U)
     {
         failed |= SELFTEST_SONAR;
-    }
-    if ((E_OK == obstacle_snapshot (&obstacle)) && (0U != (obstacle.flags & OBSTACLE_FLAG_BEAM_BLOCKED)))
-    {
-        failed |= SELFTEST_BEAM;
     }
 
     emit ((uint8_t) TELEMETRY_EVENT_SOURCE_SUPERVISOR, (uint8_t) TELEMETRY_EVT_BOOT,
@@ -1062,8 +1055,7 @@ static bool parked_observation (const run_inputs_t * p_in, uint32_t hold, uint16
     uint16_t const mm = obstacle_pack_ping_mm (ping);
     bool const b_range = (LOOK_ECHO_VALID == echo) && (0U != mm);
     *p_clear = (LOOK_ECHO_OPEN == echo) || (b_range && (mm >= clear_mm));
-    return b_fresh && (0U == (obstacle.flags & OBSTACLE_FLAG_BEAM_BLOCKED)) &&
-           (*p_clear || b_range || (LOOK_ECHO_TOO_CLOSE == echo));
+    return b_fresh && (*p_clear || b_range || (LOOK_ECHO_TOO_CLOSE == echo));
 }
 
 /* A START the operator did not send: parked, with a fresh clear ping. */

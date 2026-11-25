@@ -151,4 +151,53 @@ describe("command session", () => {
     session.noteDiag({ cmd_last_id: 20 });
     expect(cmdIdOf(session.frame(schema, "start", 0))).toBe(21);
   });
+
+  it("resets the command floor when the car starts a new run", () => {
+    const session = readySession(0x8000, 0x7fff);
+    expect(cmdIdOf(session.frame(schema, "start", 0))).toBe(0x8000);
+    session.noteHeartbeat({ run_id: 0x5678, uptime_s: 1 }, 10);
+    session.noteDiag({ cmd_last_id: 0 });
+    expect(cmdIdOf(session.frame(schema, "start", 10))).toBe(1);
+  });
+
+  it("keeps ordering and external sync across 16-bit rollover", () => {
+    const session = readySession(0x7ffe, 0xffff);
+    expect(cmdIdOf(session.frame(schema, "start", 0))).toBe(0x7ffe);
+    session.noteDiag({ cmd_last_id: 0xffff });
+    expect(cmdIdOf(session.frame(schema, "stop", 0))).toBe(0x7fff);
+
+    const wrapping = readySession(0xfffe, 0xfffd);
+    expect(cmdIdOf(wrapping.frame(schema, "start", 0))).toBe(0xfffe);
+    wrapping.noteDiag({ cmd_last_id: 0xfffd });
+    expect(cmdIdOf(wrapping.frame(schema, "stop", 0))).toBe(0xffff);
+    wrapping.noteDiag({ cmd_last_id: 0x0002 });
+    expect(cmdIdOf(wrapping.frame(schema, "start", 0))).toBe(0x0003);
+  });
+
+  it("tracks genuinely advancing diagnostics even when the next id stays ahead", () => {
+    const session = readySession(510, 500);
+    session.noteDiag({ cmd_last_id: 505 });
+    session.noteDiag({ cmd_last_id: (505 + 0x7fff) & 0xffff });
+    expect(cmdIdOf(session.frame(schema, "start", 0))).toBe((505 + 0x8000) & 0xffff);
+  });
+
+  it("leaves command id and floor unchanged when encoding throws", () => {
+    const keepsNext = readySession(10, 9);
+    expect(() => keepsNext.frame(schema, "turn", 0)).toThrow("unknown command");
+    expect(cmdIdOf(keepsNext.frame(schema, "start", 0))).toBe(10);
+
+    const keepsFloor = readySession(10, 9);
+    expect(() => keepsFloor.frame(schema, "turn", 0)).toThrow("unknown command");
+    keepsFloor.noteDiag({ cmd_last_id: 10 });
+    expect(cmdIdOf(keepsFloor.frame(schema, "start", 0))).toBe(11);
+  });
+
+  it("advances the command floor on issued frames so stale advancing diagnostics do not snap next back", () => {
+    const session = readySession(500 + 0x7fff, 500);
+    expect(cmdIdOf(session.frame(schema, "start", 0))).toBe((500 + 0x7fff) & 0xffff);
+    expect(cmdIdOf(session.frame(schema, "stop", 0))).toBe((500 + 0x8000) & 0xffff);
+    expect(cmdIdOf(session.frame(schema, "start", 0))).toBe((500 + 0x8001) & 0xffff);
+    session.noteDiag({ cmd_last_id: 501 });
+    expect(cmdIdOf(session.frame(schema, "stop", 0))).toBe((500 + 0x8002) & 0xffff);
+  });
 });

@@ -140,10 +140,10 @@ static uint32_t odometer_mm (void)
 static void report_bad (uint8_t reason, uint16_t element_width_um)
 {
     g_bad++;
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
-                               (uint8_t)TELEMETRY_EVT_BARCODE_BAD, (int16_t)reason,
-                               element_width_um,
-                               odometer_mm());
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
+                                   (uint8_t)TELEMETRY_EVT_BARCODE_BAD,
+                                   (int16_t)reason, element_width_um,
+                                   odometer_mm());
     LOG_WARN(LOG_TASK_BARCODE, LOG_MOD_NONE, "barcode refused, reason %d", (int)reason);
 }
 
@@ -157,7 +157,7 @@ static void reject_partial (barcode_parser_t * p_parser, uint8_t reason, uint32_
     *p_parser = BARCODE_PARSER_INIT;
 }
 
-/* Publish an accepted letter and pass any mapped command to the supervisor. */
+/* Submit any mapped command before non-blocking letter telemetry. */
 static void report_decoded (uint8_t code, const barcode_info_t * p_info)
 {
     uint32_t const         odo    = odometer_mm();
@@ -178,12 +178,13 @@ static void report_decoded (uint8_t code, const barcode_info_t * p_info)
     g_ok++;
     g_last_letter = letter;
     g_last_action = act.action;
-    (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
-                               (uint8_t)TELEMETRY_EVT_BARCODE, (int16_t)letter, detail, odo);
     if (BARCODE_ACTION_REJECTED != act.action)
     {
         (void)vehicle_command_post(act.opcode, VEHICLE_SRC_BARCODE);
     }
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
+                                   (uint8_t)TELEMETRY_EVT_BARCODE,
+                                   (int16_t)letter, detail, odo);
     LOG_INFO(LOG_TASK_BARCODE, LOG_MOD_NONE, "read %c, action %d%s", (int)letter,
              (int)act.action, p_info->is_reverse ? ", reversed" : "");
 }
@@ -211,9 +212,9 @@ static bool report_block (bool level, uint32_t odo_mm, bool b_have_odometer)
 
     if (0U != block_mm)
     {
-        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
-                                   (uint8_t)TELEMETRY_EVT_BARCODE_BLOCK, (int16_t)block_mm, 0U,
-                                   odo_mm);
+        (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
+                                       (uint8_t)TELEMETRY_EVT_BARCODE_BLOCK,
+                                       (int16_t)block_mm, 0U, odo_mm);
         LOG_INFO(LOG_TASK_BARCODE, LOG_MOD_NONE, "block of %d mm on the track", (int)block_mm);
     }
     return b_measured;
