@@ -44,6 +44,9 @@
 #define SNAPSHOT_LOSS_MS   (PHYSICS_DEFAULT_PERIOD_MS * PIPELINE_LOST_CYCLES)
 #define HEADING_WRAP_DDEG  (3600U)
 #define SCALE_CENTI        (100.0f)
+#define HALF_TURN_CDEG     (18000)
+#define FULL_TURN_CDEG     (36000)
+#define ROLL_FILTER_DIVISOR (8)
 
 /* physics_task_default_config values. */
 #define DEFAULT_TASK_PRIORITY (4)
@@ -189,7 +192,8 @@ static void wait_cycle (physics_task_stats_t * p_local)
             p_local->rest_interruptions++;
             p_local->collecting_rest = false;
         }
-        g_pipe.attitude.clear_count = 0U;
+        attitude_interrupt_evidence (&g_pipe.attitude);
+        p_local->attitude_sample_valid = false;
         if (!g_pipe.hump.calibrated && (g_pipe.hump.cal_count > 0U))
         {
             hump_recalibrate (&g_pipe.hump);
@@ -310,6 +314,31 @@ static void update_heading (physics_task_stats_t * p_local,
     }
 }
 
+/* At 50 Hz, a one-eighth update has a time constant near 150 ms. Take the
+ * shortest angular difference when the chassis passes through upside down. */
+static int16_t smooth_roll (int16_t previous, int16_t current)
+{
+    int32_t delta = (int32_t)current - previous;
+    if (delta > HALF_TURN_CDEG)
+    {
+        delta -= FULL_TURN_CDEG;
+    }
+    else if (delta < -HALF_TURN_CDEG)
+    {
+        delta += FULL_TURN_CDEG;
+    }
+    int32_t result = previous + (delta / ROLL_FILTER_DIVISOR);
+    if (result > HALF_TURN_CDEG)
+    {
+        result -= FULL_TURN_CDEG;
+    }
+    else if (result < -HALF_TURN_CDEG)
+    {
+        result += FULL_TURN_CDEG;
+    }
+    return (int16_t)result;
+}
+
 /* Roll, vertical acceleration and the attitude state for the stats, and the
  * lifted and overturned bits of the shared fault word (bits 11 and 12). Only
  * a known attitude is published: while the IMU is lost or has no rest
@@ -318,6 +347,8 @@ static void update_heading (physics_task_stats_t * p_local,
 static void update_attitude (physics_task_stats_t * p_local, const pipeline_step_t * p_step)
 {
     bool const b_was_collecting = p_local->collecting_rest;
+    bool const b_previous_valid = p_local->attitude_sample_valid;
+    p_local->attitude_sample_valid = pipeline_attitude_known (p_step);
     p_local->attitude_unknown = p_step->attitude_unknown;
     p_local->level_still = pipeline_attitude_known (p_step) && p_step->attitude.level_still;
     p_local->collecting_rest = p_step->sensors_ok &&
@@ -336,11 +367,14 @@ static void update_attitude (physics_task_stats_t * p_local, const pipeline_step
         p_local->az_mg   = clamp_i16 (scaled (p_step->attitude.az_g, SCALE_MILLI));
         p_local->amag_mg = (uint16_t) clamp_i16 (scaled (p_step->attitude.amag_g, SCALE_MILLI));
     }
-    if (pipeline_attitude_known (p_step))
+    if (p_local->attitude_sample_valid)
     {
         uint16_t active = 0U;
 
         p_local->roll_cdeg = clamp_i16 (scaled (p_step->attitude.roll_deg, SCALE_CENTI));
+        p_local->report_roll_cdeg = b_previous_valid ?
+            smooth_roll (p_local->report_roll_cdeg, p_local->roll_cdeg) : p_local->roll_cdeg;
+        p_local->pitch_cdeg = clamp_i16 (scaled (p_step->hump.pitch_deg, SCALE_CENTI));
         p_local->attitude_state = (uint8_t) p_step->attitude.state;
 
         if (ATTITUDE_LIFTED == p_step->attitude.state)
@@ -633,15 +667,14 @@ void physics_task_get_stats (physics_task_stats_t * p_stats)
     }
 }
 
-/* The GY-511 sits with X pointing aft on the car, so nose-up reads negative.
- * Flip the forward axis so the hump state machine and the compass use the
- * car's forward direction. */
+/* With +Z upright, raising the nose increased the old (-Y) roll channel. */
 #define CAR_HUMP_ENTER_DEG     (3.0f)
 #define CAR_HUMP_EXIT_BAND_DEG (2.0f)
 
 void physics_car_config (physics_task_config_t * p_cfg)
 {
     physics_task_default_config (p_cfg);
+    p_cfg->hump.fwd_axis      = HUMP_AXIS_Y;
     p_cfg->hump.fwd_sign      = -1;
     p_cfg->hump.enter_deg     = CAR_HUMP_ENTER_DEG;
     p_cfg->hump.exit_band_deg = CAR_HUMP_EXIT_BAND_DEG;

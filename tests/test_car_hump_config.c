@@ -36,7 +36,7 @@ static bool sample_pitch (pipeline_t * p_pipe, float pitch_deg, unsigned count,
                           hump_event_t event, pipeline_step_t * p_out)
 {
     float const angle = pitch_deg * DEG_TO_RAD;
-    float const acc[] = {-sinf (angle), 0.0f, cosf (angle)};
+    float const acc[] = {0.0f, -sinf (angle), cosf (angle)};
     motion_input_t const motion = {
         .valid = true,
         .speed_mps = DRIVE_SPEED_MPS,

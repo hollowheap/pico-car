@@ -10,11 +10,9 @@
  *   roll  sideways angle, left-down positive
  *   amag  acceleration magnitude in g
  *
- * The unsettled cue (|amag - 1 g| over the limit) counts toward LIFTED over
- * lift_samples samples, except while b_on_hump is set: hump bumps meet that
- * limit. A tilt breach still counts. The unsettled hold bridges short gaps.
- * Confirmation requires current tilt or acceleration evidence. Once both cues
- * end, a new excursion starts a new count. Reverse travel has no hump mask.
+ * Pickup uses sustained tilt or upward acceleration along calibrated gravity.
+ * Fresh stationary wheels permit a smaller vertical onset. After unloading,
+ * the landing must settle before acceleration can confirm another pickup.
  *
  * States: OK, CANDIDATE, LIFTED, OVERTURNED. Before the rest calibration the
  * module reports OK and calibrated = false. All limits are placeholders until
@@ -45,10 +43,10 @@ typedef enum
 typedef struct
 {
     float    tilt_envelope_deg;   /* A tilt above this is a breach.             */
-    float    lift_dev_g;          /* | |a| - 1 g | above this is unsettled.     */
-    uint16_t lift_dev_samples;    /* Unsettled samples in a row that count.     */
-    uint16_t lift_hold_samples;   /* The unsettled cue stays this long.         */
-    uint16_t lift_samples;        /* Candidate cue held this long: lifted.      */
+    float    lift_dev_g;          /* Upward acceleration threshold in travel, g. */
+    uint16_t lift_dev_samples;    /* Upward samples for a moving candidate.     */
+    uint16_t landing_settle_samples;   /* Supported samples needed after unloading. */
+    uint16_t lift_samples;        /* Consecutive tilt or moving rise samples.   */
     uint16_t candidate_clear;     /* No cue this long: back to OK.              */
     float    overturn_tilt_deg;   /* Tilt above this: overturned.               */
     float    overturn_roll_deg;   /* | roll | above this: overturned.           */
@@ -67,7 +65,8 @@ typedef struct
     float g0[ATTITUDE_AXES];      /* Rest gravity vector, board axes, g.        */
     float fwd[ATTITUDE_AXES];     /* Unit vector of travel, board axes.         */
     bool  b_wheels_free;          /* The wheels turn on target with low duty.   */
-    bool  b_on_hump;              /* Driving over a hump: no unsettled cue.     */
+    bool  b_wheels_still;         /* Both measured wheels are fresh and still. */
+    bool  b_on_hump;              /* Driving over a hump masks upward onset.     */
 } attitude_input_t;
 
 typedef struct
@@ -86,13 +85,13 @@ typedef struct
 {
     attitude_config_t cfg;
     attitude_state_t  state;
-    uint16_t dev_run;
-    uint16_t dev_hold;
-    uint16_t cue_count;
+    uint16_t rise_count;
+    uint16_t parked_rise_count;
+    uint16_t landing_wait;
+    uint16_t tilt_count;
     uint16_t no_cue_count;
     uint16_t overturn_count;
     uint16_t clear_count;
-    bool     was_calibrated;
 } attitude_ctx_t;
 
 /* Fill cfg with the placeholder defaults. */

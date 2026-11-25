@@ -140,6 +140,46 @@ static void test_corner_wheel_demands(void)
     }
 }
 
+/* Two front readers can briefly straddle the tape during a sustained bend.
+ * A measured turn should keep steering across that gap in either direction. */
+static void test_bend_optical_gap(void)
+{
+    for (int side = -1; side <= 1; side += 2)
+    {
+        line_follow_t f;
+        line_targets_t t;
+        line_follow_init(&f);
+        for (int i = 0; i < 36; ++i)
+        {
+            (void)line_follow_update_floor(&f, side > 0, side < 0, i * side * 3,
+                                           i * 900, (uint32_t)i * 10U, true, &t);
+        }
+        line_targets_t marker;
+        assert(!line_follow_marker_sample(&f, false, false, false, 0U, side * 110, 32400, 360U, &marker));
+        for (int i = 36; i < 54; ++i)
+        {
+            (void)line_follow_update_floor(&f, false, false, i * side * 4,
+                                           i * 900, (uint32_t)i * 10U, true, &t);
+            assert(side * (t.right_um_s - t.left_um_s) > 0);
+        }
+        /* Continue the rounded quarter turn with two more short optical gaps.
+         * Heading and distance here are independent encoder inputs. */
+        for (int i = 54; i <= 225; ++i)
+        {
+            bool const gap = (i >= 100 && i < 111) || (i >= 190 && i < 201);
+            (void)line_follow_update_floor(&f, !gap && side > 0, !gap && side < 0,
+                                           i * side * 4, i * 900, (uint32_t)i * 10U, true, &t);
+            assert(side * (t.right_um_s - t.left_um_s) > 0);
+        }
+        line_follow_t lost = f;
+        assert(line_follow_update_floor(&lost, false, false, side * 900,
+            225 * 900 + LINE_SENSOR_LEAD_MM * UM_PER_MM, 2300U, true, &t) == LINE_FOLLOW_SEARCHING);
+        assert(side * (t.right_um_s - t.left_um_s) > 0);
+        (void)line_follow_update_floor(&f, side < 0, side > 0, side * 900, 204000, 2260U, true, &t);
+        assert(side * (t.right_um_s - t.left_um_s) < 0);
+    }
+}
+
 static void test_init(void)
 {
     line_follow_t f;
@@ -1456,12 +1496,15 @@ static void test_uturn(void)
                     &r);
     assert(LINE_TURN_TURNING == turn_step(&tn, l, r, true, false, false, &t));
     expect_targets(&t, LINE_TURN_SLOW_UM_S, -LINE_TURN_SLOW_UM_S);
-    assert(LINE_TURN_DONE == turn_step(&tn, l, r, true, false, true, &t));
+    assert(LINE_TURN_TURNING == turn_step(&tn, l, r, true, false, true, &t));
+    right_turn_disp(LINE_TURN_HALF_DECI, &l, &r);
+    assert(LINE_TURN_DONE == turn_step(&tn, l, r, true, false, false, &t));
+    expect_targets(&t, 0, 0);
     assert(LINE_SIDE_RIGHT == line_turn_side(&tn));
 
     /* A U-turn aborts at 180 + margin, not at 90 + margin. */
     line_turn_start(&tn, LINE_TURN_KIND_UTURN, 1000, 2000);
-    right_turn_disp(LINE_TURN_HALF_DECI + LINE_TURN_ABORT_DECI - 20, &l, &r);
+    right_turn_disp(LINE_TURN_HALF_DECI - 20, &l, &r);
     assert(LINE_TURN_TURNING == turn_step(&tn, l, r, true, false, false, &t));
     right_turn_disp(LINE_TURN_HALF_DECI + LINE_TURN_ABORT_DECI + 20, &l, &r);
     assert(LINE_TURN_ABORTED == turn_step(&tn, l, r, true, false, false, &t));
@@ -1882,6 +1925,7 @@ int main(int argc, char * argv[])
     test_junction_sweeps();
     test_junction_sector_limits();
     test_corner_wheel_demands();
+    test_bend_optical_gap();
     test_init();
     test_one_sensor_steers_toward_the_line();
     test_cap_limits_the_correction();

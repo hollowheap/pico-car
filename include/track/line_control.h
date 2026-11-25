@@ -155,8 +155,8 @@ STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
 /** Pivot speed inside the capture window. Tune on the car. */
 #define LINE_TURN_SLOW_UM_S (80000)
 /**
- * Capture window in deci-degrees before the target. Line sensors count only
- * once the turn is this close to the target. Tune on the car.
+ * Slow the pivot near its target. Quarter turns can capture tape in this
+ * window. A U-turn completes at 180 degrees of measured rotation.
  */
 #define LINE_TURN_CAPTURE_DECI (300)
 /**
@@ -482,6 +482,12 @@ line_follow_status_t line_follow_update(line_follow_t * p_follow, bool b_left,
                                         bool b_right, int32_t heading_deci,
                                         int64_t travel_um, uint32_t now_ms,
                                         line_targets_t * p_targets);
+
+/** Continuous floor permits forward travel on the last guided heading.
+ * A measured transverse corner can still trigger a bounded turn. */
+line_follow_status_t line_follow_update_floor(line_follow_t * p_follow, bool b_left, bool b_right,
+                                              int32_t heading_deci, int64_t travel_um, uint32_t now_ms,
+                                              bool b_continuous_floor, line_targets_t * p_targets);
 
 /**
  * Begin a turn from the current wheel displacements.

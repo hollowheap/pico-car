@@ -285,7 +285,9 @@ static void test_physics (void)
     memset(&p, 0, sizeof p);
     p.ready          = true;
     p.pitch_cdeg     = -450;
-    p.roll_cdeg      = -2141;
+    p.roll_cdeg      = -4000;
+    p.report_roll_cdeg = -2141;
+    p.attitude_sample_valid = true;
     p.az_mg          = -271;
     p.amag_mg        = 1293U;
     p.attitude_state = TELEMETRY_ATTITUDE_STATE_LIFTED;
@@ -320,6 +322,9 @@ static void test_physics (void)
     CHECK(out.amag_mg == 1293U);
     CHECK(out.attitude_state == TELEMETRY_ATTITUDE_STATE_LIFTED);
 
+    p.attitude_sample_valid = false;
+    telemetry_assemble_physics(&out, &p);
+    CHECK(!(out.flags & BIT(TELEMETRY_PHYSICS_FLAGS_BIT_CALIBRATED)));
     p.finished      = true;
     p.hump_active   = false;
     p.height_valid  = false;

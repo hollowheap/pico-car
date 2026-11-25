@@ -13,7 +13,7 @@
 #define DEFAULT_TILT_ENVELOPE_DEG (20.0f)
 #define DEFAULT_LIFT_DEV_G        (0.12f)
 #define DEFAULT_LIFT_DEV_SAMPLES  (3U)
-#define DEFAULT_LIFT_HOLD_SAMPLES (10U)
+#define DEFAULT_LANDING_SETTLE (10U)
 #define DEFAULT_LIFT_SAMPLES      (15U)
 #define DEFAULT_CANDIDATE_CLEAR   (10U)
 #define DEFAULT_OVERTURN_TILT_DEG (100.0f)
@@ -22,6 +22,7 @@
 #define DEFAULT_CLEAR_TILT_DEG    (5.0f)
 #define DEFAULT_CLEAR_DEV_G       (0.05f)
 #define DEFAULT_CLEAR_SAMPLES     (50U)
+#define PARKED_RISE_SAMPLES       (5U)
 
 static float dot3 (const float * p_a, const float * p_b)
 {
@@ -57,7 +58,7 @@ void attitude_default_config (attitude_config_t * p_cfg)
         p_cfg->tilt_envelope_deg = DEFAULT_TILT_ENVELOPE_DEG;
         p_cfg->lift_dev_g        = DEFAULT_LIFT_DEV_G;
         p_cfg->lift_dev_samples  = DEFAULT_LIFT_DEV_SAMPLES;
-        p_cfg->lift_hold_samples = DEFAULT_LIFT_HOLD_SAMPLES;
+        p_cfg->landing_settle_samples = DEFAULT_LANDING_SETTLE;
         p_cfg->lift_samples      = DEFAULT_LIFT_SAMPLES;
         p_cfg->candidate_clear   = DEFAULT_CANDIDATE_CLEAR;
         p_cfg->overturn_tilt_deg = DEFAULT_OVERTURN_TILT_DEG;
@@ -72,9 +73,8 @@ void attitude_default_config (attitude_config_t * p_cfg)
 static bool config_ok (const attitude_config_t * p_cfg)
 {
     return (p_cfg->tilt_envelope_deg > 0.0f) && (p_cfg->lift_dev_g > 0.0f) &&
-           (p_cfg->lift_dev_samples >= 1U) && (p_cfg->lift_hold_samples >= 1U) &&
+           (p_cfg->lift_dev_samples >= 1U) && (p_cfg->landing_settle_samples >= 1U) &&
            (p_cfg->lift_samples >= 1U) &&
-           (p_cfg->lift_hold_samples < p_cfg->lift_samples) &&
            (p_cfg->candidate_clear >= 1U) &&
            (p_cfg->overturn_tilt_deg > p_cfg->tilt_envelope_deg) &&
            (p_cfg->overturn_roll_deg > 0.0f) && (p_cfg->overturn_samples >= 1U) &&
@@ -84,9 +84,13 @@ static bool config_ok (const attitude_config_t * p_cfg)
 
 void attitude_interrupt_evidence (attitude_ctx_t * p_ctx)
 {
-    p_ctx->dev_run        = 0U;
-    p_ctx->dev_hold       = 0U;
-    p_ctx->cue_count      = 0U;
+    if (p_ctx->landing_wait > 0U)
+    {
+        p_ctx->landing_wait = p_ctx->cfg.landing_settle_samples;
+    }
+    p_ctx->rise_count        = 0U;
+    p_ctx->parked_rise_count = 0U;
+    p_ctx->tilt_count        = 0U;
     p_ctx->no_cue_count   = 0U;
     p_ctx->overturn_count = 0U;
     p_ctx->clear_count    = 0U;
@@ -96,9 +100,9 @@ void attitude_reset (attitude_ctx_t * p_ctx)
 {
     if (NULL != p_ctx)
     {
+        p_ctx->landing_wait = 0U;
         attitude_interrupt_evidence (p_ctx);
-        p_ctx->state          = ATTITUDE_OK;
-        p_ctx->was_calibrated = false;
+        p_ctx->state = ATTITUDE_OK;
     }
 }
 
@@ -133,12 +137,13 @@ static bool input_ok (const attitude_input_t * p_in)
 }
 
 /* Tilt, roll and magnitude from the sample and the rest gravity vector. */
-static float measure (const attitude_input_t * p_in, attitude_output_t * p_out)
+static float measure (const attitude_input_t * p_in, attitude_output_t * p_out, float * p_up_g)
 {
     float const a[ATTITUDE_AXES] = { p_in->ax_g, p_in->ay_g, p_in->az_g };
     float const amag = sqrtf (dot3 (a, a));
     float const gmag = sqrtf (dot3 (p_in->g0, p_in->g0));
 
+    *p_up_g = -gmag;
     p_out->amag_g    = amag;
     p_out->tilt_deg  = 0.0f;
     p_out->roll_deg  = 0.0f;
@@ -163,6 +168,7 @@ static float measure (const attitude_input_t * p_in, attitude_output_t * p_out)
         float const lat_mag = sqrtf (dot3 (lat, lat));
         float const along   = dot3 (a, g_hat);
 
+        *p_up_g = along - gmag;
         p_out->tilt_deg = acosf (clampf (along / amag, -1.0f, 1.0f)) * RAD_TO_DEG;
         if (lat_mag > 0.0f)
         {
@@ -170,137 +176,97 @@ static float measure (const attitude_input_t * p_in, attitude_output_t * p_out)
             {
                 lat[axis] /= lat_mag;
             }
-            p_out->roll_deg = atan2f (dot3 (a, lat), along) * RAD_TO_DEG;
+            /* Up cross forward points left. A raised left side reads positive
+             * along that axis, while the vehicle roll convention is left down. */
+            p_out->roll_deg = atan2f (-dot3 (a, lat), along) * RAD_TO_DEG;
         }
     }
     return gmag;
 }
 
-static void count_overturn (attitude_ctx_t * p_ctx, const attitude_output_t * p_out)
+static uint16_t consecutive (uint16_t count, bool b_present)
+{
+    if (!b_present)
+    {
+        count = 0U;
+    }
+    else if (count < UINT16_MAX)
+    {
+        count++;
+    }
+    return count;
+}
+
+static void count_overturn (attitude_ctx_t * p_ctx, const attitude_output_t * p_out, float rest_g)
 {
     const attitude_config_t * p_cfg = &p_ctx->cfg;
 
-    if ((p_out->tilt_deg > p_cfg->overturn_tilt_deg) ||
-        (fabsf (p_out->roll_deg) > p_cfg->overturn_roll_deg))
-    {
-        if (p_ctx->overturn_count < UINT16_MAX)
-        {
-            p_ctx->overturn_count++;
-        }
-    }
-    else
-    {
-        p_ctx->overturn_count = 0U;
-    }
+    float const load = p_out->amag_g - rest_g;
+    bool const b_orientation_valid = (load >= -p_cfg->lift_dev_g) &&
+        ((0U == p_ctx->landing_wait) || (load <= p_cfg->lift_dev_g));
+    bool const b_tipped = (p_out->tilt_deg > p_cfg->overturn_tilt_deg) ||
+                          (fabsf (p_out->roll_deg) > p_cfg->overturn_roll_deg);
+    p_ctx->overturn_count = consecutive (p_ctx->overturn_count, b_orientation_valid && b_tipped);
 }
 
-/* The unsettled cue: |amag - 1| over the limit for lift_dev_samples in a row,
- * held for lift_hold_samples after the last such sample. */
-static bool unsettled_cue (attitude_ctx_t * p_ctx, const attitude_output_t * p_out)
-{
-    const attitude_config_t * p_cfg = &p_ctx->cfg;
-
-    if (fabsf (p_out->amag_g - 1.0f) > p_cfg->lift_dev_g)
-    {
-        if (p_ctx->dev_run < UINT16_MAX)
-        {
-            p_ctx->dev_run++;
-        }
-    }
-    else
-    {
-        p_ctx->dev_run = 0U;
-    }
-    if (p_ctx->dev_run >= p_cfg->lift_dev_samples)
-    {
-        p_ctx->dev_hold = p_cfg->lift_hold_samples;
-    }
-    else if (p_ctx->dev_hold > 0U)
-    {
-        p_ctx->dev_hold--;
-    }
-    else
-    {
-        /* Settled. */
-    }
-
-    return (p_ctx->dev_hold > 0U);
-}
-
-/* b_wheels_free is the second cue: the wheels turn on target with little
- * duty. It raises CANDIDATE and keeps it, but only the unsettled cue or an
- * envelope breach can make LIFTED. While b_on_hump is set the unsettled cue
- * is dropped and cue_count restarts; a tilt breach still counts. */
 static void step_lift (attitude_ctx_t * p_ctx, const attitude_output_t * p_out,
-                       bool b_wheels_free, bool b_on_hump)
+                       const attitude_input_t * p_in, float up_g, float rest_g)
 {
     const attitude_config_t * p_cfg = &p_ctx->cfg;
-    bool const b_breach    = (p_out->tilt_deg > p_cfg->tilt_envelope_deg);
-    /* Hump bumps meet the unsettled limit; the cue still runs so its hold
-     * is current when the hump ends. */
-    bool const b_unsettled = unsettled_cue (p_ctx, p_out) && !b_on_hump;
-    bool const b_cue       = b_unsettled || b_breach;
-    /* The hold bridges brief gaps in a pickup. Only a current tilt or
-     * qualified acceleration can confirm it after the debounce window. */
-    bool const b_confirm   = b_breach || (b_unsettled && p_ctx->dev_run >= p_cfg->lift_dev_samples);
+    float const load = p_out->amag_g - rest_g;
+    float const unload_g = p_in->b_wheels_still ? p_cfg->clear_dev_g : p_cfg->lift_dev_g;
 
-    if (!b_cue)
+    /* A positive landing impulse has the same sign as a pickup. Its preceding
+     * unload disambiguates it. Missing reads cannot rearm this guard. */
+    if ((load < -unload_g) ||
+        ((p_ctx->landing_wait > 0U) && (fabsf (load) > p_cfg->clear_dev_g)))
     {
-        /* Ordinary supported motion can be outside the set-down limits. */
-        p_ctx->cue_count = 0U;
+        p_ctx->landing_wait = p_cfg->landing_settle_samples;
     }
-
-    switch (p_ctx->state)
+    else if (p_ctx->landing_wait > 0U)
     {
-        case ATTITUDE_OK:
-            if (b_cue || b_wheels_free)
-            {
-                p_ctx->state        = ATTITUDE_CANDIDATE;
-                p_ctx->cue_count    = b_cue ? 1U : 0U;
-                p_ctx->no_cue_count = 0U;
-            }
-        break;
-
-        case ATTITUDE_CANDIDATE:
-            if (b_cue)
-            {
-                p_ctx->no_cue_count = 0U;
-                if (p_ctx->cue_count < p_cfg->lift_samples)
-                {
-                    p_ctx->cue_count++;
-                }
-                if (b_confirm && (p_ctx->cue_count >= p_cfg->lift_samples))
-                {
-                    p_ctx->state       = ATTITUDE_LIFTED;
-                    p_ctx->clear_count = 0U;
-                }
-            }
-            else if (b_wheels_free)
-            {
-                p_ctx->no_cue_count = 0U;
-            }
-            else
-            {
-                p_ctx->no_cue_count++;
-                if (p_ctx->no_cue_count >= p_cfg->candidate_clear)
-                {
-                    p_ctx->state     = ATTITUDE_OK;
-                    p_ctx->cue_count = 0U;
-                }
-            }
-        break;
-
-        case ATTITUDE_LIFTED:
-            if (p_ctx->clear_count >= p_cfg->clear_samples)
-            {
-                p_ctx->state     = ATTITUDE_OK;
-                p_ctx->cue_count = 0U;
-            }
-        break;
-
-        default:
-            /* OVERTURNED holds until attitude_reset. */
-        break;
+        p_ctx->landing_wait--;
+    }
+    bool const b_supported = (0U == p_ctx->landing_wait);
+    bool const b_rising = b_supported && !p_in->b_on_hump;
+    /* A hand pickup tapers. After three strong upward samples, the tail
+     * still counts while it stays continuously above the rest noise band. */
+    float const rise_threshold = (p_ctx->rise_count >= p_cfg->lift_dev_samples) ?
+        p_cfg->clear_dev_g : p_cfg->lift_dev_g;
+    p_ctx->rise_count = consecutive (p_ctx->rise_count, b_rising && (up_g > rise_threshold));
+    p_ctx->parked_rise_count = consecutive (p_ctx->parked_rise_count,
+        b_rising && p_in->b_wheels_still && (up_g > p_cfg->clear_dev_g));
+    p_ctx->tilt_count = consecutive (p_ctx->tilt_count,
+        b_supported && (p_out->tilt_deg > p_cfg->tilt_envelope_deg));
+    bool const b_confirmed = (p_ctx->tilt_count >= p_cfg->lift_samples) ||
+                             (p_ctx->rise_count >= p_cfg->lift_samples) ||
+                             (p_ctx->parked_rise_count >= PARKED_RISE_SAMPLES);
+    bool const b_candidate = (p_ctx->tilt_count > 0U) ||
+                             (p_ctx->rise_count >= p_cfg->lift_dev_samples) ||
+                             (p_ctx->parked_rise_count > 0U) || p_in->b_wheels_free;
+    if (ATTITUDE_LIFTED == p_ctx->state)
+    {
+        if (p_ctx->clear_count >= p_cfg->clear_samples)
+        {
+            p_ctx->state = ATTITUDE_OK;
+        }
+    }
+    else if (ATTITUDE_OVERTURNED != p_ctx->state)
+    {
+        p_ctx->no_cue_count = consecutive (p_ctx->no_cue_count, !b_candidate);
+        if (b_confirmed)
+        {
+            p_ctx->state = ATTITUDE_LIFTED;
+            p_ctx->clear_count = 0U;
+        }
+        else if (b_candidate)
+        {
+            p_ctx->state = ATTITUDE_CANDIDATE;
+        }
+        else if (p_ctx->no_cue_count >= p_cfg->candidate_clear)
+        {
+            p_ctx->state = ATTITUDE_OK;
+        }
     }
 }
 
@@ -331,7 +297,8 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
     }
     else
     {
-        float const rest_g = measure (p_in, p_out);
+        float up_g = 0.0f;
+        float const rest_g = measure (p_in, p_out, &up_g);
         bool const b_level = (p_out->tilt_deg < p_ctx->cfg.clear_tilt_deg) &&
                              (fabsf (p_out->amag_g - rest_g) < p_ctx->cfg.clear_dev_g);
         if (!b_level || p_in->b_wheels_free)
@@ -346,15 +313,14 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
         {
             /* The full set-down window has already elapsed. */
         }
-        p_ctx->was_calibrated = true;
-        count_overturn (p_ctx, p_out);
+        count_overturn (p_ctx, p_out, rest_g);
         if (p_ctx->overturn_count >= p_ctx->cfg.overturn_samples)
         {
             p_ctx->state = ATTITUDE_OVERTURNED;
         }
         else
         {
-            step_lift (p_ctx, p_out, p_in->b_wheels_free, p_in->b_on_hump);
+            step_lift (p_ctx, p_out, p_in, up_g, rest_g);
         }
     }
 

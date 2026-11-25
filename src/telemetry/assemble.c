@@ -270,7 +270,7 @@ telemetry_assemble_physics (telemetry_physics_t * p_out,
         return;
     }
     p_out->pitch_cdeg     = p_physics->pitch_cdeg;
-    p_out->roll_cdeg      = p_physics->roll_cdeg;
+    p_out->roll_cdeg      = p_physics->report_roll_cdeg;
     p_out->az_mg          = p_physics->az_mg;
     p_out->amag_mg        = p_physics->amag_mg;
     p_out->attitude_state = p_physics->attitude_state;
@@ -297,7 +297,7 @@ telemetry_assemble_physics (telemetry_physics_t * p_out,
     {
         p_out->flags |= PHYSICS_FLAG_HEIGHT_OK;
     }
-    if (p_physics->calibrated)
+    if (p_physics->attitude_sample_valid)
     {
         p_out->flags |= PHYSICS_FLAG_CALIBRATED;
     }

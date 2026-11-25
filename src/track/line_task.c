@@ -329,7 +329,7 @@ static void line_finish_turn (line_turn_kind_t turn, line_turn_state_t const * p
 #endif
     if (LINE_TURN_DONE == status)
     {
-        line_follow_set_side(line_follower(), line_turn_side(p_state));
+        line_follow_set_side(line_follower(), (LINE_TURN_KIND_UTURN == turn) ? LINE_SIDE_NONE : line_turn_side(p_state));
         line_update_fault(false);
     }
     else if (!b_interrupted)

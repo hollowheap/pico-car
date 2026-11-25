@@ -17,7 +17,9 @@
 
 #define RAD_TO_DEG (57.2957795f)
 #define MM_TO_M    (0.001f)
-/* Allow one missing 20 ms read and scheduling jitter between observations. */
+/* Wheel velocity arrives in integer micrometres per second. */
+#define WHEEL_SPEED_QUANTUM_MPS (0.000001f)
+/* Guard against a scheduling gap even when the next bus read succeeds. */
 #define ATTITUDE_EVIDENCE_GAP_S (0.050f)
 /* Attempts per transaction after a failed cycle. A timed-out attempt costs
  * about 6 ms (the 5 ms poll deadline, the abort and the bus clear), so two
@@ -197,7 +199,7 @@ static void prepare_inputs (pipeline_t * p_pipe, const float * p_acc_g,
 }
 
 static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
-                          pipeline_step_t * p_out);
+                          const imu_motion_input_t * p_motion, pipeline_step_t * p_out);
 
 static void judge_hump (pipeline_t * p_pipe, pipeline_step_t * p_out);
 
@@ -233,7 +235,7 @@ static void run_detectors (pipeline_t * p_pipe, hump_sample_t * p_sample,
     if (p_out->sensors_ok)
     {
         judge_hump (p_pipe, p_out);
-        run_attitude (p_pipe, p_sample, p_out);
+        run_attitude (p_pipe, p_sample, p_in, p_out);
     }
 }
 
@@ -278,11 +280,11 @@ static void judge_hump (pipeline_t * p_pipe, pipeline_step_t * p_out)
 }
 
 /* Lift and overturn from the gravity direction. A lifted or overturned car
- * reports the LIFTED motion class. The unsettled cue is masked while a valid
+ * reports the LIFTED motion class. The upward cue is masked while a valid
  * hump is in progress and the car drives forward; the travel cap only catches
  * a hump state that never ends, such as wheels spinning on a lifted car. */
 static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
-                          pipeline_step_t * p_out)
+                          const imu_motion_input_t * p_motion, pipeline_step_t * p_out)
 {
     attitude_input_t in;
     float const cap_m = (float)PIPELINE_HUMP_MASK_MM * MM_TO_M;
@@ -312,6 +314,9 @@ static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
     in.calibrated = hump_rest_gravity (&p_pipe->hump, in.g0);
     in.fwd[p_pipe->hump.cfg.fwd_axis] = (float)p_pipe->hump.cfg.fwd_sign;
     in.b_wheels_free = p_pipe->wheels_free;
+    in.b_wheels_still = p_motion->wheels_valid && !p_out->hump.motion_stale &&
+                        (fabsf (p_motion->v_left_mps) < WHEEL_SPEED_QUANTUM_MPS) &&
+                        (fabsf (p_motion->v_right_mps) < WHEEL_SPEED_QUANTUM_MPS);
     in.b_on_hump = (HUMP_STATE_FLAT != p_out->hump.state)
                    && forward_travel && (p_pipe->hump_travel_m < cap_m);
 
@@ -413,7 +418,7 @@ bool pipeline_step (pipeline_t * p_pipe,
     else
     {
         /* Missing samples interrupt the set-down window even before IMU loss. */
-        p_pipe->attitude.clear_count = 0U;
+        attitude_interrupt_evidence (&p_pipe->attitude);
         if (!p_pipe->hump.calibrated && (p_pipe->hump.cal_count > 0U))
         {
             hump_recalibrate (&p_pipe->hump);

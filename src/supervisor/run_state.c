@@ -194,7 +194,7 @@ static void command_recal (const run_ctx_t * p_ctx, const run_inputs_t * p_in, r
 
 static void command_reset (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t * p_out)
 {
-    if (p_ctx->b_estop)
+    if (p_ctx->b_estop || p_in->b_estop)
     {
         reject (p_out, RUN_REJECT_LATCHED);
     }
@@ -209,10 +209,10 @@ static void command_reset (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_res
            does not set it going again; START then releases it. */
         if (RUN_STATE_RUNNING == run_state_of (p_ctx))
         {
-            p_ctx->b_operator      = true;
-            p_out->b_cancel_turn   = true;
-            p_out->b_obstacle_stop = true;
+            p_ctx->b_operator = true;
         }
+        p_out->b_cancel_turn   = true;
+        p_out->b_obstacle_stop = true;
         /* The attitude latch clears only with a new run. */
         p_out->b_physics_recal  = p_ctx->b_overturn || p_in->b_overturned;
         p_ctx->b_righted_overturn = p_in->b_overturned;
