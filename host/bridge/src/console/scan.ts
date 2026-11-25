@@ -72,6 +72,7 @@ export function profileHits(values: LinkPacket['values']): XY[] {
 /** Cluster sparse pilot echoes by angular proximity and range step for visual inspection. */
 export function sparseProfileSurfaces(values: LinkPacket['values']): MeasuredSurface[] {
   if (values.status !== ENUMS.profileStatus.pilotSparse) return [];
+  if (stationarySideFan(values)) return profileSurfaces(values);
   const all = scanPoints(values);
   const echoes = all.filter((point) => isPlottedEcho(point));
   if (echoes.length < 2) return [];
@@ -109,26 +110,38 @@ export function stationaryContact(values: LinkPacket['values']): boolean {
   return values.status === ENUMS.profileStatus.pilotSparse && Boolean((values.flags ?? 0) & (1 << BIT_FIELDS.profileFlags.stationaryContact));
 }
 
+function stationarySideFan(values: LinkPacket['values']): boolean {
+  return stationaryContact(values) && Boolean((values.flags ?? 0) & (1 << BIT_FIELDS.profileFlags.probeSideValid));
+}
+
+function sideEndpointSlot(flags: number): number | undefined {
+  const code = (flags >> BIT_FIELDS.profileFlags.endpointLsb) & 0xf;
+  const limitDeg = SERVO_LIMIT_DECI / 10;
+  const fanSlotCount = 1 + 2 * limitDeg / SLOT_STEP_DEG;
+  const firstFanSlot = (-limitDeg - SLOT_FIRST_DEG) / SLOT_STEP_DEG;
+  return code > 0 && code <= fanSlotCount ? firstFanSlot + code - 1 : undefined;
+}
+
 export function profileSurfaces(values: LinkPacket['values']): MeasuredSurface[] {
   const status = values.status;
   const contact = stationaryContact(values);
   if (!contact && status !== undefined && (status < ENUMS.profileStatus.ok || status > ENUMS.profileStatus.noSafePath)) return [];
   const points = scanPoints(values);
-  const sideFan = contact && Boolean((values.flags ?? 0) & (1 << BIT_FIELDS.profileFlags.probeSideValid));
-  if (sideFan) {
+  if (stationarySideFan(values)) {
+    const endpoint = sideEndpointSlot(values.flags ?? 0);
+    // The firmware sweeps toward the confirmed endpoint, in descending slot order on the right.
+    const startSlot = values.side === ENUMS.hugSide.right ? endpoint : undefined;
+    const endSlot = values.side === ENUMS.hugSide.left ? endpoint : undefined;
     const surfaces: MeasuredSurface[] = [];
     let run: ScanPoint[] = [];
     const finish = () => {
       if (run.length >= 2) {
         const first = run[0]!;
         const last = run.at(-1)!;
-        const boundedStart = run.length >= SURFACE_MIN_SLOTS
-          ? supportedEdge(first, run[2]!, points[first.slot - 1])
-          : points[first.slot - 1]?.mark === 'open';
-        const boundedEnd = run.length >= SURFACE_MIN_SLOTS
-          ? supportedEdge(last, run.at(-3)!, points[last.slot + 1])
-          : points[last.slot + 1]?.mark === 'open';
-        surfaces.push({ firstSlot: first.slot, points: run.map(scanPosition), boundedStart, boundedEnd });
+        surfaces.push({
+          firstSlot: first.slot, points: run.map(servoPosition),
+          boundedStart: first.slot === startSlot, boundedEnd: last.slot === endSlot,
+        });
       }
       run = [];
     };
@@ -138,7 +151,9 @@ export function profileSurfaces(values: LinkPacket['values']): MeasuredSurface[]
         finish();
         continue;
       }
-      if (previous !== undefined && Math.abs(point.distMm - previous.distMm) > SURFACE_MAX_RANGE_STEP_MM) finish();
+      if (previous !== undefined && (point.slot !== previous.slot + 1 ||
+          point.slot === startSlot || previous.slot === endSlot ||
+          Math.abs(point.distMm - previous.distMm) > SURFACE_MAX_RANGE_STEP_MM)) finish();
       run.push(point);
     }
     finish();

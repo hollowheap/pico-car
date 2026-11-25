@@ -106,10 +106,36 @@ it('clusters sparse pilot echoes smoothly without legacy body-pivot discontinuit
 
 it('retains a short oblique side and marks only the endpoint confirmed by the car', () => {
   const side = { ...fixture({17: measured(valid, 105), 18: measured(valid, 109), 19: measured(open)}),
-    status: ENUMS.profileStatus.pilotSparse, flags: 4 | 2 | (5 << 4) };
+    status: ENUMS.profileStatus.pilotSparse, side: ENUMS.hugSide.left, flags: 4 | 2 | (5 << 4) };
   const [face] = profileSurfaces(side);
   expect(face?.points).toHaveLength(2);
   expect(face?.boundedStart).toBe(false);
   expect(face?.boundedEnd).toBe(true);
+  expect(profileSurfaces({...side, flags: 4 | 2})[0]?.boundedEnd).toBe(false);
   expect(profileSurfaces({...side, slots_18: 0})).toHaveLength(0);
+});
+
+it.each([255, 350])('marks the confirmed +10° endpoint before a deeper return at %i mm', (background) => {
+  const side = { ...fixture({
+    14: measured(valid, 220), 15: measured(valid, 215), 16: measured(valid, 210),
+    17: measured(valid, 205), 18: measured(valid, 200), 19: measured(valid, 198),
+    20: measured(valid, 195), 21: measured(valid, background), 22: measured(valid, background),
+  }), status: ENUMS.profileStatus.pilotSparse, side: ENUMS.hugSide.left, flags: 4 | 2 | (7 << 4) };
+  const confirmed = profileSurfaces(side);
+  expect(confirmed.map((face) => [face.firstSlot, face.points.length, face.boundedStart, face.boundedEnd]))
+    .toEqual([[14, 7, false, true], [21, 2, false, false]]);
+  expect(confirmed[0]?.points.at(-1)).toEqual(profileHits(side)[6]);
+  expect(sparseProfileSurfaces(side)).toEqual(confirmed);
+
+  const unconfirmed = {...side, flags: 4 | 2};
+  expect(profileSurfaces(unconfirmed).every((face) => !face.boundedStart && !face.boundedEnd)).toBe(true);
+  expect(sparseProfileSurfaces(unconfirmed)).toEqual(profileSurfaces(unconfirmed));
+});
+
+it('marks the start of a right-hand side in ascending display order', () => {
+  const side = { ...fixture({16: measured(valid, 300), 17: measured(valid, 300),
+    18: measured(valid, 109), 19: measured(valid, 105)}),
+    status: ENUMS.profileStatus.pilotSparse, side: ENUMS.hugSide.right, flags: 4 | 2 | (5 << 4) };
+  expect(profileSurfaces(side).map((face) => [face.firstSlot, face.boundedStart, face.boundedEnd]))
+    .toEqual([[16, false, false], [18, true, false]]);
 });
