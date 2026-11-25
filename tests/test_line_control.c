@@ -1,8 +1,8 @@
 /** @file test_line_control.c
- * @brief Host tests for the line follower and one-shot turns (D92, D93).
+ * @brief Host tests for the line follower and one-shot turns.
  *
  * Includes a small differential-drive simulator (107 mm track, a straight
- * line, two sensors 2 cm apart ahead of the axle) for the 30 degree entry.
+ * line, two sensors 25 mm apart ahead of the axle) for the 30 degree entry.
  */
 
 #include <assert.h>
@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "track/line_control.h"
 
@@ -106,9 +107,9 @@ static void test_one_sensor_steers_toward_the_line(void)
         assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, false, 0, 0, ms, &t));
     }
     /* Left sensor: turn left, the left wheel is the inner one. */
-    assert(t.left_um_s < CRUISE);
+    assert(t.left_um_s < t.right_um_s);
     assert(t.left_um_s > 0);
-    assert(CRUISE == t.right_um_s);
+    assert(t.right_um_s <= CRUISE);
 
     line_follow_init(&f);
     (void)follow(&f, true, true, 0, 0, 0U, &t);
@@ -116,9 +117,113 @@ static void test_one_sensor_steers_toward_the_line(void)
     {
         (void)follow(&f, false, true, 0, 0, ms, &t);
     }
-    assert(CRUISE == t.left_um_s);
-    assert(t.right_um_s < CRUISE);
+    assert(t.left_um_s <= CRUISE);
+    assert(t.right_um_s < t.left_um_s);
     assert(t.right_um_s > 0);
+}
+
+/* The speed drops with the heading error: full cruise on the line, the corner
+ * speed at LINE_SLOW_DECI and more. A long correction is a corner. */
+static void test_speed_follows_heading_error(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    uint32_t ms;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, 0U, &t);
+    expect_targets(&t, CRUISE, CRUISE);
+    /* 10 ms on the left sensor at cruise: the slew per m times 3 mm. */
+    (void)follow(&f, true, false, 0, 0, 10U, &t);
+    assert(((LINE_HIT_DECI_PER_M * 3) / 1000) == f.ref_deci);
+    assert((CRUISE - (((CRUISE - LINE_CORNER_UM_S) * f.ref_deci) / LINE_SLOW_DECI)) ==
+           t.right_um_s);
+    assert(t.left_um_s < t.right_um_s);
+    for (ms = 20U; ms <= 100U; ms += 10U)
+    {
+        (void)follow(&f, true, false, 0, 0, ms, &t);
+    }
+    assert(f.ref_deci >= LINE_SLOW_DECI);
+    assert(LINE_CORNER_UM_S == t.right_um_s);
+    /* Both sensors: the target is the heading again. The speed climbs back
+     * at LINE_ACCEL_MM_S2, not at once, so the car does not run into the next
+     * corner at cruise. */
+    (void)follow(&f, true, true, 0, 0, 110U, &t);
+    assert(t.left_um_s == t.right_um_s);
+    assert(t.left_um_s == (LINE_CORNER_UM_S + (LINE_ACCEL_MM_S2 * 10)));
+    for (ms = 120U; ms <= 2000U; ms += 10U)
+    {
+        int32_t const before = t.left_um_s;
+
+        (void)follow(&f, true, true, 0, 0, ms, &t);
+        assert(t.left_um_s >= before);
+        assert((t.left_um_s - before) <= (LINE_ACCEL_MM_S2 * 10));
+    }
+    expect_targets(&t, CRUISE, CRUISE);
+}
+
+/* After a hit, the line between the sensors means the car points along it:
+ * the target relaxes to the heading, so the car stops turning and does not
+ * swing across to the other sensor (the weave). */
+static void test_blind_relaxes_toward_heading(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    uint32_t ms;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, 0U, &t);
+    int32_t before;
+
+    for (ms = 10U; ms <= 100U; ms += 10U)
+    {
+        (void)follow(&f, true, false, 0, 0, ms, &t);
+    }
+    before = f.ref_deci;
+    assert(before > 0);
+    (void)follow(&f, false, false, 0, 1000, 110U, &t);
+    assert(f.ref_deci < before);
+    assert(f.ref_deci > 0);
+    for (ms = 120U; ms <= 300U; ms += 10U)
+    {
+        assert(LINE_FOLLOW_BRIDGING == follow(&f, false, false, 0, 1000, ms, &t));
+    }
+    assert(0 == f.ref_deci);
+    assert(t.left_um_s == t.right_um_s);
+}
+
+/* The sonar bumper: full cruise with nothing close, the bumper speed at the
+ * obstacle detect distance and closer, a straight ramp between. */
+static void test_bumper_cap(void)
+{
+    int32_t const mid_mm = (LINE_BUMPER_FAR_MM + LINE_BUMPER_NEAR_MM) / 2;
+    int32_t const mid = line_bumper_cap_um_s(true, (uint32_t)mid_mm);
+
+    assert(CRUISE == line_bumper_cap_um_s(false, 0U));
+    assert(CRUISE == line_bumper_cap_um_s(true, 5000U));
+    assert(CRUISE == line_bumper_cap_um_s(true, (uint32_t)LINE_BUMPER_FAR_MM));
+    assert(LINE_BUMPER_MIN_UM_S == line_bumper_cap_um_s(true, (uint32_t)LINE_BUMPER_NEAR_MM));
+    assert(LINE_BUMPER_MIN_UM_S == line_bumper_cap_um_s(true, 0U));
+    assert(abs(mid - ((CRUISE + LINE_BUMPER_MIN_UM_S) / 2)) <= 1000);
+    assert(line_bumper_cap_um_s(true, (uint32_t)LINE_BUMPER_NEAR_MM + 10U) >
+           LINE_BUMPER_MIN_UM_S);
+}
+
+/* A cap scales both wheels, so the car keeps its curve while it slows. */
+static void test_targets_cap(void)
+{
+    line_targets_t t = {300000, 150000};
+
+    line_targets_cap(&t, 120000);
+    expect_targets(&t, 120000, 60000);
+    t.left_um_s  = 100000;
+    t.right_um_s = 50000;
+    line_targets_cap(&t, 120000);
+    expect_targets(&t, 100000, 50000);
+    t.left_um_s  = 0;
+    t.right_um_s = 0;
+    line_targets_cap(&t, 120000);
+    expect_targets(&t, 0, 0);
 }
 
 /* The target stays within LINE_CAP_DECI of the heading, so the inner wheel never
@@ -136,25 +241,25 @@ static void test_cap_limits_the_correction(void)
         (void)follow(&f, true, false, 0, 0, ms, &t);
     }
     assert(t.left_um_s >= 0);
-    assert(CRUISE == t.right_um_s);
+    assert(LINE_CORNER_UM_S == t.right_um_s);
     assert(f.ref_deci == LINE_CAP_DECI);
 }
 
-/* Neither sensor: the car holds its heading for LINE_GAP_MM, then weaves. It
- * never stops. */
-static void test_gap_then_weave(void)
+/* Neither sensor: the car holds its heading for LINE_GAP_MM at cruise. Then
+ * it does not drive on: it turns on the spot toward the side that saw the line
+ * last, then back the other way, and stops when both turns find nothing. */
+static void test_gap_then_search_on_the_spot(void)
 {
     line_follow_t f;
     line_targets_t t;
     line_follow_status_t status = LINE_FOLLOW_FOLLOWING;
     int64_t travel = 0;
     uint32_t ms = 0U;
-    bool b_left_lead = false;
-    bool b_right_lead = false;
+    int32_t heading = 0;
 
     line_follow_init(&f);
-    (void)follow(&f, true, false, 0, 0, ms, &t);
-    /* 10 ms per pass at cruise is 1.63 mm. */
+    (void)follow(&f, false, true, 0, 0, ms, &t); /* last seen on the right */
+    (void)follow(&f, true, true, 0, 0, ms, &t);
     while (travel < ((int64_t)(LINE_GAP_MM - 5) * UM_PER_MM))
     {
         ms += 10U;
@@ -169,47 +274,54 @@ static void test_gap_then_weave(void)
         travel += (CRUISE * 10) / 1000;
         status = follow(&f, false, false, 0, travel, ms, &t);
     }
-    /* The weave runs at the search speed and swings both ways. */
-    for (ms += 10U; ms < 20000U; ms += 10U)
+    /* First turn: clockwise, toward the right, on the spot. */
+    expect_targets(&t, LINE_SEARCH_UM_S, -LINE_SEARCH_UM_S);
+    while (heading > -LINE_SEARCH_SWEEP_DECI)
     {
-        int32_t const heading = 0;
-
-        travel += (LINE_SEARCH_UM_S * 10) / 1000;
-        assert(LINE_FOLLOW_SEARCHING ==
-               follow(&f, false, false, heading, travel, ms, &t));
-        assert(t.left_um_s >= 0);
-        assert(t.right_um_s >= 0);
-        assert((t.left_um_s + t.right_um_s) > 0);
-        assert(t.left_um_s <= LINE_SEARCH_UM_S);
-        assert(t.right_um_s <= LINE_SEARCH_UM_S);
-        b_left_lead  = b_left_lead || (t.right_um_s < t.left_um_s);
-        b_right_lead = b_right_lead || (t.left_um_s < t.right_um_s);
+        ms += 10U;
+        heading -= 10;
+        assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, heading, travel, ms, &t));
     }
-    assert(b_left_lead && b_right_lead);
-    /* A sensor hit ends the search. */
-    assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, false, 0, travel, ms, &t));
-    assert(0 == f.sweep_dir - f.sweep_dir);
+    /* Second turn: back past the start, as far the other way. */
+    ms += 10U;
+    assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, heading, travel, ms, &t));
+    expect_targets(&t, -LINE_SEARCH_UM_S, LINE_SEARCH_UM_S);
+    while (heading < (LINE_SEARCH_SWEEP_DECI - 10))
+    {
+        ms += 10U;
+        heading += 10;
+        assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, heading, travel, ms, &t));
+    }
+    /* At the end the car stops and stays stopped, however long it waits. */
+    for (int pass = 0; pass < 2000; pass++)
+    {
+        ms += 10U;
+        assert(LINE_FOLLOW_STOPPED ==
+               follow(&f, false, false, LINE_SEARCH_SWEEP_DECI, travel, ms, &t));
+        expect_targets(&t, 0, 0);
+    }
+    /* A sensor hit ends the stop. */
+    assert(LINE_FOLLOW_FOLLOWING ==
+           follow(&f, true, false, LINE_SEARCH_SWEEP_DECI, travel, ms + 10U, &t));
+    assert((t.left_um_s + t.right_um_s) > 0);
 }
 
-/* The weave starts toward the side that saw the line last. */
-static void test_weave_starts_toward_the_remembered_side(void)
+/* A hit during the search: the car follows from where it points, at the
+ * corner speed, not from the end of the search turn. */
+static void test_search_hit_follows_from_the_heading(void)
 {
     line_follow_t f;
     line_targets_t t;
-    int64_t travel = 0;
-    uint32_t ms = 0U;
-    int pass;
 
     line_follow_init(&f);
-    (void)follow(&f, false, true, 0, 0, ms, &t); /* the right sensor saw it */
-    for (pass = 0; pass < 120; pass++)
-    {
-        ms += 10U;
-        travel += (CRUISE * 10) / 1000;
-        (void)follow(&f, false, false, 0, travel, ms, &t);
-    }
-    assert(LINE_FOLLOW_SEARCHING == f.status);
-    assert(-1 == f.sweep_dir);
+    line_follow_start_search(&f);
+    assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, 0, 0, 0U, &t));
+    expect_targets(&t, -LINE_SEARCH_UM_S, LINE_SEARCH_UM_S); /* no side: left first */
+    assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, 300, 0, 10U, &t));
+    assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, true, 300, 0, 20U, &t));
+    assert(300 == f.ref_deci);
+    expect_targets(&t, LINE_CORNER_UM_S + (LINE_ACCEL_MM_S2 * 10),
+                   LINE_CORNER_UM_S + (LINE_ACCEL_MM_S2 * 10));
 }
 
 static void test_targets_never_exceed_cruise(void)
@@ -250,7 +362,7 @@ static void test_time_wraps(void)
     (void)follow(&f, true, false, 0, 0, 0xFFFFFFF0U, &t);
     (void)follow(&f, true, false, 0, 0, 0x00000004U, &t);
     /* 20 ms passed, not 4 billion: the target moved by about 12 deci-degrees. */
-    assert(f.ref_deci > 0 && f.ref_deci < 40); /* 20 ms at LINE_RATE_HIT, not 4 billion */
+    assert(f.ref_deci > 0 && f.ref_deci < 40); /* 20 ms of slew, not 4 billion */
 }
 
 static void test_heading_helper(void)
@@ -286,7 +398,72 @@ typedef struct
     bool   b_corner;     /* a straight, a 90 degree arc of `radius`, a straight */
     double cross_x_mm;   /* a second line across the path at this x, 0 = none */
     bool   b_tee;        /* the cross line runs only to the left (a T) */
+    struct sim_seg const * p_segs; /* a track of segments, NULL = the cases above */
 } sim_case_t;
+
+/* One piece of a segment track: a straight (radius 0) or an arc. turn_deg is
+ * the arc angle, positive to the left. */
+typedef struct sim_seg
+{
+    double len_mm;
+    double radius;
+    double turn_deg;
+} sim_seg_t;
+
+/* The segment track as points every SEG_STEP_MM, built once per run. */
+#define SEG_STEP_MM  2.0
+#define SEG_MAX_PTS  6000
+static double g_seg_x[SEG_MAX_PTS];
+static double g_seg_y[SEG_MAX_PTS];
+static int    g_seg_n;
+
+/* Lay out the segments from (-200, 0), heading along +x. A zero entry ends
+ * the list. */
+static void seg_build(sim_seg_t const * p_segs)
+{
+    double x = -200.0, y = 0.0, psi = 0.0;
+    int i;
+
+    g_seg_n = 0;
+    for (i = 0; (p_segs[i].len_mm > 0.0) || (p_segs[i].turn_deg != 0.0); i++)
+    {
+        double const len = (p_segs[i].radius > 0.0)
+                               ? (fabs(p_segs[i].turn_deg) * PI_RAD / 180.0) * p_segs[i].radius
+                               : p_segs[i].len_mm;
+        double const dpsi = (p_segs[i].radius > 0.0)
+                                ? (p_segs[i].turn_deg * PI_RAD / 180.0) * (SEG_STEP_MM / len)
+                                : 0.0;
+        double done = 0.0;
+
+        while ((done < len) && (g_seg_n < SEG_MAX_PTS))
+        {
+            g_seg_x[g_seg_n] = x;
+            g_seg_y[g_seg_n] = y;
+            g_seg_n++;
+            x += SEG_STEP_MM * cos(psi + (dpsi / 2.0));
+            y += SEG_STEP_MM * sin(psi + (dpsi / 2.0));
+            psi += dpsi;
+            done += SEG_STEP_MM;
+        }
+    }
+}
+
+static double seg_dist(double px, double py)
+{
+    double best = 1e9;
+    int i;
+
+    for (i = 0; i < g_seg_n; i++)
+    {
+        double const d = hypot(px - g_seg_x[i], py - g_seg_y[i]);
+
+        if (d < best)
+        {
+            best = d;
+        }
+    }
+    return best;
+}
 
 typedef struct
 {
@@ -296,6 +473,9 @@ typedef struct
     double max_off_mm;
     bool   b_stopped;    /* both targets zero at some pass                   */
     double gap_heading_deg;
+    double mean_mm_s;    /* mean axle speed after the settle           */
+    double sensor_x_max; /* largest x of the sensor midpoint                 */
+    double end_off_mm;   /* sensor midpoint to the path at the end           */
 } sim_result_t;
 
 typedef struct
@@ -343,6 +523,10 @@ static double path_dist(sim_case_t const * p_c, double px, double py)
 {
     double const r = p_c->radius;
 
+    if (NULL != p_c->p_segs)
+    {
+        return seg_dist(px, py);
+    }
     if (0.0 == r)
     {
         return py;
@@ -359,6 +543,10 @@ static double path_pos(sim_case_t const * p_c, double px, double py)
 {
     double const r = p_c->radius;
 
+    if (NULL != p_c->p_segs)
+    {
+        return 0.0; /* no gaps on a segment track */
+    }
     if (0.0 == r)
     {
         return px;
@@ -397,7 +585,8 @@ static bool sim_sensor_raw(sim_case_t const * p_c, double x, double y, double ps
 
 static sim_result_t sim_run(sim_case_t const * p_c)
 {
-    sim_result_t res = {0.0, 0.0, 0.0, 0.0, false, 0.0};
+    sim_result_t res = {0.0, 0.0, 0.0, 0.0, false, 0.0, 0.0, -1e9, 0.0};
+    double moved_mm = 0.0;
     /* A straight run starts 6 mm off the line. A curve starts at the steady
      * state: the sensor midpoint on the arc, the axle on the smaller circle. */
     double x = p_c->b_corner ? -600.0 : 0.0, psi = 0.0;
@@ -415,8 +604,13 @@ static sim_result_t sim_run(sim_case_t const * p_c)
     uint32_t seed = 1U;
     line_follow_t f;
     uint8_t legacy_side = (uint8_t)LINE_SIDE_LEFT;
-    double const settle = p_c->seconds / 4.0;
+    /* A segment track is measured from the start: its bends come early. */
+    double const settle = (NULL != p_c->p_segs) ? 0.5 : (p_c->seconds / 4.0);
 
+    if (NULL != p_c->p_segs)
+    {
+        seg_build(p_c->p_segs);
+    }
     line_follow_init(&f);
     while (t < p_c->seconds)
     {
@@ -496,6 +690,7 @@ static sim_result_t sim_run(sim_case_t const * p_c)
         t += SIM_DT_S;
         if (t > settle)
         {
+            moved_mm += ((vl + vr) / 2.0) * SIM_DT_S;
             double const mx = x + (LINE_SENSOR_LEAD_MM * cos(psi));
             double const my = y + (LINE_SENSOR_LEAD_MM * sin(psi));
             double const mid = fabs(path_dist(p_c, mx, my));
@@ -505,6 +700,11 @@ static sim_result_t sim_run(sim_case_t const * p_c)
                                   (pos < (p_c->gap_from_mm + p_c->gap_len_mm + 60.0));
 
             samples++;
+            res.end_off_mm = mid;
+            if (mx > res.sensor_x_max)
+            {
+                res.sensor_x_max = mx;
+            }
             if (mid > ((LINE_SENSOR_SPACING_MM + LINE_WIDTH_MM) / 2.0))
             {
                 off++;
@@ -529,6 +729,7 @@ static sim_result_t sim_run(sim_case_t const * p_c)
         }
     }
     res.edges_hz = (double)changes / (p_c->seconds - settle);
+    res.mean_mm_s = moved_mm / (p_c->seconds - settle);
     res.lost_pct = (100.0 * (double)off) / (double)samples;
     return res;
 }
@@ -537,28 +738,33 @@ static sim_result_t sim_run(sim_case_t const * p_c)
  * fails on the old law. */
 static void test_sim_straight_hunting(void)
 {
-    sim_case_t c = {LAW_LEGACY, 0.0, 0.0, 0.0, 12.0, false, 0.0, false};
+    sim_case_t c = {LAW_LEGACY, 0.0, 0.0, 0.0, 12.0, false, 0.0, false, NULL};
     sim_result_t legacy;
     sim_result_t cascade;
 
     legacy = sim_run(&c);
     c.law = LAW_CASCADE;
     cascade = sim_run(&c);
-    (void)printf("straight: legacy %.1f edges/s (%.1f deg), cascade %.1f edges/s (%.1f deg, %.2f%% lost, max off %.1f mm)\n",
+    (void)printf("straight: legacy %.1f edges/s (%.1f deg), cascade %.1f edges/s (%.1f deg, %.2f%% lost, max off %.1f mm, %.0f mm/s)\n",
                  legacy.edges_hz, legacy.heading_deg, cascade.edges_hz,
-                 cascade.heading_deg, cascade.lost_pct, cascade.max_off_mm);
+                 cascade.heading_deg, cascade.lost_pct, cascade.max_off_mm, cascade.mean_mm_s);
     assert(legacy.edges_hz > 6.0);
-    assert(cascade.edges_hz < 8.0);
+    /* Hunting per metre: 8 edges/s at the 163364 um/s cruise. */
+    assert(cascade.edges_hz < (8.0 * (double)LINE_CRUISE_UM_S / 163364.0));
     assert(cascade.edges_hz < (legacy.edges_hz * 0.65));
     assert(cascade.heading_deg < 14.0);
     assert(!cascade.b_stopped);
     assert(cascade.lost_pct < 1.0);
     assert(cascade.max_off_mm < 25.0);
+    /* The simulated sensors are points, so a centred car gets no hit and
+     * searches on the spot after LINE_GAP_MM; the mean stays well under
+     * cruise. */
+    assert(cascade.mean_mm_s > 130.0);
 }
 
 static void test_sim_curves_keep_the_line(void)
 {
-    sim_case_t c = {LAW_CASCADE, 400.0, 0.0, 0.0, 12.0, false, 0.0, false};
+    sim_case_t c = {LAW_CASCADE, 400.0, 0.0, 0.0, 12.0, false, 0.0, false, NULL};
     sim_result_t res;
 
     res = sim_run(&c);
@@ -578,11 +784,61 @@ static void test_sim_curves_keep_the_line(void)
     assert(!res.b_stopped);
 }
 
+/* Bends in a row (user request): a U of two 90 degree corners, then a corner
+ * the other way; a 180 degree U in one arc, then a corner; an S. All arcs are
+ * 150 mm, the track corner radius. */
+static void test_sim_bends_in_a_row(void)
+{
+    static sim_seg_t const u_two[] = {
+        {800.0, 0.0, 0.0}, {0.0, 150.0, 90.0}, {100.0, 0.0, 0.0}, {0.0, 150.0, 90.0},
+        {300.0, 0.0, 0.0}, {0.0, 150.0, -90.0}, {4000.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+    static sim_seg_t const u_one[] = {
+        {800.0, 0.0, 0.0}, {0.0, 150.0, 180.0}, {300.0, 0.0, 0.0}, {0.0, 150.0, -90.0},
+        {4000.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+    static sim_seg_t const s_bend[] = {
+        {800.0, 0.0, 0.0}, {0.0, 150.0, 90.0}, {0.0, 150.0, -90.0}, {4000.0, 0.0, 0.0},
+        {0.0, 0.0, 0.0}};
+    sim_seg_t const * const tracks[] = {u_two, u_one, s_bend};
+    char const * const names[] = {"U of two corners, then right", "U in one arc, then right",
+                                  "S bend"};
+    unsigned i;
+
+    for (i = 0U; i < 3U; i++)
+    {
+        sim_case_t c = {LAW_CASCADE, 0.0, 0.0, 0.0, 20.0, false, 0.0, false, tracks[i]};
+        sim_result_t res = sim_run(&c);
+
+        (void)printf("%s: %.2f%% lost, max off %.1f mm, %.0f mm/s\n", names[i], res.lost_pct,
+                     res.max_off_mm, res.mean_mm_s);
+        assert(res.lost_pct < 1.0);
+        assert(res.max_off_mm < 25.0);
+        assert(!res.b_stopped);
+    }
+}
+
+/* A corner too sharp to follow, with a second line across the path 300 mm
+ * past it (user report: after a miss the car took another line). The car
+ * stops going forward, turns on the spot toward the side that saw the line
+ * last, and finds its own line again. */
+static void test_sim_lost_line_is_found_on_the_spot(void)
+{
+    static sim_seg_t const sharp[] = {
+        {800.0, 0.0, 0.0}, {0.0, 10.0, 90.0}, {3000.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+    /* The corner is at x = 600; the other line runs across at x = 900. */
+    sim_case_t c = {LAW_CASCADE, 0.0, 0.0, 0.0, 12.0, false, 900.0, false, sharp};
+    sim_result_t res = sim_run(&c);
+
+    (void)printf("sharp corner, line across 300 mm past it: sensors reach x %.0f mm, end %.1f mm off\n",
+                 res.sensor_x_max, res.end_off_mm);
+    assert(res.sensor_x_max < (900.0 - LINE_WIDTH_MM));
+    assert(res.end_off_mm < 25.0);
+}
+
 /* Junctions: a + crossing and a T branch to the left. With no barcode command
  * the car goes straight through both. */
 static void test_sim_junctions_go_straight(void)
 {
-    sim_case_t c = {LAW_CASCADE, 0.0, 0.0, 0.0, 14.0, false, 900.0, false};
+    sim_case_t c = {LAW_CASCADE, 0.0, 0.0, 0.0, 14.0, false, 900.0, false, NULL};
     sim_result_t res;
 
     res = sim_run(&c);
@@ -601,7 +857,7 @@ static void test_sim_junctions_go_straight(void)
 /* A 60 mm cut in the line (the run-on-car check): the car crosses it. */
 static void test_sim_crosses_a_gap(void)
 {
-    sim_case_t c = {LAW_CASCADE, 0.0, 800.0, 60.0, 14.0, false, 0.0, false};
+    sim_case_t c = {LAW_CASCADE, 0.0, 800.0, 60.0, 14.0, false, 0.0, false, NULL};
     sim_result_t res;
 
     res = sim_run(&c);
@@ -612,7 +868,8 @@ static void test_sim_crosses_a_gap(void)
     assert(res.gap_heading_deg < 12.0);
 }
 
-/* After an aborted turn the car looks for the line and does not stop. */
+/* After an aborted turn the car looks for the line on the spot and does not
+ * stop. */
 static void test_start_search(void)
 {
     line_follow_t f;
@@ -621,8 +878,7 @@ static void test_start_search(void)
     line_follow_init(&f);
     line_follow_start_search(&f);
     assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, 0, 0, 0U, &t));
-    assert((t.left_um_s + t.right_um_s) > 0);
-    assert(t.left_um_s <= LINE_SEARCH_UM_S && t.right_um_s <= LINE_SEARCH_UM_S);
+    assert((t.left_um_s != 0) && (t.left_um_s == -t.right_um_s));
     assert(LINE_FOLLOW_FOLLOWING == follow(&f, true, true, 0, 0, 10U, &t));
 }
 
@@ -651,6 +907,29 @@ static void test_recorded_side_after_turn(void)
     assert(LINE_FOLLOW_BRIDGING ==
            follow(&f, false, false, line_heading_deci(l, r), 0, 5000U, &t));
     expect_targets(&t, CRUISE, CRUISE);
+}
+
+/* NONE is the line task's "no turn waiting" value: a turn started with it is
+ * idle, so the first update stops both wheels and never pivots. */
+static void test_none_turn_is_idle(void)
+{
+    line_turn_state_t tn;
+    line_targets_t    t = {1, 1};
+
+    line_turn_start(&tn, LINE_TURN_KIND_NONE, 0, 0);
+    assert(LINE_SIDE_NONE == line_turn_side(&tn));
+    assert(LINE_TURN_ABORTED == turn_step(&tn, 0, 0, true, false, false, &t));
+    expect_targets(&t, 0, 0);
+}
+
+/* The turn kind is p1 of the TURN_START, TURN_DONE and TURN_ABORT events. */
+static void test_turn_kind_wire_values(void)
+{
+    assert(0 == (int)LINE_TURN_KIND_NONE);
+    assert(1 == (int)LINE_TURN_KIND_LEFT);
+    assert(2 == (int)LINE_TURN_KIND_RIGHT);
+    assert(3 == (int)LINE_TURN_KIND_UTURN);
+    assert(4 == (int)LINE_TURN_KIND_STRAIGHT);
 }
 
 /* STRAIGHT drives LINE_STRAIGHT_MM on the start heading, ignores the line
@@ -692,14 +971,20 @@ static void test_straight(void)
  * and of the tuning notes. */
 static void test_constants(void)
 {
-    assert(163364 == LINE_CRUISE_UM_S);
+    assert(300000 == LINE_CRUISE_UM_S);
+    assert(100000 == LINE_CORNER_UM_S);
+    assert(400 == LINE_ACCEL_MM_S2);
+    assert(LINE_CRUISE_UM_S <= 300000); /* MOTOR_MAX_TARGET_UM_S */
     assert(107 == LINE_WHEEL_TRACK_MM);
     assert(25 == LINE_SENSOR_SPACING_MM);
     assert(8 == LINE_KH);
-    assert(600 == LINE_RATE_HIT);
+    assert(4000 == LINE_HIT_DECI_PER_M);
+    assert(400 == LINE_RATE_RELAX);
+    assert(20 == LINE_SLOW_DECI);
     assert(120 == LINE_CAP_DECI);
-    assert(100 == LINE_GAP_MM);
-    assert(100000 == LINE_SEARCH_UM_S);
+    assert(150 == LINE_GAP_MM);
+    assert(90000 == LINE_SEARCH_UM_S);
+    assert(1350 == LINE_SEARCH_SWEEP_DECI);
     assert(180000 == LINE_TURN_FAST_UM_S);
     assert(80000 == LINE_TURN_SLOW_UM_S);
     assert(300 == LINE_TURN_CAPTURE_DECI);
@@ -918,15 +1203,21 @@ int main(void)
     test_init();
     test_one_sensor_steers_toward_the_line();
     test_cap_limits_the_correction();
-    test_gap_then_weave();
-    test_weave_starts_toward_the_remembered_side();
+    test_speed_follows_heading_error();
+    test_blind_relaxes_toward_heading();
+    test_bumper_cap();
+    test_targets_cap();
+    test_gap_then_search_on_the_spot();
+    test_search_hit_follows_from_the_heading();
     test_targets_never_exceed_cruise();
     test_time_wraps();
     test_heading_helper();
     test_start_search();
     test_sim_straight_hunting();
     test_sim_curves_keep_the_line();
+    test_sim_bends_in_a_row();
     test_sim_crosses_a_gap();
+    test_sim_lost_line_is_found_on_the_spot();
     test_sim_junctions_go_straight();
     test_heading_sign();
     test_left_turn_phases();
@@ -939,6 +1230,8 @@ int main(void)
     test_wrong_direction_one_sensor_never_completes();
     test_step_without_start_aborts();
     test_recorded_side_after_turn();
+    test_none_turn_is_idle();
+    test_turn_kind_wire_values();
     test_straight();
     test_constants();
     (void)puts("line_control: all tests passed");

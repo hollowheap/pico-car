@@ -36,6 +36,11 @@ typedef enum
 #define RUN_REJECT_OPCODE      (6U)
 #define RUN_REJECT_ON_HUMP     (7U) /* a calibration on a ramp would be wrong */
 
+/* Passes the car must stand level before the lift hold ends without START:
+   1 s at SUPERVISOR_PASS_MS. The car has no button, so a car set down with no
+   dashboard link must start on its own. [Default] */
+#define RUN_LIFT_SETTLE_PASSES (50U)
+
 /* The turn the line task must run, or none. */
 #define RUN_TURN_NONE (0xFFU)
 
@@ -47,6 +52,7 @@ typedef struct
     bool b_lift;     /* lifted or overturned: the lift hold is on      */
     bool b_overturn; /* overturned: needs RESET after the car is upright */
     bool b_estop;    /* the motion emergency latch                     */
+    uint8_t level_passes; /* passes level since the last lift          */
 } run_ctx_t;
 
 /* Facts the supervisor reads before each step. */

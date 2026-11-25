@@ -132,15 +132,20 @@ static inline ER tk_def_int (UINT intno, const T_DINT * pk_dint)
     return E_OK;
 }
 
+/* Mask state of the GPIO bank IRQ as the code under test left it. */
+extern int g_shim_int_enabled;
+
 static inline void EnableInt (UINT intno, INT intpri)
 {
     (void)intno;
     (void)intpri;
+    g_shim_int_enabled = 1;
 }
 
 static inline void DisableInt (UINT intno)
 {
     (void)intno;
+    g_shim_int_enabled = 0;
 }
 
 static inline void ClearInt (UINT intno)

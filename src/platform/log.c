@@ -7,8 +7,8 @@
  * and prints them. Nothing here blocks a real-time task.
  *
  * NOTE: The kernel types UINT, UB, INT, SYSTIM and T_SPLOCK are used where
- * the kernel API requires them (deviation from BARR-C 5.2.a, see
- * the project notes).
+ * the kernel API requires them (deviation from BARR-C 5.2.a: the kernel
+ * headers fix these types).
  */
 
 #include <stdarg.h>

@@ -35,6 +35,7 @@ void run_state_init (run_ctx_t * p_ctx)
     p_ctx->b_lift     = false;
     p_ctx->b_overturn = false;
     p_ctx->b_estop    = false;
+    p_ctx->level_passes = 0U;
 }
 
 run_state_t run_state_of (const run_ctx_t * p_ctx)
@@ -256,16 +257,30 @@ void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t 
     }
     if (p_in->b_overturned)
     {
-        p_ctx->b_overturn = true;
-        p_ctx->b_lift     = true;
+        p_ctx->b_overturn   = true;
+        p_ctx->b_lift       = true;
+        p_ctx->level_passes = 0U;
     }
     else if (p_in->b_lifted)
     {
-        p_ctx->b_lift = true;
+        p_ctx->b_lift       = true;
+        p_ctx->level_passes = 0U;
+    }
+    else if (p_ctx->b_lift && !p_ctx->b_overturn)
+    {
+        /* Level again: START ends the hold at once, or the car starts on its
+           own after standing level for a while. An overturn still needs RESET. */
+        p_ctx->level_passes++;
+        if (p_ctx->level_passes >= RUN_LIFT_SETTLE_PASSES)
+        {
+            p_ctx->b_lift          = false;
+            p_ctx->level_passes    = 0U;
+            p_out->b_physics_recal = !p_in->b_on_hump;
+        }
     }
     else
     {
-        /* Level again: the lift hold stays until START. */
+        /* Not held by a lift. */
     }
 
     if (p_ctx->b_overturn && !b_was_overturn)

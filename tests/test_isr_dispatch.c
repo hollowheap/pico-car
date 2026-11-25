@@ -61,6 +61,7 @@ static uint32_t g_callbacks_started;
 static int      g_ack_after_callback;
 
 FP  g_shim_inthdr = NULL;
+int g_shim_int_enabled = 0;
 INT g_shim_prc    = 1;
 
 static void die (const char * what, uint32_t addr)
@@ -444,6 +445,26 @@ static void test_core1_status_is_used_on_core1 (void)
     }
 }
 
+/* The IRQ is set up on the core that ran gpio_irq_init(); a handler for the
+ * other core could never fire, so it is refused. */
+static void test_other_core_handler_is_refused(void)
+{
+    CHECK(gpio_irq_add_handler(TP_PRC2, (1U << PIN_NONE), handler_d) == E_PAR);
+    CHECK(g_shim_int_enabled == 1);
+}
+
+/* A pin the other core owns is refused, and the shared bank IRQ is enabled
+ * again: the handlers registered before must keep their edges. */
+static void test_refused_pin_keeps_irq_enabled(void)
+{
+    uint32_t const word = PIN_NONE / 8U;
+
+    g_inte[1][word] = 0xFFFFFFFFU;
+    CHECK(gpio_irq_add_handler(TP_PRC1, (1U << PIN_NONE), handler_d) == E_OBJ);
+    CHECK(g_shim_int_enabled == 1);
+    g_inte[1][word] = 0U;
+}
+
 int main (void)
 {
     CHECK(gpio_irq_init() == E_OK);
@@ -466,6 +487,8 @@ int main (void)
     test_unhandled_pin_never_reaches_callback();
     test_no_edges_no_callbacks();
     test_level_bits_alone_do_nothing();
+    test_refused_pin_keeps_irq_enabled();
+    test_other_core_handler_is_refused();
 
     /* From here on an all-pins handler observes every snapshot. */
     CHECK(gpio_irq_add_handler(TP_PRC1, MASK_ALL, handler_d) == E_OK);

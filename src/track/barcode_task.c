@@ -1,7 +1,7 @@
 /** @file barcode_task.c
  *
  * @brief Decode Code 39 elements from the ISR edge ring, and report each
- *        barcode (D130).
+ *        barcode.
  *
  * A decoded letter becomes the event `barcode`. S, L, R and U also become a
  * command for the supervisor with source barcode. Every barcode that is
@@ -41,6 +41,7 @@ static volatile uint16_t g_bad;
 static volatile uint8_t  g_last_letter;
 static volatile uint8_t  g_last_action;
 static barcode_gate_t    g_gate;
+static barcode_block_t   g_block = BARCODE_BLOCK_INIT;
 
 void barcode_stats (barcode_stats_t * p_stats)
 {
@@ -106,6 +107,32 @@ static void report_decoded (uint8_t code, const barcode_info_t * p_info)
              (int)act.action, p_info->is_reverse ? ", reversed" : "");
 }
 
+/* A black block that just ended becomes one event. The parser reset
+ * for a block stays in the element path below. */
+static void report_block (bool level)
+{
+    motion_feedback_t feedback;
+    bool const        is_black = (0U != BARCODE_LEVEL_SPACE) ? !level : level;
+    uint32_t          odo      = 0U;
+    uint16_t          block_mm = 0U;
+
+    /* Without a snapshot there is no odometer: skip the edge. A length
+     * measured against 0 would be a false block. */
+    if (E_OK == motion_feedback_snapshot(&feedback))
+    {
+        odo      = telemetry_odometer_mm(&feedback);
+        block_mm = barcode_block_edge(&g_block, is_black, odo);
+    }
+
+    if (0U != block_mm)
+    {
+        (void)telemetry_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_BARCODE,
+                                   (uint8_t)TELEMETRY_EVT_BARCODE_BLOCK, (int16_t)block_mm, 0U,
+                                   odo);
+        LOG_INFO(LOG_TASK_BARCODE, LOG_MOD_NONE, "block of %d mm on the track", (int)block_mm);
+    }
+}
+
 void barcode_task_run (void)
 {
     barcode_parser_t parser = BARCODE_PARSER_INIT;
@@ -126,6 +153,7 @@ void barcode_task_run (void)
         {
             uint32_t const gap_us = timestamp_us - previous_us;
 
+            report_block(level);
             if (have_previous && (gap_us > BARCODE_GAP_US))
             {
                 /* A new barcode starts after a long gap. A barcode that had
@@ -163,16 +191,26 @@ void barcode_task_run (void)
                                               ? previous_level
                                               : !previous_level;
                     barcode_info_t info = {0U, false, BARCODE_REJECT_NONE, false};
-                    uint8_t const  code =
-                        barcode_parser_input_info(&parser, is_space, width_um, &info);
 
-                    if (BARCODE_REJECT_NONE != info.reject)
+                    if (barcode_element_is_block(is_space, width_um))
                     {
-                        report_bad(info.reject);
+                        /* A solid block on the track, not a bar:
+                         * start over quietly; a block is not a misread. */
+                        parser = (barcode_parser_t)BARCODE_PARSER_INIT;
                     }
-                    if (BARCODE_NO_CHAR != code)
+                    else
                     {
-                        report_decoded(code, &info);
+                        uint8_t const code =
+                            barcode_parser_input_info(&parser, is_space, width_um, &info);
+
+                        if (BARCODE_REJECT_NONE != info.reject)
+                        {
+                            report_bad(info.reject);
+                        }
+                        if (BARCODE_NO_CHAR != code)
+                        {
+                            report_decoded(code, &info);
+                        }
                     }
                 }
             }

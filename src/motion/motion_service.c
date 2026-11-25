@@ -10,7 +10,17 @@
 #include "pwm.h"
 #include "platform/faults.h"
 #include "platform/liveness.h"
+#include "platform/log.h"
 #include "supervisor/health_ids.h"
+#include "telemetry/wire_schema.h"
+
+/* The supervisor and the dashboard read motion_status_t.fault as the wire
+ * code; the supervisor reboots on EXPIRED and GAP. */
+STATIC_ASSERT ((uint32_t)MOTION_FAULT_EXPIRED == TELEMETRY_MOTION_FAULT_EXPIRED,
+               "EXPIRED wire code");
+STATIC_ASSERT ((uint32_t)MOTION_FAULT_GAP == TELEMETRY_MOTION_FAULT_GAP, "GAP wire code");
+STATIC_ASSERT ((uint32_t)MOTION_FAULT_OUTPUT == TELEMETRY_MOTION_FAULT_OUTPUT,
+               "OUTPUT wire code");
 
 #define STOP_PIN      21U
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
@@ -198,7 +208,7 @@ static void service_first_status (void)
     report_faults(fault, stopped);
 }
 
-/* Run permit (D160). until_us is written before armed, so the check never
+/* Run permit. until_us is written before armed, so the check never
  * sees an armed permit with an old time. */
 static volatile uint32_t g_permit_until_us = 0U;
 static volatile bool     g_permit_armed    = false;
@@ -216,8 +226,10 @@ static void check_permit (void)
 {
     UINT          saved = 0U;
     uint32_t const now  = in_w(TIMER_RAW_LOW);
+    /* Fail closed: until the supervisor first renews the permit the wheels
+     * are held, so a supervisor that never starts never lets the car move. */
     bool const     b_lapsed =
-        g_permit_armed && ((int32_t)(now - g_permit_until_us) > 0);
+        (!g_permit_armed) || ((int32_t)(now - g_permit_until_us) > 0);
 
     (void)ISpinLock(&g_service_lock, &saved);
     if (b_lapsed != (0U != (g_inbox.hold_mask & MOTION_HOLD_SUPERVISOR)))
@@ -254,6 +266,7 @@ static void service_cycle (motion_input_t * p_input)
     bool             stop     = false;
     bool             captured = false;
     motion_fault_t   fault    = MOTION_FAULT_NONE;
+    motion_fault_t const previous_fault = g_controller.status.fault;
 
     wait_motion_cycle();
     liveness_kick(LIVE_MOTION);
@@ -295,6 +308,19 @@ static void service_cycle (motion_input_t * p_input)
     fault = g_controller.status.fault;
     stop  = g_inbox.stopped;
     (void)ISpinUnlock(&g_service_lock, saved);
+    if ((fault != previous_fault) && (MOTION_FAULT_FEEDBACK == fault))
+    {
+        /* Say which check failed: no capture, no sample, a late sample, or
+         * invalid quadrature steps on a wheel. */
+        motion_sample_t const * const p_sample = &g_controller.status.sample;
+
+        LOG_ERROR(LOG_TASK_MOTION, LOG_MOD_NONE,
+                  "feedback captured=%u sample=%u dt_us=%u invalid=%u/%u",
+                  (unsigned int)captured, (unsigned int)g_controller.status.sample_available,
+                  (unsigned int)p_sample->elapsed_us,
+                  (unsigned int)p_sample->wheel[0].invalid_delta,
+                  (unsigned int)p_sample->wheel[1].invalid_delta);
+    }
     report_faults(fault, stop);
 }
 

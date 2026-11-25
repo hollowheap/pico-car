@@ -12,6 +12,53 @@
 
 #define US_PER_S (UINT64_C(1000000))
 
+bool barcode_element_is_block (bool is_space, uint16_t width_um)
+{
+    return (!is_space) && (width_um > BARCODE_BLOCK_UM);
+}
+
+#define UM_PER_MM      (1000U)
+#define ODO_MASK       (0x7FFFFFFFUL)
+/* Half of the 31-bit range: a larger difference is travel backward. */
+#define ODO_BACKWARD   (0x40000000UL)
+
+void barcode_block_init (barcode_block_t * p_block)
+{
+    *p_block = (barcode_block_t)BARCODE_BLOCK_INIT;
+}
+
+uint16_t barcode_block_edge (barcode_block_t * p_block, bool is_black, uint32_t odo_mm)
+{
+    uint16_t report_mm = 0U;
+
+    if (is_black)
+    {
+        p_block->black_mm = odo_mm & ODO_MASK;
+        p_block->b_black  = 1U;
+    }
+    else if (0U != p_block->b_black)
+    {
+        uint32_t const length_mm = (odo_mm - p_block->black_mm) & ODO_MASK;
+        /* Travel since the last event; behind it the difference wraps high. */
+        uint32_t const since_mm = odo_mm - p_block->last_event_mm;
+
+        p_block->b_black = 0U;
+        if ((length_mm < ODO_BACKWARD) && (length_mm > (BARCODE_BLOCK_UM / UM_PER_MM)) &&
+            (since_mm >= BARCODE_BLOCK_EVENT_MM) && (since_mm <= ODO_MASK))
+        {
+            p_block->last_event_mm = odo_mm;
+            report_mm = (length_mm > (uint32_t)INT16_MAX) ? (uint16_t)INT16_MAX
+                                                          : (uint16_t)length_mm;
+        }
+    }
+    else
+    {
+        /* A white edge with no black edge before it. */
+    }
+
+    return report_mm;
+}
+
 bool barcode_width_um (uint32_t                  interval_us,
                        motion_feedback_t const * p_feedback,
                        uint16_t                * p_width_um)

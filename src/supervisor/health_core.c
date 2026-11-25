@@ -4,6 +4,8 @@
  */
 
 #include "health_core.h"
+#include "motion/motion.h"
+#include "telemetry/wire_schema.h"
 
 void liveness_init (liveness_t * p_live, uint16_t required_mask)
 {
@@ -70,6 +72,12 @@ void liveness_check (liveness_t * p_live, uint16_t taken, uint16_t * p_new, uint
 bool liveness_critical_stalled (const liveness_t * p_live)
 {
     return (0U != (p_live->stalled & LIVENESS_CRITICAL_MASK));
+}
+
+bool health_motion_timing_fault (uint8_t state, uint8_t fault)
+{
+    return (MOTION_STATE_FAULT == state) &&
+           ((TELEMETRY_MOTION_FAULT_EXPIRED == fault) || (TELEMETRY_MOTION_FAULT_GAP == fault));
 }
 
 void progress_init (progress_t * p_prog)

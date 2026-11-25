@@ -34,6 +34,14 @@
 #define WDT_LOAD_PER_MS (2000UL)
 #define WDT_LOAD_MAX    (0x00FFFFFFUL)
 
+/* Power-on state machine: the blocks that a watchdog timeout resets. With
+   WDSEL at its reset value 0 a timeout resets nothing. Every block except the
+   two oscillators (bits 0 and 1) is selected, as the Pico SDK does, so IO_BANK0
+   and PADS_BANK0 reset and the motor pins become inputs with pull-downs. */
+#define PSM_BASE              (0x40010000U)
+#define PSM_WDSEL             (PSM_BASE + 0x08U)
+#define PSM_WDSEL_ALL_BUT_OSC (0x0001FFFCUL)
+
 static uint8_t g_reason = PLATFORM_RESET_POWER;
 static bool    g_reason_read = false;
 static uint32_t g_load = 0U;
@@ -66,6 +74,7 @@ void platform_wdt_start (uint32_t timeout_ms)
     }
     g_load = load;
     out_w (WDT_LOAD, load);
+    out_w (PSM_WDSEL, PSM_WDSEL_ALL_BUT_OSC);
     out_w (WDT_CTRL, WDT_CTRL_ENABLE | WDT_CTRL_PAUSE_JTAG | WDT_CTRL_PAUSE_DBG0 | WDT_CTRL_PAUSE_DBG1);
     g_running = true;
 }
