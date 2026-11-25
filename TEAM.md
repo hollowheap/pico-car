@@ -13,6 +13,9 @@ Each subsystem owns its lifecycle and exposes the public header in the table.
 | Supervisor | Run state, motion permits and startup admission | [supervisor.h](app_program/supervisor/supervisor.h) |
 | Platform | Startup barrier, GPIO interrupts, watchdog and system diagnostics | [platform.h](app_program/platform/platform.h) |
 
+Beak Wei Xiang contributed the IMU work, TemariVirus the barcode and line
+work, and unknowntitan12 the motion work.
+
 ## GPIO assignments
 
 | GPIO | Use after application setup | Owner |
@@ -33,6 +36,28 @@ Each subsystem owns its lifecycle and exposes the public header in the table.
 The upstream kernel boot table assigns UART0 to GP0/GP1 and drives GP16 as
 its external LED before the application configures those pins. Check the
 kernel boot table and the Pico W radio assignments when proposing pin changes.
+
+## Car dimensions
+
+[chassis.h](app_program/platform/chassis.h) defines the measured dimensions
+used by the firmware. Distances along the car are from the drive axle.
+
+| Dimension | Value | Macro |
+|---|---|---|
+| Wheel track, centre to centre | 107 mm | `CHASSIS_WHEEL_TRACK_MM` |
+| Outer width, tyre face to tyre face | 126 mm | `CHASSIS_OUTER_WIDTH_MM` |
+| Wheel diameter | 65 mm | `CHASSIS_WHEEL_TRAVEL_UM` |
+| Encoder edges per wheel turn | 2530 | `CHASSIS_EDGES_PER_REV` |
+| Axle to caster contact | 120 mm | `CHASSIS_AXLE_TO_CASTER_MM` |
+| Axle to line sensors | 130 mm | `CHASSIS_LINE_SENSOR_LEAD_MM` |
+| Line sensor spacing | 25 mm | `CHASSIS_LINE_SENSOR_SPACING_MM` |
+| Axle to barcode reader corner | 45 mm | `CHASSIS_BARCODE_FORWARD_MM` |
+| Barcode corner beyond left tyre | 44 mm | `CHASSIS_LEFT_REACH_MM` |
+| Axle to sonar | 70 mm | `CHASSIS_SONAR_FORWARD_MM` |
+| Axle to nose / IR tip | 110 / 130 mm | `CHASSIS_NOSE_FORWARD_MM`<br>`CHASSIS_FRONT_TIP_MM` |
+| Nose width / IR width | 90 / 45 mm | `CHASSIS_NOSE_WIDTH_MM`<br>`CHASSIS_IR_WIDTH_MM` |
+| Body envelope radius | 119 mm | `CHASSIS_BODY_RADIUS_MM` |
+| IMU above / behind axle | 80 / 15 mm | `CHASSIS_IMU_ABOVE_AXLE_MM`<br>`CHASSIS_IMU_BEHIND_AXLE_MM` |
 
 ## Firmware tasks
 
