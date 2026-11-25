@@ -32,6 +32,7 @@ include(ir/tests.cmake)
 include(comms/tests.cmake)
 include(motion/tests.cmake)
 include(supervisor/tests.cmake)
+include(integration/tests.cmake)
 
 # Keep existing case-specific labels, such as the two corner replay families.
 get_property(host_tests DIRECTORY PROPERTY TESTS)
