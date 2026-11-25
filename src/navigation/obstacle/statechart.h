@@ -1,6 +1,6 @@
 /** @file statechart.h
  *
- * @brief Obstacle statechart (S40, D96). Pure C99 with no kernel calls and
+ * @brief Obstacle statechart. Pure C99 with no kernel calls and
  *        no libm: the task feeds it commands, pings and time, and carries
  *        out what it asks for (events, steering, emergency stop).
  */
@@ -28,7 +28,7 @@ typedef struct
     bool     b_profile_changed;
 } obstacle_statechart_out_t;
 
-/* Task-private ping counters (D97). A run counts the pings in a row that
+/* Task-private ping counters. A run counts the pings in a row that
  * match, and a history keeps one bit per ping with the newest in bit 0. */
 typedef struct
 {
@@ -46,6 +46,7 @@ typedef struct
 {
     uint8_t                state;
     uint8_t                cause;
+    uint8_t                reason; /* FOLLOW_REASON_* for BYPASS_GAVE_UP */
     uint16_t               faults;
     uint8_t                req_id;
     uint8_t                last_class;
@@ -68,6 +69,8 @@ typedef struct
     uint8_t                boot_pings;   /* P3: pings seen since boot, saturates        */
     uint8_t                boot_hits;
     bool                   b_beam_blocked; /* P3 */
+    int16_t                escape_deci;  /* BYPASS turn target, from the line heading */
+    uint32_t               escape_ms;    /* time of the last escape step             */
     scan_algo_ctx_t        scan;
     obstacle_plan_result_t plan;
     obstacle_plan_cfg_t    cfg;
@@ -95,7 +98,7 @@ int16_t  obstacle_statechart_servo_deci (obstacle_statechart_t const * p_fsm);
 int16_t  obstacle_statechart_body_deci (obstacle_statechart_t const * p_fsm);
 
 /* A ping taken while the body turns: only the health and collision checks use
- * it (D167). */
+ * it. */
 void obstacle_statechart_ping_guard (obstacle_statechart_t * p_fsm, uint8_t cls,
                                      uint16_t dist_mm, uint32_t now_ms,
                                      obstacle_statechart_out_t * p_out);

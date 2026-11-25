@@ -29,6 +29,7 @@
 
 #include "obstacle_config.h"
 #include "comms.h"
+#include "navigation/obstacle_flags.h"
 #include "statechart.h"
 #include "obstacle_pack.h"
 #include "obstacle_internal.h"
@@ -306,7 +307,9 @@ void obstacle_comms_publish (obstacle_statechart_out_t const * p_out, obstacle_s
     }
 
     g_status = obstacle_statechart_status(p_fsm);
-    g_faults = p_fsm->faults;
+    /* Bits 12 to 14 carry the give-up reason. */
+    g_faults = (uint16_t)(p_fsm->faults |
+                          (uint16_t)(((uint32_t)p_fsm->reason & OBSTACLE_STOP_REASON_MK) << OBSTACLE_STOP_REASON_SH));
     g_flags  = obstacle_statechart_flags(p_fsm);
     g_aim    = ((uint32_t)(uint16_t)obstacle_statechart_body_deci(p_fsm) << AIM_BODY_SHIFT) |
                (uint32_t)(uint16_t)obstacle_statechart_servo_deci(p_fsm);
@@ -751,6 +754,9 @@ static void publish_profile (obstacle_statechart_t const * p_fsm)
 
 static volatile bool g_pivoting = false;
 
+/* Servo angle the face follow asks for in REACQUIRE; line task only. */
+static volatile int16_t g_look_deci = 0;
+
 void obstacle_comms_set_pivoting (bool b_pivoting)
 {
     g_pivoting = b_pivoting;
@@ -759,4 +765,24 @@ void obstacle_comms_set_pivoting (bool b_pivoting)
 bool obstacle_comms_is_pivoting (void)
 {
     return g_pivoting;
+}
+
+/*!
+ * @brief Navigation sets the servo angle for the REACQUIRE pings.
+ *
+ * @param[in] deci Angle in deci-degrees; the scan task clamps it.
+ */
+void obstacle_comms_set_look (int16_t deci)
+{
+    g_look_deci = deci;
+}
+
+/*!
+ * @brief The scan task reads the angle navigation asked for.
+ *
+ * @return Angle in deci-degrees.
+ */
+int16_t obstacle_comms_look (void)
+{
+    return g_look_deci;
 }

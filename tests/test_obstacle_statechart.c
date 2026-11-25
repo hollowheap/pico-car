@@ -163,7 +163,7 @@ static void new_monitor(obstacle_statechart_t * p_fsm)
     start_monitor(p_fsm, &out);
 }
 
-/* S12: 2 hits among the last 3 pings report an obstacle. A hit, a miss and a
+/* 2 hits among the last 3 pings report an obstacle. A hit, a miss and a
  * hit used to restart the count at the miss and report nothing. */
 static void test_detect_two_of_three(void)
 {
@@ -196,7 +196,7 @@ static void test_detect_two_of_three(void)
           OBSTACLE_STATE_MONITOR);
 }
 
-/* D97: TOO_CLOSE is an obstacle at the minimum range, not a fault. */
+/* TOO_CLOSE is an obstacle at the minimum range, not a fault. */
 static void test_too_close_is_a_hit(void)
 {
     obstacle_statechart_t     fsm;
@@ -242,7 +242,7 @@ static void test_collision_two_of_three(void)
           OBSTACLE_STATE_STOPPED);
 }
 
-/* D97: each failing class has its own limit and cause. */
+/* each failing class has its own limit and cause. */
 static void test_echo_fault_causes(void)
 {
     obstacle_statechart_t fsm;
@@ -299,9 +299,11 @@ static void test_retry_policy(void)
     CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_HANDOVER));
     CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_PLAN_TIMEOUT));
     CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_PLAN_REJECTED));
-    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_BYPASS_LIMIT));
-    CHECK(obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_LINE_TIMEOUT));
 
+    /* A bypass that gave up must not drive back at the same obstacle. */
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_BYPASS_LIMIT));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_LINE_TIMEOUT));
+    CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_BYPASS_GAVE_UP));
     CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_COLLISION));
     CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_NO_SAFE_PATH));
     CHECK(!obstacle_pack_cause_may_auto_restart(OBSTACLE_CAUSE_NO_ECHO));
@@ -472,6 +474,42 @@ static void test_scan_stall(void)
     CHECK(out.b_call_stop);
 }
 
+/* A body pivot that stalls stops the pings mid edge walk. The stall timeout
+ * then plans with the slots it has, so the car still drives a leg. */
+static void test_pivot_stall_still_plans(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    obstacle_plan_cfg_t       cfg;
+    uint32_t                  guard = 0U;
+
+    obstacle_plan_cfg_default(&cfg);
+    obstacle_statechart_init(&fsm, &cfg, 0U);
+    start_monitor(&fsm, &out);
+
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 10U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 200U, 20U, &out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 5U), 30U, 0U, &out);
+
+    /* A wall, fed until the scan asks for the first body pivot. */
+    while ((0 == obstacle_statechart_body_deci(&fsm)) && (guard < 100U))
+    {
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 300U, 40U, &out);
+        guard++;
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_SCANNING);
+    CHECK(obstacle_statechart_body_deci(&fsm) > 0);
+
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_tick(&fsm, 40U + OBSTACLE_SCAN_STALL_MS + 1U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_PLAN);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_NONE);
+    CHECK(fsm.plan.status == OBSTACLE_RESULT_OK);
+    CHECK(fsm.plan.side == OBSTACLE_SIDE_LEFT);
+    CHECK(!out.b_call_stop);
+}
+
 static void test_wall_reaches_bypass(void)
 {
     obstacle_statechart_t     fsm;
@@ -516,7 +554,7 @@ static void test_wall_reaches_bypass(void)
 }
 
 
-/* ---- D95: moving forward guard, pivot exit, wall budget ---------------- */
+/* ---- moving forward guard, pivot exit, wall budget ---------------- */
 
 #define TEST_ID (5U)
 
@@ -649,38 +687,23 @@ static void test_servo_schedule_right(void)
     }
 }
 
-/* Forward reading under OBSTACLE_FWD_GUARD_MM stops the car and starts a
- * stationary scan the same way a first detection does. */
-static void test_forward_guard_stops(void)
+/* In REACQUIRE a close reading never starts a rescan: the face follow turns
+ * away from it. Only the collision window still stops the car. */
+static void test_reacquire_close_reading_no_rescan(void)
 {
     obstacle_statechart_t     fsm;
     obstacle_statechart_out_t out;
 
     to_reacquire(&fsm, &out, false);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == 0);
-
     obstacle_statechart_out_clear(&out);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_FWD_GUARD_MM - 1U, 500U, &out);
-    CHECK(fsm.state == OBSTACLE_STATE_WAIT_STOP);
-    CHECK(fsm.cause != OBSTACLE_CAUSE_COLLISION);
-    CHECK(out.evt_count == 1U);
-    CHECK(obstacle_pack_get(out.evt[0], OBSTACLE_EV_TYPE_SH, OBSTACLE_EV_TYPE_MK) ==
-          OBSTACLE_EVT_OBSTACLE);
-    CHECK(obstacle_pack_get(out.evt[0], OBSTACLE_EV_DIST_SH, OBSTACLE_EV_DIST_MK) ==
-          (OBSTACLE_FWD_GUARD_MM - 1U));
-    /* The car holds still; nothing steers it towards the reading. */
-    CHECK(out.b_steer_valid);
-    CHECK(obstacle_pack_get(out.steer_word, OBSTACLE_EV_STEER_SH, OBSTACLE_EV_STEER_MK) ==
-          OBSTACLE_STEER_HOLD);
-    CHECK(!out.b_call_stop);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == 0);
+    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+    CHECK(out.evt_count == 0U);
 
-    /* The same handshake as a first detection: SCAN_REQ starts a scan. */
-    obstacle_statechart_out_clear(&out);
-    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_SCAN_REQ, 9U), 600U, 2000U, &out);
-    CHECK(fsm.state == OBSTACLE_STATE_SCANNING);
-    CHECK(out.b_profile_changed);
-    CHECK(obstacle_statechart_servo_deci(&fsm) == -OBSTACLE_SERVO_LIMIT_DECI);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, 560U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, 620U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
 }
 
 static void test_forward_guard_limits(void)
@@ -768,11 +791,14 @@ static void test_pivot_needs_turned(void)
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 310U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
 
-    /* TURNED with the beam clear: REACQUIRE, driving straight for the servo. */
+    /* TURNED with the beam clear: the clear pings count again from the
+     * turned heading, then REACQUIRE, driving straight for the servo. */
     turned(&fsm, &out, 320U);
     CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
-    obstacle_statechart_out_clear(&out);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 330U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 340U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
     CHECK(obstacle_pack_get(out.steer_word, OBSTACLE_EV_STEER_SH, OBSTACLE_EV_STEER_MK) ==
           OBSTACLE_STEER_STRAIGHT);
@@ -802,6 +828,70 @@ static void test_pivot_turned_but_blocked(void)
     CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
     obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, 230U, &out);
     CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+}
+
+/* Turned, and the beam still sees the obstacle: the turn target moves on
+ * away from the obstacle, one step at a time up to the limit, so the car
+ * keeps turning instead of standing still. A clear beam then ends BYPASS. */
+static void test_blocked_escape_turns_further(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    int32_t                   start = 0;
+    uint32_t                  now   = 100U;
+    uint32_t                  ping  = 0U;
+
+    to_bypass(&fsm, &out, false);
+    CHECK(fsm.plan.side == OBSTACLE_SIDE_LEFT);
+    start = obstacle_statechart_body_deci(&fsm);
+    CHECK(start == ((int32_t)fsm.plan.start_deg * OBSTACLE_DECI_PER_DEG));
+    turned(&fsm, &out, now);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 280U, now + 10U, &out);
+    CHECK(obstacle_statechart_body_deci(&fsm) == start);
+
+    now += OBSTACLE_ESCAPE_STEP_MS;
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 280U, now, &out);
+    CHECK(obstacle_statechart_body_deci(&fsm) == (start + OBSTACLE_ESCAPE_STEP_DECI));
+
+    /* The next step waits until the car has reached this one. */
+    now += OBSTACLE_ESCAPE_STEP_MS;
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 280U, now, &out);
+    CHECK(obstacle_statechart_body_deci(&fsm) == (start + OBSTACLE_ESCAPE_STEP_DECI));
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, now + 10U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, now + 20U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
+
+    /* Each reached step restarts the time budget, so a slow escape that
+     * keeps turning is not stopped by the limit. */
+    for (ping = 0U; (ping < 20U) && (obstacle_statechart_body_deci(&fsm) <
+                                     OBSTACLE_ESCAPE_TURN_MAX_DECI); ping++)
+    {
+        now += OBSTACLE_ESCAPE_MAX_MS - OBSTACLE_ESCAPE_STEP_MS;
+        turned(&fsm, &out, now);
+        obstacle_statechart_tick(&fsm, now, 0U, &out);
+        CHECK(fsm.state == OBSTACLE_STATE_BYPASS);
+        now += OBSTACLE_ESCAPE_STEP_MS;
+        obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, 280U, now, &out);
+    }
+    CHECK((now - 100U) > OBSTACLE_ESCAPE_MAX_MS);
+    CHECK(obstacle_statechart_body_deci(&fsm) == OBSTACLE_ESCAPE_TURN_MAX_DECI);
+
+    turned(&fsm, &out, now);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, now + 10U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_OPEN, 0U, now + 20U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+}
+
+/* No reached step for the whole budget: the limit still ends BYPASS. */
+static void test_escape_without_progress_hits_limit(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+
+    to_bypass(&fsm, &out, false);
+    obstacle_statechart_tick(&fsm, 60U + OBSTACLE_ESCAPE_MAX_MS + 1U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_BYPASS_LIMIT);
 }
 
 /* TURNED does not leak into the next bypass. */
@@ -893,6 +983,80 @@ static void test_hug_budget(void)
     CHECK((fsm.faults & OBSTACLE_FAULT_LINE_TIMEOUT) != 0U);
 }
 
+/* An odometer below the bypass start (a backward move or a stale sample)
+ * counts as no distance; it must not wrap to ~4e9 mm and end the bypass. */
+static void test_hug_odometer_below_start(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+
+    to_reacquire(&fsm, &out, false);
+    CHECK(fsm.bypass_mm == 1000U);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_tick(&fsm, fsm.since_ms + 100U, 999U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+    obstacle_statechart_tick(&fsm, fsm.since_ms + 100U, 0U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+    CHECK(fsm.cause != OBSTACLE_CAUSE_LINE_TIMEOUT);
+}
+
+/* REJECT during the bypass gives the bypass up; the id field is the
+ * reason, which the FAULT event carries in its reason bits. */
+static void test_reject_in_reacquire_gives_up(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+
+    to_reacquire(&fsm, &out, false);
+    obstacle_statechart_out_clear(&out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_REJECT, 2U), 400U, 1500U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_BYPASS_GAVE_UP);
+    CHECK(fsm.reason == 2U);
+    CHECK((fsm.faults & OBSTACLE_FAULT_BYPASS_LIMIT) != 0U);
+    CHECK(out.evt_count == 1U);
+    CHECK(obstacle_pack_get(out.evt[0], OBSTACLE_EV_CAUSE_SH, OBSTACLE_EV_CAUSE_MK) ==
+          OBSTACLE_CAUSE_BYPASS_GAVE_UP);
+    CHECK(obstacle_pack_get(out.evt[0], OBSTACLE_EV_REASON_SH, OBSTACLE_EV_REASON_MK) == 2U);
+    CHECK(obstacle_pack_get(out.evt[0], OBSTACLE_EV_FAULTS_SH, OBSTACLE_EV_FAULTS_MK) ==
+          (uint32_t)fsm.faults);
+
+    /* Any other stop clears the reason. */
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_RESET, 0U), 500U, 1500U, &out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_START, 0U), 510U, 1500U, &out);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_STOP, 0U), 520U, 1500U, &out);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_EXTERNAL);
+    CHECK(fsm.reason == 0U);
+
+    /* RESET after a give-up clears the reason too. */
+    to_reacquire(&fsm, &out, false);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_REJECT, 3U), 400U, 1500U, &out);
+    CHECK(fsm.reason == 3U);
+    obstacle_statechart_command(&fsm, cmd(OBSTACLE_CMD_RESET, 0U), 500U, 1500U, &out);
+    CHECK(fsm.reason == 0U);
+}
+
+/* pings during a spin in REACQUIRE do not count for the
+ * collision guard; the same readings while driving do. */
+static void test_spin_pings_skip_collision(void)
+{
+    obstacle_statechart_t     fsm;
+    obstacle_statechart_out_t out;
+    uint32_t                  ping = 0U;
+
+    to_reacquire(&fsm, &out, false);
+    for (ping = 0U; ping < 4U; ping++)
+    {
+        obstacle_statechart_out_clear(&out);
+        obstacle_statechart_ping_guard(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, 400U + (ping * 60U), &out);
+    }
+    CHECK(fsm.state == OBSTACLE_STATE_REACQUIRE);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, 700U, &out);
+    obstacle_statechart_ping(&fsm, OBSTACLE_CLASS_VALID, OBSTACLE_COLLISION_MM, 760U, &out);
+    CHECK(fsm.state == OBSTACLE_STATE_STOPPED);
+    CHECK(fsm.cause == OBSTACLE_CAUSE_COLLISION);
+}
+
 /* The wall plan reaches REACQUIRE through the same pivot rule. */
 static void test_wall_reacquire(void)
 {
@@ -937,11 +1101,14 @@ int main(void)
     test_range_follows_travel();
     test_handover_timeout();
     test_scan_stall();
+    test_blocked_escape_turns_further();
+    test_escape_without_progress_hits_limit();
+    test_pivot_stall_still_plans();
     test_wall_reaches_bypass();
     test_wall_flag();
     test_servo_schedule();
     test_servo_schedule_right();
-    test_forward_guard_stops();
+    test_reacquire_close_reading_no_rescan();
     test_forward_guard_limits();
     test_side_ping_not_guarded();
     test_bypass_no_guard();
@@ -951,6 +1118,9 @@ int main(void)
     test_line_found_unchanged();
     test_stale_turned_is_not_line();
     test_hug_budget();
+    test_hug_odometer_below_start();
+    test_reject_in_reacquire_gives_up();
+    test_spin_pings_skip_collision();
     test_wall_reacquire();
     test_reacquire_no_steer();
 

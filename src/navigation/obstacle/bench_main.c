@@ -257,7 +257,7 @@ static void print_profile (void)
 }
 
 /*!
- * @brief Servo travel check (D162). Run a scan with a square wall 150 to 800 mm
+ * @brief Servo travel check. Run a scan with a square wall 150 to 800 mm
  *        straight ahead, then run this item. It prints the angle the servo
  *        really reached at the commanded +15 and -15 degree slots.
  */

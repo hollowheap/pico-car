@@ -1,6 +1,6 @@
 /** @file test_obstacle_plan.c
  *
- * @brief Host tests for obstacle planner maths, geometry and steering rules (D96, S40).
+ * @brief Host tests for obstacle planner maths, geometry and steering rules.
  */
 
 #include <stdbool.h>
@@ -336,34 +336,6 @@ static void test_wheel_straight(void)
     CHECK(right_um_s == (140000 + 40000));
 }
 
-static void test_side_lean_and_trim(void)
-{
-    int32_t lean = 0;
-    int32_t trim = 0;
-
-    /* Exactly on target gap: zero lean. */
-    lean = obstacle_plan_side_lean_deci(190, 190, false, 190);
-    CHECK(lean == 0);
-
-    /* Too close (gap 100 mm < target 190 mm): positive lean away from obstacle. */
-    lean = obstacle_plan_side_lean_deci(100, 100, false, 190);
-    CHECK(lean > 0);
-    CHECK(lean <= OBSTACLE_LEAN_MAX_DECI);
-
-    /* Too far (gap 300 mm > target 190 mm): negative lean towards obstacle. */
-    lean = obstacle_plan_side_lean_deci(300, 300, false, 190);
-    CHECK(lean < 0);
-    CHECK(lean >= -OBSTACLE_LEAN_MAX_DECI);
-
-    /* Rate of change damping: gap grew by 20 mm compared to previous check. */
-    lean = obstacle_plan_side_lean_deci(100, 80, true, 190);
-    CHECK(lean > 0);
-
-    /* Trim calculation: change in gap relative to prev lean. */
-    trim = obstacle_plan_side_trim_deci(190, 190, 0);
-    CHECK(trim == 0);
-}
-
 static void test_hug_limit(void)
 {
     obstacle_plan_cfg_t    cfg;
@@ -391,7 +363,6 @@ int main(void)
     test_wall_flag_clear();
     test_wheel_pivot();
     test_wheel_straight();
-    test_side_lean_and_trim();
     test_hug_limit();
 
     if (g_failures == 0)

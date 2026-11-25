@@ -58,7 +58,7 @@
 #define CLASS_NAMES  (8U)
 #define MOTION_NAMES (8U)
 #define CMD_NAMES    (8U)
-#define PHASE_NAMES  (4U)
+#define PHASE_NAMES  (9U)
 
 /* Slots printed per profile line. */
 #define SLOTS_PER_LINE (5U)
@@ -137,7 +137,9 @@ static char const * const g_cmd_name[CMD_NAMES] = {
     "NONE",       "SCAN_REQ", "ACCEPT", "REJECT",
     "LINE_FOUND", "STOP",     "RESET",  "START"};
 
-static char const * const g_phase_name[PHASE_NAMES] = {"TURN", "OUT", "HUG", "ALIGN"};
+/* Face follow phases, in the order of PHASE_* in follow.c. */
+static char const * const g_phase_name[PHASE_NAMES] = {
+    "LEG", "IN", "OUT", "CORNER", "WRAP", "AWAY", "CREEP", "TURN", "DONE"};
 
 static uint32_t now_ms (void);
 static void     print_profile (uint32_t index, uint32_t t_ms);
@@ -443,7 +445,7 @@ static void print_nav_record (flight_log_rec_t const * p_rec)
         break;
 
         case OBSTACLE_LOG_PHASE:
-            LOG_NOW("DATA", "line:nav", "%8d PHASE %s: side %d mm, ahead %d mm, "
+            LOG_NOW("DATA", "line:nav", "%8d FOLLOW %s: x %d mm, y %d mm, "
                                   "heading %d deg\n",
                       t_ms, g_phase_name[p_rec->val_a % PHASE_NAMES],
                       (INT)p_rec->val_d, (INT)p_rec->val_e,

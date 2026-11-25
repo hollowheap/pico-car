@@ -21,7 +21,7 @@
  * Codes.
  * ------------------------------------------------------------------ */
 
-/* Echo class, 3 bits (D97). A missing echo is never OPEN, and no class means
+/* Echo class, 3 bits. A missing echo is never OPEN, and no class means
  * "unknown": each class has its own reaction. */
 #define OBSTACLE_CLASS_VALID     (0U) /* rise + fall, 116..23500 us         */
 #define OBSTACLE_CLASS_OPEN      (1U) /* rise seen, pulse beyond 4 m        */
@@ -55,6 +55,7 @@
 #define OBSTACLE_CAUSE_LINE_TIMEOUT  (12U)
 #define OBSTACLE_CAUSE_INIT_FAIL     (13U)
 #define OBSTACLE_CAUSE_ECHO_NOISE    (14U) /* ECHO line or edges are bad       */
+#define OBSTACLE_CAUSE_BYPASS_GAVE_UP (15U) /* the follow gave up             */
 
 /* Fault word, 9 bits: the obstacle task is its only writer. */
 #define OBSTACLE_FAULT_NO_ECHO      (1U << 0U)
@@ -164,6 +165,8 @@
 #define OBSTACLE_EV_CAUSE_MK  (0xFU)
 #define OBSTACLE_EV_FAULTS_SH (11U)
 #define OBSTACLE_EV_FAULTS_MK (0x1FFU)
+#define OBSTACLE_EV_REASON_SH (20U) /* FAULT: why BYPASS_GAVE_UP */
+#define OBSTACLE_EV_REASON_MK (0x7U)
 /* STEER payload: action 2 | seq 6. */
 #define OBSTACLE_EV_STEER_SH (7U)
 #define OBSTACLE_EV_STEER_MK (0x3U)
@@ -324,8 +327,7 @@ static inline bool obstacle_pack_cause_may_auto_restart (uint32_t cause)
 {
     return ((OBSTACLE_CAUSE_BOOT == cause) || (OBSTACLE_CAUSE_SCAN_TIMEOUT == cause) ||
             (OBSTACLE_CAUSE_HANDOVER == cause) ||
-            (OBSTACLE_CAUSE_PLAN_TIMEOUT == cause) || (OBSTACLE_CAUSE_PLAN_REJECTED == cause) ||
-            (OBSTACLE_CAUSE_BYPASS_LIMIT == cause) || (OBSTACLE_CAUSE_LINE_TIMEOUT == cause));
+            (OBSTACLE_CAUSE_PLAN_TIMEOUT == cause) || (OBSTACLE_CAUSE_PLAN_REJECTED == cause));
 }
 
 /*!
