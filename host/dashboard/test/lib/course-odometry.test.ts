@@ -131,6 +131,13 @@ describe('wheel-based course reconstruction', () => {
     expect(course.samples.at(-1)?.headingDeg).toBeCloseTo(0);
   });
 
+  it('advances by odometer over a delayed receipt with consecutive seq', () => {
+    const store = fold([status(1, 1000, 100, 0), status(2, 2500, 130, 0)]);
+    const course = buildCourse(store.trail, []);
+    expect(course.hasGap).toBe(false);
+    expect(course.points[1]?.y).toBeCloseTo(30);
+  });
+
   it('does not reuse pending pre-reboot motion at the same low status sequence', () => {
     const store = fold([frame('heartbeat', 1000, { run_id: 7, uptime_s: 10 }), wheels(0, 1200),
       frame('heartbeat', 1300, { run_id: 8, uptime_s: 0 }), status(0, 1300, 0),

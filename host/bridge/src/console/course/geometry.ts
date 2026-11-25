@@ -156,6 +156,8 @@ const STATUS_PERIOD_S = 0.2;
 // Wheel reads and odometer are rounded on the wire and taken separately.
 const ODOMETER_PAIR_SLACK_MM = 3;
 
+const MAX_STALL_MS = 5000;
+
 type CourseStep = { distance: number; turn: number; wheelTurn: boolean };
 
 function courseStep(a: TrailPoint, b: TrailPoint): CourseStep | null {
@@ -192,7 +194,12 @@ function courseStep(a: TrailPoint, b: TrailPoint): CourseStep | null {
       };
     }
   }
-  if (gap > 1 || lateReceipt || a.headingDeg === null || b.headingDeg === null) return null;
+  // Seq fixes the interval of consecutive passes, so a delivery stall only
+  // matters when it could hide a wheel reading that disagrees with the odometer
+  // or when it is longer than the link stalls seen in practice.
+  const wheelsPresent = aw !== undefined || bw !== undefined;
+  const staleReceipt = b.timestamp - a.timestamp > MAX_STALL_MS;
+  if (gap > 1 || staleReceipt || (lateReceipt && wheelsPresent) || a.headingDeg === null || b.headingDeg === null) return null;
   return { distance, turn: (headingWrap(b.headingDeg - a.headingDeg + 180) - 180) * RAD_PER_DEG, wheelTurn: false };
 }
 
