@@ -39,7 +39,7 @@ Copy the trial's bridge JSONL receipts. Create `checkpoints.json` with the start
 ```
 
 ```sh
-(cd host/dashboard && node --import tsx tools/score-course.ts ../../trial.jsonl ../../checkpoints.json)
+(cd host/bridge && node --import tsx src/console/score-course.ts ../../trial.jsonl ../../checkpoints.json)
 ```
 
 The scorer uses the dashboard's course reconstruction before visual smoothing. It aligns to the measured start pose once, reports per-checkpoint position and heading errors, and exits with a failure status when a checkpoint is missing, ambiguous or beyond an unsupported interval. An endpoint alone cannot validate an entire trajectory. The current car still needs a surveyed run to establish its baseline.
@@ -76,4 +76,4 @@ With propulsion disabled, mark the chassis forward centerline using the axle mid
 
 Use a bench-only servo command to increase angle in small increments on both sides and watch the minimum rear gap. Include powered reversals and settling overshoot, with the cable routed as it will be on the course. Record the smallest gap and the measurement uncertainty. Stop increasing travel if any part touches or the measurement cannot distinguish the gap from zero. Keep the course firmware at ±20° pending qualification of both ±30° endpoints. Consider ±35° after that pass. Enabling the wider candidate in the course image also needs one spare bit in the internal ping reply.
 
-A bench trace can capture timestamped PWM, requested and effective commanded angle, trigger, reply, range and echo class. Join camera or gauge measurements by trial and cue and label physical angle and gap separately. The servo provides no physical-angle feedback. Capture to RAM and export after the fixture stops so console output does not alter timing. The standalone bench currently writes USB logs. A separate read-only Bench replay is planned.
+A bench trace can capture timestamped PWM, requested and effective commanded angle, trigger, reply, range and echo class. Join camera or gauge measurements by trial and cue and label physical angle and gap separately. The servo provides no physical-angle feedback. Capture to RAM and export after the fixture stops so console output does not alter timing. The standalone bench writes USB logs for offline analysis.

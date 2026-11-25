@@ -29,7 +29,7 @@ vi.mock('react-native', () => ({
 }));
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({}) }));
 vi.mock('../../src/components/console/ConsoleNav', () => ({
-  BenchLink: () => null, Brand: () => null, ThemeToggle: () => null,
+  Brand: () => null, ThemeToggle: () => null,
 }));
 vi.mock('../../src/components/console/ModeBanner', () => ({ ModeBanner: () => null, bannerMessage: () => null, currentHoldMessage: () => null }));
 vi.mock('../../src/components/console/StatusRail', () => ({ StatusRail: () => null }));
