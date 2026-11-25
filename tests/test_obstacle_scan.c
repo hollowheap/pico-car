@@ -30,9 +30,9 @@ static void test_distance_and_angle(void)
     CHECK(scan_algo_dist_mm(23500U) == 4030U);
     CHECK(scan_algo_dist_mm(40000U) == 4030U);
 
-    CHECK(scan_algo_slot_deci(0U) == -600);
-    CHECK(scan_algo_slot_deci(12U) == 0);
-    CHECK(scan_algo_slot_deci(24U) == 600);
+    CHECK(scan_algo_slot_deci(0U) == -900);
+    CHECK(scan_algo_slot_deci(18U) == 0);
+    CHECK(scan_algo_slot_deci(36U) == 900);
 }
 
 static void test_classify(void)
@@ -119,7 +119,7 @@ static void test_empty_scan(void)
     uint32_t        guard = 0U;
 
     scan_algo_start(&ctx);
-    CHECK(scan_algo_target(&ctx) == 0U);
+    CHECK(scan_algo_target(&ctx) == 12U);
     while ((scan_algo_target(&ctx) != SCAN_ALGO_NO_SLOT) && (guard < 100U))
     {
         (void)feed_pair(&ctx, OBSTACLE_CLASS_OPEN, 0U);
@@ -161,34 +161,33 @@ static void test_receding_edge(void)
 
     scan_algo_start(&ctx);
 
-    /* Coarse pass: the obstacle at the centre and a receding surface at
-     * slot 15. Only slot 12 is inside the region. */
-    while ((scan_algo_target(&ctx) != 13U) && (guard < 100U))
+    /* Coarse pass: the obstacle at the centre and receding surfaces at
+     * slots 20 and 22. Only slot 18 is inside the region. */
+    while ((scan_algo_target(&ctx) != 19U) && (guard < 100U))
     {
         const uint8_t  slot = scan_algo_target(&ctx);
-        const uint8_t  cls  = ((slot == OBSTACLE_SLOT_CENTRE) || (15U == slot))
+        const uint8_t  cls  = ((slot == OBSTACLE_SLOT_CENTRE) || (20U == slot) || (22U == slot))
                                   ? (uint8_t)OBSTACLE_CLASS_VALID
                                   : (uint8_t)OBSTACLE_CLASS_OPEN;
         const uint16_t dist = (slot == OBSTACLE_SLOT_CENTRE)
                                   ? (uint16_t)200U
-                                  : ((15U == slot) ? (uint16_t)560U
-                                                   : (uint16_t)0U);
+                                  : ((20U == slot) ? (uint16_t)560U
+                                                   : ((22U == slot) ? (uint16_t)680U
+                                                                    : (uint16_t)0U));
 
         (void)feed_pair(&ctx, cls, dist);
         guard++;
     }
-    CHECK(scan_algo_target(&ctx) == 13U);
+    CHECK(scan_algo_target(&ctx) == 19U);
 
     /* A surface that recedes by 120 mm per 5-degree slot must not be
-     * mistaken for an edge. Slot 15 (560 mm) was measured in the coarse
+     * mistaken for an edge. Slot 20 (560 mm) was measured in the coarse
      * pass: it is beyond closest + 250 (450) but only 120 mm beyond the
      * last hit, so the walk steps over it instead of closing the edge. */
     (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 320U);
-    CHECK(scan_algo_target(&ctx) == 14U);
+    CHECK(scan_algo_target(&ctx) == 21U);
     (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 440U);
-    CHECK(scan_algo_target(&ctx) == 16U);
-    (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 680U);
-    CHECK(scan_algo_target(&ctx) == 17U);
+    CHECK(scan_algo_target(&ctx) == 23U);
 }
 
 int main(void)

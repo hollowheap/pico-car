@@ -1,7 +1,7 @@
 /** @file scan_algo.h
  *
- * @brief Buddy 5 echo classification, ping agreement and the coarse to
- *        fine scan engine. Pure C99, integer only and free of kernel
+ * @brief Echo classification, ping agreement and the ±30° servo scan with
+ *        body-pivot windows. Pure C99, integer only and free of kernel
  *        calls.
  */
 
@@ -17,8 +17,9 @@
 #define SCAN_ALGO_NO_SLOT (0xFFU)
 
 /* Edge result for one side of the region. NONE means there is no region,
- * BOUNDED means the last hit and the first miss are known, and UNBOUNDED
- * means the obstacle reached +-60 degrees without a real miss. */
+ * BOUNDED means the last hit and the first miss are known inside the
+ * trusted incidence angle, and UNBOUNDED means the obstacle reached the
+ * sweep limit or the trusted incidence limit without a real miss. */
 #define SCAN_ALGO_EDGE_NONE      (0U)
 #define SCAN_ALGO_EDGE_BOUNDED   (1U)
 #define SCAN_ALGO_EDGE_UNBOUNDED (2U)
@@ -36,13 +37,15 @@ typedef struct
     uint8_t  count;
 } scan_algo_agree_t;
 
-/* Scan engine state. The profile is 25 packed slots, 50 bytes. */
+/* Scan engine state. The profile is 37 packed slots (-90..+90 deg in 5 deg
+ * steps), 74 bytes. */
 typedef struct
 {
     uint16_t          profile[OBSTACLE_SLOT_COUNT];
     scan_algo_agree_t agree;
     uint8_t           phase;
     uint8_t           slot;
+    int16_t           body_deci;
     uint8_t           closest_slot;
     uint16_t          closest_mm;
     uint8_t           region_lo;
@@ -50,12 +53,15 @@ typedef struct
     uint8_t           edge_state[SCAN_ALGO_SIDES];
     uint8_t           edge_hit[SCAN_ALGO_SIDES];
     uint8_t           edge_miss[SCAN_ALGO_SIDES];
+    bool              b_pivoted[SCAN_ALGO_SIDES];
 } scan_algo_ctx_t;
 
 uint16_t scan_algo_dist_mm (uint32_t width_us);
 uint8_t  scan_algo_classify (uint32_t mbx, bool b_timed_out, bool b_echo_high,
-                             bool b_stuck);
+                              bool b_stuck);
 int16_t  scan_algo_slot_deci (uint8_t slot);
+int16_t  scan_algo_body_deci (scan_algo_ctx_t const * p_ctx);
+int16_t  scan_algo_servo_deci (scan_algo_ctx_t const * p_ctx);
 
 void scan_algo_agree_reset (scan_algo_agree_t * p_agree);
 bool scan_algo_agree_add (scan_algo_agree_t * p_agree, uint8_t cls,
@@ -72,4 +78,3 @@ bool    scan_algo_has_region (scan_algo_ctx_t const * p_ctx);
 #endif /* SCAN_ALGO_H */
 
 /*** end of file ***/
-

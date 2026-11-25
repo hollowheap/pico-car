@@ -55,6 +55,7 @@ target_compile_options(test_obstacle_scan PRIVATE
 add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
 
 add_executable(test_obstacle_plan test_obstacle_plan.c
+    ${OBSTACLE_SRC}/geometry.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
 target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
@@ -63,6 +64,7 @@ target_compile_options(test_obstacle_plan PRIVATE
 add_test(NAME obstacle_plan COMMAND test_obstacle_plan)
 
 add_executable(test_obstacle_statechart test_obstacle_statechart.c
+    ${OBSTACLE_SRC}/geometry.c
     ${OBSTACLE_SRC}/statechart.c
     ${OBSTACLE_SRC}/planner.c
     ${OBSTACLE_SRC}/scan_algo.c)
@@ -70,6 +72,23 @@ target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC} ${AP
 target_compile_options(test_obstacle_statechart PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
+
+add_executable(test_obstacle_bypass_sim test_obstacle_bypass_sim.c
+    ${OBSTACLE_SRC}/geometry.c
+    ${OBSTACLE_SRC}/statechart.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_bypass_sim PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_bypass_sim PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_obstacle_bypass_sim PRIVATE m)
+add_test(NAME obstacle_bypass_sim COMMAND test_obstacle_bypass_sim)
+
+# D95: the STEER-word hug law and everything only it used are gone.
+add_test(NAME obstacle_hug_law_removed
+    COMMAND ${CMAKE_COMMAND}
+        -DROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/check_removed_symbols.cmake)
 
 add_executable(test_barcode_parser test_barcode_parser.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)

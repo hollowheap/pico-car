@@ -368,7 +368,6 @@ target_compile_options(barcode PRIVATE ${FIRMWARE_WARNINGS})
 
 add_executable(main
     src/main.c
-    src/demo_tasks.c
 )
 target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
@@ -413,6 +412,7 @@ endforeach()
 #                   Buddy 5 + a pretend Navigation; the motors are never driven.
 # ---------------------------------------------------------------------------
 add_library(obstacle STATIC
+    src/navigation/obstacle/geometry.c
     src/navigation/obstacle/scan_algo.c
     src/navigation/obstacle/planner.c
     src/navigation/obstacle/statechart.c
