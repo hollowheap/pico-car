@@ -58,3 +58,23 @@ target_compile_options(test_obstacle_start PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/ir/fakes/line_task_ports.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle.obstacle_start.default COMMAND test_obstacle_start)
+
+set(OBSTACLE_EXTRAS_SRC ${OBSTACLE_SRC}/extras)
+add_executable(test_obstacle_extras_scan obstacle/extras_scan_test.c
+    ${OBSTACLE_EXTRAS_SRC}/scan.c ${OBSTACLE_EXTRAS_SRC}/planner.c)
+target_include_directories(test_obstacle_extras_scan PRIVATE ${OBSTACLE_EXTRAS_SRC})
+target_compile_options(test_obstacle_extras_scan PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle.extras_scan.original_replays COMMAND test_obstacle_extras_scan)
+
+add_executable(test_obstacle_extras_navigation obstacle/extras_navigation_test.c
+    ${OBSTACLE_EXTRAS_SRC}/scan.c ${OBSTACLE_EXTRAS_SRC}/planner.c
+    ${OBSTACLE_EXTRAS_SRC}/statechart.c)
+target_include_directories(test_obstacle_extras_navigation PRIVATE
+    ${OBSTACLE_EXTRAS_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_extras_navigation PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+foreach(scenario IN ITEMS no_path_twice matching_ping rejoin_speed reversal_pause close_echoes)
+    add_test(NAME obstacle.extras_navigation.${scenario}
+        COMMAND test_obstacle_extras_navigation ${scenario})
+endforeach()
