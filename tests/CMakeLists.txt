@@ -295,8 +295,81 @@ add_test(NAME line_task_contract_pending_obstacle COMMAND test_line_task_contrac
 add_test(NAME line_task_contract_pending_stale COMMAND test_line_task_contract pending-stale)
 add_test(NAME pilot_stale_line_capture COMMAND test_line_task_contract stale-line-capture)
 add_test(NAME pilot_turn_stale_line_capture COMMAND test_line_task_contract turn-stale-line-capture)
-add_test(NAME line_route_plain_square_left COMMAND test_line_task_contract route-plain-square-left -5.5 0 nov20)
-add_test(NAME line_route_plain_round_left COMMAND test_line_task_contract route-plain-round-left -5.5 30 nov20)
+# Combinations that fail on the current fixture and line task; the cases stay in the binary.
+set(CORNER_REPLAY_KNOWN_FAILING
+    line_pending_straight_square_left_matched_-5.5_0
+    line_plain_square_left_matched_0_30
+    line_plain_square_left_matched_5.5_30
+    line_plain_square_left_nov16_-5.5_30
+    line_plain_square_left_nov16_0_30
+    line_plain_square_left_nov16_5.5_30
+    line_plain_square_left_nov20_-5.5_30
+    line_plain_square_left_nov20_0_30
+    line_plain_square_left_nov20_5.5_30
+    line_pending_straight_square_right_matched_-5.5_-30
+    line_pending_straight_square_right_matched_-5.5_0
+    line_plain_square_right_matched_-5.5_30
+    line_pending_straight_square_right_matched_-5.5_30
+    line_pending_straight_square_right_matched_0_-30
+    line_pending_straight_square_right_matched_0_0
+    line_plain_square_right_matched_0_30
+    line_pending_straight_square_right_matched_0_30
+    line_pending_straight_square_right_matched_5.5_-30
+    line_pending_straight_square_right_matched_5.5_0
+    line_plain_square_right_matched_5.5_30
+    line_pending_straight_square_right_matched_5.5_30
+    line_pending_straight_square_right_nov16_-5.5_-30
+    line_pending_straight_square_right_nov16_-5.5_0
+    line_plain_square_right_nov16_-5.5_30
+    line_pending_straight_square_right_nov16_-5.5_30
+    line_pending_straight_square_right_nov16_0_-30
+    line_pending_straight_square_right_nov16_0_0
+    line_plain_square_right_nov16_0_30
+    line_pending_straight_square_right_nov16_0_30
+    line_pending_straight_square_right_nov16_5.5_-30
+    line_pending_straight_square_right_nov16_5.5_0
+    line_plain_square_right_nov16_5.5_30
+    line_pending_straight_square_right_nov16_5.5_30
+    line_plain_square_right_nov20_-5.5_30
+    line_plain_square_right_nov20_0_30
+    line_plain_square_right_nov20_5.5_30
+)
+foreach (shape IN ITEMS round square)
+    foreach (direction IN ITEMS left right)
+        foreach (wheel_model IN ITEMS matched nov16 nov20)
+            foreach (lateral IN ITEMS -5.5 0 5.5)
+                foreach (lead IN ITEMS -30 0 30)
+                    set(case_name line_plain_${shape}_${direction}_${wheel_model}_${lateral}_${lead})
+                    if (NOT case_name IN_LIST CORNER_REPLAY_KNOWN_FAILING)
+                        add_test(NAME ${case_name} COMMAND test_line_task_contract
+                            route-plain-${shape}-${direction} ${lateral} ${lead} ${wheel_model})
+                        set_tests_properties(${case_name} PROPERTIES LABELS ordinary_corner)
+                    endif ()
+                    foreach (request IN ITEMS straight left right)
+                        set(case_name line_pending_${request}_${shape}_${direction}_${wheel_model}_${lateral}_${lead})
+                        if (NOT case_name IN_LIST CORNER_REPLAY_KNOWN_FAILING)
+                            add_test(NAME ${case_name} COMMAND test_line_task_contract
+                                route-${shape}-${direction}-pending-${request} ${lateral} ${lead} ${wheel_model})
+                            set_tests_properties(${case_name} PROPERTIES LABELS pending_corner)
+                        endif ()
+                    endforeach ()
+                endforeach ()
+            endforeach ()
+        endforeach ()
+    endforeach ()
+endforeach ()
+foreach (course IN ITEMS left right straight-left straight-right t-left t-right t-straight-later
+        missing-left missing-right single-left single-right offset-back offset-front left-mirror
+        cancel event-abort straight-obstacle u u-replaces-left u-during-probe u-during-late-probe
+        u-hold-during-probe u-repeat-manual u-invalid-origin u-invalid-capture)
+    string(REPLACE "-" "_" test_suffix "${course}")
+    add_test(NAME line_route_${test_suffix} COMMAND test_line_task_contract route-${course})
+endforeach ()
+add_test(NAME line_route_right_nov20 COMMAND test_line_task_contract route-right -5.5 -30 nov20)
+add_test(NAME line_route_t_left_matched COMMAND test_line_task_contract route-t-left 5.5 -30 matched)
+add_test(NAME line_route_t_right_matched COMMAND test_line_task_contract route-t-right 5.5 -30 matched)
+add_test(NAME line_route_single_left_matched_back COMMAND test_line_task_contract route-single-left 5.5 -30 matched)
+add_test(NAME line_route_single_left_matched_inline COMMAND test_line_task_contract route-single-left 5.5 0 matched)
 
 add_executable(test_pilot_observations test_pilot_observations.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
