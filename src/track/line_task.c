@@ -50,8 +50,13 @@
 /* Crossing back to the only verified exit can take one more quarter turn
  * at tape-capture speed. The limit still runs from the start of the scan. */
 #define LINE_FALLBACK_ALIGN_MS   (1000U)
+/* Apply trim only after at least one tape width of heading drift. */
+#define LINE_ROUTE_HEADING_TRIM_DECI ((LINE_WIDTH_MM * DECI_PER_RAD) / LINE_SENSOR_LEAD_MM)
 
 static line_route_t g_route;
+static int32_t g_left_entry_deci;
+static int32_t g_right_entry_deci;
+static int32_t g_route_entry_deci;
 
 /* Wheel displacement units. */
 #define DECI_PER_DEG (10)
@@ -331,9 +336,31 @@ static bool line_route_at_junction (line_turn_kind_t turn, ir_sensors_state_t se
         g_route = (line_route_t){0};
         return false;
     }
+    bool const b_left_entry = sensors.left && !g_route.left_on_tape;
+    bool const b_right_entry = sensors.right && !g_route.right_on_tape;
+    if (b_left_entry || b_right_entry)
+    {
+        int32_t const heading = line_heading_deci(feedback.left_displacement_um, feedback.right_displacement_um);
+        if (b_left_entry)
+        {
+            g_left_entry_deci = heading;
+        }
+        if (b_right_entry)
+        {
+            g_right_entry_deci = heading;
+        }
+    }
+    int64_t const previous_anchor = g_route.start_um;
+    line_side_t const previous_side = line_route_approach_side(&g_route);
     bool const b_side_tape = ((uint8_t)sensors.barcode != BARCODE_LEVEL_SPACE);
-    return line_route_observe(&g_route, turn, sensors.left, sensors.right, b_side_tape,
-                              feedback.left_displacement_um, feedback.right_displacement_um);
+    bool const pivot = line_route_observe(&g_route, turn, sensors.left, sensors.right, b_side_tape,
+                                         feedback.left_displacement_um, feedback.right_displacement_um);
+    line_side_t const side = line_route_approach_side(&g_route);
+    if ((LINE_SIDE_NONE != side) && ((previous_side != side) || (previous_anchor != g_route.start_um)))
+    {
+        g_route_entry_deci = side == LINE_SIDE_RIGHT ? g_right_entry_deci : g_left_entry_deci;
+    }
+    return pivot;
 }
 
 STATIC_ASSERT(LINE_STRIPE_LEFT == (1U << TELEMETRY_JUNCTION_STRIPE_BIT_LEFT), "junction stripe left bit");
@@ -933,6 +960,26 @@ static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uin
     return b_feedback_fresh;
 }
 
+/* A single-sided stripe can turn the follower away from the approach tape
+ * before the detector clears it. Trim back toward the entry heading while
+ * the axle advances through the blind gap. */
+static void line_route_trim_approach (motion_feedback_t const * p_feedback, pilot_meas_t * p_meas)
+{
+    line_side_t const side = line_route_approach_side(&g_route);
+    int32_t const sign = (LINE_SIDE_RIGHT == side) ? -1 : 1;
+    int32_t const stripe_turn = sign * (g_route.heading_deci - g_route_entry_deci);
+    if ((LINE_SIDE_NONE != side) && (stripe_turn > LINE_ROUTE_HEADING_TRIM_DECI))
+    {
+        int32_t const heading = line_heading_deci(p_feedback->left_displacement_um,
+                                                 p_feedback->right_displacement_um);
+        int32_t const correction = clamp_i32(stripe_turn, 0, LINE_ROUTE_YAW_LIMIT_DECI);
+        int32_t const target = g_route.heading_deci - (sign * correction);
+        int32_t const error = clamp_i32(target - heading, -LINE_CAP_DECI, LINE_CAP_DECI);
+        p_meas->route_yaw_deci_s = (int16_t)(LINE_KH * error);
+        p_meas->b_route_trim = true;
+    }
+}
+
 /*!
  * @brief One pass of the pilot: measure, decide, drive.
  */
@@ -953,6 +1000,11 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
     line_follow_set_hump(&g_pilot.follow, b_hump);
     /* A climb also loads the wheels: only level ground tells a push. */
     meas.b_loaded = !b_hump && supervisor_wheels_loaded();
+    if ((SUPERVISOR_NO_TURN != route_opcode) && b_line_fresh && b_feedback_fresh &&
+        feedback.speed_valid[0] && feedback.speed_valid[1] && !b_hump)
+    {
+        line_route_trim_approach(&feedback, &meas);
+    }
     line_step_with_profile(&meas, &cmd);
     if (((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE != cmd.behaviour) && (SUPERVISOR_NO_TURN != route_opcode))
     {

@@ -70,6 +70,9 @@ STATIC_ASSERT((LINE_CRUISE_UM_S / LINE_SPEED_STEP_UM_S) <= 65535,
 #define LINE_SENSOR_COUNT      (2U)
 #define LINE_SENSOR_LEAD_MM    CHASSIS_LINE_SENSOR_LEAD_MM
 #define LINE_WIDTH_MM          (15)
+/* Allow half a tape width beyond the stripe for the sampled entry and exit. */
+#define LINE_ROUTE_YAW_LIMIT_DECI \
+    (((LINE_WIDTH_MM + LINE_WIDTH_MM / 2) * DECI_PER_RAD) / LINE_SENSOR_LEAD_MM)
 
 /**
  * Heading cascade. The sensors move a heading target; the encoder
@@ -268,7 +271,7 @@ typedef struct
     bool    full_width_anchor : 1;
     bool    side_recent : 1;
     bool    was_crossing : 1;
-    bool    : 1; /* Reserved to preserve the flag positions. */
+    bool    right_anchor : 1;
     bool    through_seen : 1;
     bool    clear_seen : 1;
     bool    right_on_tape : 1;
@@ -289,6 +292,9 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
 
 /** The route probe has an optical crossing to survey at the projected axle. */
 bool line_route_has_candidate(line_route_t const * p_route);
+
+/** Detector that measured the current stripe, or NONE outside its approach. */
+line_side_t line_route_approach_side(line_route_t const * p_route);
 
 /** A scan has finished and the car is centering on an observed fallback exit. */
 bool line_route_returning(line_route_t const * p_route);

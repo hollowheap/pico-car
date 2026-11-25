@@ -98,6 +98,7 @@ static void route_anchor_left(line_route_t * p_route, int64_t travel_um, int32_t
     p_route->heading_deci = heading_deci;
     p_route->phase = ROUTE_APPROACH;
     p_route->full_width_anchor = width_mm >= ROUTE_FULL_STRIPE_MIN_MM;
+    p_route->right_anchor = false;
 }
 
 /* A turn needs evidence of two routes. A hit alone is also consistent with
@@ -138,17 +139,15 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
         p_route->heading_deci = heading;
         p_route->phase = ROUTE_APPROACH;
         p_route->full_width_anchor = right_width >= ROUTE_FULL_STRIPE_MIN_MM;
+        p_route->right_anchor = true;
         /* The left detector can stay on the approach tape into a T. The
          * right detector's clean crossing still fixes the axle position. */
         p_route->right_branch = (LINE_TURN_KIND_RIGHT == kind) ||
                                 ((LINE_TURN_KIND_STRAIGHT == kind) && !b_crossing);
         p_route->kind = (uint8_t)kind;
     }
-    /* Retire the projected axle position if steering moves it out of the
-     * crossing. Include half a tape width for the sampled entry and exit. */
-    else if ((progress < 0) || ((ROUTE_APPROACH == p_route->phase) &&
-             (abs_i64(yaw) * LINE_SENSOR_LEAD_MM >
-              (LINE_WIDTH_MM + LINE_WIDTH_MM / ROUTE_MIDPOINT_DIVISOR) * DECI_PER_RAD)))
+    /* Retire the projected axle position if steering moves it out of the crossing. */
+    else if ((progress < 0) || ((ROUTE_APPROACH == p_route->phase) && (abs_i64(yaw) > LINE_ROUTE_YAW_LIMIT_DECI)))
     {
         p_route->phase = ROUTE_WAIT_EDGE;
     }
@@ -188,6 +187,15 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
 bool line_route_has_candidate(line_route_t const * p_route)
 {
     return p_route->phase != ROUTE_WAIT_EDGE;
+}
+
+line_side_t line_route_approach_side(line_route_t const * p_route)
+{
+    if (ROUTE_APPROACH != p_route->phase)
+    {
+        return LINE_SIDE_NONE;
+    }
+    return p_route->right_anchor ? LINE_SIDE_RIGHT : LINE_SIDE_LEFT;
 }
 
 bool line_route_returning(line_route_t const * p_route)

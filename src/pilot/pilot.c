@@ -473,14 +473,28 @@ static void behaviour_follow_line(pilot_state_t * p_state,
     int64_t const travel_um = (p_meas->left_um + p_meas->right_um) / HALF_DIVISOR;
     int32_t const heading = line_heading_deci(p_meas->left_um, p_meas->right_um) +
                             (p_state->witness_corr / PERCENT);
-    if (!p_meas->b_barcode || !line_follow_marker_sample(&p_state->follow, p_meas->b_line_left,
+    bool const b_marker_hold = p_meas->b_barcode && line_follow_marker_sample(&p_state->follow, p_meas->b_line_left,
             p_meas->b_line_right, p_meas->b_marker_progress, p_meas->marker_prefix_mm, heading, travel_um,
-            p_meas->now_ms, &targets))
+            p_meas->now_ms, &targets);
+    if (!b_marker_hold)
     {
         status = line_follow_update_floor(
             &p_state->follow, p_meas->b_line_left, p_meas->b_line_right,
             heading, travel_um, p_meas->now_ms,
             !p_meas->b_bounded_course, &targets);
+    }
+
+    if (p_meas->b_route_trim && !b_marker_hold && (LINE_FOLLOW_BRIDGING == status) &&
+        (targets.left_um_s > 0) && (targets.right_um_s > 0))
+    {
+        int32_t const forward_um_s = (targets.left_um_s + targets.right_um_s) / HALF_DIVISOR;
+        int32_t const half_diff_um_s = (int32_t)(((int64_t)p_meas->route_yaw_deci_s *
+            CHASSIS_WHEEL_TRACK_MM * UM_PER_MM) / (HALF_DIVISOR * DECI_PER_RAD));
+        /* Keep both wheels advancing. The normal caps below still apply. */
+        int32_t const limit = forward_um_s / HALF_DIVISOR;
+        int32_t const diff = clamp_i32(half_diff_um_s, -limit, limit);
+        targets.left_um_s = forward_um_s - diff;
+        targets.right_um_s = forward_um_s + diff;
     }
 
     bool const b_ranged = (!p_meas->b_ping_reply) && (p_meas->ping_mm > 0U) &&

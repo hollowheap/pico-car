@@ -287,6 +287,9 @@ add_test(NAME line_resume_clear COMMAND test_line_task_contract pose-clear)
 add_test(NAME line_resume_near COMMAND test_line_task_contract pose-near)
 add_test(NAME line_cancel_turn_after_pose_loss COMMAND test_line_task_contract pose-during-turn)
 add_test(NAME barcode_route_ambiguous COMMAND test_line_task_contract probe-solid)
+add_test(NAME barcode_route_placement_grid COMMAND ${CMAKE_COMMAND}
+    -DROUTE_EXE=$<TARGET_FILE:test_line_task_contract>
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/check_barcode_route_grid.cmake)
 add_test(NAME junction_left_wheel_pause COMMAND test_line_task_contract junction-left-pause)
 add_test(NAME junction_right_wheel_pause COMMAND test_line_task_contract junction-right-pause)
 add_test(NAME junction_probe_cancel_event COMMAND test_line_task_contract junction-cancel)

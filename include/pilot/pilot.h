@@ -172,10 +172,12 @@ typedef struct
     bool     b_loaded : 1;  /* a forward wheel pushes against something (duty against speed) */
     bool     b_mag_heading : 1; /* mag_heading_ddeg is offset-learnt, in band and rate-agreed */
     bool     b_wheel_invalid : 1; /* current encoder sample failed or is unavailable */
+    bool     b_route_trim : 1; /* use route_yaw_deci_s when advancing to a measured stripe */
     uint8_t  marker_prefix_mm; /* measured elements of the current tentative start */
     uint8_t  pivot_scale_pct; /* physics pivot witness in percent, 0 for none */
     int16_t  wheel_radius_mm; /* measured forward arc, left positive, zero if unavailable or straight */
     uint16_t mag_heading_ddeg; /* tilt-compensated heading, 0..3599 ddeg clockwise from north */
+    int16_t  route_yaw_deci_s; /* clockwise negative */
 } pilot_meas_t;
 
 STATIC_ASSERT(sizeof(pilot_meas_t) == 48U, "pilot_meas_t size");
