@@ -214,7 +214,7 @@ static void test_empty_queue_does_nothing (void)
 
 static void test_stops_on_pop_error (void)
 {
-    static const INT errors[] = {E_TMOUT, E_NOEXS, RLWAI_CODE, E_PAR, 0};
+    static const INT errors[] = {E_TMOUT, E_NOEXS, RLWAI_CODE, E_PAR, 0, (INT)FRAME_MAX + 1};
 
     unsigned before = g_fail;
 

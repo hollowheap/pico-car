@@ -281,6 +281,7 @@ target_sources(pico_car_sdk PRIVATE
     ${PICO_SDK_PATH}/src/rp2_common/hardware_pio/pio.c
     ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cyw43_bus_pio_spi.c
 
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/apps/mqtt/mqtt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/init.c
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/def.c
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/dns.c
@@ -351,12 +352,10 @@ add_library(telemetry STATIC
     src/telemetry/connection_task.c
     src/telemetry/drv_wifi.c
     src/telemetry/emit.c
-    src/telemetry/mqtt_client.c
+    src/telemetry/mqtt_session.c
     src/telemetry/net_queue.c
     src/telemetry/packet.c
-    src/telemetry/publisher.c
     src/telemetry/queue.c
-    src/telemetry/tcp_transport.c
     src/telemetry/wifi_link.c
     src/telemetry/worker.c
 )

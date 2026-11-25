@@ -20,7 +20,7 @@ volatile uint32_t cyw43_utk_poll_requested;
 struct netif *netif_default = &cyw43_state.netif[CYW43_ITF_STA];
 static ip_addr_t dns;
 static uint64_t now_us, attempt_us, failure_us, lost_us;
-static unsigned attempts, adoptions, adoptions_at_recovery, attempts_before_loss, transport_polls;
+static unsigned attempts, adoptions, adoptions_at_recovery, attempts_before_loss, mqtt_polls;
 static bool supplied, recovered, dropped, saw_timeout, in_driver, renumbered;
 static sys_timeout_handler timer_handler;
 static void *timer_arg;
@@ -61,10 +61,10 @@ void sys_check_timeouts(void)
     }
 }
 
-void tcp_transport_poll(void)
+void mqtt_session_poll(void)
 {
     assert(in_driver);
-    transport_polls++;
+    mqtt_polls++;
 }
 void cyw43_init(cyw43_t *self) { (void)self; }
 int cyw43_wifi_get_mac(cyw43_t *s, int i, uint8_t mac[6]) { (void)s; (void)i; (void)mac; return 0; }
@@ -165,7 +165,7 @@ int32_t tk_dly_tsk(uint32_t delay)
     assert(!in_driver);
     cyw43_utk_get_status(&st);
     assert(st.status_retries == 0U);
-    assert(st.poll_count == transport_polls + 1U);
+    assert(st.poll_count == mqtt_polls + 1U);
     if (leased) {
         assert(supplied && netif_is_link_up(netif_default) && st.link_up);
         assert(wifi_link_rssi() == (dropped ? -64 : -50));

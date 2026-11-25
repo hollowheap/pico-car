@@ -81,14 +81,11 @@ LOCAL void telemetry_sonar_aim (int16_t commanded_deci)
 }
 
 /*!
- * @brief Queue one telemetry frame for the connection task.
+ * @brief Queue one telemetry frame for the MQTT radio owner.
  */
 LOCAL int net_sink (const uint8_t * frame, uint16_t len)
 {
-    if ((E_OK == telemetry_net_queue_push(frame, len)) && (g_connection_tid > 0))
-    {
-        (void)tk_wup_tsk(g_connection_tid);
-    }
+    (void)telemetry_net_queue_push(frame, len);
     return 0;
 }
 
@@ -351,7 +348,7 @@ LOCAL T_CTSK g_ctsk_telemetry = {
     .bufptr  = g_telemetry_stack,
 };
 
-/* Core 1, 6: MQTT session; the CYW43 and lwIP poll runs on core 0, at 4. */
+/* Core 1, 6: MQTT commands and heartbeat. The radio owner runs on core 0 at 4. */
 LOCAL T_CTSK g_ctsk_connection = {
     .itskpri = 6, /* NOLINT(readability-magic-numbers): the task table is kept literal by the project rules */
     .stksz   = STACK_CONNECTION_SZ,

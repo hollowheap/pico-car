@@ -11,7 +11,7 @@
 #include "lwip/timeouts.h"
 #include "lwip_utk_ipv4.h"
 
-#include "telemetry/tcp_transport.h"
+#include "mqtt_session.h"
 #include "telemetry/wifi_link.h"
 
 #if TM_WIFI_JOIN
@@ -23,8 +23,8 @@
 #define WIFI_JOIN_RETRY_MS     5000u
 #define WIFI_JOIN_TIMEOUT_MS   30000u
 
-#if LWIP_NUM_SYS_TIMEOUT_INTERNAL >= MEMP_NUM_SYS_TIMEOUT
-#error "lwIP needs a free timeout slot for the radio timer"
+#if LWIP_NUM_SYS_TIMEOUT_INTERNAL + 2U > MEMP_NUM_SYS_TIMEOUT
+#error "lwIP needs timeout slots for the radio and MQTT timers"
 #endif
 
 /* The timer runs inside lwIP's sys_check_timeouts() in the radio owner task.
@@ -230,7 +230,7 @@ tick (void * arg)
 #if TM_WIFI_JOIN
     join_update(sys_now());
 #endif
-    tcp_transport_poll();
+    mqtt_session_poll();
 }
 
 void

@@ -184,16 +184,10 @@ target_include_directories(test_isr_dispatch PRIVATE
 target_compile_options(test_isr_dispatch PRIVATE -Wall -Wextra -Werror)
 add_test(NAME isr_dispatch COMMAND test_isr_dispatch)
 
-# Telemetry pure modules: packet, command validation and MQTT client
-# (the MQTT client runs against a fake transport port).
-foreach(tname packet cmd mqtt)
-    if(tname STREQUAL "mqtt")
-        set(tsrc mqtt_client.c)
-    else()
-        set(tsrc ${tname}.c)
-    endif()
+# Telemetry packet and command validation.
+foreach(tname packet cmd)
     add_executable(test_${tname} test_${tname}.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/${tsrc})
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry/${tname}.c)
     target_include_directories(test_${tname} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
         ${CMAKE_CURRENT_SOURCE_DIR})
@@ -201,7 +195,7 @@ foreach(tname packet cmd mqtt)
     add_test(NAME telemetry_${tname} COMMAND test_${tname})
 endforeach()
 
-# Telemetry queue, net queue, worker and publisher. The queues run
+# Telemetry queue, net queue and worker. The queues run
 # unchanged against the kernel shim and the message buffer fake in
 # shim/tk/mbf_fake.h.
 set(TELEMETRY_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/telemetry)
@@ -210,7 +204,7 @@ set(TELEMETRY_TEST_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 set(TELEMETRY_TEST_FLAGS -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 
-foreach(name IN ITEMS queue net_queue worker publisher)
+foreach(name IN ITEMS queue net_queue worker)
     add_executable(test_telemetry_${name} test_telemetry_${name}.c
         ${TELEMETRY_SRC}/${name}.c)
     target_include_directories(test_telemetry_${name} PRIVATE
@@ -222,9 +216,9 @@ endforeach()
 add_executable(test_telemetry_connection_cmd test_telemetry_connection_cmd.c
     ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c
     ${TELEMETRY_SRC}/drv_wifi.c
-    ${TELEMETRY_SRC}/packet.c ${TELEMETRY_SRC}/publisher.c)
+    ${TELEMETRY_SRC}/packet.c)
 target_include_directories(test_telemetry_connection_cmd PRIVATE
-    ${TELEMETRY_TEST_INCLUDES} ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection
+    ${TELEMETRY_TEST_INCLUDES} ${TELEMETRY_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/mtk3smp-rp2040/lib/libwifi/sysdepend/pico_rp2040)
 target_compile_options(test_telemetry_connection_cmd PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection/kernel.h"
@@ -232,8 +226,7 @@ target_compile_options(test_telemetry_connection_cmd PRIVATE
 target_link_options(test_telemetry_connection_cmd PRIVATE
     -Wl,--gc-sections -Wl,--wrap=telemetry_cmd_receive)
 add_test(NAME telemetry_connection_cmd COMMAND test_telemetry_connection_cmd)
-add_test(NAME telemetry_connection_publish_failure COMMAND test_telemetry_connection_cmd publish-failure)
-add_test(NAME telemetry_connection_data_publish_failure COMMAND test_telemetry_connection_cmd data-publish-failure)
+add_test(NAME telemetry_connection_heartbeat_busy COMMAND test_telemetry_connection_cmd heartbeat-busy)
 add_test(NAME telemetry_connection_join_failure COMMAND test_telemetry_connection_cmd join-failure)
 
 add_executable(test_line_control test_line_control.c
@@ -509,25 +502,23 @@ target_compile_options(test_telemetry_emit PRIVATE
     ${TELEMETRY_TEST_FLAGS})
 add_test(NAME telemetry_emit COMMAND test_telemetry_emit)
 
-add_executable(test_telemetry_stream_loss test_telemetry_stream_loss.c)
-target_include_directories(test_telemetry_stream_loss PRIVATE
-    ${TELEMETRY_SRC} ${TELEMETRY_TEST_INCLUDES})
-target_compile_options(test_telemetry_stream_loss PRIVATE ${TELEMETRY_TEST_FLAGS})
-add_test(NAME telemetry_stream_loss COMMAND test_telemetry_stream_loss)
-
-# tcp_transport.c runs against the lwIP and platform stubs in shim_tcp/, which
-# comes before include/ for arch/cc.h and lwipopts.h; shim/ supplies tk/smp.h.
-set(LWIP_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../lib/pico-sdk/lib/lwip/src/include)
-add_executable(test_tcp_transport test_tcp_transport.c shim_tcp/tcp_stubs.c)
-target_include_directories(test_tcp_transport BEFORE PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/shim_tcp)
-target_include_directories(test_tcp_transport PRIVATE
-    ${TELEMETRY_SRC} ${TELEMETRY_TEST_INCLUDES})
-target_include_directories(test_tcp_transport SYSTEM PRIVATE
-    ${LWIP_SRC}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/mtk3smp-rp2040/lib/libwifi/sysdepend/pico_rp2040)
-target_compile_options(test_tcp_transport PRIVATE ${TELEMETRY_TEST_FLAGS})
-add_test(NAME tcp_transport COMMAND test_tcp_transport)
+# Build the pinned SDK MQTT source against the host's simulated TCP connection.
+set(LWIP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../lib/pico-sdk/lib/lwip/src)
+set(LWIP_SRC ${LWIP_ROOT}/include)
+set(SDK_MQTT ${LWIP_ROOT}/apps/mqtt/mqtt.c)
+set_source_files_properties(${SDK_MQTT} PROPERTIES COMPILE_OPTIONS "-w")
+add_executable(test_mqtt_session test_mqtt_session.c ${SDK_MQTT}
+    ${TELEMETRY_SRC}/mqtt_session.c ${TELEMETRY_SRC}/worker.c)
+target_include_directories(test_mqtt_session BEFORE PRIVATE shim_tcp shim_connection)
+target_include_directories(test_mqtt_session PRIVATE ${TELEMETRY_TEST_INCLUDES} ${TELEMETRY_SRC})
+target_include_directories(test_mqtt_session SYSTEM PRIVATE ${LWIP_SRC})
+target_compile_options(test_mqtt_session PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim_connection/kernel.h"
+    ${TELEMETRY_TEST_FLAGS})
+target_link_options(test_mqtt_session PRIVATE -Wl,--wrap=tk_snd_mbf)
+foreach(scenario wire backpressure puback-space keepalive retry dns timeout)
+    add_test(NAME telemetry_mqtt_${scenario} COMMAND test_mqtt_session ${scenario})
+endforeach()
 
 # Run the kernel radio owner loop and the link timer with simulated CYW43 events and leases.
 set(RADIO_PORT ${CMAKE_CURRENT_SOURCE_DIR}/../lib/mtk3smp-rp2040/lib/libwifi/sysdepend/pico_rp2040)

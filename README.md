@@ -65,7 +65,7 @@ startup task initialises the shared hardware.
 | `src/physics/`                              | IMU sensor, hump detection, pipeline, task                           |
 | `src/motion/`                               | Motor owner, PIO quadrature encoders, PID                            |
 | `src/track/`, `src/platform/`               | Line sensors and the shared GPIO IRQ dispatcher                      |
-| `src/telemetry/`                            | lwIP transport, MQTT client, queues, command ingress                 |
+| `src/telemetry/`                            | lwIP MQTT session, queues, command ingress                         |
 | `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and JSON bridge                               |
 | `protocol/telemetry.yaml`                   | Wire schema shared by firmware and host                              |
 
@@ -161,6 +161,15 @@ event, profile and barcode sample packets on MQTT (topics `s m p o d h e f b`) a
 STOP/START/RESET and E-STOP commands. Broker settings are CMake cache values:
 `PICO_CAR_MQTT_HOST`, `PICO_CAR_MQTT_PORT`, `PICO_CAR_MQTT_USERNAME`,
 `PICO_CAR_MQTT_PASSWORD`, `PICO_CAR_TOPIC_PREFIX` and `PICO_CAR_CLIENT_ID`.
+The radio task runs the SDK's lwIP MQTT client. The core 1 connection task
+handles command validation, dispatch and heartbeat assembly. Telemetry uses
+QoS 0, commands use QoS 1, and the session advertises a 30 s keepalive.
+The SDK checks its idle connection watchdog once a second and closes a
+session after more than 45 s without inbound traffic or TCP acknowledgments.
+If the command queue fills, the radio waits for the connection task before
+returning from the receive callback that triggers the MQTT PUBACK. The SDK
+output buffer has room for command PUBACKs alongside a full pending telemetry
+burst. Prolonged TCP transmit blockage can still exhaust the SDK buffer.
 
 A valid MQTT E-STOP latches the drive inhibit before command diagnostics or
 supervisor reporting. The motion task applies the brake to the outputs. The
@@ -342,7 +351,8 @@ repeats the join and tracks the lease from a repeating lwIP timeout in the
 radio task. The USB
 console reports a connection fault during this wait and joining during the next
 attempt. After association the car waits for a current DHCP lease and queues a
-heartbeat as soon as MQTT reconnects. The
+heartbeat as soon as MQTT reconnects. A failed MQTT session retries after 1 s,
+doubling to at most 30 s until the command subscription succeeds. The
 `wifi_disconn` fault bit is set after 3 s without a session, for telemetry only.
 Link events mark MQTT session changes. A link-down event can be delivered after
 reconnection if the telemetry queues retain it.
@@ -355,7 +365,7 @@ sample is more than 25 ms old, the line task stops the wheels and aborts any
 active turn. Fresh line samples let normal navigation resume.
 
 The barcode reader sends best-effort `barcode_sample` frames on topic `b`.
-Each queued edge wakes the telemetry worker and forwarding wakes the MQTT task.
+Each queued edge wakes the telemetry worker, which forwards the frame to the radio task.
 Use edge timestamps for stripe timing. Task scheduling and network delivery
 can group several edges into one burst.
 The installed-reader setting interprets GP26 LOW as light floor and HIGH as
