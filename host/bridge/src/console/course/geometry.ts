@@ -328,8 +328,9 @@ const GAP_ESTIMATE_MAX_MS = 3000;
 const GAP_STRAIGHT_MAX_RAD = 35 * (Math.PI / 180);
 const OVERLAP_CELL_MM = 45;
 const SPEED_BUCKET_MMS = 10;
-const IR_FORWARD_MM = 130;
-const IR_HALF_WIDTH_MM = 22.5;
+// Line sensor lead and centre spacing measured in platform/chassis.h.
+const LINE_SENSOR_LEAD_MM = 130;
+const LINE_SENSOR_SPACING_MM = 25;
 const TAPE_BREAK_JUMP_MM = 500;
 const TAPE_BREAK_GAP_MS = 6000;
 const SLIP_YAW_DIFF_DEG = 12;
@@ -518,7 +519,7 @@ const TAPE_MASK = LEFT_TAPE_BIT | RIGHT_TAPE_BIT;
 
 /**
  * Project observed floor tape to the actual 2D front IR sensor position
- * (+130 mm ahead of the rear drive axle, ±22.5 mm lateral for single-sensor hits).
+ * (+130 mm ahead of the rear drive axle, ±12.5 mm lateral for single-sensor hits).
  * Keeps the tape continuous across brief straddles between sensors, only breaking on
  * large gaps or detours, and smooths alternating L/R hits onto the tape centerline.
  */
@@ -550,10 +551,10 @@ export function courseTapeRuns(course: Course): CoursePoint[][] {
     const fy = Math.cos(lastRad);
     const rx = Math.cos(lastRad);
     const ry = -Math.sin(lastRad);
-    const lat = leftOn && rightOn ? 0 : leftOn ? -IR_HALF_WIDTH_MM : IR_HALF_WIDTH_MM;
+    const lat = leftOn && rightOn ? 0 : (leftOn ? -1 : 1) * LINE_SENSOR_SPACING_MM / 2;
     const pt: CoursePoint = {
-      x: axle.x + IR_FORWARD_MM * fx + lat * rx,
-      y: axle.y + IR_FORWARD_MM * fy + lat * ry,
+      x: axle.x + LINE_SENSOR_LEAD_MM * fx + lat * rx,
+      y: axle.y + LINE_SENSOR_LEAD_MM * fy + lat * ry,
     };
 
     const prevPt = active?.at(-1);

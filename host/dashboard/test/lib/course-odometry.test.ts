@@ -267,17 +267,22 @@ it('damps straightaway heading jitter and attenuates overlapped historical passe
   expect(gapSegments.some((s) => s.estimated === true)).toBe(true);
 });
 
-it('projects 2D tape to front IR sensors, detects slip, and places 2D hump footprints', () => {
-  // Heading north (0 deg): left IR hit (bit 0) projects +130 mm north and -22.5 mm west of axle.
+it.each([
+  [0, 1, -12.5, 130],
+  [900, 2, 130, -12.5],
+  [900, 3, 130, 0],
+])('projects tape %i deci-degrees from north with sensor bits %i', (headingDdeg, lineBits, x, y) => {
   const tapeStore = fold([
-    frame('status', 0, { seq: 1, odometer_mm: 0, heading_ddeg: 0, speed_mms: 100, line_bits: 1 }),
-    frame('status', 200, { seq: 2, odometer_mm: 40, heading_ddeg: 0, speed_mms: 100, line_bits: 1 }),
+    frame('status', 0, { seq: 1, odometer_mm: 0, heading_ddeg: headingDdeg, speed_mms: 100, line_bits: lineBits }),
+    frame('status', 200, { seq: 2, odometer_mm: 40, heading_ddeg: headingDdeg, speed_mms: 100, line_bits: lineBits }),
   ]);
   const tapeRuns = courseTapeRuns(buildCourse(tapeStore.trail, []));
   expect(tapeRuns).toHaveLength(1);
-  expect(tapeRuns[0]![0]!.x).toBeCloseTo(-22.5, 1);
-  expect(tapeRuns[0]![0]!.y).toBeCloseTo(130, 1);
+  expect(tapeRuns[0]![0]!.x).toBeCloseTo(x, 1);
+  expect(tapeRuns[0]![0]!.y).toBeCloseTo(y, 1);
+});
 
+it('detects slip and places 2D hump footprints', () => {
   // One-wheel slip (left spinning 120 mm/s, right stalled 0 mm/s, heading unchanged) flags slip.
   const slipStore = fold([
     status(1, 0, 0, 0),
