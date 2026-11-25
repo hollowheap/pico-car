@@ -330,17 +330,43 @@ ER tk_slp_tsk (TMO timeout)
     }
     if (g_acquisition_age_case)
     {
-        if (g_delayed_mag_reads > 0U)
+        if (1U == g_cycle)
         {
             physics_status_t snapshot;
 
             CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (snapshot.ready && (1U == g_delayed_mag_reads));
             CHECK (physics_time_us () > g_acc_acquired_us);
             CHECK (snapshot.forward_sample_us == g_acc_acquired_us);
+            CHECK (0U == (snapshot.faults & PHYSICS_FAULT_I2C));
+            CHECK (0U == (system_fault_get () & FAULT_IMU_NACK_BIT));
+        }
+        else if (3U == g_cycle)
+        {
+            physics_status_t snapshot;
+
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (1U == g_delayed_mag_reads);
+            CHECK (physics_time_us () > g_acc_acquired_us);
+            CHECK (snapshot.forward_sample_us == g_acc_acquired_us);
+            CHECK (!snapshot.attitude_sample_valid && !snapshot.heading_valid);
+            CHECK (0U != (snapshot.faults & PHYSICS_FAULT_I2C));
+            CHECK (0U != (system_fault_get () & FAULT_IMU_NACK_BIT));
+        }
+        else if (5U == g_cycle)
+        {
+            physics_status_t snapshot;
+
+            CHECK (E_OK == physics_snapshot (&snapshot));
+            CHECK (snapshot.ready && (2U == g_delayed_mag_reads));
+            CHECK (physics_time_us () > g_acc_acquired_us);
+            CHECK (snapshot.forward_sample_us == g_acc_acquired_us);
+            CHECK (0U != (snapshot.faults & PHYSICS_FAULT_I2C));
+            CHECK (0U != (system_fault_get () & FAULT_IMU_NACK_BIT));
             longjmp (g_done, 1);
         }
-        CHECK (g_cycle < 5U);
-        if (g_cycle >= 5U)
+        CHECK (g_cycle < 6U);
+        if (g_cycle >= 6U)
         {
             longjmp (g_done, 1);
         }
@@ -433,6 +459,11 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
 {
     if (g_acquisition_age_case)
     {
+        if (3U == g_cycle)
+        {
+            p_dev->fault = true;
+            return LSM303_BUS_FAULT;
+        }
         g_acc_acquired_us = physics_time_us ();
         *p_out = (lsm303_vec_t){.value = {0.0f, 0.0f, 1.0f}};
         return LSM303_OK;
@@ -541,6 +572,11 @@ lsm303_result_t lsm303_read_mag (lsm303_t * p_dev, lsm303_vec_t * p_out)
     {
         g_delayed_mag_reads++;
         g_now_ms += 7U;
+        if (5U == g_cycle)
+        {
+            p_dev->fault = true;
+            return LSM303_BUS_FAULT;
+        }
         *p_out = (lsm303_vec_t){.value = {0.3f, 0.1f, 0.0f}};
         return LSM303_OK;
     }
