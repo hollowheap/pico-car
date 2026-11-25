@@ -16,9 +16,12 @@
 #define PLATFORM_RESET_POWER    (0U)
 #define PLATFORM_RESET_WATCHDOG (1U)
 
-/* The cause of the last reset, read once at start-up. The RP2040 cannot tell
-   a brown-out from a power-on, so a brown-out reads as POWER. */
+/* The wire report uses WATCHDOG for either watchdog cause and POWER for other
+   resets. Use platform_reset_was_power_up for offline start admission. */
 uint8_t platform_reset_reason (void);
+
+/* True with affirmative power-on or brown-out evidence from the RP2040. */
+bool platform_reset_was_power_up (void);
 
 /* Start the watchdog with this timeout. The board resets when the time runs
    out before the next feed. The timer stops while a debugger halts the core. */

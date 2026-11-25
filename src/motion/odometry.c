@@ -65,6 +65,16 @@ bool odometry_init (odometry_t *      p_sampler,
     return true;
 }
 
+bool odometry_rebase (odometry_t * p_sampler, const motion_input_t * p_baseline)
+{
+    if ((p_sampler == NULL) || (p_baseline == NULL) || !p_sampler->initialised)
+    {
+        return false;
+    }
+    p_sampler->previous = *p_baseline;
+    return true;
+}
+
 bool odometry_update (odometry_t *     p_sampler,
                             const motion_input_t * p_input,
                             motion_sample_t *      p_output)

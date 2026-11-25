@@ -30,6 +30,7 @@ STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_MOTION, "event length unique
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_PHYSICS, "event length unique");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_OBSTACLE, "event length unique");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_DIAG, "event length unique");
+STATIC_ASSERT (FRAME_DIAG <= TELEMETRY_QUEUE_MAX_MSG, "diagnostics fit the queue");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_HEARTBEAT, "event length unique");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_PROFILE, "event length unique");
 STATIC_ASSERT (FRAME_PROFILE <= TELEMETRY_QUEUE_MAX_MSG, "profile fits the queue");
@@ -202,8 +203,8 @@ send_evicting (const uint8_t * stored, INT stored_len)
    intended (it is the oldest at that moment), an event is sent back, and the
    consumer only ever frees space. The one effect is that a sent-back event
    lands behind the frames queued after it. */
-ER
-telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
+static ER
+push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
 {
     INT stored_len = 0;
     ER  result     = E_OK;
@@ -224,9 +225,13 @@ telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
         return E_NOEXS;
     }
 
-    result = tk_loc_mtx(g_push_mtx, TMO_FEVR);
+    result = tk_loc_mtx(g_push_mtx, lock_timeout);
     if (result != E_OK)
     {
+        if ((TMO_POL == lock_timeout) && (E_TMOUT == result))
+        {
+            (void) atomic_inc(&g_drop_count);
+        }
         return result;
     }
     result = tk_snd_mbf(g_mbf_telem_id, frame, stored_len, TMO_POL);
@@ -244,6 +249,18 @@ telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
     }
     (void) tk_unl_mtx(g_push_mtx);
     return result;
+}
+
+ER
+telemetry_queue_push (const uint8_t * frame, uint16_t len, uint8_t qos)
+{
+    return push_frame(frame, len, qos, TMO_FEVR);
+}
+
+ER
+telemetry_queue_try_push (const uint8_t * frame, uint16_t len)
+{
+    return push_frame(frame, len, 1U, TMO_POL);
 }
 
 ER

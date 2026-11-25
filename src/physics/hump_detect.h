@@ -72,7 +72,8 @@ typedef struct
     float    min_speed_mps;      /* Below this, height is marked invalid.      */
     float    max_motion_age_s;   /* Older motion data counts as stale.         */
     uint16_t cal_samples;        /* Rest samples needed to set theta_0.        */
-    float    cal_max_dev_g;      /* At rest: | |a| - 1 g | at most this.       */
+    float    cal_max_dev_g;      /* Maximum offset of the window mean from 1 g. */
+    float    cal_max_spread_g;   /* Maximum peak-to-peak acceleration magnitude. */
     float    cal_max_spread_deg; /* At rest: max - min raw pitch at most this. */
     float    cal_max_tilt_deg;   /* At rest: tilt from up axis, at most this. */
 } hump_config_t;
@@ -124,6 +125,9 @@ typedef struct
     bool     calibrated;
     uint16_t cal_count;
     float    cal_sum[HUMP_AXIS_COUNT];
+    float    cal_magnitude_sum;
+    float    cal_min_g;
+    float    cal_max_g;
     float    cal_min_deg;
     float    cal_max_deg;
     float    theta0_deg;

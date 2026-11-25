@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <tk/tkernel.h>
+
 #include "platform/faults.h"
 #include "telemetry/wire_schema.h"
 
@@ -162,6 +164,99 @@ static void test_undefined_bits_ignored (void)
     reset_words();
 }
 
+typedef struct
+{
+    uint32_t changed;
+    uint32_t level;
+} fault_change_t;
+
+#define EXPECTED_CHANGES (6U)
+
+static fault_change_t g_changes[EXPECTED_CHANGES];
+static unsigned g_change_count;
+static UINT g_sysstat;
+
+ER tk_ref_sys (T_RSYS * p_state)
+{
+    *p_state = (T_RSYS){g_sysstat, 1, 1};
+    return E_OK;
+}
+
+static void record_change (uint32_t changed, uint32_t level)
+{
+    if (g_change_count < EXPECTED_CHANGES)
+    {
+        g_changes[g_change_count] = (fault_change_t){changed, level};
+    }
+    g_change_count++;
+}
+
+static void test_observer_captures_every_level_transition (void)
+{
+    uint32_t const motion = FAULT_ENCODER_DEAD_BIT | FAULT_ESTOP_LATCHED_BIT;
+    uint32_t const line   = FAULT_LINE_LOST_BIT;
+    uint32_t const stall  = FAULT_MOTOR_STALL_BIT;
+
+    reset_words();
+    g_change_count = 0U;
+    system_fault_bind_observer(record_change);
+
+    /* This complete pulse can occur in between two telemetry snapshots. */
+    system_fault_assign(FAULT_OWNER_LINE, line, line);
+    system_fault_assign(FAULT_OWNER_LINE, line, line);
+    system_fault_assign(FAULT_OWNER_MOTION, line, 0U);
+    system_fault_assign(FAULT_OWNER_LINE, line, 0U);
+    system_fault_assign(FAULT_OWNER_LINE, line, 0U);
+    CHECK(system_fault_get() == 0U);
+    CHECK(system_fault_sticky_get() == line);
+    CHECK(g_change_count == 2U);
+
+    system_fault_assign(FAULT_OWNER_MOTION, motion, motion);
+    system_fault_assign(FAULT_OWNER_LINE, line, line);
+    system_fault_assign(FAULT_OWNER_MOTION, motion | stall, stall);
+    system_fault_sticky_clear(ALL);
+    system_fault_bind_observer(NULL);
+
+    CHECK(g_change_count == EXPECTED_CHANGES);
+    CHECK(g_changes[0].changed == line && g_changes[0].level == line);
+    CHECK(g_changes[1].changed == line && g_changes[1].level == 0U);
+    CHECK(g_changes[2].changed == motion && g_changes[2].level == motion);
+    CHECK(g_changes[3].changed == line && g_changes[3].level == (motion | line));
+    CHECK(g_changes[4].changed == stall && g_changes[4].level == (motion | line | stall));
+    CHECK(g_changes[5].changed == motion && g_changes[5].level == (line | stall));
+    CHECK(system_fault_get() == (line | stall));
+    CHECK(system_fault_sticky_get() == (line | stall));
+
+    reset_words();
+    CHECK(g_change_count == EXPECTED_CHANGES);
+}
+
+static void test_observer_requires_dispatchable_task_context (void)
+{
+    uint32_t const line = FAULT_LINE_LOST_BIT;
+
+    reset_words();
+    g_change_count = 0U;
+    system_fault_bind_observer(record_change);
+
+    g_sysstat = TSS_INDP;
+    system_fault_assign(FAULT_OWNER_LINE, line, line);
+    CHECK(system_fault_get() == line);
+    CHECK(system_fault_sticky_get() == line);
+    g_sysstat = TSS_DINT;
+    system_fault_assign(FAULT_OWNER_LINE, line, 0U);
+    g_sysstat = TSS_DDSP;
+    system_fault_assign(FAULT_OWNER_LINE, line, line);
+    CHECK(g_change_count == 0U);
+
+    g_sysstat = 0U;
+    system_fault_assign(FAULT_OWNER_LINE, line, 0U);
+    CHECK(g_change_count == 1U);
+    CHECK(g_changes[0].changed == line && g_changes[0].level == 0U);
+    system_fault_bind_observer(NULL);
+    reset_words();
+}
+
 int main (void)
 {
     test_bits_match_the_schema();
@@ -170,6 +265,8 @@ int main (void)
     test_sticky_word();
     test_assign_touches_only_owned_bits();
     test_undefined_bits_ignored();
+    test_observer_captures_every_level_transition();
+    test_observer_requires_dispatchable_task_context();
 
     if (g_fail != 0U)
     {

@@ -25,6 +25,8 @@ typedef void (*connection_cmd_dispatch_t)(const telemetry_cmd_t * cmd,
 ER connection_init (connection_cmd_dispatch_t dispatch, void * context);
 void connection_run (void);
 connection_state_t connection_state (void);
+/* True once the broker session has accepted the command subscription. */
+bool connection_mqtt_seen (void);
 
 /* A copy of the command state for the diag frame: the last accepted cmd_id
    and the refusals per cause. Any task may call it. */

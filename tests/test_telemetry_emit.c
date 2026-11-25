@@ -115,10 +115,72 @@ static void test_event_is_qos1 (void)
     }
 }
 
+static void test_try_event_on_contended_queue (void)
+{
+    uint8_t frame[TELEMETRY_FRAME_MAX];
+    UW      drops = 0U;
+
+    setup();
+    CHECK(telemetry_emit_event(TELEMETRY_EVENT_SOURCE_PHYSICS,
+                               TELEMETRY_EVT_OVERTURN, 0, 0U, 40U) == E_OK);
+    drops = telemetry_queue_drop_count();
+
+    /* The kernel returns E_TMOUT when another task owns a polled mutex. */
+    g_mbf_fake.mtx_lock_error = E_TMOUT;
+    CHECK(telemetry_try_emit_event(TELEMETRY_EVENT_SOURCE_OBSTACLE,
+                                   TELEMETRY_EVT_SCAN_DONE, -120, 8U, 41U) == E_TMOUT);
+    CHECK(g_mbf_fake.mtx_lock_calls == 2U);
+    CHECK(g_mbf_fake.mtx_wait_forever == 1U);
+    CHECK(g_mbf_fake.mtx_unlock_calls == 1U);
+    CHECK(g_mbf_fake.send_calls == 1U);
+    CHECK(telemetry_queue_drop_count() == drops + 1U);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+    CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_OVERTURN);
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
+}
+
+static void test_try_event_preserves_full_queue (void)
+{
+    /* Message buffer cost is 20 bytes including its header and padding. */
+    const uint16_t capacity = 51U;
+    uint8_t        frame[TELEMETRY_FRAME_MAX];
+    uint16_t       first = 0U;
+    UW             drops = 0U;
+
+    setup();
+    first = telemetry_event_count();
+    for (uint16_t i = 0U; i < capacity; i++)
+    {
+        CHECK(telemetry_try_emit_event(TELEMETRY_EVENT_SOURCE_OBSTACLE,
+                                       TELEMETRY_EVT_SCAN_DONE, -120, i, 40U) == E_OK);
+    }
+    drops = telemetry_queue_drop_count();
+    CHECK(telemetry_try_emit_event(TELEMETRY_EVENT_SOURCE_OBSTACLE,
+                                   TELEMETRY_EVT_SCAN_DONE, -120, 99U, 41U) == E_TMOUT);
+    CHECK(g_mbf_fake.mtx_wait_forever == 0U);
+    CHECK(g_mbf_fake.last_snd_tmout == TMO_POL);
+    CHECK(g_mbf_fake.ref_calls == 0U);
+    CHECK(telemetry_queue_drop_count() == drops + 1U);
+    for (uint16_t i = 0U; i < capacity; i++)
+    {
+        CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)TELEMETRY_EVENT_QUEUED_SIZE);
+        CHECK(frame[0] == TELEMETRY_TOPIC_EVENT);
+        CHECK(frame[1U + TELEMETRY_EVENT_OFF_EVENT_TYPE] == TELEMETRY_EVT_SCAN_DONE);
+        CHECK(frame[1U + TELEMETRY_EVENT_OFF_SOURCE] == TELEMETRY_EVENT_SOURCE_OBSTACLE);
+        CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_EVENT_ID]) == (uint16_t)(first + i));
+        CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P1]) == (uint16_t)-120);
+        CHECK(be16(&frame[1U + TELEMETRY_EVENT_OFF_P2]) == i);
+        CHECK(be32(&frame[1U + TELEMETRY_EVENT_OFF_ODOMETER_MM]) == 40U);
+    }
+    CHECK(telemetry_queue_pop(frame, TMO_POL) == E_TMOUT);
+}
+
 int main (void)
 {
     test_event_fields_and_ids();
     test_event_is_qos1();
+    test_try_event_on_contended_queue();
+    test_try_event_preserves_full_queue();
     if (g_fail != 0U)
     {
         (void)printf("%u check(s) failed\n", g_fail);

@@ -14,7 +14,9 @@
 #define MOTOR_PID_KD_Q16             (2U)
 #define MOTOR_PID_INTERVAL_US        (100000U)
 #define MOTOR_PID_SAMPLE_AGE_US      (600000U)
-#define MOTOR_PID_DUTY_PERMILLE      (400U)
+#define MOTOR_PID_BASE_DUTY_PERMILLE (400U)
+#define MOTOR_PID_DUTY_PERMILLE      (450U)
+#define MOTOR_PIVOT_DUTY_PERMILLE    (500U)
 #define MOTOR_COMMAND_TTL_US         (200000U)
 #define MOTOR_CONTROL_GAP_US         (100000U)
 #define MOTOR_REVERSAL_BRAKE_US      (100000U)
@@ -43,11 +45,13 @@ ER motion_setup (ID motion_tid)
             .max_interval_us   = MOTOR_PID_INTERVAL_US,
             .max_sample_age_us = MOTOR_PID_SAMPLE_AGE_US,
             .max_duty_permille = MOTOR_PID_DUTY_PERMILLE,
+            .base_duty_permille = MOTOR_PID_BASE_DUTY_PERMILLE,
         };
     }
     config.control.max_command_ttl_us  = MOTOR_COMMAND_TTL_US;
     config.control.max_control_gap_us  = MOTOR_CONTROL_GAP_US;
     config.control.reversal_brake_us   = MOTOR_REVERSAL_BRAKE_US;
+    config.control.pivot_duty_permille = MOTOR_PIVOT_DUTY_PERMILLE;
     config.poll_delay_ms               = MOTOR_POLL_DELAY_MS;
 
     return motion_service_init(&config, motion_tid);

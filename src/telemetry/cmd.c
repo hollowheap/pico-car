@@ -58,7 +58,7 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
     cmd->opcode   = src[CMD_OFFSET_OPCODE];
     cmd->uptime_s = read_u32(&src[CMD_OFFSET_UPTIME]);
 
-    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_RECALIBRATE)
+    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_START_STATIONARY)
     {
         return TELEMETRY_CMD_BAD_OPCODE;
     }

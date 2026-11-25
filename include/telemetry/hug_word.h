@@ -63,6 +63,7 @@
 #define HUG_WORD_THEN_TURN   (6U)
 #define HUG_WORD_THEN_EXIT   (7U)
 #define HUG_WORD_THEN_RELEASE (8U)
+#define HUG_WORD_THEN_FLANK_LOOK (13U)
 #define HUG_WORD_PU_CONTACT  (0U)
 #define HUG_WORD_PU_INNER    (2U)
 
@@ -138,7 +139,7 @@ static inline uint8_t hug_word_state (hug_t const * p_hug)
         {
             state = (uint8_t)TELEMETRY_HUG_STATE_BACKOFF;
         }
-        else if (HUG_WORD_THEN_LOOK == p_hug->then)
+        else if ((HUG_WORD_THEN_LOOK == p_hug->then) || (HUG_WORD_THEN_FLANK_LOOK == p_hug->then))
         {
             state = (uint8_t)TELEMETRY_HUG_STATE_LEG;
         }

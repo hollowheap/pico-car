@@ -9,6 +9,7 @@
 #ifndef SUPERVISOR_COMMAND_H
 #define SUPERVISOR_COMMAND_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "platform/static_assert.h"
@@ -22,6 +23,21 @@
 #define VEHICLE_CMD_ESTOP (6U)
 #define VEHICLE_CMD_STRAIGHT (7U) /* cross a junction without turning */
 #define VEHICLE_CMD_RECAL    (8U) /* calibrate the IMU again at rest */
+
+#define VEHICLE_CMD_START_CONTINUOUS_FLOOR (9U)
+#define VEHICLE_CMD_START_STATIONARY (10U)
+
+static inline bool vehicle_is_start (uint8_t opcode)
+{
+    return (VEHICLE_CMD_START == opcode) || (VEHICLE_CMD_START_CONTINUOUS_FLOOR == opcode) ||
+           (VEHICLE_CMD_START_STATIONARY == opcode);
+}
+
+static inline bool vehicle_is_junction_choice (uint8_t opcode)
+{
+    return (VEHICLE_CMD_LEFT == opcode) || (VEHICLE_CMD_RIGHT == opcode) ||
+           (VEHICLE_CMD_STRAIGHT == opcode);
+}
 
 /* Who asked. */
 #define VEHICLE_SRC_TELEMETRY (1U)

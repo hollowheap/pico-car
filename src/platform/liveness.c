@@ -25,9 +25,6 @@ void liveness_kick (uint8_t task_bit)
 
 uint16_t liveness_take (void)
 {
-    UW const bits = atomic_bitset (&g_live_bits, 0U);
-
-    (void) atomic_bitclr (&g_live_bits, bits);
-
-    return (uint16_t) bits;
+    /* A kick between a separate read and clear would be lost. */
+    return (uint16_t)atomic_xchg (&g_live_bits, 0U);
 }

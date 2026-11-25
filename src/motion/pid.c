@@ -7,9 +7,6 @@
 
 #define PID_Q16 INT64_C(65536)
 
-/* Upper bound accepted for the duty limit, in permille of full scale. */
-#define PID_DUTY_PERMILLE_FULL 1000U
-
 static bool multiply (int64_t value, uint32_t factor, int64_t * p_result)
 {
     if ((factor != 0U) && ((value > INT64_MAX / (int64_t)factor) ||
@@ -37,6 +34,23 @@ static int64_t clamp (int64_t value, int64_t limit)
     return value > limit ? limit : (value < -limit ? -limit : value);
 }
 
+static uint16_t tracking_limit (const pid_config_t * p_config, int32_t target_um_s,
+                               int32_t velocity_um_s)
+{
+    int64_t const target   = (target_um_s < 0) ? -(int64_t)target_um_s : target_um_s;
+    int64_t const measured = (target_um_s < 0) ? -(int64_t)velocity_um_s : velocity_um_s;
+    int64_t const extra    = (int64_t)p_config->max_duty_permille - p_config->base_duty_permille;
+    uint16_t      limit    = p_config->base_duty_permille;
+
+    /* Reserve the extra duty for ongoing progress so a stall or motion in
+     * the wrong direction cannot buy more torque. */
+    if ((measured > 0) && (measured < target))
+    {
+        limit += (uint16_t)(((target - measured) * extra + target - 1) / target);
+    }
+    return limit;
+}
+
 bool pid_init (pid_t * p_pid, const pid_config_t * p_config)
 {
     if ((p_pid == NULL) || (p_config == NULL) ||
@@ -47,7 +61,8 @@ bool pid_init (pid_t * p_pid, const pid_config_t * p_config)
         (p_config->max_sample_age_us == 0U) ||
         (p_config->max_sample_age_us > (uint32_t)INT32_MAX) ||
         (p_config->max_duty_permille == 0U) ||
-        (p_config->max_duty_permille > PID_DUTY_PERMILLE_FULL))
+        (p_config->max_duty_permille > PID_DUTY_PERMILLE_FULL) ||
+        (p_config->base_duty_permille > p_config->max_duty_permille))
     {
         return false;
     }
@@ -115,6 +130,10 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     }
     integral_delta /= INT64_C(1000000);
     limit = (int64_t)next.config.max_duty_permille * PID_Q16;
+    if (next.config.base_duty_permille != 0U)
+    {
+        limit = (int64_t)tracking_limit(&next.config, target_um_s, p_feedback->velocity_um_s) * PID_Q16;
+    }
     if (!add(next.integral_q16, integral_delta, &integral))
     {
         return false;
@@ -144,7 +163,7 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     if (((sum > limit) && (error > 0)) || ((sum < -limit) && (error < 0)))
     {
         /* Reject integration pushing further into saturation. */
-        integral = next.integral_q16;
+        integral = clamp(next.integral_q16, limit);
         if (!add(proportional, -derivative, &sum) || !add(sum, integral, &sum))
         {
             return false;

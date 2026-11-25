@@ -37,6 +37,7 @@ packets:
       - { name: mode, offset: 9, type: uint8, enum: vehicle_mode }
       - { name: faults, offset: 10, type: uint16 }
       - { name: seq, offset: 12, type: uint16 }
+      # Bits 3–4 hold barcode_element and bits 5–7 hold the latest barcode_phase.
       - { name: line_bits, offset: 14, type: uint8 }
       - { name: hold_mask, offset: 15, type: uint8 }
   # 5 Hz. Wheels and the motion controller. seq here and in physics is the
@@ -57,8 +58,8 @@ packets:
       - { name: motion_fault, offset: 13, type: uint8, enum: motion_fault }
       - { name: overruns, offset: 14, type: uint16 }
       - { name: seq, offset: 16, type: uint8 }
-  # 5 Hz. IMU, hump and attitude. roll, az, amag, a_fwd and attitude_state
-  # are filled by the attitude work (zero until then).
+  # 5 Hz. IMU, hump and attitude. Roll, az, amag and attitude_state can hold
+  # their last known values while calibration is missing or IMU faults are set.
   physics:
     wire_size: 24
     fields:
@@ -174,13 +175,12 @@ packets:
     wire_size: 82
     fields:
       - { name: req_id, offset: 0, type: uint8 }
-      - { name: status, offset: 1, type: uint8 }
+      - { name: status, offset: 1, type: uint8, enum: profile_status }
       - { name: side, offset: 2, type: uint8 }
-      - { name: flags, offset: 3, type: uint8, enum: obstacle_flags }
+      - { name: flags, offset: 3, type: uint8, enum: profile_flags }
       - { name: closest_mm, offset: 4, type: uint16 }
       - { name: width_mm, offset: 6, type: uint16 }
       - { name: slots, offset: 8, type: uint16, count: 37 }
-
 # A command on the command topic is a 9-byte frame, big-endian:
 #   cmd_id u16, run_id u16, opcode u8, uptime_s u32
 # run_id and uptime_s are copied from the newest heartbeat. The car accepts a
@@ -203,19 +203,29 @@ commands:
   estop: 0x06
   straight: 0x07
   recalibrate: 0x08
+  start_continuous_floor: 0x09
+  start_stationary: 0x0A
 
 # Event types. The `p1` and `p2` layouts:
 #   barcode      p1 = ASCII letter (S straight, L left, R right, U u-turn, H halt),
 #                p2 = narrow width/4 um << 4 | reverse << 3 | action
-#   barcode_bad  p1 = reason (1 element, 2 parity, 3 delimiter, 4 speed, 5 duplicate)
+#   barcode_bad  p1 = reason (1 element, 2 parity, 3 delimiter, 4 speed, 5 duplicate, 6 non-letter symbol, 7 capture loss)
+#                p2 = estimated width of the last element in µm, 0 if unavailable
 #   barcode_block  p1 = length of a black block in mm (over 50, saturates at 32767); at most
 #                one event per 200 mm of travel
+#   barcode_phase  p1 = barcode_phase (1 start, 2 decoding, 3 complete, 4 aborted);
+#                p2 bit 0 = reverse and bits 8–15 = barcode_bad reason if present.
+#                Emitted after the opening delimiter, first accepted data element,
+#                and completion or abort of that active read.
+#                Idle aborts use the odometer at the last observed edge.
 #   cmd_accept   p1 = source << 8 | opcode (source 1 telemetry, 2 barcode, 3 button),
-#                p2 = cmd_id of a telemetry command (0 from a barcode or the button)
+#                p2 = cmd_id of a telemetry command, including 0 after wrap.
+#                For barcode and button commands p2 is 0 and carries no ID.
 #   cmd_reject   p1 = reason << 12 | source << 8 | opcode, p2 = cmd_id as in
 #                cmd_accept; reason 1 not running, 2 busy, 3 latched, 4 lifted,
-#                5 source, 6 opcode, 7 on a hump, 8 stalled, 9 lean unknown;
-#                source 0 when the line task could not run a turn it was allowed
+#                5 source, 6 opcode, 7 on a hump, 8 stalled, 9 lean unknown,
+#                10 hardware connection fault.
+#                Source 0 identifies a line-task turn refusal.
 #   task_stall   p1 = liveness bit; 0x80 = the car does not move; 0x81 = line sensors stuck;
 #                0x82 = the wheels answer crosswise (encoder plugs swapped)
 #   line_lost    p1 = side that saw the line last (0 none, 1 left, 2 right), p2 = 0 when the
@@ -227,18 +237,26 @@ commands:
 #                behaviour 0 none, 1 safety, 2 hug, 3 follow line; reason 0 none,
 #                1 stale wheel feedback, 2 estop, 3 line lost, 4 stuck,
 #                5 encoder, 6 sonar, 7 held, 8 hug move timeout,
-#                9 sonar latched, 10 stale wheel feedback latched
+#                9 sonar latched, 10 stale wheel feedback latched,
+#                11 course clearance unverified (requires START),
+#                12 checking course clearance (automatic recovery)
 #   boot         p1 = reset reason, p2 = failed self-test checks (1 imu, 2 sonar, 4 beam,
 #                8 imu not calibrated)
 #   turn_*       p1 = turn (1 left, 2 right, 3 u-turn, 4 straight), p2 = elapsed ms on done/abort
 #   run_stop     p1 = run state entered (2 stopped, 3 held, 4 latched)
+#   motion_state p1 = previous state << 8 | new state, p2 = motion fault << 8 | applied hold mask
 #   obstacle_seen  p1 = distance mm
-#   scan_done    only the old planner path sends it: p1 = plan status (0 ok, 1 clear,
-#                2 no safe path, 3 failed), p2 = width mm
+#   scan_done    p1 = plan status (0 ok, 1 clear, 2 no safe path, 3 failed,
+#                4 stationary pilot scan, course clearance unverified), p2 = width mm
 #   bypass_start p1 = side (0 left, 1 right)
 #   bypass_end   p1 = front width mm, p2 = breadth mm (0 when not seen)
 #   obstacle_stop  p1 = obstacle cause, p2 = echo class
+#   sonar_aim    p1 = commanded servo angle in signed deci-degrees, positive left;
+#                no shaft feedback, p2 = 0
 #   hump_end     p1 = peak mm, p2 = 1 when the height is valid
+#   lift_start, lift_end, overturn: p1 = angle to calibrated rest gravity in
+#                centidegrees (0x7FFF when the zero vector has no direction),
+#                p2 = acceleration magnitude in mg (legacy frames are both zero)
 #   fault_set, fault_clear  p1 = fault bit
 events:
   boot: 0x01
@@ -246,12 +264,14 @@ events:
   run_stop: 0x03
   cmd_accept: 0x04
   cmd_reject: 0x05
+  motion_state: 0x06
   barcode: 0x10
   barcode_bad: 0x11
   turn_start: 0x12
   turn_done: 0x13
   turn_abort: 0x14
   barcode_block: 0x15
+  barcode_phase: 0x16
   line_lost: 0x18
   line_found: 0x19
   pilot_decision: 0x1A
@@ -260,6 +280,7 @@ events:
   bypass_start: 0x22
   bypass_end: 0x23
   obstacle_stop: 0x24
+  sonar_aim: 0x25
   hump_start: 0x30
   hump_end: 0x31
   lift_start: 0x38
@@ -317,6 +338,13 @@ enums:
       plan: 4
       bypass: 5
       reacquire: 6
+  profile_status:
+    values:
+      ok: 0
+      clear: 1
+      no_safe_path: 2
+      failed: 3
+      pilot_sparse: 4  # stationary observations at one pose, unmeasured slots clear
   obstacle_cause:
     values:
       none: 0
@@ -370,6 +398,10 @@ enums:
       bypass_limit: 6
       line_timeout: 7
       echo_noise: 8
+  profile_flags:
+    bits:
+      wall: 0
+      probe_side_valid: 1  # pilot_sparse: side identifies the selected edge to investigate
   obstacle_flags:
     bits:
       wall: 0
@@ -452,6 +484,24 @@ enums:
       left: 0
       right: 1
       barcode: 2
+      barcode_element_lsb: 3
+      barcode_element_msb: 4
+      barcode_phase_lsb: 5
+      barcode_phase_mid: 6
+      barcode_phase_msb: 7
+  barcode_element:
+    values:
+      unknown: 0
+      space: 1
+      bar: 2
+      block: 3
+  barcode_phase:
+    values:
+      unknown: 0
+      start: 1
+      decoding: 2
+      complete: 3
+      aborted: 4
   hold_mask:
     bits:
       obstacle: 0

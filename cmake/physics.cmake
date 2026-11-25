@@ -56,7 +56,7 @@ add_library(physics STATIC
     ${PHYSICS_SRC}/physics.c)
 target_include_directories(physics PRIVATE
     ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(physics PUBLIC physics_task physics_glue)
+target_link_libraries(physics PUBLIC physics_task physics_glue PRIVATE telemetry)
 target_compile_options(physics PRIVATE
     -ffreestanding -Wall -Wextra -Werror -Wshadow -Wfloat-equal
     ${FIRMWARE_WARNINGS})

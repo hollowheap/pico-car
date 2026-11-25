@@ -23,6 +23,13 @@
 #define WDT_CTRL_PAUSE_DBG1 (1UL << 26U)
 
 #define WDT_REASON_TIMER (1UL << 0U)
+#define WDT_REASON_FORCE (1UL << 1U)
+
+#define CHIP_RESET             (0x40064008U)
+#define CHIP_RESET_HAD_POR     (1UL << 8U)
+#define CHIP_RESET_HAD_RUN     (1UL << 16U)
+#define CHIP_RESET_HAD_RESTART (1UL << 20U)
+#define CHIP_RESET_CAUSES      (CHIP_RESET_HAD_POR | CHIP_RESET_HAD_RUN | CHIP_RESET_HAD_RESTART)
 
 #define WDT_TICK_ENABLE  (1UL << 9U)
 #define WDT_TICK_RUNNING (1UL << 10U)
@@ -44,6 +51,7 @@
 
 static uint8_t g_reason = PLATFORM_RESET_POWER;
 static bool    g_reason_read = false;
+static bool    g_b_power_up;
 static uint32_t g_load = 0U;
 static bool    g_running = false;
 
@@ -51,12 +59,21 @@ uint8_t platform_reset_reason (void)
 {
     if (!g_reason_read)
     {
-        g_reason      = (0U != (in_w (WDT_REASON) & WDT_REASON_TIMER)) ? PLATFORM_RESET_WATCHDOG
-                                                                       : PLATFORM_RESET_POWER;
+        bool const b_watchdog = (0U != (in_w (WDT_REASON) & (WDT_REASON_TIMER | WDT_REASON_FORCE)));
+
+        g_reason = b_watchdog ? PLATFORM_RESET_WATCHDOG : PLATFORM_RESET_POWER;
+        /* HAD_POR represents both power-on and brown-out on the RP2040. */
+        g_b_power_up = !b_watchdog && (CHIP_RESET_HAD_POR == (in_w (CHIP_RESET) & CHIP_RESET_CAUSES));
         g_reason_read = true;
     }
 
     return g_reason;
+}
+
+bool platform_reset_was_power_up (void)
+{
+    (void) platform_reset_reason ();
+    return g_b_power_up;
 }
 
 void platform_wdt_start (uint32_t timeout_ms)

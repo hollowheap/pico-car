@@ -28,6 +28,7 @@
  */
 static UW g_fault_reg = 0U;
 static UW g_sticky_reg = 0U;
+static system_fault_observer_t gp_observer = NULL;
 
 static uint32_t const g_owner_mask[FAULT_OWNER_COUNT] = {
     FAULT_WIFI_DISCONN_BIT | FAULT_MQTT_NACK_BIT,
@@ -38,6 +39,22 @@ static uint32_t const g_owner_mask[FAULT_OWNER_COUNT] = {
     FAULT_SONAR_NO_ECHO_BIT | FAULT_ECHO_LINE_BIT | FAULT_OBSTACLE_STOPPED_BIT,
     FAULT_TASK_STALLED_BIT | FAULT_ABNORMAL_RESET_BIT,
 };
+
+void system_fault_bind_observer(system_fault_observer_t p_observer)
+{
+    gp_observer = p_observer;
+}
+
+static void notify_observer (UW changed, UW level)
+{
+    T_RSYS state;
+
+    if ((0U != changed) && (NULL != gp_observer) && (E_OK == tk_ref_sys(&state)) &&
+        (0U == (state.sysstat & (TSS_INDP | TSS_DINT | TSS_DDSP))))
+    {
+        gp_observer((uint32_t)changed, (uint32_t)level);
+    }
+}
 
 uint32_t system_fault_owner_mask(fault_owner_t owner)
 {
@@ -59,12 +76,16 @@ void system_fault_assign(fault_owner_t owner, uint32_t mask, uint32_t active)
 
     if (0U != to_set)
     {
-        (void)atomic_bitset(&g_fault_reg, to_set);
+        UW const prior = atomic_bitset(&g_fault_reg, to_set);
+
         (void)atomic_bitset(&g_sticky_reg, to_set);
+        notify_observer(to_set & ~prior, prior | to_set);
     }
     if (0U != to_clear)
     {
-        (void)atomic_bitclr(&g_fault_reg, to_clear);
+        UW const prior = atomic_bitclr(&g_fault_reg, to_clear);
+
+        notify_observer(to_clear & prior, prior & ~to_clear);
     }
 }
 

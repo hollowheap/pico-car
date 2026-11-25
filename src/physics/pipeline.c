@@ -17,6 +17,8 @@
 
 #define RAD_TO_DEG (57.2957795f)
 #define MM_TO_M    (0.001f)
+/* Allow one missing 20 ms read and scheduling jitter between observations. */
+#define ATTITUDE_EVIDENCE_GAP_S (0.050f)
 /* Attempts per transaction after a failed cycle. A timed-out attempt costs
  * about 6 ms (the 5 ms poll deadline, the abort and the bus clear), so two
  * fit a 20 ms cycle with room for the rest of it. */
@@ -284,12 +286,17 @@ static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
 {
     attitude_input_t in;
     float const cap_m = (float)PIPELINE_HUMP_MASK_MM * MM_TO_M;
+    /* Height estimation needs useful speed. The attitude mask only needs
+     * fresh encoder evidence that the car is still travelling forward. */
+    bool const forward_travel = !p_out->hump.motion_stale
+                                && (p_sample->speed_mps > 0.0f)
+                                && (p_sample->ds_m > 0.0f);
 
     if (HUMP_STATE_FLAT == p_out->hump.state)
     {
         p_pipe->hump_travel_m = 0.0f;
     }
-    else if (p_out->hump.speed_ok && (p_sample->ds_m > 0.0f))
+    else if (forward_travel)
     {
         p_pipe->hump_travel_m += p_sample->ds_m;
     }
@@ -306,7 +313,7 @@ static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
     in.fwd[p_pipe->hump.cfg.fwd_axis] = (float)p_pipe->hump.cfg.fwd_sign;
     in.b_wheels_free = p_pipe->wheels_free;
     in.b_on_hump = (HUMP_STATE_FLAT != p_out->hump.state)
-                   && p_out->hump.speed_ok && (p_pipe->hump_travel_m < cap_m);
+                   && forward_travel && (p_pipe->hump_travel_m < cap_m);
 
     if (attitude_update (&p_pipe->attitude, &in, &p_out->attitude)
         && ((ATTITUDE_LIFTED == p_out->attitude.state)
@@ -366,7 +373,6 @@ bool pipeline_step (pipeline_t * p_pipe,
     packed_hump_t word = 0U;
     uint8_t faults = 0U;
     bool event = false;
-    bool was_lost = false;
 
     if ((NULL == p_pipe) || (NULL == p_motion) || (NULL == p_out)
         || !isfinite (dt_s) || (dt_s <= 0.0f))
@@ -375,10 +381,14 @@ bool pipeline_step (pipeline_t * p_pipe,
     }
 
     (void)memset (p_out, 0, sizeof (*p_out));
-    p_out->sensors_ok = false;
-    was_lost = (p_pipe->failed_cycles >= PIPELINE_LOST_CYCLES);
+    bool const was_lost = (p_pipe->failed_cycles >= PIPELINE_LOST_CYCLES);
 
-    if (NULL == p_acc_g)
+    if ((dt_s + p_pipe->carry_dt_s) > ATTITUDE_EVIDENCE_GAP_S)
+    {
+        attitude_interrupt_evidence (&p_pipe->attitude);
+    }
+    if ((NULL == p_acc_g) || !isfinite (p_acc_g[HUMP_AXIS_X]) ||
+        !isfinite (p_acc_g[HUMP_AXIS_Y]) || !isfinite (p_acc_g[HUMP_AXIS_Z]))
     {
         p_pipe->carry_ds_m += p_motion->valid ? p_motion->ds_m : 0.0f;
         p_pipe->carry_dt_s += dt_s;
@@ -400,11 +410,18 @@ bool pipeline_step (pipeline_t * p_pipe,
     {
         pack_result (p_pipe, p_out, i2c_fault, &word, &event);
     }
+    else
+    {
+        /* Missing samples interrupt the set-down window even before IMU loss. */
+        p_pipe->attitude.clear_count = 0U;
+        if (!p_pipe->hump.calibrated && (p_pipe->hump.cal_count > 0U))
+        {
+            hump_recalibrate (&p_pipe->hump);
+        }
+    }
     if (p_pipe->failed_cycles >= PIPELINE_LOST_CYCLES)
     {
-        /* The attitude output stays the zeroed default (OK, not calibrated).
-         * The rest reference is dropped once, so a car that comes back
-         * calibrates again at rest before it trusts the gravity direction. */
+        /* Reacquire the gravity reference at rest after a sustained outage. */
         p_out->imu_lost = true;
         if (PIPELINE_LOST_CYCLES == p_pipe->failed_cycles)
         {

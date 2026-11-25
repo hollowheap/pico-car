@@ -1215,11 +1215,10 @@ static void pipe_car_at_rest (pipeline_t * p_pipe)
     pipe_rest_with (p_pipe, &hcfg);
 }
 
-/* The car nose-up at pitch_deg with the magnitude swinging 1.3 g and 0.7 g,
- * wheels reading speed_mps. */
-static shake_result_t shake (pipeline_t * p_pipe, uint32_t cycles,
-                             float pitch_deg, float speed_mps,
-                             pipeline_step_t * p_out)
+/* The car nose-up at pitch_deg with the magnitude swinging 1.3 g and 0.7 g. */
+static shake_result_t shake_with_motion (pipeline_t * p_pipe, uint32_t cycles,
+                                        float pitch_deg, const motion_input_t * p_motion,
+                                        pipeline_step_t * p_out)
 {
     shake_result_t res = { false, false };
     uint32_t i;
@@ -1228,24 +1227,155 @@ static shake_result_t shake (pipeline_t * p_pipe, uint32_t cycles,
     {
         float const mag = ((i % 2U) == 0U) ? 1.3f : 0.7f;
         float acc[3];
-        motion_input_t m;
 
         acc[0] = mag * sinf (pitch_deg * DEG_TO_RAD);
         acc[1] = 0.0f;
         acc[2] = mag * cosf (pitch_deg * DEG_TO_RAD);
-        memset (&m, 0, sizeof (m));
-        m.valid = true;
-        m.wheels_valid = true;
-        m.age_s = 0.005f;
-        m.speed_mps = speed_mps;
-        m.v_left_mps = speed_mps;
-        m.v_right_mps = speed_mps;
-        m.ds_m = speed_mps * DT_S;
-        CHECK (pipeline_step (p_pipe, acc, NULL, &m, DT_S, false, p_out));
+        CHECK (pipeline_step (p_pipe, acc, NULL, p_motion, DT_S, false, p_out));
         res.on_hump = res.on_hump || (HUMP_STATE_FLAT != p_out->hump.state);
         res.lifted = res.lifted || (ATTITUDE_LIFTED == p_out->attitude.state);
     }
     return res;
+}
+
+static motion_input_t forward_motion (float speed_mps)
+{
+    return (motion_input_t){ .valid = true, .wheels_valid = true, .age_s = 0.005f,
+                             .speed_mps = speed_mps, .ds_m = speed_mps * DT_S,
+                             .v_left_mps = speed_mps, .v_right_mps = speed_mps };
+}
+
+/* Production mounting: forward is -X and positive roll is about -X. */
+static void step_car_attitude (pipeline_t * p_pipe, const motion_input_t * p_motion,
+                               float pitch_deg, float roll_deg, float magnitude,
+                               pipeline_step_t * p_out)
+{
+    float const pitch = pitch_deg * DEG_TO_RAD;
+    float const roll = roll_deg * DEG_TO_RAD;
+    float const yz = magnitude * cosf (pitch);
+    float const accel[3] = { -magnitude * sinf (pitch), -yz * sinf (roll),
+                             yz * cosf (roll) };
+
+    CHECK (pipeline_step (p_pipe, accel, NULL, p_motion, DT_S, false, p_out));
+    CHECK (p_out->sensors_ok && p_out->calibrated && !p_out->attitude_unknown);
+}
+
+static void pipe_mounted_car_at_rest (pipeline_t * p_pipe)
+{
+    hump_config_t hcfg;
+
+    hump_default_config (&hcfg);
+    hcfg.fwd_sign = -1;
+    hcfg.enter_deg = 3.0f;
+    hcfg.exit_band_deg = 2.0f;
+    pipe_rest_with (p_pipe, &hcfg);
+}
+
+static void test_pipeline_lift_settled_gap (void)
+{
+    motion_input_t motion = forward_motion (0.118f);
+
+    motion.v_left_mps = 0.122f;
+    motion.v_right_mps = 0.114f;
+    for (uint32_t wheel_cue = 0U; wheel_cue < 2U; wheel_cue++)
+    {
+        pipeline_t pipe;
+        pipeline_step_t out;
+        bool lifted = false;
+        bool started_hump = false;
+
+        pipe_mounted_car_at_rest (&pipe);
+        pipe.wheels_free = 0U != wheel_cue;
+        for (uint32_t i = 0U; i < 20U; i++)
+        {
+            bool const settled = (i >= 8U) && (i < 12U);
+
+            step_car_attitude (&pipe, &motion, settled ? 0.0f : -6.5f,
+                               settled ? 0.0f : 19.73f, settled ? 1.0f : 1.044f,
+                               &out);
+            lifted |= (ATTITUDE_LIFTED == out.attitude.state);
+            CHECK (HUMP_STATE_FLAT == out.hump.state);
+            if (settled && (0U != wheel_cue))
+            {
+                CHECK (ATTITUDE_CANDIDATE == out.attitude.state);
+            }
+        }
+        CHECK (!lifted);
+        for (uint32_t i = 0U; i < 10U; i++)
+        {
+            step_car_attitude (&pipe, &motion, 8.0f, 0.0f, 1.0f, &out);
+            started_hump |= (HUMP_EVENT_STARTED == out.hump.event);
+        }
+        CHECK (started_hump);
+    }
+}
+
+static void test_pipeline_sustained_lift_cues (void)
+{
+    motion_input_t const forward = forward_motion (0.118f);
+    motion_input_t const stationary = forward_motion (0.0f);
+    pipeline_t pipe;
+    pipeline_step_t out;
+
+    pipe_mounted_car_at_rest (&pipe);
+    for (unsigned idx = 0U; idx < 8U; idx++)
+    {
+        step_car_attitude (&pipe, &forward, -6.5f, 19.73f, 1.044f, &out);
+    }
+    for (unsigned idx = 0U; idx < 20U; idx++)
+    {
+        CHECK (pipeline_step (&pipe, NULL, NULL, &forward, DT_S, true, &out));
+    }
+    for (unsigned idx = 0U; idx < 15U; idx++)
+    {
+        step_car_attitude (&pipe, &forward, -6.5f, 19.73f, 1.044f, &out);
+        CHECK ((idx == 14U) == (ATTITUDE_LIFTED == out.attitude.state));
+    }
+
+    pipe_mounted_car_at_rest (&pipe);
+    for (uint32_t i = 0U; i < 15U; i++)
+    {
+        /* A real combined lean still counts even if forward wheels turn and
+         * the pitch detector labels the profile a hump. */
+        step_car_attitude (&pipe, &forward, 6.5f, 19.73f, 1.044f, &out);
+        CHECK (out.attitude.tilt_deg > 20.0f);
+        CHECK ((i == 14U) == (ATTITUDE_LIFTED == out.attitude.state));
+    }
+    CHECK (HUMP_STATE_CLIMB == out.hump.state);
+
+    pipe_mounted_car_at_rest (&pipe);
+    for (uint32_t i = 0U; i < 17U; i++)
+    {
+        step_car_attitude (&pipe, &stationary, 0.0f, 0.0f, 0.0f, &out);
+    }
+    CHECK (ATTITUDE_LIFTED == out.attitude.state);
+
+    pipe_mounted_car_at_rest (&pipe);
+    for (uint32_t i = 0U; i < 17U; i++)
+    {
+        /* Two disturbances inside the existing unsettled hold remain one
+         * cue even though the middle samples are level and balanced. */
+        bool const between = (i >= 3U) && (i < 7U);
+
+        step_car_attitude (&pipe, &stationary, 0.0f, 0.0f,
+                           between ? 1.0f : 1.32f, &out);
+    }
+    CHECK (ATTITUDE_LIFTED == out.attitude.state);
+
+    pipe_mounted_car_at_rest (&pipe);
+    for (uint32_t i = 0U; i < 10U; i++)
+    {
+        step_car_attitude (&pipe, &forward, 6.5f, 70.0f, 1.0f, &out);
+    }
+    CHECK (ATTITUDE_OVERTURNED == out.attitude.state);
+}
+
+static shake_result_t shake (pipeline_t * p_pipe, uint32_t cycles,
+                             float pitch_deg, float speed_mps, pipeline_step_t * p_out)
+{
+    motion_input_t const motion = forward_motion (speed_mps);
+
+    return shake_with_motion (p_pipe, cycles, pitch_deg, &motion, p_out);
 }
 
 /* Bumps on a hump are not a lift while the car drives over it. The mask
@@ -1268,6 +1398,68 @@ static void test_pipeline_hump_mutes_bumps (void)
     CHECK (HUMP_STATE_FLAT != out.hump.state);
     CHECK (!res.lifted);
     CHECK (ATTITUDE_LIFTED != out.attitude.state);
+}
+
+static void test_pipeline_slow_grounded_hump (void)
+{
+    pipeline_t pipe;
+    pipeline_step_t out;
+    shake_result_t res;
+    hump_fields_t fields;
+
+    pipe_car_at_rest (&pipe);
+    res = shake (&pipe, 24U, 8.0f, SPEED_MPS, &out);
+    CHECK (res.on_hump && !res.lifted);
+    res = shake (&pipe, 20U, 8.0f, 0.06f, &out);
+    CHECK (res.on_hump && (HUMP_STATE_FLAT != out.hump.state));
+    CHECK (!out.hump_rejected && !out.hump.speed_ok && !out.hump.motion_stale);
+    CHECK (!out.hump.height_valid && !res.lifted);
+    CHECK (hump_unpack (out.word, &fields));
+    CHECK (MOTION_CLASS_LIFTED != fields.motion);
+
+    res = shake (&pipe, 20U, 8.0f, 0.0f, &out);
+    CHECK (res.on_hump && res.lifted && (ATTITUDE_LIFTED == out.attitude.state));
+    CHECK (hump_unpack (out.word, &fields));
+    CHECK (MOTION_CLASS_LIFTED == fields.motion);
+}
+
+static void test_pipeline_hump_requires_forward_travel (void)
+{
+    motion_input_t motion[] = { forward_motion (0.06f), forward_motion (0.06f),
+                               forward_motion (0.06f), forward_motion (-0.06f) };
+
+    motion[0].valid = false;
+    motion[1].age_s = 1.0f;
+    motion[2].ds_m = 0.0f;
+    for (size_t i = 0U; i < (sizeof (motion) / sizeof (motion[0])); i++)
+    {
+        pipeline_t pipe;
+        pipeline_step_t out;
+        shake_result_t res;
+
+        pipe_car_at_rest (&pipe);
+        res = shake (&pipe, 24U, 8.0f, SPEED_MPS, &out);
+        CHECK (res.on_hump && !res.lifted);
+        res = shake_with_motion (&pipe, 20U, 8.0f, &motion[i], &out);
+        CHECK (res.on_hump && res.lifted && (ATTITUDE_LIFTED == out.attitude.state));
+    }
+}
+
+static void test_pipeline_slow_hump_ends_at_travel_cap (void)
+{
+    pipeline_t pipe;
+    pipeline_step_t out;
+    shake_result_t res;
+
+    pipe_car_at_rest (&pipe);
+    res = shake (&pipe, 24U, 8.0f, SPEED_MPS, &out);
+    CHECK (res.on_hump && !res.lifted);
+    /* This travel stays below the cap even if all initial samples counted. */
+    res = shake (&pipe, 300U, 8.0f, 0.06f, &out);
+    CHECK (res.on_hump && !res.lifted);
+    res = shake (&pipe, 100U, 8.0f, 0.06f, &out);
+    CHECK (HUMP_STATE_FLAT != out.hump.state);
+    CHECK (!out.hump_rejected && !out.hump.speed_ok && res.lifted);
 }
 
 /* A car lifted 8 degrees nose-up at rest reads as a hump to the pitch
@@ -1770,6 +1962,11 @@ static const test_case_t cases[] = {
     CASE(attitude_unknown_without_reference),
     CASE(pipeline),
     CASE(pipeline_hump_mutes_bumps),
+    CASE(pipeline_lift_settled_gap),
+    CASE(pipeline_sustained_lift_cues),
+    CASE(pipeline_slow_grounded_hump),
+    CASE(pipeline_hump_requires_forward_travel),
+    CASE(pipeline_slow_hump_ends_at_travel_cap),
     CASE(pipeline_lift_at_rest_on_hump_state),
     CASE(pipeline_wheels_free_on_hump_state),
     CASE(pipeline_lasting_hump_state_ends_at_cap),

@@ -50,13 +50,15 @@
  * two and a half 10 ms motion periods: one missed motion sample still passes,
  * and an older speed, dv/dt or travel is never paired with this reading. */
 #define DEFAULT_MAX_MOTION_AGE_S   (0.025f)
-/* 1 s at rest: |a| within 0.05 g of 1 g and a pitch spread under 2 degrees
+/* 1 s at rest: a plausible mean gravity and a pitch spread under 2 degrees
  * mean the car stands still. The board lies flat on the car, so the rest
  * pose also has z up and within 10 degrees of vertical [Default]: a tilt past
  * that, or an upside-down car, does not set the reference. A slope under the
  * limit does not stop calibration. */
 #define DEFAULT_CAL_SAMPLES        (50U)
-#define DEFAULT_CAL_MAX_DEV_G      (0.05f)
+#define DEFAULT_CAL_MAX_DEV_G      (0.075f)
+#define DEFAULT_CAL_MAX_SPREAD_G   (0.05f)
+#define CAL_SHOCK_MULTIPLIER       (2.0f)
 #define DEFAULT_CAL_MAX_SPREAD_DEG (2.0f)
 #define DEFAULT_CAL_MAX_TILT_DEG   (10.0f)
 #define RIGHT_ANGLE_DEG            (90.0f)
@@ -190,6 +192,7 @@ bool hump_rest_gravity (const hump_ctx_t * p_ctx, float * p_g0)
 static void cal_restart (hump_ctx_t * p_ctx)
 {
     p_ctx->cal_count = 0U;
+    p_ctx->cal_magnitude_sum = 0.0f;
     p_ctx->cal_sum[HUMP_AXIS_X] = 0.0f;
     p_ctx->cal_sum[HUMP_AXIS_Y] = 0.0f;
     p_ctx->cal_sum[HUMP_AXIS_Z] = 0.0f;
@@ -230,7 +233,7 @@ static bool cal_add (hump_ctx_t * p_ctx, const float axes[HUMP_AXIS_COUNT],
 {
     const hump_config_t * p_cfg = &p_ctx->cfg;
     bool sample_ok = !moving
-                     && (fabsf (magnitude_g - 1.0f) <= p_cfg->cal_max_dev_g)
+                     && (fabsf (magnitude_g - 1.0f) <= CAL_SHOCK_MULTIPLIER * p_cfg->cal_max_spread_g)
                      && upright_at_rest (p_cfg, axes);
     bool done = false;
 
@@ -244,6 +247,8 @@ static bool cal_add (hump_ctx_t * p_ctx, const float axes[HUMP_AXIS_COUNT],
         {
             p_ctx->cal_min_deg = raw_deg;
             p_ctx->cal_max_deg = raw_deg;
+            p_ctx->cal_min_g = magnitude_g;
+            p_ctx->cal_max_g = magnitude_g;
         }
         else
         {
@@ -251,24 +256,37 @@ static bool cal_add (hump_ctx_t * p_ctx, const float axes[HUMP_AXIS_COUNT],
                                                             : p_ctx->cal_min_deg;
             float new_max = (raw_deg > p_ctx->cal_max_deg) ? raw_deg
                                                             : p_ctx->cal_max_deg;
+            float min_g = fminf (p_ctx->cal_min_g, magnitude_g);
+            float max_g = fmaxf (p_ctx->cal_max_g, magnitude_g);
 
-            if ((new_max - new_min) > p_cfg->cal_max_spread_deg)
+            if (((new_max - new_min) > p_cfg->cal_max_spread_deg) ||
+                ((max_g - min_g) > p_cfg->cal_max_spread_g))
             {
                 /* Car moved or was bumped: start again from this sample. */
                 cal_restart (p_ctx);
                 new_min = raw_deg;
                 new_max = raw_deg;
+                min_g = magnitude_g;
+                max_g = magnitude_g;
             }
             p_ctx->cal_min_deg = new_min;
             p_ctx->cal_max_deg = new_max;
+            p_ctx->cal_min_g = min_g;
+            p_ctx->cal_max_g = max_g;
         }
 
         p_ctx->cal_sum[HUMP_AXIS_X] += axes[HUMP_AXIS_X];
         p_ctx->cal_sum[HUMP_AXIS_Y] += axes[HUMP_AXIS_Y];
         p_ctx->cal_sum[HUMP_AXIS_Z] += axes[HUMP_AXIS_Z];
         p_ctx->cal_count++;
+        p_ctx->cal_magnitude_sum += magnitude_g;
 
-        if (p_ctx->cal_count >= p_cfg->cal_samples)
+        if ((p_ctx->cal_count >= p_cfg->cal_samples) &&
+            (fabsf ((p_ctx->cal_magnitude_sum / (float)p_ctx->cal_count) - 1.0f) > p_cfg->cal_max_dev_g))
+        {
+            cal_restart (p_ctx);
+        }
+        else if (p_ctx->cal_count >= p_cfg->cal_samples)
         {
             /* theta_0 from the mean vector, which averages out noise better
              * than the mean of per-sample angles. Scale does not matter. */
@@ -299,6 +317,7 @@ void hump_default_config (hump_config_t * p_cfg)
         p_cfg->max_motion_age_s = DEFAULT_MAX_MOTION_AGE_S;
         p_cfg->cal_samples = DEFAULT_CAL_SAMPLES;
         p_cfg->cal_max_dev_g = DEFAULT_CAL_MAX_DEV_G;
+        p_cfg->cal_max_spread_g = DEFAULT_CAL_MAX_SPREAD_G;
         p_cfg->cal_max_spread_deg = DEFAULT_CAL_MAX_SPREAD_DEG;
         p_cfg->cal_max_tilt_deg = DEFAULT_CAL_MAX_TILT_DEG;
     }
@@ -331,6 +350,8 @@ bool hump_init (hump_ctx_t * p_ctx, const hump_config_t * p_cfg)
              && (p_cfg->cal_samples >= 1U)
              && is_finite (p_cfg->cal_max_dev_g)
              && (p_cfg->cal_max_dev_g > 0.0f)
+             && is_finite (p_cfg->cal_max_spread_g)
+             && (p_cfg->cal_max_spread_g > 0.0f)
              && is_finite (p_cfg->cal_max_spread_deg)
              && (p_cfg->cal_max_spread_deg > 0.0f)
              && is_finite (p_cfg->cal_max_tilt_deg)

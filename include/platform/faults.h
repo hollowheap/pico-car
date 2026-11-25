@@ -62,6 +62,14 @@ typedef enum
     FAULT_OWNER_COUNT
 } fault_owner_t;
 
+/* Bind before producers start, or pass a null callback with producers stopped.
+   The observer receives only changed level bits and the level word as of that
+   operation. It runs in the reporting task after the atomic lock is released,
+   may run concurrently on both cores, and must not wait. ISR reports and
+   reports with dispatch or interrupts disabled still update both words. */
+typedef void (*system_fault_observer_t)(uint32_t changed, uint32_t level);
+void system_fault_bind_observer(system_fault_observer_t p_observer);
+
 /* Return the bits owner may change; 0 for an unknown owner. */
 uint32_t system_fault_owner_mask(fault_owner_t owner);
 

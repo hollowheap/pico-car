@@ -27,6 +27,7 @@
 typedef struct
 {
     uint32_t cycles;         /* Task cycles since start.                */
+    uint32_t reference_request; /* Latest new-run request applied to this sample. */
     uint32_t overruns;       /* Wake-ups missed while still working.    */
     int16_t  pitch_cdeg;     /* Pitch in centi-degrees.                 */
     int16_t  yaw_rate_cdps;  /* Best available yaw rate, 0.01 deg/s.    */
@@ -41,20 +42,23 @@ typedef struct
     uint8_t  motion;         /* Motion class from the IMU.              */
     uint8_t  faults;         /* Latched B4 faults.                      */
     uint8_t  attitude_state; /* Wire attitude_state: ok, candidate, lifted, overturned. */
-    bool     ready;          /* The task has produced a message.        */
+    bool     ready;          /* The task has produced a recent message. */
     bool     calibrated;     /* Hump detector has its rest reference.   */
     bool     heading_valid;  /* heading_ddeg is fresh and usable.       */
     bool     hump_active;    /* A hump is in progress.                  */
     bool     finished;       /* The last hump finished.                 */
     bool     height_valid;   /* hump_peak_mm is trustworthy.            */
+    bool     level_still;    /* Recent samples settled against the rest gravity vector. */
+    bool     collecting_rest; /* Fresh qualifying sample in the gravity or settled-pose window. */
+    uint8_t  rest_interruptions; /* Wraps when an ongoing rest window is interrupted. */
     bool     attitude_unknown; /* No rest reference: at boot, after a new run
                                   or after an IMU loss. Attitude fields hold
                                   the last known values; do not act on them
                                   while set. */
 } physics_status_t;
 
-/* 8 + 10 + 8 + 4 + 7 = 37 bytes of fields, padded to 40. */
-STATIC_ASSERT (sizeof(physics_status_t) == 40U, "physics_status_t size");
+/* Fixed-size supervisor and telemetry snapshot. */
+STATIC_ASSERT (sizeof(physics_status_t) == 44U, "physics_status_t size");
 
 /* Set up the task's message buffers and cyclic handler. The composition
  * root creates the task named by task_id and calls physics_run() from it,
@@ -66,12 +70,13 @@ ER physics_init (ID task_id);
 /* Task body. Never returns. */
 void physics_run (void);
 
-/* Copy the latest state. Returns E_PAR for a null pointer, or E_OK with
- * ready == false before the first message. */
+/* Copy the latest state from a kernel task on either core. Returns E_PAR for
+ * a null pointer, or E_OK with ready == false and unknown attitude when the
+ * task is yet to publish or the last sample is past the IMU loss window. */
 ER physics_snapshot (physics_status_t * p_status);
 
-/* Request a new run at rest: recalibrate and reset the run peak. */
-void physics_request_new_run (void);
+/* Return the new reference request ID; physics_snapshot reports its application. */
+uint32_t physics_request_new_run (void);
 
 /* The supervisor tells physics that the wheels turn on target with low duty.
  * It raises the attitude state CANDIDATE and never LIFTED. */

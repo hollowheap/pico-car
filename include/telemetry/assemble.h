@@ -26,14 +26,15 @@
 /* 5 Hz status frame.
    faults is the level word of the fault register. The estop bit is added
    here from the motion latch. line_bits: bit 0 left, bit 1 right, bit 2
-   barcode. b_turning is true while a one-shot turn runs. */
+   barcode. b_turning is true while a one-shot turn runs. p_hug is the
+   optional published pilot snapshot used for the obstacle frame. */
 void telemetry_assemble_status (telemetry_status_t * p_out,
                                 const motion_status_t * p_motion,
                                 const motion_feedback_t * p_feedback,
                                 const physics_status_t * p_physics,
                                 const obstacle_status_t * p_obstacle,
                                 uint16_t faults, uint16_t seq,
-                                uint8_t line_bits, bool b_turning);
+                                uint8_t line_bits, bool b_turning, const uint32_t * p_hug);
 
 /* 5 Hz motion frame. Speeds are zero when the feedback is stale. */
 void telemetry_assemble_motion (telemetry_motion_t * p_out,
@@ -46,14 +47,14 @@ void telemetry_assemble_motion (telemetry_motion_t * p_out,
 void telemetry_assemble_physics (telemetry_physics_t * p_out,
                                  const physics_status_t * p_physics);
 
-/* 2 Hz obstacle frame. A NULL plan leaves the plan fields at zero (no scan
-   has finished yet). p_hug points to the two hug words of
-   telemetry/hug_word.h, or is NULL. A NULL or never-published snapshot leaves
-   the hug fields idle, none and 0 and the servo as the obstacle snapshot
-   gives it; a published one sets them, and the servo of the latest ping. */
+/* 2 Hz obstacle frame. ping is one obstacle_ping_read() sample, or zero
+   before the first sample. p_obstacle provides state, cause and faults.
+   A NULL plan leaves plan fields zero. A NULL or never-published p_hug
+   leaves hug phase and geometry idle and empty. */
 void telemetry_assemble_obstacle (telemetry_obstacle_t * p_out,
                                   const obstacle_status_t * p_obstacle,
                                   const obstacle_plan_summary_t * p_plan,
+                                  uint32_t ping,
                                   const uint32_t * p_hug);
 
 /* Profile header from the plan of the same scan. The caller copies the
