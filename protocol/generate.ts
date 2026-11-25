@@ -47,7 +47,7 @@ const TYPE_SIZE: Record<FieldType, number> = {
 };
 
 const sourceUrl = new URL('./telemetry.yaml', import.meta.url);
-const tsUrl = new URL('../host/dashboard/lib/schema.generated.ts', import.meta.url);
+const tsUrl = new URL('../host/dashboard/src/lib/schema.generated.ts', import.meta.url);
 const cUrl = new URL('../include/telemetry/wire_schema.h', import.meta.url);
 const vectorsUrl = new URL('./vectors.json', import.meta.url);
 const testHeaderUrl = new URL('../tests/telemetry_vectors.h', import.meta.url);
