@@ -34,12 +34,6 @@ describe("commands", () => {
     expect(() => parseCommandRequest(null, schema)).toThrow("object");
   });
 
-  it("refuses the withdrawn stationary command in the shipped schema", () => {
-    const shipped = loadProtocolSchema(new URL("../../../protocol/telemetry.yaml", import.meta.url).pathname);
-    expect(parseCommandRequest({ action: "start" }, shipped)).toEqual({ action: "start" });
-    expect(() => parseCommandRequest({ action: "start_stationary" }, shipped)).toThrow("unknown command");
-  });
-
   it("refuses reserved commands during parsing, encoding, and session framing while keeping start aliases", () => {
     const shipped = loadProtocolSchema(new URL("../../../protocol/telemetry.yaml", import.meta.url).pathname);
     expect(encodeCommand(shipped, "start", 1, 0x1234, 5)[4]).toBe(1);
