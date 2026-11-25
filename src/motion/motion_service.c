@@ -3,9 +3,10 @@
  */
 #include <tk/smp.h>
 #include <bsp/libbsp.h>
-#include "encoder_capture.h"
+#include "encoder.h"
+#include "motion/motion.h"
 #include "motion_service.h"
-#include "motor_pwm.h"
+#include "pwm.h"
 
 #define STOP_PIN      21U
 #define TIMER_RAW_LOW (TIMER_BASE + 0x28U)
@@ -17,7 +18,7 @@ static motion_inbox_t          inbox;
 static uint32_t                next_id;
 /* Startup lifecycle only: published before any producer/reader starts. */
 static bool             start_called;
-static motion_control_t controller;
+static controller_t controller;
 
 static motion_apply_result_t apply_output (void * context, int16_t left,
                                            int16_t right)
@@ -25,7 +26,7 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
     ER result;
 
     (void)context;
-    result = motor_pwm_set_pair(left, right);
+    result = pwm_set_pair(left, right);
     if (result == E_OK)
     {
         return MOTION_APPLIED;
@@ -34,7 +35,7 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
     {
         /* Also covers unexpected legacy-driver activity: explicitly brake
          * before promising RETRY to the controller. */
-        return motor_pwm_brake() == E_OK ? MOTION_BRAKED_RETRY
+        return pwm_brake() == E_OK ? MOTION_BRAKED_RETRY
                                          : MOTION_OUTPUT_FAILED;
     }
     return MOTION_OUTPUT_FAILED;
@@ -43,15 +44,15 @@ static motion_apply_result_t apply_output (void * context, int16_t left,
 static bool brake_output (void * context, bool latch)
 {
     (void)context;
-    return (latch ? motor_pwm_latch_stop() : motor_pwm_brake()) == E_OK;
+    return (latch ? pwm_latch_stop() : pwm_brake()) == E_OK;
 }
 
 static bool capture_input (motion_input_t * p_input)
 {
-    encoder_capture_sample_t captured;
+    encoder_sample_t captured;
     unsigned int             wheel;
 
-    if (encoder_capture_read(&captured) != E_OK)
+    if (encoder_read(&captured) != E_OK)
     {
         return false;
     }
@@ -63,7 +64,7 @@ static bool capture_input (motion_input_t * p_input)
     return true;
 }
 
-static void owner_task (INT start_code, void * p_extra)
+void motion_service_run (void)
 {
     motion_output_t output = {NULL, apply_output, brake_output};
     motion_input_t  input;
@@ -71,12 +72,10 @@ static void owner_task (INT start_code, void * p_extra)
     UINT            saved;
     bool            initial_stop;
 
-    (void)start_code;
-    (void)p_extra;
-    result = motor_pwm_init();
+    result = pwm_init();
     if (result == E_OK)
     {
-        result = encoder_capture_init();
+        result = encoder_init();
     }
     (void)gpio_set_pin(STOP_PIN, GPIO_MODE_IN);
     clr_w(GPIO(STOP_PIN), GPIO_PDE);
@@ -86,7 +85,7 @@ static void owner_task (INT start_code, void * p_extra)
         result = E_IO;
     }
     if ((result == E_OK) &&
-        !motion_control_init(&controller, &configuration.control, &input,
+        !controller_init(&controller, &configuration.control, &input,
                              &output))
     {
         result = E_SYS;
@@ -95,8 +94,8 @@ static void owner_task (INT start_code, void * p_extra)
     {
         /* Owner-only latch if initialisation reached it; boot brake is also
          * asserted because a failed PWM init may not have registered owner. */
-        motor_pwm_boot_brake();
-        (void)motor_pwm_latch_stop();
+        pwm_boot_brake();
+        (void)pwm_latch_stop();
         (void)ISpinLock(&service_lock, &saved);
         published.init_error    = result;
         published.control.state = MOTION_FAULT;
@@ -113,7 +112,7 @@ static void owner_task (INT start_code, void * p_extra)
     (void)ISpinUnlock(&service_lock, saved);
     if (initial_stop || gpio_get_val(STOP_PIN) == 0U)
     {
-        motion_control_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL, true);
+        controller_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL, true);
     }
     (void)ISpinLock(&service_lock, &saved);
     if (controller.status.state == MOTION_STOPPED)
@@ -142,7 +141,7 @@ static void owner_task (INT start_code, void * p_extra)
         if (stop)
         {
             /* Do not wait for capture or perform conversion before STOP. */
-            motion_control_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL,
+            controller_tick(&controller, NULL, in_w(TIMER_RAW_LOW), NULL,
                                 true);
         }
         else
@@ -154,7 +153,7 @@ static void owner_task (INT start_code, void * p_extra)
                 motion_inbox_take(&inbox, in_w(TIMER_RAW_LOW), &command, &stop);
             (void)ISpinUnlock(&service_lock, saved);
             stop = stop || gpio_get_val(STOP_PIN) == 0U;
-            motion_control_tick(&controller, captured ? &input : NULL,
+            controller_tick(&controller, captured ? &input : NULL,
                                 in_w(TIMER_RAW_LOW), received ? &command : NULL,
                                 stop);
         }
@@ -173,18 +172,8 @@ static void owner_task (INT start_code, void * p_extra)
     }
 }
 
-ER motion_service_start (const motion_service_config_t * p_config)
+ER motion_service_init (const motion_service_config_t * p_config)
 {
-    T_CTSK task_definition = {
-        .task    = owner_task,
-        .itskpri = 5,
-        .stksz   = 4096,
-        .tskatr  = TA_HLNG | TA_RNG3 | TA_ASSPRC,
-        .assprc  = TP_PRC1,
-    };
-    ID task;
-    ER result;
-
     if ((tk_get_prc() != TP_PRC1) || (tk_get_tid() <= 0))
     {
         return E_CTX;
@@ -194,7 +183,7 @@ ER motion_service_start (const motion_service_config_t * p_config)
         return E_OBJ;
     }
     if ((p_config == NULL) ||
-        !motion_control_config_valid(&p_config->control) ||
+        !controller_config_valid(&p_config->control) ||
         (p_config->poll_delay_ms == 0U) ||
         (p_config->poll_delay_ms >
          p_config->control.max_control_gap_us / 1000U))
@@ -205,15 +194,9 @@ ER motion_service_start (const motion_service_config_t * p_config)
     (void)motion_inbox_init(&inbox, configuration.control.max_command_ttl_us);
     (void)InitSpinLock(&service_lock);
     start_called = true;
-    motor_pwm_boot_brake();
-    task   = tk_cre_tsk(&task_definition);
-    result = task <= E_OK ? (ER)task : tk_sta_tsk(task, 0);
-    if (result != E_OK)
-    {
-        published.init_error    = result;
-        published.control.state = MOTION_FAULT;
-    }
-    return result;
+    pwm_boot_brake();
+
+    return E_OK;
 }
 
 static ER post_command (motion_command_t command, bool stamp_now)
@@ -373,4 +356,85 @@ ER motion_service_read_status (motion_service_status_t * p_status)
     *p_status = published;
     (void)ISpinUnlock(&service_lock, saved);
     return E_OK;
+}
+
+ER motion_feedback_snapshot (motion_feedback_t * p_feedback)
+{
+    motion_service_status_t status;
+    ER                      result;
+    uint32_t                age_us;
+
+    if (p_feedback == NULL)
+    {
+        return E_PAR;
+    }
+
+    result = motion_service_read_status(&status);
+    if (E_OK != result)
+    {
+        return result;
+    }
+
+    age_us = in_w(TIMER_RAW_LOW) - status.control.sample.timestamp_us;
+    p_feedback->left_speed_um_s  = status.control.sample.wheel[ENCODER_LEFT].velocity_um_s;
+    p_feedback->right_speed_um_s = status.control.sample.wheel[ENCODER_RIGHT].velocity_um_s;
+    p_feedback->left_displacement_um =
+        status.control.sample.wheel[ENCODER_LEFT].displacement_um;
+    p_feedback->right_displacement_um =
+        status.control.sample.wheel[ENCODER_RIGHT].displacement_um;
+    p_feedback->timestamp_us = status.control.sample.timestamp_us;
+    p_feedback->age_us       = age_us;
+    p_feedback->speed_valid[ENCODER_LEFT] =
+        status.control.sample.wheel[ENCODER_LEFT].speed_valid;
+    p_feedback->speed_valid[ENCODER_RIGHT] =
+        status.control.sample.wheel[ENCODER_RIGHT].speed_valid;
+    p_feedback->odometry_valid[ENCODER_LEFT] =
+        status.control.sample.wheel[ENCODER_LEFT].odometry_valid;
+    p_feedback->odometry_valid[ENCODER_RIGHT] =
+        status.control.sample.wheel[ENCODER_RIGHT].odometry_valid;
+    p_feedback->fresh = status.ready && status.control.sample_available &&
+                        (age_us <= MOTION_FEEDBACK_MAX_AGE_US);
+
+    return E_OK;
+}
+
+ER motion_status (motion_status_t * p_status)
+{
+    motion_service_status_t status;
+    ER                      result;
+
+    if (p_status == NULL)
+    {
+        return E_PAR;
+    }
+
+    result = motion_service_read_status(&status);
+    if (E_OK != result)
+    {
+        return result;
+    }
+
+    p_status->state          = (uint8_t)status.control.state;
+    p_status->fault          = (uint8_t)status.control.fault;
+    p_status->ready          = status.ready;
+    p_status->stop_requested = status.stop_requested;
+    p_status->hold_mask      = status.hold_mask;
+    p_status->init_error     = status.init_error;
+
+    return E_OK;
+}
+
+ER motion_set_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
+{
+    return motion_service_set_speed(left_um_s, right_um_s, ttl_us);
+}
+
+ER motion_set_hold (uint32_t reason, bool held)
+{
+    return motion_service_set_hold(reason, held);
+}
+
+ER motion_request_stop (void)
+{
+    return motion_service_request_stop();
 }

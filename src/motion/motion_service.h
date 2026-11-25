@@ -5,19 +5,19 @@
 #define MOTION_SERVICE_H
 
 #include <tk/tkernel.h>
-#include "motion_control.h"
+#include "controller.h"
 #include "motion_request.h"
 #include "motion_inbox.h"
 
 typedef struct
 {
-    motion_control_config_t control;
+    controller_config_t control;
     uint32_t poll_delay_ms; /* Nominal delay, not a guaranteed task period. */
 } motion_service_config_t;
 
 typedef struct
 {
-    motion_control_status_t control;
+    controller_status_t control;
     ER                      init_error;
     bool                    ready;
     bool                    stop_requested;
@@ -27,13 +27,18 @@ typedef struct
 
 /* Lifecycle: call ONCE from core-0 startup task before launching producers
  * or status readers. Reserves encoder bank IRQ and motor PWM slices4/5.
- * Invalid configuration returns E_PAR without starting a task. E_OK means
- * task creation succeeded, not that hardware init/tuning passed: read status.
- * No default gains, boot command, automatic arming or diagnostic button run.
- * Integrator must start only after agreeing pin/IRQ/resource ownership. */
-ER motion_service_start (const motion_service_config_t * p_config);
+ * Invalid configuration returns E_PAR without touching the hardware. E_OK
+ * only means the command path is ready; the hardware init runs in
+ * motion_service_run(). No default gains, boot command, automatic arming or
+ * diagnostic button run. Integrator must start only after agreeing
+ * pin/IRQ/resource ownership. */
+ER motion_service_init (const motion_service_config_t * p_config);
 
-/* Task-context APIs on either core after the start call returns. Latest
+/* Task body. The composition root creates the task and calls this; the
+ * task owns the motors until reboot. Never returns. */
+void motion_service_run (void);
+
+/* Task-context APIs on either core after the init call returns. Latest
  * pending speeds replace the previous pending speeds; no unbounded queue.
  * E_OK means accepted, not applied. Freshness/quality of upstream IR/sonar
  * decisions remains the caller's responsibility. TTL starts at acceptance.

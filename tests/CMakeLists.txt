@@ -6,102 +6,75 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 enable_testing()
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
-add_library(encoder_math_reference SHARED ../src/encoder_math.c)
-target_include_directories(encoder_math_reference PUBLIC ../src)
-target_compile_options(encoder_math_reference PRIVATE
+set(PHYSICS_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/physics)
+
+# test_hump_detect
+add_executable(test_hump_detect test_hump_detect.c ${PHYSICS_SRC}/hump_detect.c)
+target_include_directories(test_hump_detect PRIVATE ${PHYSICS_SRC})
+target_compile_options(test_hump_detect PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_hump_detect PRIVATE m)
+add_test(NAME hump_detect COMMAND test_hump_detect)
+
+# test_hump_msg
+add_executable(test_hump_msg test_hump_msg.c ${PHYSICS_SRC}/hump_msg.c ${PHYSICS_SRC}/hump_detect.c)
+target_include_directories(test_hump_msg PRIVATE ${PHYSICS_SRC})
+target_compile_options(test_hump_msg PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_hump_msg PRIVATE m)
+add_test(NAME hump_msg COMMAND test_hump_msg)
+
+# test_imu_motion
+add_executable(test_imu_motion test_imu_motion.c ${PHYSICS_SRC}/imu_motion.c ${PHYSICS_SRC}/hump_detect.c)
+target_include_directories(test_imu_motion PRIVATE ${PHYSICS_SRC})
+target_compile_options(test_imu_motion PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_imu_motion PRIVATE m)
+add_test(NAME imu_motion COMMAND test_imu_motion)
+
+# test_drivers
+add_executable(test_drivers test_drivers.c
+    ${PHYSICS_SRC}/hump_detect.c
+    ${PHYSICS_SRC}/imu_motion.c
+    ${PHYSICS_SRC}/hump_msg.c
+    ${PHYSICS_SRC}/lsm303.c
+    ${PHYSICS_SRC}/motion_adapter.c
+    ${PHYSICS_SRC}/pipeline.c)
+target_include_directories(test_drivers PRIVATE ${PHYSICS_SRC})
+target_compile_options(test_drivers PRIVATE -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_drivers PRIVATE m)
+add_test(NAME drivers COMMAND test_drivers)
+
+# Obstacle avoidance pure modules
+set(OBSTACLE_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src/navigation/obstacle)
+set(APP_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
+add_executable(test_obstacle_scan test_obstacle_scan.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_scan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_scan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_scan COMMAND test_obstacle_scan)
 
-add_executable(test_encoder_math test_encoder_math.c ../src/encoder_math.c)
-target_include_directories(test_encoder_math PRIVATE ../src)
-target_compile_options(test_encoder_math PRIVATE
+add_executable(test_obstacle_plan test_obstacle_plan.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_plan PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_plan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle_plan COMMAND test_obstacle_plan)
 
-add_test(NAME encoder_math_cases COMMAND test_encoder_math)
-add_test(NAME encoder_math_reference
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/check_encoder_math.py
-            $<TARGET_FILE:encoder_math_reference>)
-
-add_executable(test_encoder_quad test_encoder_quad.c ../src/encoder_quad.c)
-target_include_directories(test_encoder_quad PRIVATE ../src)
-target_compile_options(test_encoder_quad PRIVATE
+add_executable(test_obstacle_statechart test_obstacle_statechart.c
+    ${OBSTACLE_SRC}/statechart.c
+    ${OBSTACLE_SRC}/planner.c
+    ${OBSTACLE_SRC}/scan_algo.c)
+target_include_directories(test_obstacle_statechart PRIVATE ${OBSTACLE_SRC} ${APP_INCLUDE})
+target_compile_options(test_obstacle_statechart PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME encoder_quadrature COMMAND test_encoder_quad)
+add_test(NAME obstacle_statechart COMMAND test_obstacle_statechart)
 
-add_executable(test_motor_pulse test_motor_pulse.c ../src/motor_pulse.c)
-target_include_directories(test_motor_pulse PRIVATE ../src)
-target_compile_options(test_motor_pulse PRIVATE
+add_executable(test_barcode_parser test_barcode_parser.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/barcode/parser.c)
+target_include_directories(test_barcode_parser PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+target_compile_options(test_barcode_parser PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME motor_pulse_policy COMMAND test_motor_pulse)
-
-add_executable(test_motion_sampler test_motion_sampler.c
-    ../src/motion_sampler.c ../src/encoder_math.c)
-target_include_directories(test_motion_sampler PRIVATE ../src)
-target_compile_options(test_motion_sampler PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-add_test(NAME motion_sampler COMMAND test_motion_sampler)
-
-add_executable(test_motor_pair test_motor_pair.c ../src/motor_pair.c)
-add_executable(test_motor_batch test_motor_batch.c
-    ../src/motor_batch.c ../src/motor_pulse.c)
-foreach(test_target IN ITEMS test_motor_pair test_motor_batch)
-    target_include_directories(${test_target} PRIVATE ../src)
-    target_compile_options(${test_target} PRIVATE
-        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-endforeach()
-add_test(NAME motor_pair_planning COMMAND test_motor_pair)
-add_test(NAME motor_batch_policy COMMAND test_motor_batch)
-
-add_executable(test_wheel_pid test_wheel_pid.c ../src/wheel_pid.c
-    ../src/motion_sampler.c ../src/encoder_math.c)
-target_include_directories(test_wheel_pid PRIVATE ../src)
-target_compile_options(test_wheel_pid PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME wheel_pid COMMAND test_wheel_pid)
-
-add_executable(test_motion_control test_motion_control.c ../src/motion_control.c
-    ../src/wheel_pid.c ../src/motion_sampler.c ../src/encoder_math.c
-    ../src/motion_request.c ../src/motion_inbox.c)
-target_include_directories(test_motion_control PRIVATE ../src)
-target_compile_options(test_motion_control PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME motion_control_integration COMMAND test_motion_control)
-
-add_executable(test_speed_probe test_speed_probe.c ../src/speed_probe.c
-    ../src/motor_pulse.c ../src/motion_control.c ../src/wheel_pid.c
-    ../src/motion_sampler.c ../src/encoder_math.c)
-target_include_directories(test_speed_probe PRIVATE ../src)
-target_compile_options(test_speed_probe PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME speed_probe_policy COMMAND test_speed_probe)
-
-add_executable(test_motion_guidance test_motion_guidance.c
-    ../src/motion_request.c ../src/motion_inbox.c)
-target_include_directories(test_motion_guidance PRIVATE ../src)
-target_compile_options(test_motion_guidance PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME motion_guidance_policy COMMAND test_motion_guidance)
-
-add_executable(test_guidance_replay test_guidance_replay.c
-    ../src/guidance_replay.c ../src/speed_probe.c ../src/motor_pulse.c
-    ../src/motion_request.c ../src/motion_inbox.c ../src/motion_control.c
-    ../src/wheel_pid.c ../src/motion_sampler.c ../src/encoder_math.c)
-target_include_directories(test_guidance_replay PRIVATE ../src)
-target_compile_options(test_guidance_replay PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME guidance_replay_integration COMMAND test_guidance_replay)
-
-add_executable(test_route_demo test_route_demo.c ../src/route_demo.c
-    ../src/motion_sampler.c ../src/encoder_math.c)
-target_include_directories(test_route_demo PRIVATE ../src)
-target_compile_options(test_route_demo PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME route_demo_policy COMMAND test_route_demo)
-
-add_executable(test_b5_plan_track test_b5_plan_track.c
-    ../src/obstacle/b5_plan.c ../src/obstacle/scan_algo.c)
-target_include_directories(test_b5_plan_track PRIVATE ../src/obstacle)
-target_compile_options(test_b5_plan_track PRIVATE
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow -UNDEBUG)
-add_test(NAME b5_plan_track_geometry COMMAND test_b5_plan_track)
+add_test(NAME barcode_parser COMMAND test_barcode_parser)

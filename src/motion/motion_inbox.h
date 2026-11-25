@@ -4,12 +4,8 @@
 #ifndef MOTION_INBOX_H
 #define MOTION_INBOX_H
 
-#include "motion_control.h"
-
-#define MOTION_HOLD_OBSTACLE  UINT32_C(1)
-#define MOTION_HOLD_LINE_LOST UINT32_C(2)
-#define MOTION_HOLD_OPERATOR  UINT32_C(4)
-#define MOTION_HOLD_ALL       UINT32_C(7)
+#include "controller.h"
+#include "motion/motion.h"
 
 typedef struct
 {

@@ -6,6 +6,60 @@ include($ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
 
 project(pico-car C CXX ASM)
 
+# Telemetry broker endpoint and credentials.  Override with -D on the
+# configure line; the defaults target a LAN Mosquitto instance.
+set(PICO_CAR_MQTT_HOST "$ENV{PICO_CAR_MQTT_HOST}" CACHE STRING "MQTT broker host or IP")
+set(PICO_CAR_MQTT_PORT "1883" CACHE STRING "MQTT broker TCP port")
+set(PICO_CAR_MQTT_USERNAME "" CACHE STRING "MQTT username (empty for anonymous)")
+set(PICO_CAR_MQTT_PASSWORD "" CACHE STRING "MQTT password (empty for anonymous)")
+set(PICO_CAR_TOPIC_PREFIX "car/PICO-CAR" CACHE STRING "MQTT topic prefix")
+set(PICO_CAR_CLIENT_ID "pico-car" CACHE STRING "MQTT client identifier")
+
+if (NOT PICO_CAR_MQTT_PORT MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "PICO_CAR_MQTT_PORT must be numeric")
+endif()
+
+if (NOT PICO_CAR_MQTT_HOST)
+    set(PICO_CAR_MQTT_HOST "mosquitto" CACHE STRING "MQTT broker host or IP" FORCE)
+endif()
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/telemetry_config.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/telemetry_config.h
+    @ONLY
+)
+
+# Wi-Fi join. Empty SSID keeps TM_WIFI_JOIN=0. An open network needs
+# CYW43_AUTH_OPEN and an empty password. The generated credentials header
+# lives in build/ and is never committed.
+set(PICO_CAR_WIFI_SSID "$ENV{PICO_CAR_WIFI_SSID}" CACHE STRING
+    "Wi-Fi SSID (empty disables the join)")
+set(PICO_CAR_WIFI_PASSWORD "$ENV{PICO_CAR_WIFI_PASSWORD}" CACHE STRING
+    "Wi-Fi password (empty allows an open network)")
+set(PICO_CAR_WIFI_AUTH "$ENV{PICO_CAR_WIFI_AUTH}" CACHE STRING
+    "CYW43 auth constant for the join")
+
+if (NOT PICO_CAR_WIFI_AUTH)
+    set(PICO_CAR_WIFI_AUTH "CYW43_AUTH_WPA2_AES_PSK" CACHE STRING
+        "CYW43 auth constant for the join" FORCE)
+endif()
+
+if (PICO_CAR_WIFI_SSID AND
+    (PICO_CAR_WIFI_PASSWORD OR PICO_CAR_WIFI_AUTH STREQUAL "CYW43_AUTH_OPEN"))
+    set(PICO_CAR_WIFI_JOIN 1)
+    string(REPLACE "\\" "\\\\" PICO_CAR_WIFI_SSID_ESC "${PICO_CAR_WIFI_SSID}")
+    string(REPLACE "\"" "\\\"" PICO_CAR_WIFI_SSID_ESC "${PICO_CAR_WIFI_SSID_ESC}")
+    string(REPLACE "\\" "\\\\" PICO_CAR_WIFI_PASSWORD_ESC "${PICO_CAR_WIFI_PASSWORD}")
+    string(REPLACE "\"" "\\\"" PICO_CAR_WIFI_PASSWORD_ESC "${PICO_CAR_WIFI_PASSWORD_ESC}")
+    configure_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/wifi_credentials.h.in
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/wifi_credentials.h
+        @ONLY
+    )
+else()
+    set(PICO_CAR_WIFI_JOIN 0)
+endif()
+
 # mtk3smp-rp2040 (uT-Kernel 3.0 RP2040 SMP port) presence check
 set(MTK3SMP_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/mtk3smp-rp2040")
 
@@ -45,15 +99,15 @@ target_compile_definitions(mtk3smp PUBLIC
     CNF_SMP=1
     TM_CONSOLE_USB_CDC=1
     TM_WIFI_CYW43=1
-    TM_WIFI_JOIN=0
-    TM_WIFI_NETIF=0
+    TM_WIFI_JOIN=${PICO_CAR_WIFI_JOIN}
+    TM_WIFI_NETIF=1
     TM_WIFI_STATIC=0
-    TM_WIFI_DHCP=0
-    TM_WIFI_DNS=0
+    TM_WIFI_DHCP=1
+    TM_WIFI_DNS=1
     TM_WIFI_UDP=0
     TM_WIFI_TCP=0
     TM_WIFI_TCPBULK=0
-    CYW43_LWIP=0
+    CYW43_LWIP=1
     CYW43_ENABLE_BLUETOOTH=0
     CYW43_USE_OTP_MAC=1
     CYW43_DEFAULT_PIN_WL_REG_ON=23u
@@ -74,6 +128,7 @@ target_compile_definitions(mtk3smp PUBLIC
 
 target_include_directories(mtk3smp PUBLIC
     ${MTK3SMP_PATH}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${MTK3SMP_PATH}/config
     ${MTK3SMP_PATH}/kernel/knlinc
     ${MTK3SMP_PATH}/kernel/tkernel
@@ -82,6 +137,9 @@ target_include_directories(mtk3smp PUBLIC
     ${MTK3SMP_PATH}/kernel/sysdepend/pico_rp2040
     ${MTK3SMP_PATH}/device
     ${MTK3SMP_PATH}/lib/libwifi/sysdepend/pico_rp2040
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/include
+    ${MTK3SMP_PATH}/lib/libnet/lwip/include
     ${MTK3SMP_PATH}/lib/libtm/sysdepend/pico_rp2040/usb
   PRIVATE
     ${PICO_SDK_PATH}/src/boards/include
@@ -187,6 +245,7 @@ target_sources(mtk3smp PRIVATE
 
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_ctrl.c
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_ll.c
+    ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_lwip.c
     ${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_stats.c
     ${PICO_SDK_PATH}/lib/tinyusb/src/tusb.c
     ${PICO_SDK_PATH}/lib/tinyusb/src/common/tusb_fifo.c
@@ -199,51 +258,108 @@ target_sources(mtk3smp PRIVATE
     ${PICO_SDK_PATH}/src/rp2_common/hardware_gpio/gpio.c
     ${PICO_SDK_PATH}/src/rp2_common/hardware_pio/pio.c
     ${PICO_SDK_PATH}/src/rp2_common/pico_cyw43_driver/cyw43_bus_pio_spi.c
+
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/init.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/def.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/dns.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/inet_chksum.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ip.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/mem.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/memp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/netif.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/pbuf.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/raw.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/stats.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/sys.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/tcp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/tcp_in.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/tcp_out.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/timeouts.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/udp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/acd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/dhcp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/etharp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/icmp.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4_addr.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/core/ipv4/ip4_frag.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/pico-sdk/lib/lwip/src/netif/ethernet.c
+    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk.c
+    ${MTK3SMP_PATH}/lib/libnet/lwip/lwip_utk_ipv4.c
 )
 
 target_compile_options(mtk3smp PRIVATE -w -ffunction-sections -fdata-sections)
 
 # Compile the executable
-add_library(sys STATIC
-    src/sys/gpio_irq.c
+add_library(platform STATIC
+    src/platform/faults.c
+    src/platform/isr.c
 )
-target_link_libraries(sys PUBLIC mtk3smp)
+target_include_directories(platform PUBLIC include)
+target_link_libraries(platform PUBLIC mtk3smp)
+
+add_library(telemetry STATIC
+    src/telemetry/cmd.c
+    src/telemetry/connection_task.c
+    src/telemetry/mqtt_client.c
+    src/telemetry/net_queue.c
+    src/telemetry/packet.c
+    src/telemetry/publisher.c
+    src/telemetry/queue.c
+    src/telemetry/tcp_transport.c
+    src/telemetry/worker.c
+)
+target_include_directories(telemetry PUBLIC include PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_link_libraries(telemetry PUBLIC platform mtk3smp)
 
 add_library(motion_core STATIC
-    src/motion/motion_control.c
-    src/motion/wheel_pid.c
-    src/motion/motion_sampler.c
+    src/motion/controller.c
+    src/motion/pid.c
+    src/motion/odometry.c
     src/motion/encoder_math.c
     src/motion/motion_request.c
     src/motion/motion_inbox.c
 )
+target_include_directories(motion_core PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 target_link_libraries(motion_core PUBLIC mtk3smp)
 
 add_library(motion_service STATIC
     src/motion/motion_service.c
-    src/motion/motor_pwm.c
-    src/motion/motor_pair.c
-    src/motion/encoder_capture.c
-    src/motion/encoder_quad.c
+    src/motion/pwm.c
+    src/motion/motor.c
+    src/motion/encoder.c
+    src/motion/quadrature.c
 )
-target_link_libraries(motion_service PUBLIC sys motion_core mtk3smp)
+target_include_directories(motion_service PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(motion_service PUBLIC platform motion_core mtk3smp)
 
-add_library(ir_service STATIC
-    src/ir/ir_capture.c
+add_library(track STATIC
+    src/track/ir_capture.c
+    src/track/barcode_task.c
 )
-target_link_libraries(ir_service PUBLIC sys mtk3smp)
+target_include_directories(track PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(track PUBLIC platform barcode mtk3smp)
+
+add_library(barcode STATIC
+    src/barcode/parser.c
+)
+target_include_directories(barcode PUBLIC include)
 
 add_executable(main
     src/main.c
     src/demo_tasks.c
 )
+target_include_directories(main PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
 foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
     target_link_libraries(${app_target} PRIVATE
-        sys
         motion_service
-        ir_service
+        track
+        platform
+        telemetry
+        barcode
         mtk3smp
     )
     # The kernel supplies its own startup code (vector table, boot stage 2, reset
@@ -280,14 +396,14 @@ foreach(app_target IN ITEMS main)
 endforeach()
 
 # ---------------------------------------------------------------------------
-# Buddy 5: obstacle detection and avoidance (src/obstacle)
+# Buddy 5: obstacle detection and avoidance (src/navigation/obstacle)
 #   obstacle        library: sensor, servo, scan, planner, statechart
 #   obstacle_nav    Phase 2 glue used by the line task in main.c, plus
-#                   the Buddy 5 flight recorder (b5_log.c)
+#                   the Buddy 5 flight recorder (flight_log.c)
 #   obstacle_bench  standalone bench firmware -> build/obstacle_bench.uf2
 #                   Buddy 5 + a pretend Navigation; the motors are never driven.
 # ---------------------------------------------------------------------------
-set(B5_WARNINGS
+set(OBSTACLE_WARNINGS
     -Werror
     -Wall
     -Wextra
@@ -300,24 +416,28 @@ set(B5_WARNINGS
 )
 
 add_library(obstacle STATIC
-    src/obstacle/scan_algo.c
-    src/obstacle/b5_plan.c
-    src/obstacle/b5_fsm.c
-    src/obstacle/b5_comms.c
-    src/obstacle/scan_hw.c
-    src/obstacle/scan_task.c
-    src/obstacle/obstacle.c
+    src/navigation/obstacle/scan_algo.c
+    src/navigation/obstacle/planner.c
+    src/navigation/obstacle/statechart.c
+    src/navigation/obstacle/comms.c
+    src/navigation/obstacle/scan_hw.c
+    src/navigation/obstacle/scan_task.c
+    src/navigation/obstacle/obstacle.c
 )
-target_link_libraries(obstacle PUBLIC sys mtk3smp)
+target_include_directories(obstacle PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle PUBLIC platform mtk3smp)
 target_compile_options(obstacle PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${B5_WARNINGS})
+    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
 
 add_executable(obstacle_bench
-    src/obstacle/b5_bench_main.c
+    src/navigation/obstacle/bench_main.c
 )
-target_link_libraries(obstacle_bench PRIVATE obstacle sys mtk3smp)
+target_include_directories(obstacle_bench PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle_bench PRIVATE obstacle platform mtk3smp)
 target_compile_options(obstacle_bench PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${B5_WARNINGS})
+    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
 target_link_options(obstacle_bench PRIVATE
     -nostartfiles
     -Wl,--gc-sections
@@ -328,10 +448,17 @@ pico_add_extra_outputs(obstacle_bench)
 
 # Phase 2: main.uf2 runs Buddy 5 through the line task (src/main.c).
 add_library(obstacle_nav STATIC
-    src/obstacle/b5_nav.c
-    src/obstacle/b5_log.c
+    src/navigation/obstacle/obstacle_nav.c
+    src/navigation/obstacle/flight_log.c
 )
-target_link_libraries(obstacle_nav PUBLIC obstacle motion_service sys mtk3smp)
+target_include_directories(obstacle_nav PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}/include)
+target_link_libraries(obstacle_nav PUBLIC obstacle motion_service platform mtk3smp)
 target_compile_options(obstacle_nav PRIVATE
-    -ffreestanding -ffunction-sections -fdata-sections ${B5_WARNINGS})
+    -ffreestanding -ffunction-sections -fdata-sections ${OBSTACLE_WARNINGS})
 target_link_libraries(main PRIVATE obstacle_nav)
+
+# Buddy 4: IMU, terrain detection, and bring-up targets
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/physics.cmake)
+
+target_link_libraries(main PRIVATE physics)
