@@ -58,8 +58,13 @@ describe("bridge config", () => {
     expect(config.password).toBeUndefined();
   });
 
+  it("keeps the pinned car ID beside the credentials unless CAR_ID_PATH says otherwise", () => {
+    expect(loadConfig({ PICO_CAR_CREDENTIALS_DIR: "/no/such/credentials" }).carIdPath).toBe("/no/such/credentials/car-id");
+    expect(loadConfig({ CAR_ID_PATH: "/data/car-id" }).carIdPath).toBe("/data/car-id");
+  });
+
   it("locates the credentials directory", () => {
-    expect(credentialsDir({ PICO_CAR_CREDENTIALS_DIR: "/tmp/x" })).toBe("/tmp/x");
+    expect(credentialsDir({ PICO_CAR_CREDENTIALS_DIR: "/no/such/credentials" })).toBe("/no/such/credentials");
     expect(credentialsDir({})).toMatch(/host\/credentials$/);
   });
 });

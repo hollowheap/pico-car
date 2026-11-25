@@ -1,5 +1,6 @@
 add_library(telemetry STATIC
     app_program/comms/telemetry/assemble.c
+    app_program/comms/telemetry/car_id.c
     app_program/comms/telemetry/cmd.c
     app_program/comms/telemetry/connection_task.c
     app_program/comms/telemetry/drv_wifi.c

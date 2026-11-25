@@ -8,10 +8,10 @@
 
 #define QUEUE_BUFFER_ALIGN 4
 
-/* Smallest message cost in the buffer: 4 B header + the 9 B heartbeat frame
-   rounded up to 12 B. It bounds the eviction loop by the number of messages
+/* Smallest message cost in the buffer: 4 B header + the 13 B event frame
+   rounded up to 16 B. It bounds the eviction loop by the number of messages
    the buffer can hold. */
-#define QUEUE_MIN_COST      16U
+#define QUEUE_MIN_COST      20U
 #define QUEUE_EVICT_LIMIT   (TELEMETRY_QUEUE_BYTES / QUEUE_MIN_COST)
 
 /* The first byte of a stored frame is its topic. Eviction recognises an

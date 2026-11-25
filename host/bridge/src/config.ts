@@ -11,6 +11,7 @@ export type BridgeConfig = {
   httpHost: string;
   dashboardPath: string;
   schemaPath: string;
+  carIdPath: string;
   historyPath: string;
   historyMaxRecords: number;
   historyMaxEvents: number;
@@ -48,6 +49,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     httpHost: env.BRIDGE_HTTP_HOST ?? "127.0.0.1",
     dashboardPath: fileURLToPath(new URL("../../dashboard/dist/", import.meta.url)),
     schemaPath: env.PROTOCOL_SCHEMA ?? fileURLToPath(new URL("../../../protocol/telemetry.yaml", import.meta.url)),
+    carIdPath: env.CAR_ID_PATH ?? join(credentialsDir(env), "car-id"),
     historyPath: env.BRIDGE_HISTORY_PATH ?? fileURLToPath(new URL("../history.jsonl", import.meta.url)),
     historyMaxRecords: Number(env.BRIDGE_HISTORY_MAX_RECORDS ?? "10000"),
     historyMaxEvents: Number(env.BRIDGE_HISTORY_MAX_EVENTS ?? "2000"),

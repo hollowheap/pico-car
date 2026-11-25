@@ -1,5 +1,5 @@
 # Telemetry packet and command validation.
-foreach(tname packet cmd)
+foreach(tname packet cmd car_id)
     add_executable(test_${tname} comms/${tname}_test.c
         ${TELEMETRY_SRC}/${tname}.c)
     target_include_directories(test_${tname} PRIVATE
@@ -27,7 +27,7 @@ foreach(name IN ITEMS queue net_queue worker)
 endforeach()
 
 add_executable(test_telemetry_connection_cmd comms/telemetry_connection_cmd_test.c
-    ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c
+    ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c ${TELEMETRY_SRC}/car_id.c
     ${TELEMETRY_SRC}/drv_wifi.c
     ${TELEMETRY_SRC}/packet.c)
 target_include_directories(test_telemetry_connection_cmd PRIVATE
@@ -64,7 +64,7 @@ set(LWIP_SRC ${LWIP_ROOT}/include)
 set(SDK_MQTT ${LWIP_ROOT}/apps/mqtt/mqtt.c)
 set_source_files_properties(${SDK_MQTT} PROPERTIES COMPILE_OPTIONS "-w")
 add_executable(test_mqtt_session comms/mqtt_session_test.c ${SDK_MQTT}
-    ${TELEMETRY_SRC}/mqtt_session.c ${TELEMETRY_SRC}/worker.c)
+    ${TELEMETRY_SRC}/mqtt_session.c ${TELEMETRY_SRC}/car_id.c ${TELEMETRY_SRC}/worker.c)
 target_include_directories(test_mqtt_session BEFORE PRIVATE comms/fakes/lwip comms/fakes/connection)
 target_include_directories(test_mqtt_session PRIVATE ${TELEMETRY_TEST_INCLUDES} ${TELEMETRY_SRC})
 target_include_directories(test_mqtt_session SYSTEM PRIVATE ${LWIP_SRC})
@@ -72,7 +72,7 @@ target_compile_options(test_mqtt_session PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/comms/fakes/connection/kernel.h"
     ${TELEMETRY_TEST_FLAGS})
 target_link_options(test_mqtt_session PRIVATE -Wl,--wrap=tk_snd_mbf)
-foreach(scenario wire backpressure puback-space keepalive retry dns timeout)
+foreach(scenario wire backpressure puback-space keepalive retry dns timeout no-car-id)
     add_test(NAME comms.mqtt_session.telemetry_mqtt_${scenario} COMMAND test_mqtt_session ${scenario})
 endforeach()
 

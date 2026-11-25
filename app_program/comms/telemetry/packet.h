@@ -155,9 +155,10 @@ typedef struct
     uint8_t  reset_reason;
     uint8_t  link_state;
     uint16_t run_id;       /* commands must carry it */
+    uint32_t car_id;       /* fingerprint of the board, see car_id.h */
 } telemetry_heartbeat_t;
 
-STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 12U, "telemetry_heartbeat_t size");
+STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 16U, "telemetry_heartbeat_t size");
 
 /* One captured transition of the barcode IR input. UINT32_MAX means the
  * odometer was unavailable at the edge. A zero interval starts a new span. */

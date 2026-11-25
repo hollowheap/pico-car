@@ -32,6 +32,7 @@ services:
       - ../host/credentials/bridge.env
     environment:
       MQTT_URL: mqtt://broker:1883
+      CAR_ID_PATH: /data/car-id
     ports:
       - "127.0.0.1:${DASHBOARD_LOCAL_PORT:-5281}:8080"
     volumes:

@@ -18,6 +18,8 @@
 #error "tests need assert()"
 #endif
 
+#define CAR_ID 0xC10ABCF0U
+
 static uint32_t g_now;
 static wifi_lease_t g_lease = WIFI_LEASE_READY;
 static struct tcp_pcb g_pcb;
@@ -244,11 +246,13 @@ static void suback (bool b_ok)
 static void test_wire (void)
 {
     static const uint8_t connect[] = {
-        0x10U, 16U, 0U, 4U, 'M', 'Q', 'T', 'T', 4U, 2U, 0U, 30U, 0U, 4U, 't', 'e', 's', 't',
+        0x10U, 25U, 0U, 4U, 'M', 'Q', 'T', 'T', 4U, 2U, 0U, 30U, 0U, 13U,
+        't', 'e', 's', 't', '-', 'c', '1', '0', 'a', 'b', 'c', 'f', '0',
     };
     static const uint8_t subscribe[] = {0x82U, 11U, 0U, 1U, 0U, 6U, 't', 'e', 's', 't', '/', 'c', 1U};
     static const uint8_t heartbeat[] = {
-        0x30U, 18U, 0U, 6U, 't', 'e', 's', 't', '/', 'h', 0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U,
+        0x30U, 22U, 0U, 6U, 't', 'e', 's', 't', '/', 'h', 0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U,
+        10U, 11U, 12U, 13U,
     };
     static const uint8_t event[] = {0x30U, 10U, 0U, 6U, 't', 'e', 's', 't', '/', 'e', 0xA5U, 0x5AU};
     static const uint8_t command_start[] = {0x32U, 19U, 0U, 6U, 't', 'e', 's', 't', '/', 'c', 0U, 4U, 0U, 9U};
@@ -496,6 +500,16 @@ static void test_keepalive (void)
     assert(g_attempts == 2U);
 }
 
+static void test_waits_for_car_id (void)
+{
+    poll_at(0U);
+    poll_at(1000U);
+    assert(g_resolve == NULL && g_attempts == 0U);
+    mqtt_session_set_car_id(CAR_ID);
+    poll_at(1001U);
+    assert(g_attempts == 1U);
+}
+
 int main (int argc, char ** argv)
 {
     assert(argc == 2);
@@ -504,6 +518,10 @@ int main (int argc, char ** argv)
     assert(g_attempts == 0U);
     assert(mqtt_session_init() == E_OK);
     mqtt_session_start(1);
+    if (strcmp(argv[1], "no-car-id") != 0)
+    {
+        mqtt_session_set_car_id(CAR_ID);
+    }
 
     if (strcmp(argv[1], "wire") == 0)
     {
@@ -524,6 +542,10 @@ int main (int argc, char ** argv)
     else if (strcmp(argv[1], "retry") == 0)
     {
         test_retry();
+    }
+    else if (strcmp(argv[1], "no-car-id") == 0)
+    {
+        test_waits_for_car_id();
     }
     else if (strcmp(argv[1], "dns") == 0)
     {

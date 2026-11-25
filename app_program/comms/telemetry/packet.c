@@ -230,6 +230,7 @@ telemetry_pack_heartbeat (uint8_t * dst, const telemetry_heartbeat_t * p_src)
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_RESET_REASON, p_src->reset_reason);
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_LINK_STATE, p_src->link_state);
     put_u16 (dst, TELEMETRY_HEARTBEAT_OFF_RUN_ID, p_src->run_id);
+    put_u32 (dst, TELEMETRY_HEARTBEAT_OFF_CAR_ID, p_src->car_id);
 
     return TELEMETRY_HEARTBEAT_WIRE_SIZE;
 }

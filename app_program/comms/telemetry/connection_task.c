@@ -13,6 +13,7 @@
 #include "platform/drv_watchdog.h"
 #include "supervisor/health_ids.h"
 #include "platform/log.h"
+#include "comms/telemetry/car_id.h"
 #include "comms/telemetry/cmd.h"
 #include "comms/telemetry/connection.h"
 #include "comms/telemetry/emit.h"
@@ -42,6 +43,7 @@ static void *                      gp_dispatch_context;
 static bool                        g_mqtt_ready;
 static uint32_t                    g_heartbeat_ms;
 static drv_wifi_status_t           g_status;
+static uint32_t                    g_car_id;
 
 static void
 publish_cmd_state (const telemetry_cmd_state_t * p_state)
@@ -131,6 +133,7 @@ publish_heartbeat (uint32_t now_ms)
     heartbeat.reset_reason = platform_reset_reason ();
     heartbeat.link_state   = (uint8_t) TELEMETRY_LINK_STATE_MQTT;
     heartbeat.run_id       = g_cmd_state.expected_run_id;
+    heartbeat.car_id       = g_car_id;
     if (telemetry_pack_heartbeat(payload, &heartbeat) == 0u)
     {
         return;
@@ -269,6 +272,11 @@ connection_run (void)
 
             last_poll_ms = now_ms;
             drv_wifi_read_status(&g_status);
+            if (g_car_id == 0U)
+            {
+                g_car_id = car_id_from_mac(g_status.netif_mac);
+                mqtt_session_set_car_id(g_car_id);
+            }
             wifi_join_t const join = wifi_link_join();
             wifi_lease_t const lease = wifi_link_lease();
             next = classify(&g_status, join, lease);

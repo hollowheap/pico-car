@@ -151,9 +151,12 @@ packets:
   # 1 Hz. Sent by the connection task, not through the queue. run_id is
   # random and non-zero at each boot; a command must carry it. drops counts
   # the frames lost since boot: both queues plus the frames the TCP send ring
-  # had no room for, summed and held at 255.
+  # had no room for, summed and held at 255. car_id is the last four bytes
+  # of the radio MAC. It never changes, and the bridge pins it to tell its own
+  # car from another one on the broker. The MQTT client ID ends with the same
+  # value as eight lowercase hex digits.
   heartbeat:
-    wire_size: 10
+    wire_size: 14
     fields:
       - { name: uptime_s, offset: 0, type: uint32 }
       - { name: drops, offset: 4, type: uint8 }
@@ -161,6 +164,7 @@ packets:
       - { name: reset_reason, offset: 6, type: uint8, enum: reset_reason }
       - { name: link_state, offset: 7, type: uint8, enum: link_state }
       - { name: run_id, offset: 8, type: uint16 }
+      - { name: car_id, offset: 10, type: uint32 }
   # On event. QoS 1 in the queue; a status frame never evicts it.
   event:
     wire_size: 12

@@ -5,6 +5,7 @@ import sirv from "sirv";
 import { loadConfig } from "./config.js";
 import { randomInt } from "node:crypto";
 import { CommandTimeoutError, createCommandSession, parseCommandRequest, PUBACK_TIMEOUT_MS, publishWithTimeout, type CommandRequest } from "./command.js";
+import { createCarPin, loadCarId, rememberCarId } from "./car-id.js";
 import { createHistoryStore } from "./history.js";
 import { courseStorage } from "./console/retention.js";
 import { createConsoleView } from "./console/view.js";
@@ -28,6 +29,10 @@ const broker = station && !process.env.MQTT_URL ? await startLocalBroker() : und
 process.once("exit", () => broker?.kill());
 let live: ReturnType<typeof createLiveServer> | null = null;
 const commands = createCommandSession(randomInt(0x10000));
+const carPin = createCarPin(loadCarId(process.env, config.carIdPath), (id) => {
+  rememberCarId(config.carIdPath, id);
+  console.log(`pinned car ${id.toString(16).padStart(8, "0")} in ${config.carIdPath}`);
+});
 const ingest = createMqttIngest(config, schema, (packet, topic) => {
   const timestamp = Date.now();
   if (packet.name === "heartbeat") {
@@ -44,6 +49,12 @@ const ingest = createMqttIngest(config, schema, (packet, topic) => {
   view.append(receipt);
   live?.broadcast(receipt);
   console.log(`${packet.name}: ${JSON.stringify(packet.values)}`);
+}, (packet) => {
+  const admitted = carPin.admit(packet, Date.now());
+  if (!admitted && packet.name === "heartbeat") {
+    console.error(`rejected heartbeat from car ${carPin.state(Date.now()).reporting}; expected ${carPin.state(Date.now()).expected}`);
+  }
+  return admitted;
 });
 
 ingest.client.on("connect", () => live?.broadcastStatus());
@@ -102,6 +113,10 @@ async function handleCommand(
     sendJson(response, 503, { error: "mqtt disconnected" });
     return;
   }
+  if (carPin.blocked(Date.now())) {
+    sendJson(response, 409, { error: "another car is reporting; the pinned car id does not match" });
+    return;
+  }
   const frame = commands.frame(schema, command.action, Date.now());
   if (frame === null) {
     sendJson(response, 503, { error: "no fresh heartbeat or no diag frame from the car" });
@@ -145,6 +160,7 @@ const server = createServer((request, response) => {
       lastPacketAt: ingest.stats.lastPacketAt,
       lastPacket: ingest.stats.lastPacket,
       historyStorage: history.storageStatus(),
+      car: carPin.state(Date.now()),
     });
     return;
   }

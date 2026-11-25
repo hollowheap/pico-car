@@ -12,6 +12,7 @@
 
 #include "platform/faults.h"
 #include "mqtt_session.h"
+#include "comms/telemetry/car_id.h"
 #include "comms/telemetry/net_queue.h"
 #include "comms/telemetry/drv_wifi_link.h"
 #include "comms/telemetry/worker.h"
@@ -56,8 +57,10 @@ STATIC_ASSERT(MQTT_REQ_MAX_IN_FLIGHT *(MQTT_SESSION_TOPIC_SIZE +
                   MQTT_OUTPUT_RINGBUF_SIZE,
               "pending telemetry leaves room for a burst of command PUBACKs");
 
-static const struct mqtt_connect_client_info_t g_client_info = {
-    .client_id = TELEMETRY_CLIENT_ID,
+static char g_client_name[sizeof(TELEMETRY_CLIENT_ID) + CAR_ID_HEX_DIGITS + 1U];
+
+static struct mqtt_connect_client_info_t g_client_info = {
+    .client_id = g_client_name,
     .client_user =
         (TELEMETRY_MQTT_USERNAME[0] != '\0') ? TELEMETRY_MQTT_USERNAME : NULL,
     .client_pass = ((TELEMETRY_MQTT_USERNAME[0] != '\0') &&
@@ -86,6 +89,7 @@ static bool              g_b_receiving_command;
 static uint16_t          g_incoming_used;
 static bool              g_b_heartbeat_sent;
 static volatile uint32_t g_drops;
+static volatile uint32_t g_car_id;
 
 /* The connection task supplies heartbeat bytes and reads the session level. */
 static T_SPLOCK      g_lock;
@@ -275,6 +279,12 @@ static void begin_attempt (uint32_t now_ms)
 {
     ip_addr_t address;
 
+    if (car_id_client_id(g_client_name, sizeof(g_client_name),
+                         TELEMETRY_CLIENT_ID, g_car_id) == 0U)
+    {
+        schedule_retry(now_ms);
+        return;
+    }
     g_phase       = SESSION_RESOLVING;
     g_deadline_ms = now_ms + MQTT_SESSION_REPLY_MS;
     err_t const err =
@@ -394,6 +404,11 @@ int32_t mqtt_session_init (void)
     return E_OK;
 }
 
+void mqtt_session_set_car_id (uint32_t car_id)
+{
+    g_car_id = car_id;
+}
+
 void mqtt_session_start (int32_t task)
 {
     mp_memory_barrir();
@@ -469,6 +484,7 @@ void mqtt_session_poll (void)
         service_online();
     }
     else if ((g_phase == SESSION_IDLE) && b_ready && !g_b_dns_pending &&
+             (g_car_id != 0U) &&
              (!g_b_retrying || ((int32_t)(now_ms - g_retry_ms) >= 0)))
     {
         begin_attempt(now_ms);

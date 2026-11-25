@@ -1,6 +1,8 @@
 /** @file drv_wifi.c
  * @brief Hardware diagnostics and boot ID for the connection task.
  */
+#define PROHIBIT_DEF_SIZE_T
+#include <string.h>
 #include <tk/tkernel.h>
 
 #include "cyw43_utk.h"
@@ -34,6 +36,8 @@ void drv_wifi_read_status (drv_wifi_status_t * p_status)
     p_status->join_started  = g_radio_status.join_started;
     p_status->join_complete = g_radio_status.join_complete;
     p_status->link_up       = g_radio_status.link_up;
+    (void)memcpy(p_status->netif_mac, g_radio_status.netif_mac,
+                 sizeof(p_status->netif_mac));
 }
 
 /*** end of file ***/

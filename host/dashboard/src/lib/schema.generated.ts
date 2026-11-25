@@ -124,7 +124,7 @@ export const PACKETS = {
     ],
   },
   heartbeat: {
-    wireSize: 10,
+    wireSize: 14,
     fields: [
         { name: 'uptime_s', offset: 0, type: 'uint32' },
         { name: 'drops', offset: 4, type: 'uint8' },
@@ -132,6 +132,7 @@ export const PACKETS = {
         { name: 'reset_reason', offset: 6, type: 'uint8' },
         { name: 'link_state', offset: 7, type: 'uint8' },
         { name: 'run_id', offset: 8, type: 'uint16' },
+        { name: 'car_id', offset: 10, type: 'uint32' },
     ],
   },
   event: {

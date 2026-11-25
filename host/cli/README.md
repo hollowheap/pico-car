@@ -27,7 +27,7 @@ It keeps polling through a lost connection and prints the error:
 
 ```text
 12:00:01 status    speed_mms=123 odometer_mm=456 heading_ddeg=900 state=2 mode=1 faults=0 seq=7 line_bits=0 hold_mask=0
-12:00:01 heartbeat uptime_s=42 drops=0 wifi_rssi=-55 reset_reason=0 link_state=3 run_id=4660
+12:00:01 heartbeat uptime_s=42 drops=0 wifi_rssi=-55 reset_reason=0 link_state=3 run_id=4660 car_id=3238001904
 ```
 
 The time is the bridge's receipt time.

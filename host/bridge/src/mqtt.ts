@@ -17,6 +17,7 @@ export function createMqttIngest(
   config: BridgeConfig,
   schema: ProtocolSchema,
   onPacket: (packet: DecodedPacket, topic: string) => void,
+  admit: (packet: DecodedPacket) => boolean = () => true,
 ): { client: MqttClient; stats: IngestStats } {
   const client = mqtt.connect(config.mqttUrl, {
     username: config.username,
@@ -46,6 +47,9 @@ export function createMqttIngest(
     }
     try {
       const packet = decodePacket(schema, name, payload);
+      if (!admit(packet)) {
+        return;
+      }
       stats.packets += 1;
       stats.lastPacketAt = Date.now();
       stats.lastPacket = packet;
