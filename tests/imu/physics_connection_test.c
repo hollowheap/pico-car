@@ -19,7 +19,13 @@
 
 #define SAMPLE_PERIOD_MS     (20U)
 #define SNAPSHOT_LOSS_MS     (500U)
+#define SNAPSHOT_DRIVE_CYCLE (2U)
 #define SNAPSHOT_FREEZE_CYCLE (8U)
+#define HUMP_RAMP_START_CYCLE (85U)
+#define HUMP_RAMP_LENGTH_MM   (100.0f)
+#define HUMP_MIN_HEIGHT_MM    (10)
+#define HUMP_MAX_HEIGHT_MM    (30)
+#define HUMP_HEIGHT_ERROR_MM  (10)
 
 static jmp_buf g_done;
 static uint32_t g_cycle;
@@ -31,6 +37,9 @@ static uint32_t g_acc_acquired_us;
 static unsigned g_delayed_mag_reads;
 static bool g_attitude_events;
 static bool g_hump_events;
+static bool g_hump_acceptance;
+static int16_t g_hump_height_mm = HUMP_MAX_HEIGHT_MM;
+static int32_t g_hump_speed_mm_s = 150;
 static bool g_stationary_start;
 static uint32_t g_new_reference;
 static bool g_stationary_setdown;
@@ -40,6 +49,12 @@ static bool g_start_witness;
 static bool g_witness_motion_read;
 static unsigned g_imu_inits;
 static unsigned g_event_count;
+
+static float hump_axle_mm (void)
+{
+    return ((float)g_cycle - (float)HUMP_RAMP_START_CYCLE)
+           * (float)(g_hump_speed_mm_s * (int32_t)SAMPLE_PERIOD_MS) / 1000.0f;
+}
 
 #define CHECK(cond)                                                    \
     do                                                                 \
@@ -112,10 +127,30 @@ ER telemetry_try_emit_event (uint8_t source, uint8_t type, int16_t p1,
         if (0U == g_event_count)
         {
             CHECK (TELEMETRY_EVT_HUMP_START == type && p1 == 0 && p2 == 0U);
+            if (g_hump_acceptance)
+            {
+                float const x_mm = hump_axle_mm ();
+
+                CHECK (x_mm > 0.0f && x_mm <= HUMP_RAMP_LENGTH_MM);
+                (void)printf ("hump onset at %.1f mm and %d ms after ramp entry\n",
+                    (double)x_mm, ((int)g_cycle - (int)HUMP_RAMP_START_CYCLE)
+                                  * (int)SAMPLE_PERIOD_MS);
+            }
         }
         else
         {
             CHECK (TELEMETRY_EVT_HUMP_END == type && p1 > 0 && p2 == 1U);
+            if (g_hump_acceptance)
+            {
+                CHECK (p1 >= HUMP_MIN_HEIGHT_MM &&
+                       abs ((int)p1 - (int)g_hump_height_mm) <= HUMP_HEIGHT_ERROR_MM);
+                if (HUMP_MIN_HEIGHT_MM == g_hump_height_mm)
+                {
+                    CHECK (HUMP_MIN_HEIGHT_MM == p1);
+                }
+                (void)printf ("hump finished at %.1f mm with height %d mm\n",
+                    (double)hump_axle_mm (), (int)p1);
+            }
         }
         g_event_count++;
     }
@@ -293,7 +328,7 @@ ER tk_slp_tsk (TMO timeout)
                 CHECK (!snapshot.ready && !snapshot.level_still);
             }
         }
-        if (g_hump_events && ((112U == g_cycle) || (242U == g_cycle)))
+        if (g_hump_events && !g_hump_acceptance && ((112U == g_cycle) || (242U == g_cycle)))
         {
             physics_status_t snapshot;
             CHECK (E_OK == physics_snapshot (&snapshot));
@@ -306,7 +341,7 @@ ER tk_slp_tsk (TMO timeout)
                 CHECK (snapshot.pitch_cdeg >= 12 && snapshot.pitch_cdeg <= 20 && snapshot.roll_cdeg < -500);
             }
         }
-        if (g_hump_events && 246U == g_cycle)
+        if (g_hump_events && !g_hump_acceptance && 246U == g_cycle)
         {
             physics_status_t snapshot;
             CHECK (E_OK == physics_snapshot (&snapshot));
@@ -417,19 +452,22 @@ bool motion_glue_read (motion_reading_t * p_reading)
             .velocity_um_s = {speed, speed}, .speed_valid = {true, true}, .odometry_valid = {true, true}};
         return true;
     }
-    if (g_attitude_events || g_hump_events)
+    if (g_snapshot_case || g_attitude_events || g_hump_events)
     {
-        int32_t const speed = (g_hump_events && g_cycle >= 60U) ? 150000 : 0;
-        uint32_t const travel_cycles = (g_cycle >= 60U) ? g_cycle - 60U : 0U;
+        uint32_t const start_cycle = g_snapshot_case ? SNAPSHOT_DRIVE_CYCLE : 60U;
+        int32_t const speed = (!g_attitude_events && g_cycle >= start_cycle) ? 1000 * g_hump_speed_mm_s : 0;
+        uint32_t const travel_cycles = (g_cycle >= start_cycle) ? g_cycle - start_cycle : 0U;
         int64_t const distance = 100000 + ((int64_t)speed * travel_cycles * SAMPLE_PERIOD_MS) / 1000;
+        /* The expiry probe calibrates first, then receives a running encoder. */
+        bool const available = (!g_attitude_events || g_cycle < 95U)
+                               && (!g_snapshot_case || g_cycle >= start_cycle);
 
-        /* A braked car can lose fresh wheel speed while retaining its odometer. */
-        *p_reading = (motion_reading_t){.available = !g_attitude_events || g_cycle < 95U,
+        *p_reading = (motion_reading_t){.available = available,
             .timestamp_us = physics_time_us (),
             .velocity_um_s = {speed, speed}, .displacement_um = {distance, distance},
             .speed_valid = {true, true}, .odometry_valid = {true, true}};
     }
-    return g_attitude_events || g_hump_events;
+    return g_snapshot_case || g_attitude_events || g_hump_events;
 }
 
 lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus, uint8_t attempts)
@@ -450,7 +488,8 @@ lsm303_result_t lsm303_check_config (lsm303_t * p_dev)
 /* Triangle in millimetres, sampled at axle and caster contacts. */
 static float hump_ground_height (float x_mm)
 {
-    float const height = 30.0f - (0.3f * fabsf (x_mm - 100.0f));
+    float const height = (float)g_hump_height_mm
+                        * (1.0f - fabsf (x_mm - HUMP_RAMP_LENGTH_MM) / HUMP_RAMP_LENGTH_MM);
 
     return fmaxf (height, 0.0f);
 }
@@ -535,12 +574,18 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
     if (g_hump_events)
     {
         float const axle = (float)CHASSIS_AXLE_TO_CASTER_MM;
-        float const x = ((float)g_cycle - 85.0f) * 3.0f;
+        float const x = hump_axle_mm ();
         float const slope = (hump_ground_height (x) - hump_ground_height (x - axle)) / axle;
 
         *p_out = (lsm303_vec_t){0};
         p_out->value[LSM303_AXIS_Y] = -slope;
         p_out->value[LSM303_AXIS_Z] = sqrtf (1.0f - (slope * slope));
+        if (g_hump_acceptance && ((g_cycle >= 69U && g_cycle < 75U)
+                                 || (g_cycle >= 79U && g_cycle < 85U)))
+        {
+            /* Two 120 ms bursts of forward specific force on level ground. */
+            p_out->value[LSM303_AXIS_Y] = -0.08f;
+        }
         if (g_cycle >= 230U)
         {
             /* Left side raised with a small, independently known nose-up angle. */
@@ -550,7 +595,7 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
         }
         return LSM303_OK;
     }
-    if (g_snapshot_case && (g_cycle > 1U))
+    if (g_snapshot_case && (g_cycle >= SNAPSHOT_DRIVE_CYCLE))
     {
         p_out->value[LSM303_AXIS_X] = 0.13f;
         p_out->value[LSM303_AXIS_Y] = 0.14f;
@@ -615,7 +660,21 @@ int main (int argc, char ** argv)
     g_snapshot_case = (2 == argc) && (0 == strcmp (argv[1], "snapshot-expiry"));
     g_acquisition_age_case = (2 == argc) && (0 == strcmp (argv[1], "acceleration-acquisition-time"));
     g_attitude_events = (2 == argc) && (0 == strcmp (argv[1], "attitude-events"));
-    g_hump_events = (2 == argc) && (0 == strcmp (argv[1], "hump-events"));
+    g_hump_acceptance = (4 == argc) && (0 == strcmp (argv[1], "hump-acceptance"));
+    g_hump_events = g_hump_acceptance || ((2 == argc) && (0 == strcmp (argv[1], "hump-events")));
+    if (g_hump_acceptance)
+    {
+        long const height = strtol (argv[2], NULL, 10);
+        long const speed = strtol (argv[3], NULL, 10);
+
+        if (((HUMP_MIN_HEIGHT_MM != height) && (HUMP_MAX_HEIGHT_MM != height))
+            || ((120 != speed) && (180 != speed)))
+        {
+            return 2;
+        }
+        g_hump_height_mm = (int16_t)height;
+        g_hump_speed_mm_s = (int32_t)speed;
+    }
     g_stationary_start = (2 == argc) && (0 == strcmp (argv[1], "stationary-start"));
     g_stationary_setdown = (2 == argc) && (0 == strcmp (argv[1], "stationary-setdown"));
     g_calibration_gap = (2 == argc) && (0 == strcmp (argv[1], "calibration-gap"));
@@ -625,6 +684,7 @@ int main (int argc, char ** argv)
     {
         cfg.hump.cal_samples = 1U;
         cfg.hump.enter_samples = 1U;
+        cfg.read_motion = motion_glue_read;
         /* The sample is published just before a low-word clock wrap. */
         g_now_ms = (uint64_t)UINT32_MAX - 200U;
     }

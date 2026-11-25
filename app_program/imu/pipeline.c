@@ -298,6 +298,15 @@ static void judge_hump (pipeline_t * p_pipe, pipeline_step_t * p_out)
         p_hump->complete = false;
         p_hump->height_valid = false;
     }
+    else if (b_ending && p_hump->complete && p_hump->height_valid)
+    {
+        /* Body pitch integrated along the wheelbase smooths short humps.
+         * The largest axle-to-caster elevation difference bounds the rise. */
+        float const contact_rise_m = ((float)CHASSIS_AXLE_TO_CASTER_MM * MM_TO_M)
+            * sinf (p_hump->peak_pitch_deg / RAD_TO_DEG);
+
+        p_hump->peak_m = fmaxf (p_hump->peak_m, contact_rise_m);
+    }
     else
     {
         /* No hump, or a valid one. */

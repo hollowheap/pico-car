@@ -59,6 +59,12 @@ add_test(NAME imu.physics_connection.physics_snapshot_expiry COMMAND test_physic
 add_test(NAME imu.physics_connection.physics_acceleration_acquisition_time COMMAND test_physics_connection acceleration-acquisition-time)
 add_test(NAME imu.physics_connection.physics_attitude_events COMMAND test_physics_connection attitude-events)
 add_test(NAME imu.physics_connection.physics_hump_events COMMAND test_physics_connection hump-events)
+foreach(height IN ITEMS 10 30)
+    foreach(speed IN ITEMS 120 180)
+        add_test(NAME imu.physics_connection.hump_${height}mm_at_${speed}mms
+            COMMAND test_physics_connection hump-acceptance ${height} ${speed})
+    endforeach()
+endforeach()
 add_test(NAME imu.physics_connection.physics_stationary_start COMMAND test_physics_connection stationary-start)
 add_test(NAME imu.physics_connection.physics_stationary_setdown COMMAND test_physics_connection stationary-setdown)
 add_test(NAME imu.physics_connection.physics_calibration_gap COMMAND test_physics_connection calibration-gap)

@@ -60,6 +60,7 @@ typedef struct
     uint32_t accel_to;
     float accel_mps2;
     bool report_accel;           /* False: Buddy 2 reports dv/dt as zero. */
+    uint32_t stop_from;          /* First run sample at standstill. */
 } profile_t;
 
 typedef struct
@@ -83,6 +84,7 @@ static void profile_init (profile_t * p_prof)
     p_prof->crest_samples = 10U;
     p_prof->speed_mps = SPEED_MPS;
     p_prof->report_accel = true;
+    p_prof->stop_from = UINT32_MAX;
 }
 
 /* Slope for run sample index i of a profile that starts with lead_in flat
@@ -213,8 +215,8 @@ static result_t run (const hump_config_t * p_cfg, const profile_t * p_prof,
                      lin, p_prof->noise_g, &sample);
         sample.motion_valid = !(bad && !p_prof->bad_is_stale);
         sample.motion_age_s = (bad && p_prof->bad_is_stale) ? 0.030f : 0.005f;
-        sample.speed_mps = p_prof->speed_mps;
-        sample.ds_m = p_prof->speed_mps * DT_S;
+        sample.speed_mps = (i >= p_prof->stop_from) ? 0.0f : p_prof->speed_mps;
+        sample.ds_m = sample.speed_mps * DT_S;
         sample.accel_mps2 = p_prof->report_accel ? lin : 0.0f;
 
         CHECK (hump_update (&ctx, &sample, &out));
@@ -648,6 +650,8 @@ static void test_median_rejects_spike (void)
         uint32_t started = 0U;
 
         hump_default_config (&cfg);
+        /* Isolate the median with a short enter debounce. */
+        cfg.enter_samples = 3U;
         cfg.median_len = (0U == pass) ? 5U : 1U;
         CHECK (hump_init (&ctx, &cfg));
         for (i = 0U; i < (CAL_SAMPLES + 50U); i++)
@@ -854,6 +858,112 @@ static void test_speed_ok_output (void)
     CHECK (out.speed_ok);
 }
 
+static void test_hump_onset_needs_forward_travel (void)
+{
+    hump_config_t cfg;
+    profile_t prof;
+    result_t res;
+
+    printf ("pitch_excursion_without_forward_travel_does_not_start_a_hump\n");
+    hump_default_config (&cfg);
+    profile_init (&prof);
+    prof.speed_mps = 0.0f;
+    res = run (&cfg, &prof, 20U, 250U, 0U);
+    CHECK (0U == res.started);
+    CHECK (HUMP_STATE_FLAT == res.final_state);
+
+    prof.speed_mps = -SPEED_MPS;
+    res = run (&cfg, &prof, 20U, 250U, 0U);
+    CHECK (0U == res.started);
+    CHECK (HUMP_STATE_FLAT == res.final_state);
+
+    /* A pivot with uneven wheel speeds can report a little forward travel. */
+    prof.speed_mps = 0.01f;
+    prof.ramp_samples = 12U;
+    res = run (&cfg, &prof, 20U, 250U, 0U);
+    CHECK (0U == res.started);
+    CHECK (HUMP_STATE_FLAT == res.final_state);
+
+    prof.speed_mps = SPEED_MPS;
+    prof.bad_from = 20U;
+    prof.bad_to = 40U;
+    prof.bad_is_stale = true;
+    res = run (&cfg, &prof, 20U, 250U, 0U);
+    CHECK (0U == res.started);
+    CHECK (HUMP_STATE_FLAT == res.final_state);
+}
+
+static void test_short_moving_pitch_excursion (void)
+{
+    hump_config_t cfg;
+    profile_t prof;
+    result_t res;
+
+    printf ("short_pitch_excursion_while_driving_does_not_start_a_hump\n");
+    hump_default_config (&cfg);
+    cfg.enter_deg = 3.0f;
+    cfg.exit_band_deg = 2.0f;
+    profile_init (&prof);
+    prof.angle_deg = 5.0f;
+    prof.speed_mps = 0.10f;
+    prof.ramp_samples = 4U;
+    prof.crest_samples = 10000U;
+    res = run (&cfg, &prof, 20U, 250U, 0U);
+    CHECK (0U == res.started);
+    CHECK (HUMP_STATE_FLAT == res.final_state);
+
+    /* A sustained shallow climb should still start within 20 mm. */
+    prof.angle_deg = 3.2f;
+    prof.ramp_samples = 39U;
+    res = run (&cfg, &prof, 20U, 30U, 0U);
+    CHECK (1U == res.started);
+    CHECK (HUMP_STATE_CLIMB == res.final_state);
+}
+
+static void test_noise_blip_does_not_stick_in_crest (void)
+{
+    hump_config_t cfg;
+    profile_t prof;
+    result_t res;
+
+    printf ("pitch_blip_without_descent_ends_after_the_travel_cap\n");
+    hump_default_config (&cfg);
+    profile_init (&prof);
+    prof.ramp_samples = 6U;
+    prof.crest_samples = 10000U;
+    res = run (&cfg, &prof, 20U, 100U, 0U);
+    CHECK (0U == res.finished);
+    CHECK (HUMP_STATE_CREST == res.final_state);
+
+    res = run (&cfg, &prof, 20U, 300U, 0U);
+    CHECK (1U == res.started);
+    CHECK (1U == res.finished);
+    CHECK (0U == res.complete);
+    CHECK (HUMP_STATE_FLAT == res.final_state);
+}
+
+static void test_standstill_ends_crest (void)
+{
+    hump_config_t cfg;
+    profile_t prof;
+    result_t res;
+
+    printf ("standstill_on_the_crest_ends_the_hump\n");
+    hump_default_config (&cfg);
+    profile_init (&prof);
+    prof.ramp_samples = 6U;
+    prof.crest_samples = 10000U;
+    prof.stop_from = 60U;
+    res = run (&cfg, &prof, 20U, 65U, 0U);
+    CHECK (0U == res.finished);
+    CHECK (HUMP_STATE_CREST == res.final_state);
+
+    res = run (&cfg, &prof, 20U, 100U, 0U);
+    CHECK (1U == res.started);
+    CHECK (1U == res.finished);
+    CHECK (0U == res.complete);
+}
+
 int main (int argc, char * argv[])
 {
     static const struct
@@ -906,6 +1016,10 @@ int main (int argc, char * argv[])
     test_incomplete_hump ();
     test_two_humps ();
     test_speed_ok_output ();
+    test_hump_onset_needs_forward_travel ();
+    test_short_moving_pitch_excursion ();
+    test_noise_blip_does_not_stick_in_crest ();
+    test_standstill_ends_crest ();
 
     if (0 == g_failures)
     {

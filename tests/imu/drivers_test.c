@@ -1479,8 +1479,7 @@ static void test_pipeline_slow_hump_ends_at_travel_cap (void)
     CHECK (!out.hump_rejected && !out.hump.speed_ok && res.lifted);
 }
 
-/* A car lifted 8 degrees nose-up at rest reads as a hump to the pitch
- * detector, but the wheels do not move: the lift must show. */
+/* A car lifted nose-up after stopping on a climb must still report the lift. */
 static void test_pipeline_lift_at_rest_on_hump_state (void)
 {
     pipeline_t pipe;
@@ -1490,6 +1489,8 @@ static void test_pipeline_lift_at_rest_on_hump_state (void)
 
     printf ("pipeline_lift_nose_up_at_rest_is_lifted\n");
     pipe_at_rest (&pipe);
+    res = apply_load (&pipe, 24U, 8.0f, SPEED_MPS, &out);
+    CHECK (res.on_hump && !res.lifted);
     res = apply_load (&pipe, 60U, 8.0f, 0.0f, &out);
     CHECK (res.on_hump);
     CHECK (res.lifted);

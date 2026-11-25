@@ -60,6 +60,14 @@ On `car_bench`, a short press on GP20 selects the next item. Hold GP20 for 1 s t
 3. Note the setup, start the run and note the wall-clock time.
 4. Write the record below, including the time, so the run can be found in the recording.
 
+For a hump check, include a flat straight, a stop and an in-place turn before
+crossing a measured 10 mm hump with a 100 mm incline and a 100 mm descent.
+The car requires seven consecutive filtered pitch samples above 3° at 50 Hz
+with fresh forward travel totalling at least 4 mm. On a crest, 200 ms without
+forward motion or 250 mm of travel without a confirmed descent ends the hump
+as incomplete. The course and run summary show completed valid heights of
+at least 10 mm. Check for one reported hump and no starts on level ground.
+
 ## Run logs
 
 Keep captures for a run together in `testing/logs/<date>-<subsystem>-<run>/`.
