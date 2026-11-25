@@ -89,9 +89,6 @@ uint32_t physics_request_new_run (void);
  * It raises the attitude state CANDIDATE and never LIFTED. */
 void physics_set_wheels_free (bool b_free);
 
-/* Clear the latched I2C fault on the next cycle. */
-void physics_request_clear_fault (void);
-
 #endif /* PHYSICS_PHYSICS_H */
 
 /*** end of file ***/

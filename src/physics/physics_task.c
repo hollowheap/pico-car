@@ -69,7 +69,6 @@ static physics_task_stats_t  g_stats;
 /* Sample the latest requests under the publication lock. The task applies
  * them outside the lock and publishes the reference ID with the result. */
 static uint32_t         g_requested_reference;
-static bool             g_clear_fault_pending;
 /* A level, not a request: the owner sets it every pass; the last value wins. */
 static volatile bool    g_wheels_free = false;
 
@@ -481,14 +480,8 @@ static void apply_requests (physics_task_stats_t * p_local)
     UINT saved = 0U;
     (void)ISpinLock (&g_stats_lock, &saved);
     uint32_t const requested = g_requested_reference;
-    bool const b_clear = g_clear_fault_pending;
-    g_clear_fault_pending = false;
     (void)ISpinUnlock (&g_stats_lock, saved);
 
-    if (b_clear)
-    {
-        lsm303_clear_fault (&g_imu);
-    }
     if (p_local->reference_request != requested)
     {
         pipeline_new_run (&g_pipe);
@@ -697,14 +690,6 @@ uint32_t physics_task_request_new_run (void)
     uint32_t const requested = g_requested_reference;
     (void)ISpinUnlock (&g_stats_lock, saved);
     return requested;
-}
-
-void physics_task_request_clear_fault (void)
-{
-    UINT saved = 0U;
-    (void)ISpinLock (&g_stats_lock, &saved);
-    g_clear_fault_pending = true;
-    (void)ISpinUnlock (&g_stats_lock, saved);
 }
 
 /*** end of file ***/
