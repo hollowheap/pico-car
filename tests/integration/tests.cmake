@@ -81,7 +81,7 @@ target_compile_options(test_integration PRIVATE
     -Wall -Wextra -Werror)
 target_link_libraries(test_integration PRIVATE m)
 
-foreach(scenario IN ITEMS boot_parked mqtt_start_stop button_start
+foreach(scenario IN ITEMS boot_parked mqtt_start_stop periodic_state_bundle button_start
         mqtt_rejects_stale_commands mqtt_estop_keeps_latch sonar_approach_stops_for_obstacle)
     add_test(NAME integration.firmware.${scenario} COMMAND test_integration ${scenario})
     set_tests_properties(integration.firmware.${scenario} PROPERTIES TIMEOUT 5)

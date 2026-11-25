@@ -6,7 +6,7 @@ import type { LinkPacket } from './link.js';
 import { odometerDiscontinuous } from './odometer.js';
 import { hasSpeedFault, headingDegrees, pivotScalePercent } from './schema.js';
 import { profileSurfaces, stationaryContact, type Survey } from './scan.js';
-import { BIT_FIELDS, COMMANDS, ENUMS, FAULT_BITS } from './schema.generated.js';
+import { BIT_FIELDS, COMMANDS, ENUMS, FAULT_BITS, PACKETS } from './schema.generated.js';
 
 /** Keep up to 20 minutes at full resolution, then simplify the older geometry. */
 export const TRAIL_MAX = 6000;
@@ -221,13 +221,19 @@ function replaceTrailSample(store: TelemetryStore, index: number, point: TrailPo
   };
 }
 
-function addMotion(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
-  const { seq, left_mms: leftMms, right_mms: rightMms, motion_fault: fault } = packet.values;
-  if (seq === undefined || !Number.isInteger(seq) || seq < 0 || seq >= MOTION_SEQ_WRAP ||
-      leftMms === undefined || rightMms === undefined || !Number.isFinite(leftMms) || !Number.isFinite(rightMms) ||
-      (fault !== undefined && fault !== 0)) return store;
+function measuredWheels(packet: LinkPacket): TrailPoint['wheels'] {
+  const { left_mms: leftMms, right_mms: rightMms, motion_fault: fault } = packet.values;
+  if (leftMms === undefined || rightMms === undefined || !Number.isFinite(leftMms) || !Number.isFinite(rightMms) ||
+      (fault !== undefined && fault !== 0)) return undefined;
+  return { leftMms, rightMms };
+}
 
-  const pending = { seq, timestamp: packet.timestamp, wheels: { leftMms, rightMms } };
+function addMotion(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
+  const seq = packet.values.seq;
+  const wheels = measuredWheels(packet);
+  if (seq === undefined || !Number.isInteger(seq) || seq < 0 || seq >= MOTION_SEQ_WRAP || wheels === undefined) return store;
+
+  const pending = { seq, timestamp: packet.timestamp, wheels };
   const start = Math.max(0, store.trail.length - MOTION_PAIR_PASSES);
   const offset = store.trail.slice(start).findLastIndex((point) =>
     point.seq !== undefined && sameMotionPass(point.seq, point.timestamp, pending));
@@ -245,6 +251,31 @@ function addMotion(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
   const fresh = store.pendingWheels.filter((p) => Math.abs(p.timestamp - pending.timestamp) <= MOTION_PAIR_AGE_MS);
   if (fresh.some((p) => p.seq === pending.seq)) return store;
   return { ...store, pendingWheels: cap([...fresh, pending], MOTION_PAIR_PASSES) };
+}
+
+// Keep the existing panel interfaces while recording only the received status frame.
+function bundledReading(packet: LinkPacket, kind: 'motion' | 'physics'): LinkPacket {
+  const values: LinkPacket['values'] = {};
+  for (const { name } of PACKETS[kind].fields) {
+    const value = packet.values[name === 'heading_ddeg' ? 'physics_heading_ddeg' : name];
+    if (value !== undefined) values[name] = name === 'seq' ? value % MOTION_SEQ_WRAP : value;
+  }
+  if (kind === 'motion') {
+    const flags = packet.values.sample_flags ?? 0;
+    const bits = BIT_FIELDS.statusSampleFlags;
+    const fresh = (flags & (1 << bits.wheelFresh)) !== 0;
+    if (!fresh || (flags & (1 << bits.leftSpeedValid)) === 0) delete values.left_mms;
+    if (!fresh || (flags & (1 << bits.rightSpeedValid)) === 0) delete values.right_mms;
+  }
+  return { ...packet, packet: kind, values };
+}
+
+function recordPitch(history: PitchSample[], packet: LinkPacket): PitchSample[] {
+  const { pitch_cdeg: pitchCdeg, flags, hump_state: humpState } = packet.values;
+  const calibrated = ((flags ?? 0) & (1 << BIT_FIELDS.physicsFlags.calibrated)) !== 0;
+  if (!calibrated || pitchCdeg === undefined || !Number.isFinite(pitchCdeg) ||
+      packet.timestamp < (history.at(-1)?.at ?? -Infinity)) return history;
+  return cap([...history, { at: packet.timestamp, pitchDeg: pitchCdeg / 100, humpActive: (humpState ?? 0) !== 0 }], PITCH_HISTORY_MAX);
 }
 
 function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore {
@@ -275,6 +306,10 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
   }
   const reordered = insertAt < current.trail.length;
   if (!reordered && receiptDelta < 0) return current;
+  const bundled = v.device_sample_us !== undefined;
+  const motion = bundled ? bundledReading(packet, 'motion') : undefined;
+  const physics = bundled ? bundledReading(packet, 'physics') : undefined;
+  const attitudeValid = !bundled || ((v.sample_flags ?? 0) & (1 << BIT_FIELDS.statusSampleFlags.attitudeValid)) !== 0;
   let lost = current.statusLost;
   if (reordered && insertAt > 0 && seq !== undefined) {
     const before = current.trail[insertAt - 1]?.seq;
@@ -291,8 +326,8 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
   let trail = current.trail;
   let pendingWheels = current.pendingWheels;
   if (v.odometer_mm !== undefined) {
-    const phys = current.latest.physics;
-    const physFresh = phys !== undefined && Math.abs(packet.timestamp - phys.timestamp) <= 1000;
+    const phys = physics ?? current.latest.physics;
+    const physFresh = attitudeValid && phys !== undefined && Math.abs(packet.timestamp - phys.timestamp) <= 1000;
     const physCal = physFresh && ((phys.values.flags ?? 0) & (1 << BIT_FIELDS.physicsFlags.calibrated)) !== 0;
     const pitchDeg = physCal && phys.values.pitch_cdeg !== undefined ? Math.round(phys.values.pitch_cdeg / 10) / 10 : undefined;
     const rollDeg = physCal && phys.values.roll_cdeg !== undefined ? Math.round(phys.values.roll_cdeg / 10) / 10 : undefined;
@@ -312,10 +347,9 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
       seq,
     };
     const pending = seq === undefined ? undefined : pendingWheels.find((p) => sameMotionPass(seq, packet.timestamp, p));
-    if (pending !== undefined) {
-      point.wheels = pending.wheels;
-      pendingWheels = pendingWheels.filter((p) => p !== pending);
-    }
+    const wheels = motion === undefined ? pending?.wheels : measuredWheels(motion);
+    if (wheels !== undefined) point.wheels = wheels;
+    if (pending !== undefined) pendingWheels = pendingWheels.filter((p) => p !== pending);
     trail = reordered ? [...trail.slice(0, insertAt), point, ...trail.slice(insertAt)] : [...trail, point];
   }
   let scanStart = current.scanStart;
@@ -341,7 +375,7 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
     }
   }
   const signal = { timestamp: signals[signalAt]?.timestamp ?? packet.timestamp, seq, bits: v.line_bits ?? null };
-  const next = {
+  const next: TelemetryStore = {
     ...current,
     latest: reordered ? current.latest : { ...current.latest, status: packet },
     firstTimestamp: current.firstTimestamp ?? packet.timestamp,
@@ -354,6 +388,12 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
     statusLost: lost,
     lastSeq: reordered ? current.lastSeq : seq ?? current.lastSeq,
   };
+  if (!reordered && motion !== undefined && physics !== undefined) {
+    next.latest.motion = motion;
+    next.latest.physics = physics;
+    next.wheelHistory = recordWheels(current.wheelHistory, motion);
+    if (attitudeValid) next.pitchHistory = recordPitch(current.pitchHistory, physics);
+  }
   // A CONTACT and the first status of its pass can be drained in either order.
   const contact = current.latest.obstacle;
   const anchored = next.obstacle === null && contact?.values.hug_state === HUG_CONTACT && contact.values.body_deci !== undefined &&
@@ -664,17 +704,7 @@ export function reduceStore(store: TelemetryStore, packet: LinkPacket): Telemetr
   if (packet.packet === 'event') next = addEvent(next, packet);
   if (packet.packet === 'heartbeat') next = addHeartbeat(next, packet, previousHeartbeat);
   if (packet.packet === 'diag') next = addDiag(next, packet, previousDiag);
-  if (packet.packet === 'physics') {
-    const pitchCdeg = packet.values.pitch_cdeg;
-    const calibrated = ((packet.values.flags ?? 0) & 8) !== 0;
-    if (calibrated && pitchCdeg !== undefined && Number.isFinite(pitchCdeg)) {
-      const humpActive = (packet.values.hump_state ?? 0) !== 0;
-      const lastPitch = store.pitchHistory.at(-1);
-      if (!lastPitch || packet.timestamp >= lastPitch.at) {
-        next.pitchHistory = cap([...store.pitchHistory, { at: packet.timestamp, pitchDeg: pitchCdeg / 100, humpActive }], PITCH_HISTORY_MAX);
-      }
-    }
-  }
+  if (packet.packet === 'physics') next.pitchHistory = recordPitch(store.pitchHistory, packet);
   return next;
 }
 

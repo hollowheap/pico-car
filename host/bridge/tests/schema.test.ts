@@ -67,6 +67,15 @@ describe("protocol schema", () => {
     });
   });
 
+  it("decodes the bundled status on the existing status topic", () => {
+    const vector = vectors.vectors.status_bundle!;
+    const name = packetNameForTopic(schema, "car/PICO-CAR/s");
+    expect(name).toBe("status");
+    expect(decodePacket(schema, name!, Buffer.from(vector.hex, "hex"))).toEqual({
+      name: "status", values: flatten(vector.values),
+    });
+  });
+
   it("preserves a sonar command's signed angle in the existing event frame", () => {
     const type = packetNameForTopic(schema, "car/PICO-CAR/e");
     expect(type).toBe("event");

@@ -6,6 +6,7 @@
 #include "comms/telemetry/cmd.h"
 #include "comms/telemetry/wire_schema.h"
 #include "fakes/world.h"
+#include "motion/motion.h"
 #include "platform/chassis.h"
 #include "supervisor/health_ids.h"
 
@@ -92,6 +93,51 @@ static void mqtt_start_stop (void)
     CHECK(drive_time == g_world.nonzero_duty_ms);
     CHECK(NULL != supervisor_event(TELEMETRY_EVT_RUN_STOP, 0U));
     expect_ack(TELEMETRY_EVT_CMD_ACCEPT, 1U, stop_id, TELEMETRY_CMD_STOP);
+}
+
+static uint32_t state_field (unsigned offset, unsigned bytes)
+{
+    uint32_t value = 0U;
+
+    for (unsigned i = 0U; i < bytes; ++i)
+    {
+        value = (value << 8U) | g_world.status_payload[offset + i];
+    }
+    return value;
+}
+
+static void periodic_state_bundle (void)
+{
+    boot_parked();
+    expect_started(world_command(TELEMETRY_CMD_START));
+    uint32_t const samples = g_world.status_frames;
+    uint32_t const sample_us = state_field(TELEMETRY_STATUS_BUNDLE_OFF_DEVICE_SAMPLE_US, 4U);
+    uint16_t const seq = (uint16_t)state_field(TELEMETRY_STATUS_BUNDLE_OFF_SEQ, 2U);
+
+    world_run_ms(200U);
+    CHECK(g_world.status_frames == samples + 1U);
+    CHECK(0U == g_world.separate_motion_frames);
+    CHECK(0U == g_world.separate_physics_frames);
+    CHECK(TELEMETRY_STATUS_BUNDLE_WIRE_SIZE == g_world.status_wire_size);
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_DEVICE_SAMPLE_US, 4U) - sample_us == 200000U);
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_SEQ, 2U) == (uint16_t)(seq + 1U));
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_STATE, 1U) == TELEMETRY_RUN_STATE_RUNNING);
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_WHEEL_AGE_US, 2U) <= MOTION_FEEDBACK_MAX_AGE_US);
+    uint32_t const left_travel = state_field(TELEMETRY_STATUS_BUNDLE_OFF_LEFT_TRAVEL_MM, 4U);
+    uint32_t const right_travel = state_field(TELEMETRY_STATUS_BUNDLE_OFF_RIGHT_TRAVEL_MM, 4U);
+    CHECK((left_travel > 0U) && (left_travel <= (uint32_t)INT32_MAX));
+    CHECK((right_travel > 0U) && (right_travel <= (uint32_t)INT32_MAX));
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_FORWARD_ECHO_CLASS, 1U) == TELEMETRY_ECHO_CLASS_OPEN);
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_FORWARD_DIST_MM, 2U) == UINT16_MAX);
+    CHECK(state_field(TELEMETRY_STATUS_BUNDLE_OFF_FORWARD_AGE_MS, 1U) < UINT8_MAX);
+
+    /* Expose one real payload for offline replay through the bridge decoder. */
+    (void)printf("status bundle ");
+    for (unsigned i = 0U; i < sizeof(g_world.status_payload); ++i)
+    {
+        (void)printf("%02x", (unsigned)g_world.status_payload[i]);
+    }
+    (void)printf("\n");
 }
 
 static void button_start (void)
@@ -188,6 +234,7 @@ int main (int argc, char ** argv)
     } cases[] = {
         {"boot_parked", boot_parked},
         {"mqtt_start_stop", mqtt_start_stop},
+        {"periodic_state_bundle", periodic_state_bundle},
         {"button_start", button_start},
         {"mqtt_rejects_stale_commands", mqtt_rejects_stale_commands},
         {"mqtt_estop_keeps_latch", mqtt_estop_keeps_latch},

@@ -1172,7 +1172,24 @@ static void radio_step (void)
             break;
         }
         g_world.frames_published++;
-        if (((uint8_t)TELEMETRY_TOPIC_EVENT == frame[0]) && ((uint32_t)len >= (1U + TELEMETRY_EVENT_WIRE_SIZE)))
+        if ((uint8_t)TELEMETRY_TOPIC_STATUS == frame[0])
+        {
+            g_world.status_frames++;
+            g_world.status_wire_size = (uint16_t)(len - 1);
+            if (g_world.status_wire_size == sizeof(g_world.status_payload))
+            {
+                memcpy(g_world.status_payload, &frame[1], g_world.status_wire_size);
+            }
+        }
+        else if ((uint8_t)TELEMETRY_TOPIC_MOTION == frame[0])
+        {
+            g_world.separate_motion_frames++;
+        }
+        else if ((uint8_t)TELEMETRY_TOPIC_PHYSICS == frame[0])
+        {
+            g_world.separate_physics_frames++;
+        }
+        else if (((uint8_t)TELEMETRY_TOPIC_EVENT == frame[0]) && ((uint32_t)len >= (1U + TELEMETRY_EVENT_WIRE_SIZE)))
         {
             note_event(&frame[1]);
         }

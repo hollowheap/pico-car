@@ -45,6 +45,10 @@ uint32_t obstacle_comms_status (void);
 uint32_t obstacle_comms_ping (void);
 uint32_t obstacle_comms_take_ping_request (void);
 void     obstacle_comms_publish_ping_reply (uint32_t word);
+/* Copy a centered free-running shot, or invalidate it at the start of an aim.
+ */
+void obstacle_comms_publish_forward (
+    const obstacle_forward_sample_t * p_sample);
 uint16_t obstacle_comms_faults (void);
 uint8_t  obstacle_comms_drops (void);
 void     obstacle_comms_copy_scalars (obstacle_comms_scalars_t * p_out);

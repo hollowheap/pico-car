@@ -642,6 +642,54 @@ static void test_profile (void)
     CHECK(out.flags == (1U << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL));
 }
 
+static void test_status_bundle_details (void)
+{
+    telemetry_status_bundle_t out;
+    motion_feedback_t feedback = fresh_feedback();
+    physics_status_t const physics = {
+        .ready = true,
+        .calibrated = true,
+        .attitude_sample_valid = true,
+    };
+    obstacle_forward_sample_t forward = {
+        .trigger_us = UINT32_MAX - 3999U,
+        .distance_mm = 432U,
+        .echo_class = OBSTACLE_CLASS_VALID,
+    };
+
+    feedback.timestamp_us = UINT32_MAX - 499U;
+    feedback.left_displacement_um = -1201999;
+    feedback.right_displacement_um = 991500;
+    feedback.speed_valid[1] = true;
+    feedback.odometry_valid[0] = true;
+    telemetry_assemble_bundle_details(&out, 1000U, &feedback, &physics, &forward);
+    CHECK(out.device_sample_us == 1000U);
+    CHECK(out.left_travel_mm == -1201 && out.right_travel_mm == 991);
+    CHECK(out.wheel_age_us == 1500U);
+    CHECK(out.sample_flags == (BIT(TELEMETRY_STATUS_SAMPLE_FLAGS_BIT_WHEEL_FRESH) |
+                               BIT(TELEMETRY_STATUS_SAMPLE_FLAGS_BIT_RIGHT_SPEED_VALID) |
+                               BIT(TELEMETRY_STATUS_SAMPLE_FLAGS_BIT_LEFT_TRAVEL_VALID) |
+                               BIT(TELEMETRY_STATUS_SAMPLE_FLAGS_BIT_ATTITUDE_VALID)));
+    CHECK(out.forward_dist_mm == 432U && out.forward_echo_class == OBSTACLE_CLASS_VALID);
+    CHECK(out.forward_age_ms == 5U);
+
+    forward.echo_class = OBSTACLE_CLASS_NO_ECHO;
+    telemetry_assemble_bundle_details(&out, 1000U, NULL, NULL, &forward);
+    CHECK(out.forward_dist_mm == UINT16_MAX && out.forward_echo_class == OBSTACLE_CLASS_NO_ECHO);
+    CHECK(out.forward_age_ms == 5U);
+    CHECK(out.wheel_age_us == UINT16_MAX && out.sample_flags == 0U);
+
+    feedback.fresh = false;
+    feedback.left_displacement_um = INT64_MIN;
+    feedback.right_displacement_um = INT64_MAX;
+    telemetry_assemble_bundle_details(&out, 251000U, &feedback, NULL, &forward);
+    CHECK(out.left_travel_mm == INT32_MIN && out.right_travel_mm == INT32_MAX);
+    CHECK(out.wheel_age_us == UINT16_MAX);
+    CHECK((out.sample_flags & BIT(TELEMETRY_STATUS_SAMPLE_FLAGS_BIT_WHEEL_FRESH)) == 0U);
+    CHECK(out.forward_dist_mm == UINT16_MAX);
+    CHECK(out.forward_echo_class == UINT8_MAX && out.forward_age_ms == UINT8_MAX);
+}
+
 int main (int argc, char ** argv)
 {
     if ((2 == argc) && (0 == strcmp(argv[1], "link_fault")))
@@ -667,6 +715,7 @@ int main (int argc, char ** argv)
     test_status_clamps_and_nulls();
     test_motion();
     test_physics();
+    test_status_bundle_details();
     test_obstacle();
     test_obstacle_hug();
     test_obstacle_sonar_sample();

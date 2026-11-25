@@ -77,4 +77,17 @@ describe('frame log', () => {
     expect(motion.rows.map(({ id, packet }) => [id, packet.timestamp])).toEqual([[1, 110], [3, 130]]);
     expect(readFrameSlice(log, 0, 10, 'diag').count).toBe(0);
   });
+
+  it('opens motion and recorded physics from the same bundled receipt', () => {
+    const bundle = { ...frame(200), values: { seq: 300, device_sample_us: 0, left_mms: 30,
+      pitch_cdeg: 123, heading_ddeg: 900, physics_heading_ddeg: 901 } };
+    const log = createFrameLog([frame(100), bundle]);
+    expect(readFrameSlice(log, 0, 10).rows[1]).toEqual({ id: 1, packet: bundle });
+    expect(readFrameSlice(log, 0, 10, 'motion').rows).toEqual([
+      { id: 1, packet: { ...bundle, packet: 'motion', values: { seq: 300, left_mms: 30 } } },
+    ]);
+    expect(readFrameSlice(log, 0, 10, 'physics').rows).toEqual([
+      { id: 1, packet: { ...bundle, packet: 'physics', values: { seq: 300, pitch_cdeg: 123, physics_heading_ddeg: 901 } } },
+    ]);
+  });
 });

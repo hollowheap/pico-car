@@ -6,6 +6,16 @@
 
 #define QUEUE_BUFFER_ALIGN 4
 #define TELEMETRY_EVENT_HEADROOM_BYTES (128U)
+/* The kernel MBF charges one size word and rounds the payload to a word. */
+#define MBF_SIZE_WORD_BYTES ((uint32_t)sizeof(INT))
+#define STATUS_BUNDLE_COST                                                     \
+    (MBF_SIZE_WORD_BYTES +                                                     \
+     ((TELEMETRY_STATUS_BUNDLE_FRAME_SIZE + MBF_SIZE_WORD_BYTES - 1U) &        \
+      ~(MBF_SIZE_WORD_BYTES - 1U)))
+
+STATIC_ASSERT(TELEMETRY_EVENT_HEADROOM_BYTES + STATUS_BUNDLE_COST <=
+                  TELEMETRY_NET_QUEUE_BYTES,
+              "a status bundle fits with event headroom");
 
 static uint8_t g_queue_buffer[TELEMETRY_NET_QUEUE_BYTES]
     __attribute__((aligned(QUEUE_BUFFER_ALIGN)));
@@ -47,21 +57,32 @@ ER telemetry_net_queue_push (const uint8_t * payload, uint16_t len)
     }
     bool const b_barcode = (len == (1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE)) &&
                            (payload[0] == (uint8_t)TELEMETRY_TOPIC_BARCODE_SAMPLE);
+    bool const b_bundle = (len == TELEMETRY_STATUS_BUNDLE_FRAME_SIZE) &&
+                          (payload[0] == (uint8_t)TELEMETRY_TOPIC_STATUS);
     bool const b_periodic =
+        b_bundle ||
         ((payload[0] == (uint8_t)TELEMETRY_TOPIC_STATUS) &&
-         ((len == (1U + TELEMETRY_STATUS_WIRE_SIZE)) || (len == (1U + TELEMETRY_STATUS_PIVOT_WIRE_SIZE)))) ||
-        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_MOTION) && (len == (1U + TELEMETRY_MOTION_WIRE_SIZE))) ||
-        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_PHYSICS) && (len == (1U + TELEMETRY_PHYSICS_WIRE_SIZE))) ||
-        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_OBSTACLE) && (len == (1U + TELEMETRY_OBSTACLE_WIRE_SIZE))) ||
-        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_DIAG) && (len == (1U + TELEMETRY_DIAG_COUNTS_WIRE_SIZE)));
+         ((len == (1U + TELEMETRY_STATUS_WIRE_SIZE)) ||
+          (len == (1U + TELEMETRY_STATUS_PIVOT_WIRE_SIZE)))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_MOTION) &&
+         (len == (1U + TELEMETRY_MOTION_WIRE_SIZE))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_PHYSICS) &&
+         (len == (1U + TELEMETRY_PHYSICS_WIRE_SIZE))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_OBSTACLE) &&
+         (len == (1U + TELEMETRY_OBSTACLE_WIRE_SIZE))) ||
+        ((payload[0] == (uint8_t)TELEMETRY_TOPIC_DIAG) &&
+         (len == (1U + TELEMETRY_DIAG_COUNTS_WIRE_SIZE)));
     if (b_barcode || b_periodic)
     {
-        /* Reserve uplink headroom so events are preserved ahead of periodic frames. */
-        T_RMBF info;
-        ER const status = tk_ref_mbf(g_mbf_net_tx_id, &info);
+        /* Leave the event reserve after admitting a bundle. The telemetry
+         * task is the only producer and the MQTT task only frees space. */
+        T_RMBF   info;
+        ER const status  = tk_ref_mbf(g_mbf_net_tx_id, &info);
         SZ const reserve = b_barcode
-            ? (SZ)(TELEMETRY_NET_QUEUE_BYTES / TELEMETRY_RAW_HEADROOM_DIVISOR)
-            : (SZ)TELEMETRY_EVENT_HEADROOM_BYTES;
+                               ? (SZ)(TELEMETRY_NET_QUEUE_BYTES /
+                                      TELEMETRY_RAW_HEADROOM_DIVISOR)
+                               : (SZ)(TELEMETRY_EVENT_HEADROOM_BYTES +
+                                      (b_bundle ? STATUS_BUNDLE_COST : 0U));
         if ((E_OK != status) || (info.frbufsz < reserve))
         {
             (void)atomic_inc(&g_drop_count);

@@ -332,6 +332,31 @@ static void test_barcode_burst_preserves_events (void)
     CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
 }
 
+static void test_status_bundle_leaves_event_headroom (void)
+{
+    uint8_t const bundle[TELEMETRY_STATUS_BUNDLE_FRAME_SIZE] = {TELEMETRY_TOPIC_STATUS};
+    uint8_t const event[1U + TELEMETRY_EVENT_WIRE_SIZE] = {TELEMETRY_TOPIC_EVENT};
+
+    setup();
+    CHECK(fill_with(MSG_MAX, 3U) == 3U);
+    /* 204 B free. The 80 B bundle would leave less than the 128 B reserve. */
+    CHECK(push_seed(40U, 0U) == E_OK);
+    unsigned const drops = telemetry_net_queue_drop_count();
+    CHECK(telemetry_net_queue_push(bundle, sizeof(bundle)) == E_TMOUT);
+    CHECK(telemetry_net_queue_drop_count() == drops + 1U);
+    CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
+
+    setup();
+    CHECK(fill_with(MSG_MAX, 3U) == 3U);
+    /* 208 B free, just enough for a bundle and six 20 B event frames. */
+    CHECK(push_seed(36U, 0U) == E_OK);
+    CHECK(telemetry_net_queue_push(bundle, sizeof(bundle)) == E_OK);
+    for (unsigned i = 0U; i < 6U; i++)
+    {
+        CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
+    }
+}
+
 int main (void)
 {
     test_create_failure_paths();
@@ -343,6 +368,7 @@ int main (void)
     test_other_errors_not_counted();
     test_wraparound_fuzz();
     test_barcode_burst_preserves_events();
+    test_status_bundle_leaves_event_headroom();
 
     (void)printf("%u checks, %u failed\n", g_checks, g_fail);
     return (g_fail == 0U) ? 0 : 1;

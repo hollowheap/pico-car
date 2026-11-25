@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { COMMANDS, ENUMS, FAULT_BITS } from '../src/console/schema.generated.js';
+import { BIT_FIELDS, COMMANDS, ENUMS, FAULT_BITS } from '../src/console/schema.generated.js';
+import { emptyStore, reduceStore } from '../src/console/telemetry-store.js';
 import { consoleUpdate } from '../src/console/update.js';
 import { createConsoleView } from '../src/console/view.js';
 
@@ -13,6 +14,55 @@ const ack = (timestamp: number, action: number, id: number) => ({
 });
 
 describe('bridge console projection', () => {
+  it('projects one bundled status through the motion, attitude and course views', () => {
+    const base = status(65535, 20, 1000);
+    const packet = {
+      ...base,
+      values: {
+        ...base.values, device_sample_us: 0, line_bits: 3,
+        left_mms: -40, right_mms: 60, left_travel_mm: -20, right_travel_mm: 60,
+        physics_heading_ddeg: 2700, pitch_cdeg: 413, roll_cdeg: -140,
+        flags: 1 << BIT_FIELDS.physicsFlags.calibrated, sample_flags: 0x3f,
+        forward_dist_mm: 180, forward_age_ms: 15, forward_echo_class: 0,
+      },
+    };
+    const first = reduceStore(emptyStore(), packet);
+    expect(first.trail).toEqual([expect.objectContaining({
+      lineBits: 3, headingDeg: 0, pitchDeg: 4.1, rollDeg: -1.4,
+      wheels: { leftMms: -40, rightMms: 60 },
+    })]);
+    expect(first.wheelHistory).toEqual([expect.objectContaining({ at: 1000, seq: 255, left: -40, right: 60 })]);
+    expect(first.pitchHistory).toEqual([{ at: 1000, pitchDeg: 4.13, humpActive: false }]);
+    const snapshot = createConsoleView([packet]).read();
+    expect(snapshot.store.latest).toMatchObject({
+      status: { values: { left_travel_mm: -20, right_travel_mm: 60, forward_dist_mm: 180 } },
+      motion: { packet: 'motion', timestamp: 1000, values: { left_mms: -40, right_mms: 60, seq: 255 } },
+      physics: { packet: 'physics', timestamp: 1000, values: { heading_ddeg: 2700, pitch_cdeg: 413, seq: 255 } },
+    });
+    expect(snapshot.frameLog.blocks.flat()).toEqual([packet]);
+    expect(reduceStore(first, { ...packet, timestamp: 1001 })).toBe(first);
+
+    const late = reduceStore(first, {
+      ...packet, timestamp: 1003,
+      values: { ...packet.values, seq: 65534, pitch_cdeg: 760, left_mms: -33 },
+    });
+    expect(late.trail[0]).toMatchObject({ seq: 65534, pitchDeg: 7.6, wheels: { leftMms: -33, rightMms: 60 } });
+    expect(late.latest).toBe(first.latest);
+    expect(late.wheelHistory).toBe(first.wheelHistory);
+    expect(late.pitchHistory).toBe(first.pitchHistory);
+
+    const stale = reduceStore(first, {
+      ...packet, timestamp: 1200,
+      values: { ...packet.values, seq: 0, device_sample_us: 200000, sample_flags: 0 },
+    });
+    expect(stale.lastSeq).toBe(0);
+    expect(stale.statusLost).toBe(0);
+    expect(stale.trail.at(-1)?.wheels).toBeUndefined();
+    expect(stale.trail.at(-1)?.pitchDeg).toBeUndefined();
+    expect(stale.wheelHistory.at(-1)).toMatchObject({ at: 1200, seq: 0, left: undefined, right: undefined });
+    expect(stale.pitchHistory).toBe(first.pitchHistory);
+  });
+
   it('derives course, run metrics, faults and command outcomes from retained and live packets', () => {
     const view = createConsoleView([status(1, 0, 1000), status(2, 20, 1200)]);
     view.append(ack(1300, COMMANDS.left, 77));

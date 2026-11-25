@@ -246,6 +246,52 @@
         "pivot_scale_pct": 199
       },
       "hex": "6819b2163e9b41a47526a65338b85c8bc7"
+    },
+    "status_bundle": {
+      "values": {
+        "speed_mms": 25160,
+        "odometer_mm": 3629367757,
+        "heading_ddeg": 34028,
+        "state": 1,
+        "mode": 102,
+        "faults": 38191,
+        "seq": 29806,
+        "line_bits": 47,
+        "hold_mask": 94,
+        "pivot_scale_pct": 159,
+        "left_mms": 14684,
+        "right_mms": -15799,
+        "left_target_mms": 27887,
+        "right_target_mms": 16195,
+        "left_duty_pm": 5226,
+        "right_duty_pm": 2826,
+        "motion_state": 110,
+        "motion_fault": 30,
+        "overruns": 40388,
+        "pitch_cdeg": -3228,
+        "roll_cdeg": 244,
+        "az_mg": -2055,
+        "amag_mg": 16459,
+        "a_fwd_mg": -2063,
+        "yaw_rate_cdps": -28892,
+        "physics_heading_ddeg": 21214,
+        "hump_peak_mm": 60933,
+        "run_peak_mm": 35244,
+        "hump_state": 28,
+        "motion_class": 20,
+        "physics_faults": 1,
+        "flags": 60,
+        "attitude_state": 248,
+        "device_sample_us": 3838418157,
+        "left_travel_mm": -2108204696,
+        "right_travel_mm": 1671818663,
+        "wheel_age_us": 40411,
+        "sample_flags": 174,
+        "forward_dist_mm": 14919,
+        "forward_echo_class": 8,
+        "forward_age_ms": 97
+      },
+      "hex": "6248d853c1cd84ec0166952f746e2f5e9f395cc2496cef3f43146a0b0a6e1e9dc4f36400f4f7f9404bf7f18f2452deee0589ac1c14013cf8e4c99ced8257596863a5eda79ddbae3a470861"
     }
   }
 }

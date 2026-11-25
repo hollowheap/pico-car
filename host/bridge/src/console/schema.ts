@@ -42,7 +42,9 @@ function readField(view: DataView, type: FieldType, offset: number): number {
  */
 export function decodePacket(name: PacketName, payload: Uint8Array): Record<string, number> {
   let packet: AnyPacket = PACKETS[name];
-  if (name === 'status' && payload.byteLength === PACKETS.status_pivot.wireSize) {
+  if (name === 'status' && payload.byteLength === PACKETS.status_bundle.wireSize) {
+    packet = PACKETS.status_bundle;
+  } else if (name === 'status' && payload.byteLength === PACKETS.status_pivot.wireSize) {
     packet = PACKETS.status_pivot;
   } else if (name === 'diag' && payload.byteLength === PACKETS.diag_counts.wireSize) {
     packet = PACKETS.diag_counts;

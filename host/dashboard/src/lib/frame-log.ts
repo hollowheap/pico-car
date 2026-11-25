@@ -1,4 +1,5 @@
 import type { LinkPacket } from './link';
+import { PACKETS } from './schema.generated';
 
 export const FRAME_LOG_LIMIT = 5000;
 export const FRAME_LOG_BLOCK_SIZE = 100;
@@ -11,6 +12,16 @@ export type FrameLog = {
 };
 
 const firstId = (log: FrameLog) => Math.max(0, log.nextId - FRAME_LOG_LIMIT);
+
+function bundleFields(packet: LinkPacket, section: 'motion' | 'physics'): LinkPacket {
+  const values: LinkPacket['values'] = {};
+  for (const { name } of PACKETS[section].fields) {
+    const key = name === 'heading_ddeg' ? 'physics_heading_ddeg' : name;
+    const value = packet.values[key];
+    if (value !== undefined) values[key] = value;
+  }
+  return { ...packet, packet: section, values };
+}
 
 export function readFramePage(log: FrameLog, cursor: number | null) {
   const first = firstId(log);
@@ -47,14 +58,22 @@ export function readFrameSlice(log: FrameLog, offsetStart: number, offsetEnd: nu
     return { rows, count: total };
   }
 
+  // A bundled receipt also appears under Motion and Physics. All and Status
+  // keep the original frame with all fields and the same receipt ID.
+  const section = packetFilter === 'motion' || packetFilter === 'physics' ? packetFilter : undefined;
   const matched: { id: number; packet: LinkPacket }[] = [];
   for (let offset = 0; offset < total; offset += 1) {
     const id = first + offset;
     const packet = log.blocks[Math.floor(id / FRAME_LOG_BLOCK_SIZE) - firstBlock]?.[id % FRAME_LOG_BLOCK_SIZE];
-    if (packet !== undefined && packet.packet === packetFilter) matched.push({ id, packet });
+    if (packet !== undefined && (packet.packet === packetFilter ||
+        (section !== undefined && packet.packet === 'status' && packet.values.device_sample_us !== undefined))) {
+      matched.push({ id, packet });
+    }
   }
   const count = matched.length;
   const clampedStart = Math.max(0, Math.min(count, offsetStart));
   const clampedEnd = Math.max(clampedStart, Math.min(count, offsetEnd));
-  return { rows: matched.slice(clampedStart, clampedEnd), count };
+  const rows = matched.slice(clampedStart, clampedEnd);
+  return { rows: section === undefined ? rows : rows.map((row) => row.packet.packet === section
+    ? row : { ...row, packet: bundleFields(row.packet, section) }), count };
 }

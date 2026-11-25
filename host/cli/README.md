@@ -32,6 +32,12 @@ It keeps polling through a lost connection and prints the error:
 
 The time is the bridge's receipt time.
 
+Current firmware sends one 5 Hz status frame on `/s` with vehicle state,
+motion, attitude and forward sonar. The CLI prints the bundle on one line
+with its shared sequence and device timestamp. The bridge also reads separate
+legacy status, motion and physics frames. Update the bridge before flashing
+firmware that sends the bundle.
+
 `command` posts `{"action": "<name>"}` and prints `sent <name> cmd_id=<id>` on
 the bridge's 202 reply. The bridge adds the run ID, the command ID and the
 heartbeat uptime, and refuses with 503 when it has no fresh heartbeat and diag

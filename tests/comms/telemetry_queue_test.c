@@ -463,7 +463,9 @@ static void test_topic_length_validation (void)
             fill_frame(frame, len, 0x11U);
             frame[0] = g_topics[t];
             r        = telemetry_queue_push(frame, len, 0U);
-            if (len == frame_len(g_topics[t]))
+            if ((len == frame_len(g_topics[t])) ||
+                ((frame[0] == (uint8_t)TELEMETRY_TOPIC_STATUS) &&
+                 (len == TELEMETRY_STATUS_BUNDLE_FRAME_SIZE)))
             {
                 CHECK(r == E_OK);
                 CHECK(g_mbf_fake.send_calls == (sent + 1U));

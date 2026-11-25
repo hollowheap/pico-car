@@ -96,6 +96,13 @@ WebSocket on the same port. Use `npm run serve` to reuse the current web export.
   private HTTP station on a non-loopback address, set
   `EXPO_PUBLIC_ALLOW_INSECURE=1` when exporting the dashboard.
 
+Firmware publishes one [75-byte telemetry bundle](protocol/telemetry.yaml)
+on `/s` every 200 ms. It carries status, wheel motion, attitude, and the
+latest qualified forward sonar shot when available. The bundle has one
+sequence and a device timestamp for the telemetry pass. Encoder and sonar
+ages identify their respective acquisition times. The bridge still decodes
+legacy status, motion, and physics packets from older firmware and recordings.
+
 To run the station in containers:
 
 ```sh

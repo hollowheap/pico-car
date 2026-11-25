@@ -69,6 +69,8 @@ static uint32_t volatile g_status = 0U;
 /* Last good wheel travel; the obstacle task only. */
 static obstacle_travel_t g_travel = {0U, 0U};
 static uint32_t volatile g_ping   = 0U;
+static obstacle_forward_sample_t volatile g_forward;
+static bool volatile g_b_forward_available = false;
 /* The statechart's ping word as last published, to tell a new free-running
  * ping from one that was already shown. */
 static uint32_t g_fsm_ping_seen = 0U;
@@ -475,6 +477,40 @@ uint32_t obstacle_comms_take_ping_request (void)
 void obstacle_comms_publish_ping_reply (uint32_t word)
 {
     g_ping = word;
+}
+
+void obstacle_comms_publish_forward (const obstacle_forward_sample_t * p_sample)
+{
+    UINT const intsts = lock_take(&g_pub_lock);
+
+    g_b_forward_available = (p_sample != NULL);
+    if (p_sample != NULL)
+    {
+        g_forward = *p_sample;
+    }
+    lock_give(&g_pub_lock, intsts);
+}
+
+ER obstacle_forward_snapshot (obstacle_forward_sample_t * p_sample)
+{
+    if (p_sample == NULL)
+    {
+        return E_PAR;
+    }
+    if (g_links.h_flag <= 0)
+    {
+        return E_OBJ;
+    }
+    ER         result = E_OBJ;
+    UINT const intsts = lock_take(&g_pub_lock);
+
+    if (g_b_forward_available)
+    {
+        *p_sample = g_forward;
+        result    = E_OK;
+    }
+    lock_give(&g_pub_lock, intsts);
+    return result;
 }
 
 /*!

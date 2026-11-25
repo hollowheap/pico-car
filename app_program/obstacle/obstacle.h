@@ -95,6 +95,16 @@ typedef struct
 
 STATIC_ASSERT (sizeof(obstacle_status_t) == 18U, "obstacle_status_t size");
 
+/* Latest settled, centered, free-running sonar shot. */
+typedef struct
+{
+    uint32_t trigger_us;  /* Low 32 bits of the boot-relative hardware timer. */
+    uint16_t distance_mm; /* Range for VALID, 20 for TOO_CLOSE, 0 otherwise. */
+    uint8_t echo_class; /* Raw OBSTACLE_CLASS_* value, including echo faults. */
+} obstacle_forward_sample_t;
+
+STATIC_ASSERT(sizeof(obstacle_forward_sample_t) == 8U, "forward sample size");
+
 /* The plan from the last finished scan. It is valid after the first scan. */
 typedef struct
 {
@@ -188,6 +198,11 @@ ER obstacle_ping_request (int16_t servo_deci, uint8_t seq);
 /* Non-consuming latest ping, shared by readers. Bit 27 identifies a reply.
  * The servo field records the commanded bearing. There is no capture timestamp. */
 uint32_t obstacle_ping_read (void);
+
+/* Coherent copy of the latest centered shot. E_OBJ when unavailable, including
+ * while serving an aimed request. The reader checks the age at its own clock.
+ */
+ER obstacle_forward_snapshot (obstacle_forward_sample_t * p_sample);
 
 /* Event flag for NAV_EVT and NAV_STEER waits. E_OBJ before init. */
 ID obstacle_flag_id (void);

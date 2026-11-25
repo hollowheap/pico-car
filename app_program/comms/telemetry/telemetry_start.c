@@ -116,54 +116,44 @@ LOCAL uint8_t current_line_bits (void)
 }
 
 /*!
- * @brief Queue the 5 Hz frames: status, motion and physics. Each subsystem
- *        snapshot is read once.
+ * @brief Queue one 5 Hz status bundle. Copy within each subsystem's snapshot
+ *        before packing or touching the queue.
  */
 LOCAL void telemetry_send_fast (void)
 {
-    uint8_t              packet[TELEMETRY_WIRE_MAX];
-    motion_status_t      motion;
-    motion_feedback_t    feedback;
-    motion_diag_t        diag;
-    physics_status_t     physics;
-    obstacle_status_t    obstacle;
-    telemetry_status_t   status;
-    telemetry_motion_t   moving;
-    telemetry_physics_t  imu;
-    bool const           b_motion   = (E_OK == motion_snapshot(&motion, &feedback, &diag));
-    bool const           b_feedback = b_motion;
-    bool const           b_diag     = b_motion;
-    bool const           b_physics  = (E_OK == physics_snapshot(&physics));
-    bool const           b_obstacle = (E_OK == obstacle_snapshot(&obstacle));
-    line_task_stats_t    line;
+    uint8_t                   packet[TELEMETRY_STATUS_BUNDLE_WIRE_SIZE];
+    motion_status_t           motion;
+    motion_feedback_t         feedback;
+    motion_diag_t             diag;
+    physics_status_t          physics;
+    obstacle_status_t         obstacle;
+    obstacle_forward_sample_t forward;
+    telemetry_status_bundle_t bundle;
+    bool const b_motion  = (E_OK == motion_snapshot(&motion, &feedback, &diag));
+    bool const b_physics = (E_OK == physics_snapshot(&physics));
+    bool const b_obstacle = (E_OK == obstacle_snapshot(&obstacle));
+    bool const b_forward  = (E_OK == obstacle_forward_snapshot(&forward));
+    line_task_stats_t line;
 
     uint32_t hug[HUG_WORD_COUNT];
     line_task_hug(hug);
     line_task_stats(&line);
-    telemetry_assemble_status(&status, b_motion ? &motion : NULL,
-                              b_feedback ? &feedback : NULL,
-                              b_physics ? &physics : NULL,
-                              b_obstacle ? &obstacle : NULL, (uint16_t)system_fault_get(),
-                              g_status_seq, current_line_bits(), line.b_turning, hug);
+    telemetry_assemble_status(
+        &bundle.status, b_motion ? &motion : NULL, b_motion ? &feedback : NULL,
+        b_physics ? &physics : NULL, b_obstacle ? &obstacle : NULL,
+        (uint16_t)system_fault_get(), g_status_seq, current_line_bits(),
+        line.b_turning, hug);
     g_status_seq++;
+    telemetry_assemble_motion(&bundle.motion, b_motion ? &motion : NULL,
+                              b_motion ? &feedback : NULL,
+                              b_motion ? &diag : NULL);
+    telemetry_assemble_physics(&bundle.physics, b_physics ? &physics : NULL);
+    telemetry_assemble_bundle_details(
+        &bundle, now_us(), b_motion ? &feedback : NULL,
+        b_physics ? &physics : NULL, b_forward ? &forward : NULL);
     (void)telemetry_queue_push_packet(
         (uint8_t)TELEMETRY_TOPIC_STATUS, packet,
-        telemetry_pack_status(packet, &status), 0U);
-
-    telemetry_assemble_motion(&moving, b_motion ? &motion : NULL,
-                              b_feedback ? &feedback : NULL,
-                              b_diag ? &diag : NULL);
-    /* Cast is safe: the frame keeps the low byte to pair with status. */
-    moving.seq = (uint8_t)status.seq;
-    (void)telemetry_queue_push_packet(
-        (uint8_t)TELEMETRY_TOPIC_MOTION, packet,
-        telemetry_pack_motion(packet, &moving), 0U);
-
-    telemetry_assemble_physics(&imu, b_physics ? &physics : NULL);
-    imu.seq = (uint8_t)status.seq;
-    (void)telemetry_queue_push_packet(
-        (uint8_t)TELEMETRY_TOPIC_PHYSICS, packet,
-        telemetry_pack_physics(packet, &imu), 0U);
+        telemetry_pack_status_bundle(packet, &bundle), 0U);
 }
 
 /*!

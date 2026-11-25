@@ -413,6 +413,7 @@ static bool serve_ping_request (void)
         /* Cast is safe: the clamped servo angle fits in int16_t. */
         int16_t const target =
             (int16_t)obstacle_pack_servo_clamp(obstacle_pack_ping_req_servo(req));
+        obstacle_comms_publish_forward(NULL);
         if (!read_requested_ping(target, &cls, &dist_mm))
         {
             if (g_servo.deci != 0)
@@ -449,6 +450,16 @@ static void ping_and_step (void)
     obstacle_comms_count_class(cls);
     sonar_health_ping(&g_health, cls, dist_mm, true, g_servo.deci);
     obstacle_comms_publish(&g_health);
+    if (g_servo.b_known && (0 == g_servo.deci))
+    {
+        obstacle_forward_sample_t const sample = {
+            .trigger_us  = g_last_trig_us,
+            .distance_mm = g_health.last_dist,
+            .echo_class  = cls,
+        };
+
+        obstacle_comms_publish_forward(&sample);
+    }
 }
 
 /*** end of file ***/

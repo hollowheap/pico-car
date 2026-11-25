@@ -28,7 +28,7 @@ topics:
   command: "c"
 
 packets:
-  # Original /s layout. The firmware sends status_pivot on the same topic.
+  # Original /s layout. The firmware sends status_bundle on the same topic.
   status:
     wire_size: 16
     fields:
@@ -42,7 +42,7 @@ packets:
       # Bits 3–4 hold barcode_element and bits 5–7 hold the latest barcode_phase.
       - { name: line_bits, offset: 14, type: uint8 }
       - { name: hold_mask, offset: 15, type: uint8 }
-  # 5 Hz. Wheels and the motion controller. seq here and in physics is the
+  # Legacy /m. Wheels and the motion controller. seq here and in physics is the
   # low byte of the status seq of the same pass: a client pairs the three
   # frames and sees a lost one. The frames of one pass share the seq and each
   # is one coherent snapshot of its subsystem; the three are not read at the
@@ -60,7 +60,7 @@ packets:
       - { name: motion_fault, offset: 13, type: uint8, enum: motion_fault }
       - { name: overruns, offset: 14, type: uint16 }
       - { name: seq, offset: 16, type: uint8 }
-  # 5 Hz. IMU, hump and attitude. Roll, az, amag and attitude_state can hold
+  # Legacy /p. IMU, hump and attitude. Roll, az, amag and attitude_state can hold
   # their last known values while calibration is missing or IMU faults are set.
   physics:
     wire_size: 24
@@ -249,7 +249,7 @@ packets:
       - { name: width_valid, offset: 16, type: uint8 }
       - { name: capture_loss, offset: 17, type: uint8 }
 
-  # Current /s layout. Pivot scale is the measured body yaw as a percentage
+  # Earlier /s layout. Pivot scale is the measured body yaw as a percentage
   # of encoder yaw in a steady pivot. Zero means no usable measurement.
   status_pivot:
     variant_of: status
@@ -265,6 +265,65 @@ packets:
       - { name: line_bits, offset: 14, type: uint8 }
       - { name: hold_mask, offset: 15, type: uint8 }
       - { name: pivot_scale_pct, offset: 16, type: uint8 }
+
+  # 5 Hz /s. Status-pivot prefix, then the legacy motion and physics fields
+  # without their duplicate seq bytes. All three share the uint16 status seq.
+  # Snapshots are coherent within each subsystem and copied in one pass.
+  status_bundle:
+    variant_of: status
+    wire_size: 75
+    fields:
+      - { name: speed_mms, offset: 0, type: int16 }
+      - { name: odometer_mm, offset: 2, type: uint32 }
+      - { name: heading_ddeg, offset: 6, type: uint16 }
+      - { name: state, offset: 8, type: uint8, enum: run_state }
+      - { name: mode, offset: 9, type: uint8, enum: vehicle_mode }
+      - { name: faults, offset: 10, type: uint16 }
+      - { name: seq, offset: 12, type: uint16 }
+      - { name: line_bits, offset: 14, type: uint8 }
+      - { name: hold_mask, offset: 15, type: uint8 }
+      - { name: pivot_scale_pct, offset: 16, type: uint8 }
+      - { name: left_mms, offset: 17, type: int16 }
+      - { name: right_mms, offset: 19, type: int16 }
+      - { name: left_target_mms, offset: 21, type: int16 }
+      - { name: right_target_mms, offset: 23, type: int16 }
+      - { name: left_duty_pm, offset: 25, type: int16 }
+      - { name: right_duty_pm, offset: 27, type: int16 }
+      - { name: motion_state, offset: 29, type: uint8, enum: motion_state }
+      - { name: motion_fault, offset: 30, type: uint8, enum: motion_fault }
+      - { name: overruns, offset: 31, type: uint16 }
+      - { name: pitch_cdeg, offset: 33, type: int16 }
+      - { name: roll_cdeg, offset: 35, type: int16 }
+      - { name: az_mg, offset: 37, type: int16 }
+      - { name: amag_mg, offset: 39, type: uint16 }
+      - { name: a_fwd_mg, offset: 41, type: int16 }
+      - { name: yaw_rate_cdps, offset: 43, type: int16 }
+      - { name: physics_heading_ddeg, offset: 45, type: uint16 }
+      - { name: hump_peak_mm, offset: 47, type: uint16 }
+      - { name: run_peak_mm, offset: 49, type: uint16 }
+      - { name: hump_state, offset: 51, type: uint8, enum: hump_state }
+      - { name: motion_class, offset: 52, type: uint8, enum: motion_class }
+      - { name: physics_faults, offset: 53, type: uint8, enum: physics_faults }
+      - { name: flags, offset: 54, type: uint8, enum: physics_flags }
+      - { name: attitude_state, offset: 55, type: uint8, enum: attitude_state }
+      # Low 32 bits of the boot-relative microsecond timer, after copying
+      # snapshots. Sequence and timer differences are unsigned modulo 2^16
+      # and 2^32, respectively. Neither counts from the start of a run.
+      - { name: device_sample_us, offset: 56, type: uint32 }
+      # Signed cumulative wheel travel since boot, positive car-forward.
+      # Truncated to whole mm and saturated at int32 limits.
+      - { name: left_travel_mm, offset: 60, type: int32 }
+      - { name: right_travel_mm, offset: 64, type: int32 }
+      # Age at device_sample_us. 65535 means unavailable or too old to encode.
+      - { name: wheel_age_us, offset: 68, type: uint16 }
+      - { name: sample_flags, offset: 70, type: uint8, enum: status_sample_flags }
+      # Settled, centered, free-running sonar shot. Range is 65535 without a
+      # finite echo (including OPEN and NO_ECHO), 20 for TOO_CLOSE.
+      # Class and age are both 255 before a shot, during aimed requests or when
+      # the centered shot is older than 250 ms. Age is whole ms since the probe attempt.
+      - { name: forward_dist_mm, offset: 71, type: uint16 }
+      - { name: forward_echo_class, offset: 73, type: uint8, enum: echo_class }
+      - { name: forward_age_ms, offset: 74, type: uint8 }
 
 # A command on the command topic is a 9-byte frame, big-endian:
 #   cmd_id u16, run_id u16, opcode u8, uptime_s u32
@@ -561,6 +620,16 @@ enums:
       lifted: 3
       overturned: 4
       mag_bad: 5
+  # Require wheel_fresh as well as the matching validity bit for an interval.
+  # The attitude bit qualifies the latest calibrated attitude snapshot.
+  status_sample_flags:
+    bits:
+      wheel_fresh: 0
+      left_speed_valid: 1
+      right_speed_valid: 2
+      left_travel_valid: 3
+      right_travel_valid: 4
+      attitude_valid: 5
   physics_flags:
     bits:
       hump_active: 0

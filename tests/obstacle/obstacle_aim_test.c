@@ -65,6 +65,7 @@ static bool g_aimed_echo_fault;
 static bool g_aimed_forward;
 static uint16_t g_published_echo_faults;
 static uint32_t g_forward_ping;
+static bool g_qualified_forward;
 static uint32_t g_forward_before_trigger;
 static uint32_t g_trigger_ms;
 static unsigned g_class_count;
@@ -258,6 +259,20 @@ void obstacle_comms_publish (sonar_health_t const * p_health)
     g_published_echo_faults = p_health->echo_faults;
 }
 
+void obstacle_comms_publish_forward (const obstacle_forward_sample_t * p_sample)
+{
+    g_qualified_forward = (p_sample != NULL);
+    if (p_sample != NULL)
+    {
+        uint32_t const trigger_ms = p_sample->echo_class == OBSTACLE_CLASS_STUCK ? g_ms : g_trigger_ms;
+
+        CHECK(g_servo == 0);
+        CHECK(p_sample->trigger_us == trigger_ms * 1000U);
+        CHECK(p_sample->echo_class ==
+              obstacle_pack_get(g_forward_ping, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK));
+    }
+}
+
 uint32_t obstacle_comms_take_ping_request (void)
 {
     uint32_t const request = g_request;
@@ -268,6 +283,7 @@ uint32_t obstacle_comms_take_ping_request (void)
 
 void obstacle_comms_publish_ping_reply (uint32_t reply)
 {
+    CHECK(!g_qualified_forward);
     g_replies++;
     g_last_reply = obstacle_pack_ping_seq(reply);
     if (g_stop_case != STOP_NONE)
@@ -416,6 +432,7 @@ int main (int argc, char ** argv)
         CHECK(!obstacle_pack_ping_is_reply(g_forward_ping));
         CHECK(obstacle_pack_ping_seq(g_forward_ping) == 2U);
         CHECK(obstacle_pack_ping_servo(g_forward_ping) == 0);
+        CHECK(g_qualified_forward);
         return g_fail == 0U ? 0 : 1;
     }
     if (g_aimed_echo_fault)

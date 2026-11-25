@@ -7,6 +7,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "comms/telemetry/wire_schema.h"
+
 #define WORLD_WHEELS      (2U)
 #define WORLD_EVENTS_MAX  (4096U)
 #define WORLD_BOXES_MAX   (4U)
@@ -93,6 +95,11 @@ typedef struct
     bool     mqtt_up;
     uint32_t mqtt_drops;
     uint32_t frames_published;
+    uint32_t status_frames;
+    uint32_t separate_motion_frames;
+    uint32_t separate_physics_frames;
+    uint16_t status_wire_size;
+    uint8_t status_payload[TELEMETRY_STATUS_BUNDLE_WIRE_SIZE];
     uint32_t heartbeats;
     uint32_t heartbeat_uptime_s;
     uint32_t heartbeat_car_id;
