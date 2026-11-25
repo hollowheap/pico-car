@@ -88,8 +88,8 @@ typedef struct
 
 void physics_task_default_config (physics_task_config_t * p_cfg);
 
-/* Create the cyclic handler. The composition root
- * creates the task named by task_id and calls physics_task_run() from it. The
+/* Create the cyclic handler. physics_start()
+ * creates the task named by task_id, which calls physics_task_run(). The
  * cyclic handler needs the task id, so create the task first. Returns E_OK
  * or the first kernel error. */
 ER physics_task_init (const physics_task_config_t * p_cfg, ID task_id);

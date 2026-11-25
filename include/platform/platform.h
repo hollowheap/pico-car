@@ -16,10 +16,12 @@
 /* Initialise the log and create the startup barrier. */
 void platform_init (void);
 
-/* Create and start the startup task. Call it after every other subsystem has
-   started, so that the task IDs it reads exist. Returns false when the task
-   could not be created or started. */
-bool platform_start (void);
+/* Create and start the startup task running body. Call it after every other
+   subsystem has started, so that the task IDs the body reads exist. The body
+   ends with platform_startup_ready() or platform_startup_failed(), then
+   tk_exd_tsk(). Returns false when the task could not be created or
+   started. */
+bool platform_start (FP body);
 
 /* Wait until the startup task has finished. Returns false on a startup
    failure; the caller must then park. */
@@ -27,6 +29,9 @@ bool platform_wait_startup (void);
 
 /* Park a task whose service could not start. Never returns. */
 void platform_park (void);
+
+/* Tell every waiting task that startup finished and they may run. */
+void platform_startup_ready (void);
 
 /* Tell every waiting task that the system will not start. */
 void platform_startup_failed (void);

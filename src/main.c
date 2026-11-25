@@ -1,17 +1,17 @@
 #include <tk/tkernel.h>
-#include <tk/smp.h>
-#include <tm/tmonitor.h>
 #include <bsp/libbsp.h>
 
+#include "motion/motion.h"
 #include "motion/motor_setup.h"
 #include "navigation/obstacle.h"
 #include "physics/physics.h"
-#include "platform/faults.h"
+#include "platform/isr.h"
 #include "platform/liveness.h"
 #include "platform/log.h"
 #include "platform/platform.h"
 #include "platform/static_assert.h"
 #include "supervisor/supervisor.h"
+#include "telemetry/cmd.h"
 #include "telemetry/connection.h"
 #include "telemetry/telemetry.h"
 #include "track/barcode.h"
@@ -78,13 +78,15 @@ LOCAL bool configure_supervisor (uint16_t optional_mask)
  */
 LOCAL bool start_tasks (uint16_t * p_optional_mask)
 {
-    bool b_ok = true;
-
-    b_ok = motion_start() && b_ok;
-    b_ok = physics_start() && b_ok;
-    b_ok = obstacle_start() && b_ok;
-    b_ok = track_start() && b_ok;
-    b_ok = supervisor_start() && b_ok;
+    bool b_ok = motion_start();
+    b_ok = b_ok && physics_start();
+    b_ok = b_ok && obstacle_start();
+    b_ok = b_ok && track_start();
+    b_ok = b_ok && supervisor_start();
+    if (!b_ok)
+    {
+        return false;
+    }
     telemetry_start();
     *p_optional_mask = telemetry_live_mask();
     if (barcode_start())
@@ -95,6 +97,66 @@ LOCAL bool start_tasks (uint16_t * p_optional_mask)
     return b_ok;
 }
 
+/*!
+ * @brief Hand a telemetry command to the supervisor.
+ *
+ * The supervisor decides. The emergency stop also acts here, at once: it
+ * never waits for the next supervisor pass. The latch needs a reboot.
+ */
+LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
+{
+    (void)context;
+
+    if ((uint8_t)TELEMETRY_CMD_ESTOP == cmd->opcode)
+    {
+        (void)motion_request_stop();
+    }
+    (void)vehicle_command_post_ids(cmd->opcode, VEHICLE_SRC_TELEMETRY,
+                                   cmd->cmd_id, cmd->run_id);
+}
+
+LOCAL void startup_task (INT stacd, void * exinf)
+{
+    ER result = gpio_irq_init();
+
+    (void)stacd;
+    (void)exinf;
+
+    if (E_OK == result)
+    {
+        result = motion_setup(motion_task_id());
+    }
+    if (E_OK == result)
+    {
+        result = physics_setup(physics_task_id());
+    }
+    if (E_OK == result)
+    {
+        result = ir_capture_init();
+    }
+    if (E_OK == result)
+    {
+        /* Obstacle avoidance. If it fails, line following still
+         * runs, but this build stops instead of driving blind. */
+        result = obstacle_line_init();
+    }
+
+    if (E_OK == result)
+    {
+        platform_startup_ready();
+    }
+    else
+    {
+        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "startup failed, er=%d",
+                  (int)result);
+        /* The telemetry task parks on a failed startup, so print now. */
+        log_flush();
+        platform_startup_failed();
+    }
+
+    (void)tk_exd_tsk();
+}
+
 EXPORT INT usermain (void)
 {
     uint16_t optional_mask = 0U;
@@ -102,7 +164,7 @@ EXPORT INT usermain (void)
 
     motion_init();
     platform_init();
-    telemetry_init();
+    telemetry_init(command_dispatch);
     physics_init();
     obstacle_init();
     track_init();
@@ -112,7 +174,7 @@ EXPORT INT usermain (void)
     /* The startup task goes last: it reads the IDs of the tasks started
      * before it, and releases them from the startup barrier. */
     b_ok = start_tasks(&optional_mask) && configure_supervisor(optional_mask) &&
-           platform_start();
+           platform_start(startup_task);
     if (!b_ok)
     {
         /* Tasks that already started wait on the startup barrier. */

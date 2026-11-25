@@ -329,24 +329,6 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
     }
 }
 
-/*!
- * @brief Hand a telemetry command to the supervisor.
- *
- * The supervisor decides. The emergency stop also acts here, at once: it
- * never waits for the next supervisor pass. The latch needs a reboot.
- */
-LOCAL void command_dispatch (const telemetry_cmd_t * cmd, void * context)
-{
-    (void)context;
-
-    if ((uint8_t)TELEMETRY_CMD_ESTOP == cmd->opcode)
-    {
-        (void)motion_request_stop();
-    }
-    (void)vehicle_command_post_ids(cmd->opcode, VEHICLE_SRC_TELEMETRY,
-                                   cmd->cmd_id, cmd->run_id);
-}
-
 LOCAL void connection_task (INT stacd, void * exinf)
 {
     (void)stacd;
@@ -383,7 +365,7 @@ LOCAL T_CTSK g_ctsk_connection = {
 #endif
 };
 
-void telemetry_init (void)
+void telemetry_init (connection_cmd_dispatch_t dispatch)
 {
     ER result = E_OK;
 
@@ -406,7 +388,7 @@ void telemetry_init (void)
                   (int)result);
     }
 
-    result = connection_init(command_dispatch, NULL);
+    result = connection_init(dispatch, NULL);
     g_b_connection = (E_OK == result);
     if (!g_b_connection)
     {

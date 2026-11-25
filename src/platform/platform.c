@@ -6,14 +6,9 @@
 
 #include "platform/platform.h"
 
-#include "motion/motor_setup.h"
-#include "navigation/obstacle.h"
-#include "physics/physics.h"
 #include "platform/faults.h"
-#include "platform/isr.h"
 #include "platform/log.h"
 #include "platform/stack.h"
-#include "track/track.h"
 
 #define STACK_STARTUP_SZ (2048U)
 
@@ -92,46 +87,9 @@ bool platform_task_started (const char * p_what, ID tid)
     return b_started;
 }
 
-LOCAL void startup_task (INT stacd, void * exinf)
+void platform_startup_ready (void)
 {
-    ER result = gpio_irq_init();
-
-    (void)stacd;
-    (void)exinf;
-
-    if (E_OK == result)
-    {
-        result = motion_setup(motion_task_id());
-    }
-    if (E_OK == result)
-    {
-        result = physics_setup(physics_task_id());
-    }
-    if (E_OK == result)
-    {
-        result = ir_capture_init();
-    }
-    if (E_OK == result)
-    {
-        /* Obstacle avoidance. If it fails, line following still
-         * runs, but this build stops instead of driving blind. */
-        result = obstacle_line_init();
-    }
-
-    if (E_OK == result)
-    {
-        (void)tk_set_flg(g_startup_flg, STARTUP_FLAG_READY);
-    }
-    else
-    {
-        LOG_ERROR(LOG_TASK_BOOT, LOG_MOD_NONE, "startup failed, er=%d",
-                  (int)result);
-        /* The telemetry task parks on a failed startup, so print now. */
-        log_flush();
-        (void)tk_set_flg(g_startup_flg, STARTUP_FLAG_FAILED);
-    }
-
-    (void)tk_exd_tsk();
+    (void)tk_set_flg(g_startup_flg, STARTUP_FLAG_READY);
 }
 
 /* Task table. Core 0 (TP_PRC1) runs real-time control at priorities 1 to 5
@@ -149,7 +107,7 @@ LOCAL void startup_task (INT stacd, void * exinf)
 LOCAL T_CTSK g_ctsk_startup = {
     .itskpri = 1,
     .stksz   = STACK_STARTUP_SZ,
-    .task    = startup_task,
+    .task    = NULL,
     .bufptr  = g_startup_stack,
 #if TK_SUPPORT_SMP
     .tskatr = TA_HLNG | TA_RNG3 | TA_USERBUF | TA_ASSPRC,
@@ -159,9 +117,12 @@ LOCAL T_CTSK g_ctsk_startup = {
 #endif
 };
 
-bool platform_start (void)
+bool platform_start (FP body)
 {
-    ID const tid = tk_cre_tsk(&g_ctsk_startup);
+    ID tid = 0;
+
+    g_ctsk_startup.task = body;
+    tid = tk_cre_tsk(&g_ctsk_startup);
 
     return platform_task_made("tsk(startup)", tid) &&
            platform_task_started("tsk(startup)", tid);

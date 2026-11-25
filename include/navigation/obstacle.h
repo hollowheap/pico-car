@@ -113,8 +113,9 @@ void obstacle_init (void);
 bool obstacle_start (void);
 
 /* Initialize obstacle while parked. Uses the motion-service links and the
- * obstacle outbox. The composition root calls this after gpio_irq_init() and
- * motion_service_init(), then creates the task and calls obstacle_run(). */
+ * obstacle outbox. The startup task calls this after gpio_irq_init() and
+ * motion_service_init(); the task created by obstacle_start() runs
+ * obstacle_run(). */
 ER obstacle_line_init (void);
 
 /* Optionally observe the initial center and subsequent commanded sonar angles.

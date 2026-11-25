@@ -32,8 +32,8 @@ bool motion_start (void);
 ID motion_task_id (void);
 
 /**
- * Task body of the motion service. The composition root creates the task and
- * calls this; the task owns the motors until reboot. Never returns.
+ * Task body of the motion service. The task created by motion_start() calls
+ * this; the task owns the motors until reboot. Never returns.
  */
 void motion_service_run (void);
 

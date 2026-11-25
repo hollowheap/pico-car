@@ -4,7 +4,7 @@
  *
  * The controller, PID, odometry and PWM headers stay private in
  * src/motion/. Configuration and task start-up remain in the private
- * motion_service.h and are called only by the composition root.
+ * motion_service.h and are called only by the motion subsystem and the startup task.
  */
 
 #ifndef MOTION_MOTION_H

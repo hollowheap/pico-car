@@ -9,9 +9,12 @@
 
 #include <stdint.h>
 
-/* Create the frame queues and prepare the connection. Telemetry is optional:
-   the car still runs when either fails. */
-void telemetry_init (void);
+#include "telemetry/connection.h"
+
+/* Create the frame queues and prepare the connection. dispatch receives every
+   command the connection accepts. Telemetry is optional: the car still runs
+   when either fails. */
+void telemetry_init (connection_cmd_dispatch_t dispatch);
 
 /* Create and start the telemetry and connection tasks. A failure is logged
    and the task is left out of telemetry_live_mask(). */

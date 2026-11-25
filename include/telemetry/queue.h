@@ -23,7 +23,7 @@
    among the frame lengths. */
 #define TELEMETRY_EVENT_QUEUED_SIZE (TELEMETRY_EVENT_WIRE_SIZE + 1u)
 
-/* Called by the composition root before producers or the consumer run. */
+/* Called by telemetry_init() before producers or the consumer run. */
 ER telemetry_queue_create(void);
 
 /* Pushes a frame: frame[0] is the topic (TELEMETRY_TOPIC_*), the rest is the

@@ -33,7 +33,7 @@
 #define SUPERVISOR_STALL_SENSOR   (0x81U) /* the line sensors never change         */
 #define SUPERVISOR_STALL_ENCODERS (0x82U) /* the wheels answer crosswise */
 
-/* The pass period of the task. The composition root wakes the task with a
+/* The pass period of the task. supervisor_start() wakes the task with a
    cyclic handler of this period. */
 #define SUPERVISOR_PASS_MS (20U)
 
@@ -65,11 +65,11 @@ void supervisor_init (void);
    not start. */
 bool supervisor_start (void);
 
-/* Prepare the supervisor. Call once from the startup task, before the task
-   runs. */
+/* Prepare the supervisor. Call once from the composition root, after
+   supervisor_start() and before the startup barrier opens. */
 ER supervisor_setup (const supervisor_config_t * p_config);
 
-/* Task body. Never returns. The composition root creates the task and the
+/* Task body. Never returns. supervisor_start() creates the task and the
    cyclic handler that wakes it. */
 void supervisor_run (void);
 

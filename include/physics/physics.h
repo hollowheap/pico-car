@@ -76,9 +76,9 @@ bool physics_start (void);
 /* The ID of the physics task, or 0 before physics_start() created it. */
 ID physics_task_id (void);
 
-/* Set up the task's message buffers and cyclic handler. The composition
- * root creates the task named by task_id and calls physics_run() from it,
- * so create the task before calling this. Call once, after
+/* Set up the task's message buffers and cyclic handler. The task
+ * named by task_id is created by physics_start() and runs physics_run(), so
+ * start it before calling this. Call once, after
  * motion_service_init(), because the default configuration reads the motion service's
  * motion service. */
 ER physics_setup (ID task_id);
