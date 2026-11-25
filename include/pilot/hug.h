@@ -315,13 +315,31 @@ typedef struct
     bool b_left_scan_gap : 1;
     bool b_right_scan_gap : 1;
     bool b_pivot_reaimed : 1; /* one post-settlement correction before replanning */
-    uint32_t bend_start_ms;
-    uint32_t bend_outer_um; /* outer wheel at the first such return, low 32 bits */
+    bool b_fan_pending : 1;   /* anchor.fan_pose awaits copy-out at the first idle tick */
+    bool b_settled_pose : 1;  /* last_left_um and last_right_um hold the last fine fan's pose */
+    uint8_t quiet_pings : 2;  /* measured clear forward pings in a row since the last fan start, max three */
+    /* Bend is written in idle and fan_pose in bypass, so they share storage. The fan pose
+     * is copied out to last_*_um at the first idle tick, before recheck_on_bend can
+     * overwrite the bend anchor. */
+    union
+    {
+        struct
+        {
+            uint32_t start_ms;
+            uint32_t outer_um; /* outer wheel at the first such return, low 32 bits */
+        } bend;
+        struct
+        {
+            uint32_t left_um;
+            uint32_t right_um;
+        } fan_pose;
+    } anchor;
 } hug_t;
 
 STATIC_ASSERT(sizeof(hug_t) == 200U, "hug_t size");
 
-/** Idle, no memory of a face. */
+/** Idle, no memory of a face. Keeps the last fine fan's settled pose, so a latch cannot
+ *  re-arm a fan at an unmoved pose. The struct must hold a previous hug or be zeroed. */
 void hug_init(hug_t * p_hug);
 
 /** After a complete empty IR sweep, resume the remaining perimeter once if
@@ -356,5 +374,11 @@ int32_t hug_pivot_turn_um(int32_t diff_um, uint8_t witness_pct);
  * @return true when the hug has taken control and filled p_out.
  */
 bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out);
+
+/** True when a fan may start here. At the last fine fan's settled pose it needs
+ *  either both wheels PILOT_MOVE_MIN_UM from that pose in either direction, or a new
+ *  encounter: a forward contact after three consecutive measured clear forward pings
+ *  since that fan started. Unusable echoes count as neither clear nor contact. */
+bool hug_fan_renewable(hug_t const * p_hug, hug_in_t const * p_in);
 
 #endif /* PILOT_HUG_H */

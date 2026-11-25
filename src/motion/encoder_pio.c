@@ -2,6 +2,7 @@
  * @brief Start and read the quadrature state machines. See encoder_pio.h.
  */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "hardware/pio.h"
@@ -16,7 +17,8 @@
 #define ENCODER_PIO_PINS   (2U)
 #define ENCODER_PIO_SHIFT  (32U)
 
-static PIO  gp_pio;
+static PIO  gp_pio = NULL;
+static uint g_offset = 0U;
 static uint g_sm[ENCODER_WHEELS];
 
 static void start_sm (uint sm, uint offset, uint pin_a)
@@ -37,32 +39,60 @@ static void start_sm (uint sm, uint offset, uint pin_a)
 
 bool encoder_pio_start (const unsigned int pins_a[ENCODER_WHEELS])
 {
+    PIO  pio    = NULL;
     uint offset = 0U;
     uint first  = 0U;
     int  second = -1;
-    bool b_ok   = pio_claim_free_sm_and_add_program(&quadrature_program, &gp_pio,
-                                                    &first, &offset);
+    bool b_ok   = false;
 
+    if (gp_pio != NULL)
+    {
+        return false;
+    }
+
+    b_ok = pio_claim_free_sm_and_add_program(&quadrature_program, &pio,
+                                             &first, &offset);
     if (b_ok)
     {
-        second = pio_claim_unused_sm(gp_pio, false);
+        second = pio_claim_unused_sm(pio, false);
         if (second < 0)
         {
-            pio_remove_program_and_unclaim_sm(&quadrature_program, gp_pio, first,
+            pio_remove_program_and_unclaim_sm(&quadrature_program, pio, first,
                                               offset);
             b_ok = false;
         }
     }
     if (b_ok)
     {
+        gp_pio              = pio;
+        g_offset            = offset;
         g_sm[ENCODER_LEFT]  = first;
         g_sm[ENCODER_RIGHT] = (uint)second;
-        start_sm(g_sm[ENCODER_LEFT], offset, pins_a[ENCODER_LEFT]);
-        start_sm(g_sm[ENCODER_RIGHT], offset, pins_a[ENCODER_RIGHT]);
-        pio_set_sm_mask_enabled(gp_pio, (1U << first) | (1U << (uint)second), true);
+        start_sm(g_sm[ENCODER_LEFT], g_offset, pins_a[ENCODER_LEFT]);
+        start_sm(g_sm[ENCODER_RIGHT], g_offset, pins_a[ENCODER_RIGHT]);
+        pio_set_sm_mask_enabled(gp_pio,
+                                (1U << g_sm[ENCODER_LEFT]) |
+                                    (1U << g_sm[ENCODER_RIGHT]),
+                                true);
     }
 
     return b_ok;
+}
+
+void encoder_pio_stop (void)
+{
+    if (gp_pio != NULL)
+    {
+        pio_set_sm_mask_enabled(gp_pio,
+                                (1U << g_sm[ENCODER_LEFT]) |
+                                    (1U << g_sm[ENCODER_RIGHT]),
+                                false);
+        pio_sm_unclaim(gp_pio, g_sm[ENCODER_RIGHT]);
+        pio_remove_program_and_unclaim_sm(&quadrature_program, gp_pio,
+                                          g_sm[ENCODER_LEFT], g_offset);
+        gp_pio   = NULL;
+        g_offset = 0U;
+    }
 }
 
 static bool rx_fifo_empty (void * p_ctx)
@@ -72,7 +102,13 @@ static bool rx_fifo_empty (void * p_ctx)
 
 bool encoder_pio_read (uint32_t words[ENCODER_WHEELS])
 {
-    uint wheel = 0U;
+    uint     wheel                 = 0U;
+    uint32_t fresh[ENCODER_WHEELS] = {0U};
+
+    if ((words == NULL) || (gp_pio == NULL))
+    {
+        return false;
+    }
 
     /* A full FIFO drops new words and keeps old ones. Drain both FIFOs first,
      * so the two waits for a fresh word overlap. */
@@ -89,7 +125,11 @@ bool encoder_pio_read (uint32_t words[ENCODER_WHEELS])
         {
             return false;
         }
-        words[wheel] = pio_sm_get(gp_pio, g_sm[wheel]);
+        fresh[wheel] = pio_sm_get(gp_pio, g_sm[wheel]);
+    }
+    for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        words[wheel] = fresh[wheel];
     }
     return true;
 }

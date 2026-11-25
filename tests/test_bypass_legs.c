@@ -7,6 +7,9 @@
 #include <string.h>
 #include "pilot/hug.h"
 
+/* Nine bearings plus the single decision-critical repeat. */
+#define FAN_ALLOWANCE (10U)
+
 typedef struct
 {
     hug_t hug;
@@ -900,6 +903,324 @@ static void test_contact_fan_uses_measured_edge(int side, int open_from, int out
     assert(observed_open && departed && requests <= 9U && "use the supported edge within the fixed fan budget");
 }
 
+static void test_fan_glitch_keeps_deadline(void)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    assert(f.out.b_req);
+    uint32_t const start = f.in.now_ms;
+    unsigned glitches = 0U;
+    unsigned requests = 1U;
+    int last_seq = (int)f.out.seq;
+
+    for (unsigned i = 0U; i < 60U; ++i)
+    {
+        bool const b_glitch = (0U == glitches) && (f.in.now_ms - start >= 200U);
+        f.in.b_stationary = !b_glitch;
+        glitches += b_glitch ? 1U : 0U;
+        tick(&f, LOOK_ECHO_NONE, 0);
+        if (f.out.b_req && ((int)f.out.seq != last_seq))
+        {
+            last_seq = (int)f.out.seq;
+            ++requests;
+        }
+        if (f.in.now_ms - start >= 1000U)
+        {
+            assert(!f.out.b_req && "a glitch cannot renew the fan deadline");
+        }
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+    }
+    assert(1U == glitches);
+    assert(requests <= FAN_ALLOWANCE && "a glitch cannot restart the fan");
+}
+
+static void test_fixed_pose_fan_once(void)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    assert(f.out.b_req);
+    uint32_t const start = f.in.now_ms;
+    unsigned requests = 1U;
+    int last_seq = (int)f.out.seq;
+
+    while (f.in.now_ms - start < 10000U)
+    {
+        tick(&f, LOOK_ECHO_VALID, 205);
+        if (f.out.b_req && ((int)f.out.seq != last_seq))
+        {
+            last_seq = (int)f.out.seq;
+            ++requests;
+        }
+    }
+    assert(requests >= 9U && "the first fan must run its full budget");
+    assert(requests <= FAN_ALLOWANCE && "a fixed pose gets one fan and one repeat over 10 s");
+}
+
+static void test_fixed_pose_hands_off_once(void)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    assert(f.out.b_req);
+    f.drop_replies = true;
+    uint32_t const start = f.in.now_ms;
+    unsigned exits = 0U;
+    unsigned requests_after_exit = 0U;
+
+    while (f.in.now_ms - start < 10000U)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+        if (f.out.b_no_exit)
+        {
+            ++exits;
+        }
+        if ((exits > 0U) && f.out.b_req)
+        {
+            ++requests_after_exit;
+        }
+    }
+    assert(1U == exits && "the fixed pose hands off exactly once");
+    assert(0U == requests_after_exit && "no fan follows the handoff");
+}
+
+static void test_hold_clock_excludes_fan_gap(void)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = false;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    uint32_t const begin = f.in.now_ms;
+    for (unsigned i = 0U; i < 8U; ++i)
+    {
+        tick(&f, LOOK_ECHO_VALID, 205);
+    }
+    f.in.b_stationary = true;
+    f.drop_replies = true;
+    bool exited = false;
+    while (!exited && (f.in.now_ms - begin < 4000U))
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        exited = f.out.b_no_exit != 0U;
+    }
+    assert(exited && "the fan hands off once its recovery budget is spent");
+    assert((f.in.now_ms - begin) <= 2000U + 40U && "the fan's own scan time is not recovery time");
+}
+
+static void stall_tick(fixture_t *f)
+{
+    f->in.b_stall = true;
+    tick(f, LOOK_ECHO_OPEN, 0);
+    f->in.b_stall = false;
+}
+
+static void fixed_fan_to_handoff(fixture_t *f)
+{
+    hug_init(&f->hug);
+    f->in.b_stationary = true;
+    tick(f, LOOK_ECHO_VALID, 205);
+    tick(f, LOOK_ECHO_VALID, 205);
+    assert(f->out.b_req);
+    f->drop_replies = true;
+    for (unsigned i = 0U; (i < 200U) && !f->out.b_no_exit; ++i)
+    {
+        tick(f, LOOK_ECHO_NONE, 0);
+        assert(f->out.speed_mm_s <= 0 && !f->out.b_rejoined);
+    }
+    assert(f->out.b_no_exit && "a fixed fan hands off once its budget is spent");
+}
+
+static void test_fixed_pose_stall_retrigger_once(void)
+{
+    fixture_t f = {0};
+    unsigned requests = 1U;
+    unsigned ends = 0U;
+    unsigned requests_after_end = 0U;
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    assert(f.out.b_req);
+    f.drop_replies = true;
+    int last_seq = (int)f.out.seq;
+    uint32_t const start = f.in.now_ms;
+
+    while (f.in.now_ms - start < 20000U)
+    {
+        if (ends > 0U)
+        {
+            stall_tick(&f);
+        }
+        else
+        {
+            tick(&f, LOOK_ECHO_NONE, 0);
+        }
+        if (f.out.b_req && ((int)f.out.seq != last_seq))
+        {
+            last_seq = (int)f.out.seq;
+            if (ends > 0U)
+            {
+                ++requests_after_end;
+            }
+            else
+            {
+                ++requests;
+            }
+        }
+        if (f.out.b_no_exit || f.out.b_timeout)
+        {
+            ++ends;
+        }
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+    }
+    assert(1U == ends && "a stalled fixed pose hands off exactly once");
+    assert(0U == requests_after_end && "a stall at a fixed pose starts no second fan");
+    assert(requests <= FAN_ALLOWANCE && "a fixed pose gets one fan and one repeat over 20 s");
+}
+
+static void test_fixed_pose_relook_cannot_restart_fan(void)
+{
+    fixture_t f = {0};
+    fixed_fan_to_handoff(&f);
+    uint32_t const start = f.in.now_ms;
+
+    while (f.in.now_ms - start < 10000U)
+    {
+        f.in.b_relook = true;
+        tick(&f, LOOK_ECHO_NONE, 0);
+        f.in.b_relook = false;
+        assert(!f.out.b_req && !f.out.b_timeout && !f.out.b_no_exit &&
+               "a relook at an unmoved pose starts no fan");
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+    }
+}
+
+static unsigned fans_after_quiet_run(int quiet_echo)
+{
+    fixture_t f = {0};
+    fixed_fan_to_handoff(&f);
+    for (unsigned i = 0U; i < 3U; ++i)
+    {
+        tick(&f, quiet_echo, 0);
+    }
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    uint32_t const start = f.in.now_ms;
+    unsigned requests = 0U;
+    int last_seq = (int)f.out.seq;
+
+    while (f.in.now_ms - start < 5000U)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        if (f.out.b_req && ((int)f.out.seq != last_seq))
+        {
+            last_seq = (int)f.out.seq;
+            ++requests;
+        }
+    }
+    return requests;
+}
+
+static void test_dropouts_are_not_a_new_encounter(void)
+{
+    assert(0U == fans_after_quiet_run(LOOK_ECHO_NONE) &&
+           "unusable echoes at an unmoved pose cannot re-arm the fan");
+}
+
+static void test_new_encounter_gets_bounded_fan(void)
+{
+    fixture_t f = {0};
+    fixed_fan_to_handoff(&f);
+    for (unsigned i = 0U; i < 3U; ++i)
+    {
+        tick(&f, LOOK_ECHO_OPEN, 0);
+    }
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    uint32_t const start = f.in.now_ms;
+    unsigned requests = 0U;
+    unsigned exits = 0U;
+    int last_seq = (int)f.out.seq;
+
+    while (f.in.now_ms - start < 5000U)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        if (f.out.b_req && ((int)f.out.seq != last_seq))
+        {
+            last_seq = (int)f.out.seq;
+            ++requests;
+        }
+        exits += f.out.b_no_exit ? 1U : 0U;
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+    }
+    assert(requests > 0U && "a contact after a clear interval gets a fan");
+    assert(1U == exits && "that fan ends in one bounded handoff");
+}
+
+static void test_nonstationary_expired_fan_hands_off_once(void)
+{
+    fixture_t f = {0};
+    hug_init(&f.hug);
+    f.in.b_stationary = true;
+    tick(&f, LOOK_ECHO_VALID, 205);
+    tick(&f, LOOK_ECHO_VALID, 205);
+    assert(f.out.b_req);
+    f.in.b_stationary = false;
+    f.drop_replies = true;
+    uint32_t const start = f.in.now_ms;
+    unsigned exits = 0U;
+    uint32_t exit_ms = 0U;
+
+    while (f.in.now_ms - start < 10000U)
+    {
+        tick(&f, LOOK_ECHO_NONE, 0);
+        assert(f.out.speed_mm_s <= 0 && !f.out.b_rejoined);
+        if (f.out.b_no_exit)
+        {
+            ++exits;
+            exit_ms = f.in.now_ms - start;
+        }
+    }
+    assert(1U == exits && "an expired fan hands off once while the wheels move");
+    assert(exit_ms <= 2000U + 40U &&
+           "the handoff comes within the deadline plus the recovery budget");
+}
+
+static bool begin_output_within(fixture_t *f, uint32_t ms)
+{
+    uint32_t const start = f->in.now_ms;
+    bool seen = false;
+
+    while (!seen && (f->in.now_ms - start < ms))
+    {
+        tick(f, LOOK_ECHO_NONE, 0);
+        seen = f->out.b_req || f->out.b_timeout || f->out.b_no_exit;
+    }
+    return seen;
+}
+
+static void test_single_wheel_travel_keeps_fan_closed(void)
+{
+    fixture_t f = {0};
+    fixed_fan_to_handoff(&f);
+    tick(&f, LOOK_ECHO_NONE, 0);
+    f.in.left_um += 3000;
+    stall_tick(&f);
+    assert(!begin_output_within(&f, 3000U) && "one wheel's travel cannot reopen a fan at its pose");
+    translate(&f, 3);
+    stall_tick(&f);
+    assert(begin_output_within(&f, 3000U) && "travel on both required wheels reopens the fan");
+}
+
 int main(int argc, char *argv[])
 {
     if (argc == 2 && strcmp(argv[1], "frozen-leg-ends-at-deadline") == 0)
@@ -921,6 +1242,26 @@ int main(int argc, char *argv[])
     if (argc == 2 && strcmp(argv[1], "independent-hold-pauses-deadline") == 0)
     {
         test_bypass_handoff_deadline(true, false);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "fan-glitch-keeps-deadline") == 0)
+    {
+        test_fan_glitch_keeps_deadline();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "fixed-pose-fan-once") == 0)
+    {
+        test_fixed_pose_fan_once();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "hold-clock-excludes-fan-gap") == 0)
+    {
+        test_hold_clock_excludes_fan_gap();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "fixed-pose-hands-off-once") == 0)
+    {
+        test_fixed_pose_hands_off_once();
         return EXIT_SUCCESS;
     }
     if (argc == 2 && strcmp(argv[1], "same-pose-cannot-repeat-fan") == 0)
@@ -947,6 +1288,36 @@ int main(int argc, char *argv[])
         contact(&f, 1, true);
         memset(&f, 0, sizeof(f));
         contact(&f, -1, true);
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "fixed-pose-stall-retrigger-once") == 0)
+    {
+        test_fixed_pose_stall_retrigger_once();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "fixed-pose-relook-cannot-restart-fan") == 0)
+    {
+        test_fixed_pose_relook_cannot_restart_fan();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "dropouts-are-not-a-new-encounter") == 0)
+    {
+        test_dropouts_are_not_a_new_encounter();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "new-encounter-gets-bounded-fan") == 0)
+    {
+        test_new_encounter_gets_bounded_fan();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "nonstationary-expired-fan-hands-off-once") == 0)
+    {
+        test_nonstationary_expired_fan_hands_off_once();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && strcmp(argv[1], "single-wheel-travel-keeps-fan-closed") == 0)
+    {
+        test_single_wheel_travel_keeps_fan_closed();
         return EXIT_SUCCESS;
     }
     if (argc != 1)

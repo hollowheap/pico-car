@@ -6,6 +6,7 @@
 #include "platform/static_assert.h"
 
 #define BYPASS_SIDES (2U)
+#define BYPASS_FAN_DEADLINE_MS (1000U)
 
 /* The axle origin is the obstacle contact, with x ahead and y left. */
 typedef enum
@@ -47,13 +48,20 @@ typedef struct
     int16_t edge_deci[BYPASS_SIDES];
     uint8_t phase;
     uint8_t ray;
-    uint8_t sector;
     uint8_t seq;
     uint8_t last_forward;
     uint8_t unknown;
-    uint8_t blocked_pings;
-    uint8_t failed_sides;
-    uint8_t views;
+    uint8_t sector : 2;
+    uint8_t blocked_pings : 2;
+    uint8_t failed_sides : 2;
+    uint8_t views : 2;
+    uint8_t fan_left_step : 3;
+    uint8_t fan_right_step : 3;
+    uint8_t fan_gap_left : 2;
+    uint8_t fan_repeat_left : 3;
+    uint8_t fan_repeat_right : 3;
+    uint8_t fan_gap_right : 2;
+    uint8_t fan_repeat_slot : 4;
     bool b_pending : 1;
     bool b_clear : 1;
     bool b_black : 1;
@@ -84,7 +92,15 @@ typedef struct
     bool b_left_reverse : 1;
     bool b_right_reverse : 1;
     bool b_contact_moving : 1;
+    bool b_fan_done : 1;
+    bool b_fan_repeated : 1;
+    bool b_fan_repeating : 1;
+    bool b_fan_pose_set : 1;
+    bool b_fan_center_gap : 1;
 } bypass_t;
 
 STATIC_ASSERT(sizeof(bypass_t) == 72U, "bypass state size");
+
+/** Both wheels are at least the move minimum away from a settled pose, in either direction. */
+bool bypass_pose_moved(int32_t dl_um, int32_t dr_um);
 #endif

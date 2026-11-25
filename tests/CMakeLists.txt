@@ -76,11 +76,13 @@ add_test(NAME physics_calibration_gap COMMAND test_physics_connection calibratio
 add_test(NAME physics_repeated_read_loss COMMAND test_physics_connection repeated-read-loss)
 add_test(NAME physics_start_witness COMMAND test_physics_connection start-witness)
 
-# RP2040 I2C1 polling driver against a register model in the test.
+# RP2040 I2C1 interrupt-driven driver against register and timer models.
 add_executable(test_i2c_rp2040 test_i2c_rp2040.c ${PHYSICS_SRC}/i2c_rp2040.c)
 target_include_directories(test_i2c_rp2040 PRIVATE ${PHYSICS_SRC}
-    ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include ${CMAKE_CURRENT_SOURCE_DIR}/shim)
 target_compile_options(test_i2c_rp2040 PRIVATE -include stddef.h
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/tk/flg_fake.h"
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/i2c_rp2040_kernel.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME i2c_rp2040 COMMAND test_i2c_rp2040)
 add_test(NAME i2c_completion_interrupt_armed COMMAND test_i2c_rp2040 completion-interrupt-armed)
@@ -725,6 +727,16 @@ add_test(NAME obstacle_frozen_leg_ends_at_deadline COMMAND test_bypass_legs froz
 add_test(NAME obstacle_same_pose_cannot_repeat_fan COMMAND test_bypass_legs same-pose-cannot-repeat-fan)
 add_test(NAME obstacle_contact_fan_uses_measured_edge COMMAND test_bypass_legs contact-fan-uses-measured-edge)
 add_test(NAME obstacle_contact_fan_preserves_unknown COMMAND test_bypass_legs contact-fan-preserves-unknown)
+add_test(NAME obstacle_fan_glitch_keeps_deadline COMMAND test_bypass_legs fan-glitch-keeps-deadline)
+add_test(NAME obstacle_fixed_pose_fan_once COMMAND test_bypass_legs fixed-pose-fan-once)
+add_test(NAME obstacle_fixed_pose_hands_off_once COMMAND test_bypass_legs fixed-pose-hands-off-once)
+add_test(NAME obstacle_hold_clock_excludes_fan_gap COMMAND test_bypass_legs hold-clock-excludes-fan-gap)
+add_test(NAME obstacle_fixed_pose_stall_retrigger_once COMMAND test_bypass_legs fixed-pose-stall-retrigger-once)
+add_test(NAME obstacle_fixed_pose_relook_cannot_restart_fan COMMAND test_bypass_legs fixed-pose-relook-cannot-restart-fan)
+add_test(NAME obstacle_new_encounter_gets_bounded_fan COMMAND test_bypass_legs new-encounter-gets-bounded-fan)
+add_test(NAME obstacle_dropouts_are_not_a_new_encounter COMMAND test_bypass_legs dropouts-are-not-a-new-encounter)
+add_test(NAME obstacle_nonstationary_expired_fan_hands_off_once COMMAND test_bypass_legs nonstationary-expired-fan-hands-off-once)
+add_test(NAME obstacle_single_wheel_travel_keeps_fan_closed COMMAND test_bypass_legs single-wheel-travel-keeps-fan-closed)
 
 add_executable(test_pilot_rejoin test_pilot_rejoin.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/drive.c

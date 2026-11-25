@@ -21,9 +21,8 @@
 #define WHEEL_SPEED_QUANTUM_MPS (0.000001f)
 /* Guard against a scheduling gap even when the next bus read succeeds. */
 #define ATTITUDE_EVIDENCE_GAP_S (0.050f)
-/* Attempts per transaction after a failed cycle. A timed-out attempt costs
- * about 6 ms (the 5 ms poll deadline, the abort and the bus clear), so two
- * fit a 20 ms cycle with room for the rest of it. */
+/* Attempts per transaction after a failed cycle. The bounded waits of one
+ * transaction total at most 9 ms (see i2c_rp2040.h). */
 #define RETRY_ATTEMPTS (2U)
 
 bool pipeline_init (pipeline_t * p_pipe,

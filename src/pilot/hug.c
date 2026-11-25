@@ -14,6 +14,7 @@
 #include "hug_internal.h"
 #include "geometry.h"
 #include "obstacle_config.h"
+#include "pilot/pilot.h"
 #include "platform/chassis.h"
 #include "platform/units.h"
 #include "track/line_control.h"
@@ -271,6 +272,16 @@ static bool forward_ping(hug_t * p_hug, hug_in_t const * p_in, bool * p_b_guard)
         }
         p_hug->last_seq = p_in->ping_seq;
         b_hit = b_too_close || (b_valid && (p_in->ping_mm <= (uint16_t)HUG_STANDOFF_MM));
+        if (b_hit)
+        {
+            /* A saturated count survives hits so the trigger can see the contact that follows the quiet run. */
+            p_hug->quiet_pings = (p_hug->quiet_pings < HIST_BITS) ? 0U : p_hug->quiet_pings;
+        }
+        else if (((LOOK_ECHO_OPEN == p_in->ping_echo) || b_valid) &&
+                 (p_hug->quiet_pings < HIST_BITS))
+        {
+            p_hug->quiet_pings = (uint8_t)(p_hug->quiet_pings + 1U);
+        }
         *p_b_guard = b_too_close || (b_valid && (p_in->ping_mm <= (uint16_t)HUG_GUARD_MM));
         p_hug->hist = (uint8_t)(((uint32_t)p_hug->hist << 1U) | (b_hit ? 1U : 0U));
         p_hug->hist = (uint8_t)((uint32_t)p_hug->hist & HIST_MASK);
@@ -336,19 +347,35 @@ static bool recheck_on_bend(hug_t * p_hug, hug_in_t const * p_in, bool b_forward
     uint32_t const outer = (uint32_t)(p_in->b_line_left ? p_in->right_um : p_in->left_um);
     if (!p_hug->b_bend_check && b_forward && (1U == p_hug->hist))
     {
-        p_hug->bend_outer_um = outer;
-        p_hug->bend_start_ms = p_in->now_ms;
+        p_hug->anchor.bend.outer_um = outer;
+        p_hug->anchor.bend.start_ms = p_in->now_ms;
         p_hug->b_bend_check = true;
     }
     /* A point return supplies no obstacle width. A surface that stays in
      * view as the wheels turn must get the ordinary stationary survey. */
-    return p_hug->b_bend_check && (outer - p_hug->bend_outer_um < BEND_OUTER_TRAVEL_UM) &&
-           (p_in->now_ms - p_hug->bend_start_ms < HUG_REPLY_TIMEOUT_MS);
+    return p_hug->b_bend_check && (outer - p_hug->anchor.bend.outer_um < BEND_OUTER_TRAVEL_UM) &&
+           (p_in->now_ms - p_hug->anchor.bend.start_ms < HUG_REPLY_TIMEOUT_MS);
+}
+
+static void settle_fan_pose(hug_t * p_hug)
+{
+    if (p_hug->b_fan_pending)
+    {
+        /* Idle odo_update is off and b_can_resume is clear, so the wheel anchors are free. */
+        p_hug->b_fan_pending = false;
+        p_hug->last_left_um = p_hug->anchor.fan_pose.left_um;
+        p_hug->last_right_um = p_hug->anchor.fan_pose.right_um;
+        p_hug->b_settled_pose = true;
+    }
 }
 
 void hug_init(hug_t * p_hug)
 {
     uint8_t * const p_bytes = (uint8_t *)p_hug;
+    settle_fan_pose(p_hug);
+    uint32_t const left_um = p_hug->last_left_um;
+    uint32_t const right_um = p_hug->last_right_um;
+    bool const b_settled_pose = p_hug->b_settled_pose;
 
     for (size_t i = 0U; i < sizeof(*p_hug); i++)
     {
@@ -356,6 +383,9 @@ void hug_init(hug_t * p_hug)
     }
     p_hug->last_seq = (uint8_t)ODD_SEQ;
     p_hug->side = 1;
+    p_hug->last_left_um = left_um;
+    p_hug->last_right_um = right_um;
+    p_hug->b_settled_pose = b_settled_pose;
 }
 
 void hug_forget_approach(hug_t * p_hug)
@@ -2681,6 +2711,17 @@ static void observe_approach_tape(hug_t * p_hug, hug_in_t const * p_in)
     }
 }
 
+bool hug_fan_renewable(hug_t const * p_hug, hug_in_t const * p_in)
+{
+    if (!p_hug->b_settled_pose)
+    {
+        return true;
+    }
+    int32_t const dl = (int32_t)((uint32_t)p_in->left_um - p_hug->last_left_um);
+    int32_t const dr = (int32_t)((uint32_t)p_in->right_um - p_hug->last_right_um);
+    return bypass_pose_moved(dl, dr) || (triggered(p_hug) && (HIST_BITS == p_hug->quiet_pings));
+}
+
 void hug_begin_bypass(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, uint16_t range_mm)
 {
     begin(p_hug, p_look, p_in);
@@ -2690,6 +2731,7 @@ void hug_begin_bypass(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, uin
 
 static void observe_idle(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, bool b_forward)
 {
+    settle_fan_pose(p_hug);
     bool const b_rechecking = recheck_on_bend(p_hug, p_in, b_forward);
     observe_approach_tape(p_hug, p_in);
     /* A stall with the follower driving is a contact: the sonar did not see
@@ -2721,13 +2763,18 @@ static void observe_idle(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, 
                 }
             }
         }
-        if (range != 0U)
+        if (!hug_fan_renewable(p_hug, p_in))
         {
-            hug_begin_bypass(p_hug, p_look, p_in, range);
+            return;
+        }
+        p_hug->quiet_pings = 0U;
+        if (range == 0U)
+        {
+            begin(p_hug, p_look, p_in);
         }
         else
         {
-            begin(p_hug, p_look, p_in);
+            hug_begin_bypass(p_hug, p_look, p_in, range);
         }
     }
 }
@@ -2784,7 +2831,6 @@ bool hug_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t *
     }
     if (!p_in->b_other && (ST_IDLE != p_hug->state))
     {
-        b_takes = true;
         if (!flag_get(p_hug, F_EXIT) && (THEN_FLANK_LOOK != p_hug->then) &&
             ((ST_DRIVE != p_hug->state) || (SUB_SETTLE != p_hug->sub)))
         {

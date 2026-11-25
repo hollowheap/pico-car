@@ -1543,7 +1543,7 @@ static uint32_t begin_stationary_contact(hug_t *hug, look_t *look, hug_in_t *in,
 
 static void test_hug_stationary_feedback(void)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {0};
     hug_out_t out;
@@ -1554,21 +1554,31 @@ static void test_hug_stationary_feedback(void)
     in.ping_seq = out.seq;
     in.ping_servo_deci = out.servo_deci;
     in.ping_echo = LOOK_ECHO_OPEN;
-    for (unsigned i = 0; i < 350; ++i)
+    unsigned zero_ticks = 0U;
+    bool b_handoff = false;
+    for (unsigned i = 0; i < 350 && !b_handoff; ++i)
     {
         in.now_ms += TICK_MS;
-        assert(hug_step(&hug, &look, &in, &out));
-        assert(!out.b_req && !out.turn_deci_s && !out.speed_mm_s && look.count == 0);
+        b_handoff = !hug_step(&hug, &look, &in, &out);
+        if (!b_handoff)
+        {
+            assert(!out.b_req && !out.turn_deci_s && !out.speed_mm_s && look.count == 0);
+            ++zero_ticks;
+        }
     }
+    assert(b_handoff && out.b_no_exit && "a missing reply hands off the expired fan");
+    assert(zero_ticks <= (BYPASS_FAN_DEADLINE_MS + PILOT_RECOVER_MS) / TICK_MS &&
+           "zero demand lasts no longer than the deadline plus the recovery budget");
     in.b_stationary = true;
     in.now_ms += TICK_MS;
-    assert(hug_step(&hug, &look, &in, &out) && out.b_req);
-    assert(out.seq != in.ping_seq && look.count == 0);
+    (void)hug_step(&hug, &look, &in, &out);
+    assert(!out.b_req && !out.speed_mm_s && !out.turn_deci_s && look.count == 0 &&
+           "a glitch cannot renew the expired fan deadline at the same pose");
 }
 
 static void test_fan_deadline_survives_missing_replies(void)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {0};
     hug_out_t out;
@@ -1597,7 +1607,7 @@ static void test_fan_deadline_survives_missing_replies(void)
 
 static void test_hug_slow_scan_pause(void)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {0};
     hug_out_t out;
@@ -1633,7 +1643,7 @@ static void test_hug_slow_scan_pause(void)
 
 static void test_short_leg_clearance(void)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.now_ms = 10U, .ping_echo = LOOK_ECHO_VALID, .ping_mm = 320U, .ping_seq = 1U};
     hug_out_t out;
@@ -1674,7 +1684,7 @@ static void test_short_leg_clearance(void)
  * directly. A 90 degree heading puts the reader 130 mm out from the axle. */
 static void check_tape_on_leg(int side, int axle_lateral_mm, int heading_deci, bool both, bool expect_exit)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.now_ms = 10U, .b_line_left = true, .b_line_right = both};
     hug_out_t out;
@@ -1779,7 +1789,7 @@ static void test_front_edge_leg(void)
         int const half = half_widths[i];
         for (int sparse = 0; sparse <= 1; sparse++)
         {
-            hug_t hug;
+            hug_t hug = {0};
             look_t look;
             hug_in_t in = {.now_ms = HUG_SCAN_BATCH_MS, .b_ping_reply = true, .b_stationary = true,
                            .ping_echo = LOOK_ECHO_OPEN, .ping_servo_deci = -HUG_REFINE_ZONE_DECI};

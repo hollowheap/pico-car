@@ -67,6 +67,18 @@ STATIC_ASSERT(READER_RADIUS_MM * READER_RADIUS_MM >= LINE_SENSOR_LEAD_MM * LINE_
 #define ASSUMED_ANGLE   (300)
 #define LAST_SECTOR     (2U)
 #define MS_PER_SECOND   (1000U)
+#define FAN_BUDGET      (9U)
+#define FAN_MAX_WING_STEPS (6U)
+#define FAN_GAP_SAT     (2U)
+#define FAN_REPEAT_NONE (0U)
+#define FAN_REPEAT_CENTER (1U)
+#define FAN_REPEAT_LEFT_BASE (2U)
+#define FAN_REPEAT_RIGHT_BASE (FAN_REPEAT_LEFT_BASE + FAN_MAX_WING_STEPS)
+#define FAN_REPEAT_MAX  (15U)
+#define PACKED_2BIT_MAX (3U)
+#define PACKED_3BIT_MAX (7U)
+#define WING_STEPS      ((uint8_t)(OBSTACLE_SERVO_LIMIT_DECI / RAY_STEP))
+#define FAN_BUDGET_ACTIVE ((SLOT_COUNT < (int32_t)FAN_BUDGET) ? (uint8_t)SLOT_COUNT : (uint8_t)FAN_BUDGET)
 
 /* Keep Buddy 5's larger turning allowance. Check each measured station
  * around the axle, including the asymmetric barcode board behind the sonar. */
@@ -78,6 +90,66 @@ STATIC_ASSERT(SWING_MM * SWING_MM >= CHASSIS_NOSE_FORWARD_MM * CHASSIS_NOSE_FORW
               CHASSIS_NOSE_LEFT_MM * CHASSIS_NOSE_LEFT_MM, "pivot clears nose");
 STATIC_ASSERT(CHASSIS_NOSE_LEFT_MM >= CHASSIS_NOSE_WIDTH_MM / 2, "left side covers nominal nose");
 STATIC_ASSERT(OBSTACLE_SERVO_LIMIT_DECI >= TRACK_TILT, "two return scan gazes fit servo");
+STATIC_ASSERT(LAST_SECTOR <= PACKED_2BIT_MAX, "sector fits 2 bits");
+STATIC_ASSERT(FAN_MAX_WING_STEPS <= PACKED_3BIT_MAX, "wing steps fit 3 bits");
+STATIC_ASSERT(HUG_TRIGGER_HITS <= PACKED_2BIT_MAX, "blocked pings fit 2 bits");
+STATIC_ASSERT((LEFT_BLOCKED | RIGHT_BLOCKED) <= PACKED_2BIT_MAX, "failed sides fit 2 bits");
+STATIC_ASSERT(LOOK_VIEWS <= PACKED_2BIT_MAX, "views fit 2 bits");
+STATIC_ASSERT((OBSTACLE_SERVO_LIMIT_DECI / RAY_STEP) <= (int32_t)FAN_MAX_WING_STEPS,
+              "servo wing steps fit packed fan state");
+STATIC_ASSERT((FAN_REPEAT_RIGHT_BASE + FAN_MAX_WING_STEPS - 1U) <= FAN_REPEAT_MAX,
+              "repeat slot fits 4 bits");
+STATIC_ASSERT(FAN_BUDGET <= LOOK_RAYS_MAX, "fan budget fits look buffer");
+
+static void reset_contact_fan(bypass_t * p_run)
+{
+    p_run->ray = 0U;
+    p_run->unknown = 0U;
+    p_run->b_front_seen = false;
+    p_run->b_center_clear = false;
+    p_run->b_blocked = false;
+    p_run->b_swing_blocked = false;
+    p_run->nearest_mm = UINT16_MAX;
+    p_run->last_hit_deci = -1;
+    p_run->edge_deci[0] = UNSEEN_EDGE;
+    p_run->edge_deci[1] = UNSEEN_EDGE;
+    p_run->b_edge_gap_left = false;
+    p_run->b_edge_gap_right = false;
+    p_run->fan_left_step = 0U;
+    p_run->fan_right_step = 0U;
+    p_run->fan_gap_left = 0U;
+    p_run->fan_gap_right = 0U;
+    p_run->fan_repeat_left = 0U;
+    p_run->fan_repeat_right = 0U;
+    p_run->fan_repeat_slot = FAN_REPEAT_NONE;
+    p_run->b_fan_center_gap = false;
+    p_run->b_fan_repeating = false;
+}
+
+static bool fan_pose_intact(hug_t const * p_hug, hug_in_t const * p_in)
+{
+    return p_hug->bypass.b_fan_pose_set &&
+           ((uint32_t)p_in->left_um == p_hug->anchor.fan_pose.left_um) &&
+           ((uint32_t)p_in->right_um == p_hug->anchor.fan_pose.right_um);
+}
+
+bool bypass_pose_moved(int32_t dl_um, int32_t dr_um)
+{
+    return (geom_abs(dl_um) >= PILOT_MOVE_MIN_UM) && (geom_abs(dr_um) >= PILOT_MOVE_MIN_UM);
+}
+
+static bool moved_usefully(hug_in_t const * p_in, uint32_t left_um, uint32_t right_um)
+{
+    int32_t const dl = (int32_t)((uint32_t)p_in->left_um - left_um);
+    int32_t const dr = (int32_t)((uint32_t)p_in->right_um - right_um);
+    return bypass_pose_moved(dl, dr);
+}
+
+static bool fan_pose_moved_usefully(hug_t const * p_hug, hug_in_t const * p_in)
+{
+    return !p_hug->bypass.b_fan_pose_set ||
+           moved_usefully(p_in, p_hug->anchor.fan_pose.left_um, p_hug->anchor.fan_pose.right_um);
+}
 
 static int32_t axis_mm(hug_t const * p_hug, int32_t angle)
 {
@@ -101,19 +173,13 @@ static void enter(hug_t * p_hug, bypass_phase_t phase, int32_t aim, int32_t dist
     p_run->sector = 0U;
     p_run->b_white = false;
     p_run->b_black = false;
+    p_run->b_fan_repeating = false;
+    p_run->b_fan_pose_set = false;
     if ((BYPASS_CONTACT == phase) || (BYPASS_SWEEP == phase) || (BYPASS_TRACK_OUT == phase))
     {
-        p_run->unknown = 0U;
-        p_run->b_front_seen = false;
-        p_run->b_center_clear = false;
-        p_run->b_blocked = false;
-        p_run->b_swing_blocked = false;
-        p_run->nearest_mm = UINT16_MAX;
-        p_run->last_hit_deci = -1;
-        p_run->edge_deci[0] = UNSEEN_EDGE;
-        p_run->edge_deci[1] = UNSEEN_EDGE;
-        p_run->b_edge_gap_left = false;
-        p_run->b_edge_gap_right = false;
+        reset_contact_fan(p_run);
+        p_run->b_fan_done = false;
+        p_run->b_fan_repeated = false;
     }
     if (BYPASS_MAP == phase)
     {
@@ -151,37 +217,72 @@ static bool is_point(hug_in_t const * p_in)
     return look_echo_is_point(p_in->ping_echo) && (0U != p_in->ping_mm);
 }
 
+static void retire_contact_fan(hug_t * p_hug, hug_out_t * p_out);
+
 /* The scan service returns a request ID and quantized angle, without a
  * trigger timestamp. Keep the chassis still from request through reply. */
 static bool ray(hug_t * p_hug, hug_in_t const * p_in, int32_t aim, int32_t gaze,
                 hug_out_t * p_out)
 {
     bypass_t * const p_run = &p_hug->bypass;
+    bool const b_contact_fan = (BYPASS_CONTACT == p_run->phase) && (0U == p_run->sector);
     int32_t const servo = geom_wrap_deci(gaze - aim);
     int32_t const tol = (p_run->b_pending || p_run->b_look_ready) ? AIM_HOLD_TOL : AIM_TOL;
-    if ((geom_abs(servo) > OBSTACLE_SERVO_LIMIT_DECI) || !turn_within(p_hug, aim, tol, p_out) ||
-        !p_in->b_stationary)
+    if ((geom_abs(servo) > OBSTACLE_SERVO_LIMIT_DECI) || !turn_within(p_hug, aim, tol, p_out))
     {
         p_run->b_pending = false;
         p_out->b_scan_pivot = (p_out->turn_deci_s != 0);
         return false;
     }
-    bool const b_matched = p_run->b_pending && obstacle_ping_reply_matches(
-        p_in->b_ping_reply, p_in->ping_seq, p_in->ping_servo_deci,
-        p_run->seq, servo, OBSTACLE_PING_MAX_QUANTIZATION_DECI) &&
+    if (b_contact_fan && p_run->b_survey_timed &&
+        ((uint32_t)(p_in->now_ms - p_run->survey_ms) >= BYPASS_FAN_DEADLINE_MS))
+    {
+        retire_contact_fan(p_hug, p_out);
+        return false;
+    }
+    if (!p_in->b_stationary)
+    {
+        p_run->b_pending = false;
+        return false;
+    }
+    bool const b_pose_held = !b_contact_fan || fan_pose_intact(p_hug, p_in);
+    if (!b_pose_held)
+    {
+        p_run->b_pending = false;
+    }
+    bool const b_matched = p_run->b_pending && b_pose_held &&
+        obstacle_ping_reply_matches(p_in->b_ping_reply, p_in->ping_seq, p_in->ping_servo_deci,
+                                    p_run->seq, servo, OBSTACLE_PING_MAX_QUANTIZATION_DECI) &&
         (geom_abs(geom_wrap_deci(hug_pose_heading_deci(p_hug) - p_run->requested_head)) <= AIM_HOLD_TOL);
-    bool const b_expired = p_run->b_pending && (p_in->now_ms - p_run->request_ms >= HUG_REPLY_TIMEOUT_MS);
+    bool const b_expired = p_run->b_pending &&
+        ((uint32_t)(p_in->now_ms - p_run->request_ms) >= HUG_REPLY_TIMEOUT_MS);
     if (b_matched && !b_expired)
     {
         p_run->b_pending = false;
         return true;
     }
+    if (b_contact_fan && b_expired)
+    {
+        if (p_run->b_fan_repeated)
+        {
+            retire_contact_fan(p_hug, p_out);
+            return false;
+        }
+        p_run->b_fan_repeated = true;
+    }
     if (!p_run->b_pending || b_expired)
     {
-        if (b_expired || !p_run->b_survey_timed)
+        if (!p_run->b_survey_timed || (b_expired && !b_contact_fan))
         {
             p_run->survey_ms = p_in->now_ms;
             p_run->b_survey_timed = true;
+        }
+        if (b_contact_fan && !p_run->b_fan_pose_set)
+        {
+            p_hug->anchor.fan_pose.left_um = (uint32_t)p_in->left_um;
+            p_hug->anchor.fan_pose.right_um = (uint32_t)p_in->right_um;
+            p_run->b_fan_pose_set = true;
+            p_hug->b_fan_pending = true;
         }
         p_run->request_ms = p_in->now_ms;
         p_run->seq = (uint8_t)((p_run->seq + 1U) & OBSTACLE_PING_SEQ_MK);
@@ -234,6 +335,34 @@ static void contact_ray(hug_t * p_hug, hug_in_t const * p_in, int32_t bearing)
     {
         p_run->b_edge_gap_left = p_run->b_edge_gap_left || (bearing >= -AIM_TOL);
         p_run->b_edge_gap_right = p_run->b_edge_gap_right || (bearing <= AIM_TOL);
+        if (geom_abs(bearing) <= AIM_TOL)
+        {
+            p_run->b_fan_center_gap = true;
+        }
+        else if (0U == side)
+        {
+            uint8_t const step = (uint8_t)(geom_abs(bearing) / RAY_STEP);
+            if ((0U == p_run->fan_gap_left) && (step <= FAN_MAX_WING_STEPS))
+            {
+                p_run->fan_repeat_left = (uint8_t)(step & PACKED_3BIT_MAX);
+            }
+            if (p_run->fan_gap_left < FAN_GAP_SAT)
+            {
+                p_run->fan_gap_left = (uint8_t)((p_run->fan_gap_left + 1U) & PACKED_2BIT_MAX);
+            }
+        }
+        else
+        {
+            uint8_t const step = (uint8_t)(geom_abs(bearing) / RAY_STEP);
+            if ((0U == p_run->fan_gap_right) && (step <= FAN_MAX_WING_STEPS))
+            {
+                p_run->fan_repeat_right = (uint8_t)(step & PACKED_3BIT_MAX);
+            }
+            if (p_run->fan_gap_right < FAN_GAP_SAT)
+            {
+                p_run->fan_gap_right = (uint8_t)((p_run->fan_gap_right + 1U) & PACKED_2BIT_MAX);
+            }
+        }
     }
     else if (b_open && (geom_abs(bearing) > AIM_TOL))
     {
@@ -364,7 +493,8 @@ static bool choose_side(hug_t * p_hug, look_t const * p_look)
     int32_t const left = (p_run->b_edge_gap_left || (p_run->failed_sides & LEFT_BLOCKED) != 0U) ? UNSEEN_EDGE : p_run->edge_deci[0];
     int32_t const right = (p_run->b_edge_gap_right || (p_run->failed_sides & RIGHT_BLOCKED) != 0U) ? UNSEEN_EDGE : p_run->edge_deci[1];
     int32_t const extent = (p_run->sector == 0U) ? OBSTACLE_SERVO_LIMIT_DECI : FULL_PAN;
-    bool const complete = (p_run->sector == LAST_SECTOR) || ((p_run->sector == 0U) && (p_run->ray >= SLOT_COUNT));
+    bool const complete = (p_run->sector == LAST_SECTOR) ||
+        ((p_run->sector == 0U) && (p_run->ray >= FAN_BUDGET_ACTIVE));
     bool const wall = complete && (left > extent - RAY_STEP) && (right > extent - RAY_STEP) &&
         (p_run->failed_sides != (LEFT_BLOCKED | RIGHT_BLOCKED)) && spans_front(p_hug, p_look);
     if (!wall && (left == UNSEEN_EDGE) && (right == UNSEEN_EDGE))
@@ -485,12 +615,373 @@ static bool repeat_front_fan(bypass_t const * p_run)
            (p_run->b_edge_gap_left && p_run->b_edge_gap_right);
 }
 
+static bool contact_wing_usable(bypass_t const * p_run, unsigned wing)
+{
+    if (0U == wing)
+    {
+        return ((p_run->failed_sides & LEFT_BLOCKED) == 0U) && !p_run->b_edge_gap_left;
+    }
+    return ((p_run->failed_sides & RIGHT_BLOCKED) == 0U) && !p_run->b_edge_gap_right;
+}
+
+static uint8_t contact_wing_step(bypass_t const * p_run, unsigned wing)
+{
+    return (0U == wing) ? p_run->fan_left_step : p_run->fan_right_step;
+}
+
+static int32_t contact_repeat_offset(uint8_t slot)
+{
+    if (FAN_REPEAT_CENTER == slot)
+    {
+        return 0;
+    }
+    if (slot >= FAN_REPEAT_RIGHT_BASE)
+    {
+        return -((int32_t)(slot - FAN_REPEAT_RIGHT_BASE) + 1) * RAY_STEP;
+    }
+    return ((int32_t)(slot - FAN_REPEAT_LEFT_BASE) + 1) * RAY_STEP;
+}
+
+static int32_t contact_fan_offset(bypass_t const * p_run)
+{
+    unsigned wing = 0U;
+
+    if (p_run->b_fan_repeating)
+    {
+        return contact_repeat_offset(p_run->fan_repeat_slot);
+    }
+    if (0U == p_run->ray)
+    {
+        return 0;
+    }
+    unsigned const pref = ((p_run->failed_sides & LEFT_BLOCKED) != 0U) ? 1U : 0U;
+    unsigned const other = 1U - pref;
+    if ((contact_wing_step(p_run, pref) < WING_STEPS) && contact_wing_usable(p_run, pref))
+    {
+        wing = pref;
+    }
+    else if ((contact_wing_step(p_run, other) < WING_STEPS) && contact_wing_usable(p_run, other))
+    {
+        wing = other;
+    }
+    else if (contact_wing_step(p_run, pref) < WING_STEPS)
+    {
+        wing = pref;
+    }
+    else if (contact_wing_step(p_run, other) < WING_STEPS)
+    {
+        wing = other;
+    }
+    else
+    {
+        return 0;
+    }
+    int32_t const step = (int32_t)contact_wing_step(p_run, wing) + 1;
+    return (0U == wing) ? (step * RAY_STEP) : -(step * RAY_STEP);
+}
+
+static void retire_contact_fan(hug_t * p_hug, hug_out_t * p_out)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+
+    p_run->b_pending = false;
+    p_run->b_fan_repeating = false;
+    if ((p_run->b_front_seen ||
+         ((p_run->ray >= FAN_BUDGET_ACTIVE) && (p_run->contact_mm <= FRONT_RESERVE_MM))) &&
+        (((int32_t)p_run->contact_mm + SHAFT_MM) < (SWING_MM + SPIN_GAP_MM)))
+    {
+        if (p_run->b_backed)
+        {
+            end_route(p_hug, p_out, false);
+        }
+        else
+        {
+            p_run->b_backed = true;
+            p_run->b_wide = true;
+            enter(p_hug, BYPASS_AHEAD, 0,
+                  (int32_t)p_run->contact_mm + SHAFT_MM - (SWING_MM + SPIN_GAP_MM));
+        }
+        return;
+    }
+    p_run->b_fan_done = true;
+    p_out->b_stop = 1U;
+}
+
+static bool contact_fan_gate(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
+                             hug_out_t * p_out)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+
+    if (p_run->b_fan_done)
+    {
+        if (fan_pose_moved_usefully(p_hug, p_in))
+        {
+            p_hug->last_motion_ms = p_in->now_ms;
+            enter(p_hug, BYPASS_CONTACT, 0, 0);
+            look_clear(p_look);
+        }
+        else
+        {
+            p_run->b_pending = false;
+            if ((uint32_t)(p_in->now_ms - p_hug->last_motion_ms) >= PILOT_RECOVER_MS)
+            {
+                /* A repeated stop or reverse would alternate with a re-triggered fan forever. */
+                end_route(p_hug, p_out, false);
+            }
+            else
+            {
+                p_out->b_stop = 1U;
+            }
+            return false;
+        }
+    }
+    if (p_run->b_survey_timed &&
+        ((uint32_t)(p_in->now_ms - p_run->survey_ms) >= BYPASS_FAN_DEADLINE_MS))
+    {
+        retire_contact_fan(p_hug, p_out);
+        return false;
+    }
+    if (!p_in->b_stationary)
+    {
+        p_run->b_pending = false;
+        return false;
+    }
+    if (p_run->b_survey_timed && !fan_pose_intact(p_hug, p_in))
+    {
+        if (fan_pose_moved_usefully(p_hug, p_in))
+        {
+            p_hug->last_motion_ms = p_in->now_ms;
+            enter(p_hug, BYPASS_CONTACT, 0, 0);
+            look_clear(p_look);
+        }
+        else
+        {
+            retire_contact_fan(p_hug, p_out);
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint8_t contact_fan_repeat_slot(bypass_t const * p_run)
+{
+    uint8_t repeat_slot = FAN_REPEAT_NONE;
+    if (!p_run->b_fan_repeated && (0U != p_run->unknown))
+    {
+        bool const b_left_repeat = (1U == p_run->fan_gap_left) && (0U != p_run->fan_repeat_left);
+        bool const b_right_repeat = (1U == p_run->fan_gap_right) && (0U != p_run->fan_repeat_right);
+        if (!p_run->b_fan_center_gap && b_left_repeat && ((p_run->failed_sides & LEFT_BLOCKED) == 0U) &&
+            (p_run->edge_deci[0] != UNSEEN_EDGE))
+        {
+            repeat_slot = (uint8_t)(FAN_REPEAT_LEFT_BASE + p_run->fan_repeat_left - 1U);
+        }
+        else if (!p_run->b_fan_center_gap && b_right_repeat && ((p_run->failed_sides & RIGHT_BLOCKED) == 0U) &&
+                 (p_run->edge_deci[1] != UNSEEN_EDGE))
+        {
+            repeat_slot = (uint8_t)(FAN_REPEAT_RIGHT_BASE + p_run->fan_repeat_right - 1U);
+        }
+        else if (1U == p_run->unknown)
+        {
+            if (p_run->b_fan_center_gap)
+            {
+                repeat_slot = FAN_REPEAT_CENTER;
+            }
+            else if (b_left_repeat)
+            {
+                repeat_slot = (uint8_t)(FAN_REPEAT_LEFT_BASE + p_run->fan_repeat_left - 1U);
+            }
+            else if (b_right_repeat)
+            {
+                repeat_slot = (uint8_t)(FAN_REPEAT_RIGHT_BASE + p_run->fan_repeat_right - 1U);
+            }
+        }
+    }
+    return repeat_slot;
+}
+
+static void contact_fan_record(hug_t * p_hug, hug_in_t const * p_in, int32_t offset)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+
+    if (p_run->b_fan_repeating)
+    {
+        bool const b_point = is_point(p_in);
+        bool const b_open = (LOOK_ECHO_OPEN == p_in->ping_echo) ||
+            (b_point && ((int32_t)p_in->ping_mm > (int32_t)p_run->contact_mm + CONTACT_JUMP_MM));
+        if (b_open || b_point)
+        {
+            if (p_run->unknown > 0U)
+            {
+                p_run->unknown--;
+            }
+            p_run->b_front_seen = p_run->b_front_seen || (b_point && (p_in->ping_mm <= HUG_STANDOFF_MM));
+            if (b_point && (p_in->ping_mm < p_run->contact_mm))
+            {
+                p_run->contact_mm = p_in->ping_mm;
+            }
+            if (geom_abs(offset) <= AIM_TOL)
+            {
+                p_run->b_center_clear = (LOOK_ECHO_OPEN == p_in->ping_echo) ||
+                    (b_point && (p_in->ping_mm > HUG_STANDOFF_MM));
+                p_run->b_fan_center_gap = false;
+                p_run->b_edge_gap_left = (p_run->fan_gap_left != 0U);
+                p_run->b_edge_gap_right = (p_run->fan_gap_right != 0U);
+            }
+            else
+            {
+                unsigned const side = (offset > 0) ? 0U : 1U;
+                int32_t const mag = geom_abs(offset);
+                if (0U == side)
+                {
+                    if (p_run->fan_gap_left > 0U)
+                    {
+                        p_run->fan_gap_left = (uint8_t)((p_run->fan_gap_left - 1U) & PACKED_2BIT_MAX);
+                    }
+                    p_run->b_edge_gap_left = p_run->b_fan_center_gap || (p_run->fan_gap_left != 0U);
+                }
+                else
+                {
+                    if (p_run->fan_gap_right > 0U)
+                    {
+                        p_run->fan_gap_right = (uint8_t)((p_run->fan_gap_right - 1U) & PACKED_2BIT_MAX);
+                    }
+                    p_run->b_edge_gap_right = p_run->b_fan_center_gap || (p_run->fan_gap_right != 0U);
+                }
+                if (b_open)
+                {
+                    if ((p_run->edge_deci[side] != UNSEEN_EDGE) && (mag < p_run->edge_deci[side]))
+                    {
+                        p_run->edge_deci[side] = (int16_t)mag;
+                    }
+                    else if ((p_run->edge_deci[side] == UNSEEN_EDGE) &&
+                             (mag == ((int32_t)WING_STEPS * RAY_STEP)))
+                    {
+                        p_run->edge_deci[side] = (int16_t)mag;
+                    }
+                }
+                else if ((p_run->edge_deci[side] != UNSEEN_EDGE) && (mag > p_run->edge_deci[side]))
+                {
+                    p_run->edge_deci[side] = UNSEEN_EDGE;
+                }
+            }
+        }
+        p_run->b_fan_repeating = false;
+    }
+    else
+    {
+        contact_ray(p_hug, p_in, offset);
+        if (offset > 0)
+        {
+            p_run->fan_left_step = (uint8_t)((p_run->fan_left_step + 1U) & PACKED_3BIT_MAX);
+        }
+        else if (offset < 0)
+        {
+            p_run->fan_right_step = (uint8_t)((p_run->fan_right_step + 1U) & PACKED_3BIT_MAX);
+        }
+        p_run->ray++;
+    }
+}
+
+static bool contact_fan_decide(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
+                               hug_out_t * p_out)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+
+    bool b_ready = false;
+    for (unsigned wing = 0U; wing < BYPASS_SIDES; wing++)
+    {
+        int32_t const edge = p_run->edge_deci[wing];
+        int32_t const reached = (int32_t)contact_wing_step(p_run, wing) * RAY_STEP;
+        b_ready = b_ready || (p_run->b_front_seen && contact_wing_usable(p_run, wing) &&
+                              (edge != UNSEEN_EDGE) && (reached >= (edge + RAY_STEP)));
+    }
+    if (b_ready && choose_side(p_hug, p_look))
+    {
+        return true;
+    }
+    if (p_run->ray < FAN_BUDGET_ACTIVE)
+    {
+        /* Emit the next bearing immediately so servo settle overlaps the 60 ms spacing. */
+        int32_t const next_offset = contact_fan_offset(p_run);
+        (void)ray(p_hug, p_in, 0, next_offset, p_out);
+        return true;
+    }
+    if (cleared_contact_fan(p_run, FAN_BUDGET_ACTIVE))
+    {
+        p_hug->state = 0U;
+        p_hug->hist = 0U;
+        p_run->phase = BYPASS_IDLE;
+        return true;
+    }
+    if (p_run->b_front_seen && choose_side(p_hug, p_look))
+    {
+        return true;
+    }
+    if (p_run->b_front_seen && (p_run->failed_sides == (LEFT_BLOCKED | RIGHT_BLOCKED)))
+    {
+        end_route(p_hug, p_out, false);
+        return true;
+    }
+    return false;
+}
+
+static void contact_fan_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in,
+                             hug_out_t * p_out)
+{
+    bypass_t * const p_run = &p_hug->bypass;
+
+    if (!contact_fan_gate(p_hug, p_look, p_in, p_out))
+    {
+        return;
+    }
+    int32_t const offset = contact_fan_offset(p_run);
+    if (!ray(p_hug, p_in, 0, offset, p_out))
+    {
+        return;
+    }
+    look_pose_t const pose = hug_axle_pose(p_hug);
+    if (look_add(p_look, &pose, p_in->ping_servo_deci, p_in->ping_echo, p_in->ping_mm))
+    {
+        remember_contact(p_run, &p_look->rays[p_look->count - 1U]);
+    }
+    contact_fan_record(p_hug, p_in, offset);
+    if (contact_fan_decide(p_hug, p_look, p_in, p_out))
+    {
+        return;
+    }
+    uint8_t const repeat_slot = contact_fan_repeat_slot(p_run);
+    if ((FAN_REPEAT_NONE != repeat_slot) &&
+        ((uint32_t)(p_in->now_ms - p_run->survey_ms) < BYPASS_FAN_DEADLINE_MS))
+    {
+        p_run->b_fan_repeated = true;
+        p_run->b_fan_repeating = true;
+        p_run->fan_repeat_slot = repeat_slot & FAN_REPEAT_MAX;
+        (void)ray(p_hug, p_in, 0, contact_repeat_offset(repeat_slot), p_out);
+        return;
+    }
+    if (repeat_front_fan(p_run) || !p_run->b_front_seen ||
+        (((int32_t)p_run->contact_mm + SHAFT_MM) < (SWING_MM + SPIN_GAP_MM)))
+    {
+        retire_contact_fan(p_hug, p_out);
+        return;
+    }
+    p_run->sector = (uint8_t)((p_run->sector + 1U) & PACKED_2BIT_MAX);
+    p_run->ray = 0U;
+    p_run->b_survey_timed = false;
+    p_run->b_fan_pose_set = false;
+}
+
 /* Sample the centre first, then progressively farther on each side. The
  * second and third sectors use chassis yaw to supply the missing bearings. */
 static void sweep(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_t * p_out)
 {
     bypass_t * const p_run = &p_hug->bypass;
     bool const b_contact = (BYPASS_CONTACT == p_run->phase);
+    if (b_contact && (0U == p_run->sector))
+    {
+        contact_fan_step(p_hug, p_look, p_in, p_out);
+        return;
+    }
     int32_t const base = b_contact ? 0 : -p_hug->side * RIGHT_ANGLE;
     int32_t const sector = (0 == p_run->sector) ? 0 :
         ((1 == p_run->sector) ? 1 : -1) * (FULL_PAN - OBSTACLE_SERVO_LIMIT_DECI);
@@ -527,14 +1018,7 @@ static void sweep(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out
     {
         return;
     }
-    if (b_contact && cleared_contact_fan(p_run, n))
-    {
-        p_hug->state = 0U;
-        p_hug->hist = 0U;
-        p_run->phase = BYPASS_IDLE;
-        return;
-    }
-    if (b_contact && p_run->b_front_seen && ((0U == p_run->sector) || (LAST_SECTOR == p_run->sector)) && choose_side(p_hug, p_look))
+    if (b_contact && p_run->b_front_seen && (LAST_SECTOR == p_run->sector) && choose_side(p_hug, p_look))
     {
         return;
     }
@@ -548,39 +1032,20 @@ static void sweep(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out
         end_route(p_hug, p_out, false);
         return;
     }
-    if (b_contact && (p_run->sector == 0U) && repeat_front_fan(p_run))
-    {
-        enter(p_hug, BYPASS_CONTACT, 0, 0);
-        look_clear(p_look);
-        p_out->b_stop = 1U;
-        return;
-    }
-    if (b_contact && (0U == p_run->sector) && ((int32_t)p_run->contact_mm + SHAFT_MM < SWING_MM + SPIN_GAP_MM))
-    {
-        /* No edge in servo reach. Establish turning room along the measured
-         * approach before widening the view from a displaced axle. */
-        if (p_run->b_backed)
-        {
-            end_route(p_hug, p_out, false);
-            return;
-        }
-        p_run->b_backed = true;
-        p_run->b_wide = true;
-        enter(p_hug, BYPASS_AHEAD, 0, (int32_t)p_run->contact_mm + SHAFT_MM - (SWING_MM + SPIN_GAP_MM));
-    }
-    else if (b_slow && !b_contact && p_run->ray < n)
+    if (b_slow && !b_contact && (p_run->ray < n))
     {
         move_on(p_hug, true);
     }
-    else if (++p_run->sector <= LAST_SECTOR)
+    else if (p_run->sector < LAST_SECTOR)
     {
+        p_run->sector = (uint8_t)((p_run->sector + 1U) & PACKED_2BIT_MAX);
         p_run->ray = 0U;
         p_run->b_survey_timed = false;
+        p_run->b_fan_pose_set = false;
     }
     else if (b_contact)
     {
-        enter(p_hug, BYPASS_CONTACT, 0, 0);
-        look_clear(p_look);
+        end_route(p_hug, p_out, false);
     }
     else
     {
@@ -1048,6 +1513,12 @@ static void exit_ahead(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hu
     {
         uint16_t const range = (LOOK_ECHO_TOO_CLOSE == p_in->ping_echo) ?
             OBSTACLE_PING_TOO_CLOSE_MM : p_in->ping_mm;
+        if (p_hug->b_fan_pending &&
+            !moved_usefully(p_in, p_hug->anchor.fan_pose.left_um, p_hug->anchor.fan_pose.right_um))
+        {
+            end_route(p_hug, p_out, false);
+            return;
+        }
         hug_forget_approach(p_hug);
         hug_begin_bypass(p_hug, p_look, p_in, range);
     }
@@ -1560,7 +2031,7 @@ static void observe_progress(hug_t * p_hug, hug_in_t const * p_in)
 
 static bool settled_fan_running(bypass_t const * p_run, hug_in_t const * p_in)
 {
-    return p_in->b_stationary && p_run->b_survey_timed &&
+    return p_in->b_stationary && p_run->b_survey_timed && !p_run->b_fan_done &&
         ((BYPASS_CONTACT == p_run->phase) || (BYPASS_SWEEP == p_run->phase) ||
          (BYPASS_TRACK_OUT == p_run->phase) || (BYPASS_TRACK_BACK == p_run->phase) ||
          (BYPASS_LOOK_BACK == p_run->phase) || (BYPASS_SIDE_FAN == p_run->phase));
@@ -1578,6 +2049,26 @@ static void resume_bypass(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in)
     p_run->b_interrupted = false;
     p_run->last_forward = p_in->ping_seq;
     p_run->b_drive_aligned = false;
+    if (BYPASS_CONTACT == p_run->phase)
+    {
+        if (fan_pose_moved_usefully(p_hug, p_in))
+        {
+            enter(p_hug, BYPASS_CONTACT, 0, 0);
+            look_clear(p_look);
+        }
+        else
+        {
+            /* A pose that did not move must not restart the deadline or clear the completion latch. */
+            p_run->b_pending = false;
+            p_run->b_fan_repeating = false;
+            if (p_run->b_survey_timed &&
+                ((uint32_t)(p_in->now_ms - p_run->survey_ms) >= BYPASS_FAN_DEADLINE_MS))
+            {
+                p_run->b_fan_done = true;
+            }
+        }
+        return;
+    }
     p_run->b_survey_timed = false;
     if (p_run->phase == BYPASS_SIDE_FAN)
     {
@@ -1590,11 +2081,11 @@ static void resume_bypass(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in)
         enter(p_hug, BYPASS_AWAY, p_hug->side * RIGHT_ANGLE, 0);
         look_clear(p_look);
     }
-    else if ((p_run->phase == BYPASS_CONTACT) || (p_run->phase == BYPASS_SWEEP) ||
-        (p_run->phase == BYPASS_TRACK_OUT) || (p_run->phase == BYPASS_TRACK_BACK))
+    else if ((p_run->phase == BYPASS_SWEEP) ||
+             (p_run->phase == BYPASS_TRACK_OUT) ||
+             (p_run->phase == BYPASS_TRACK_BACK))
     {
-        bool const b_contact = p_run->phase == BYPASS_CONTACT;
-        enter(p_hug, b_contact ? BYPASS_CONTACT : BYPASS_FACE, b_contact ? 0 : -p_hug->side * RIGHT_ANGLE, 0);
+        enter(p_hug, BYPASS_FACE, -p_hug->side * RIGHT_ANGLE, 0);
         look_clear(p_look);
     }
 }
@@ -1666,7 +2157,8 @@ void bypass_step(hug_t * p_hug, look_t * p_look, hug_in_t const * p_in, hug_out_
     observe_progress(p_hug, p_in);
     run_phase(p_hug, p_look, p_in, p_out);
     bool const b_motor = (p_out->speed_mm_s != 0) || (p_out->turn_deci_s != 0);
-    p_run->b_scan_pause = p_run->b_progress_timed && !b_motor && settled_fan_running(p_run, p_in);
+    /* A settled fine scan pauses the recovery clock before its first motor leg too. */
+    p_run->b_scan_pause = !b_motor && settled_fan_running(p_run, p_in);
     if (p_run->b_scan_pause)
     {
         p_hug->t_ms = p_in->now_ms;

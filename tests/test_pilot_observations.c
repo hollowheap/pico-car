@@ -278,7 +278,7 @@ static void hug_feed(hug_t * p_hug, look_t * p_look, uint8_t seq, uint8_t echo,
 static void test_hug_trigger(void)
 {
     static look_t look;
-    hug_t hug;
+    hug_t hug = {0};
     bool b_takes = false;
 
     hug_init(&hug);
@@ -366,7 +366,7 @@ static void test_breadth_kept(void)
 {
     static look_t look;
     look_pose_t const pose = {0, 0, 0};
-    hug_t hug;
+    hug_t hug = {0};
     hug_in_t in = {.b_stationary = true};
     hug_out_t out;
     uint8_t echo = 0U;
@@ -423,7 +423,7 @@ static void aim_head(hug_t * p_hug, int32_t deci)
 
 static void test_missed_rear_leg_reply(uint8_t next_echo)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.now_ms = 1200U, .b_stationary = true, .ping_echo = LOOK_ECHO_NONE, .ping_seq = 1U};
     hug_out_t out;
@@ -457,7 +457,7 @@ static void test_missed_rear_leg_reply(uint8_t next_echo)
 
 static void test_leg_pivot_coast(void)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.now_ms = 1000U, .b_stationary = true, .ping_echo = LOOK_ECHO_OPEN};
     hug_out_t out;
@@ -500,7 +500,7 @@ static void test_contact_side_uses_usable_rays(void)
 
     for (size_t i = 0U; i < sizeof(wide_echoes) / sizeof(wide_echoes[0]); i++)
     {
-        hug_t hug;
+        hug_t hug = {0};
         look_t look;
         hug_in_t in = {.b_stationary = true};
         hug_out_t out;
@@ -537,7 +537,7 @@ static void test_contact_side_uses_usable_rays(void)
 static int aim_run(int32_t head_deci)
 {
     static look_t look;
-    hug_t hug;
+    hug_t hug = {0};
     hug_in_t in = {.b_stationary = true};
     hug_out_t out;
     int done_ms = -1;
@@ -589,7 +589,7 @@ static void test_aimed_settle(void)
 
 static void test_scan_requests_the_next_bearing(void)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.b_stationary = true};
     hug_out_t out = {0};
@@ -620,7 +620,7 @@ static void test_scan_requests_the_next_bearing(void)
 
 static void test_side_look_uses_two_headings(int8_t direction)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.b_stationary = true};
     hug_out_t out = {0};
@@ -678,7 +678,7 @@ typedef enum { CORNER_CLEAR, CORNER_BLOCKED, CORNER_DELAYED, CORNER_UNKNOWN, COR
 
 static void test_measured_corner_checks_next_leg(corner_check_t scenario)
 {
-    hug_t hug;
+    hug_t hug = {0};
     look_t look;
     hug_in_t in = {.b_stationary = true};
     hug_out_t out = {0};
@@ -807,6 +807,9 @@ static look_t g_note_look;
 static void note_start(note_car_t * p_car)
 {
     hug_init(&p_car->hug);
+    p_car->hug.last_left_um = 0U;
+    p_car->hug.last_right_um = 0U;
+    p_car->hug.b_settled_pose = false;
     look_clear(&g_note_look);
     p_car->in = (hug_in_t){0};
     p_car->in.now_ms = 1000U;
@@ -1045,7 +1048,7 @@ static uint32_t pivot_plan_ms(uint32_t angle_deci)
 static uint32_t stall_ms(uint8_t then, int16_t u_head, uint32_t other_ms)
 {
     static look_t look;
-    hug_t hug;
+    hug_t hug = {0};
     hug_in_t in = {0};
     hug_out_t out;
     uint32_t start_ms = 0U;
@@ -1053,6 +1056,8 @@ static uint32_t stall_ms(uint8_t then, int16_t u_head, uint32_t other_ms)
     unsigned t;
 
     hug_init(&hug);
+    hug.last_left_um = (uint32_t)in.left_um;
+    hug.last_right_um = (uint32_t)in.right_um;
     look_clear(&look);
     hug.state = (uint8_t)HUG_CODE_ST_PIVOT;
     hug.sub = (uint8_t)HUG_CODE_SUB_SETTLE;
@@ -1122,14 +1127,18 @@ static void test_move_timeout(void)
 
 static void test_hug_timeout(void)
 {
+    unsigned const bound_ticks = (BYPASS_FAN_DEADLINE_MS + PILOT_RECOVER_MS) / TICK_MS;
     pilot_state_t st;
     pilot_meas_t m = fresh_meas(1000U);
     pilot_cmd_t cmd = {0};
+    unsigned first_req = 0U;
+    unsigned requests = 0U;
+    uint8_t last_seq = 0U;
     bool requested = false;
-    bool resumed = false;
+    bool recovered = false;
     pilot_init(&st);
     m.b_stationary = true;
-    for (unsigned i = 0; i < 650U && !resumed; i++)
+    for (unsigned i = 0; i < 650U; i++)
     {
         m.now_ms = m.stamp_ms = 1000U + i * TICK_MS;
         m.ping_seq = (uint8_t)((i / 6U) & 63U);
@@ -1142,14 +1151,28 @@ static void test_hug_timeout(void)
         m.ping_echo = (m.ping_servo_deci >= 100) ? LOOK_ECHO_OPEN : LOOK_ECHO_VALID;
         m.ping_mm = (m.ping_echo == LOOK_ECHO_OPEN) ? 0U : 205U;
         pilot_step(&st, &m, &cmd);
-        requested |= cmd.b_ping_req != 0U;
-        if (requested && i <= 400U)
+        if (cmd.b_ping_req && !requested)
+        {
+            requested = true;
+            first_req = i;
+        }
+        if (cmd.b_ping_req && (PILOT_BEHAVIOUR_HUG == cmd.behaviour) &&
+            ((0U == requests) || (cmd.ping_seq != last_seq)))
+        {
+            requests++;
+            last_seq = cmd.ping_seq;
+        }
+        if (requested && (i < first_req + bound_ticks))
         {
             check(!cmd.speed_mm_s && !cmd.turn_deci_s, "a missing requested scan cannot authorize motion");
         }
-        resumed |= requested && cmd.behaviour == PILOT_BEHAVIOUR_HUG && cmd.speed_mm_s > 0;
+        if (requested && (i <= first_req + bound_ticks))
+        {
+            recovered |= (cmd.speed_mm_s != 0) || (cmd.turn_deci_s != 0);
+        }
     }
-    check(resumed, "fresh matching replies must resume a transiently silent survey without START");
+    check(recovered, "nonzero demand comes no later than the deadline plus the remaining budget");
+    check(requests <= 2U, "a fixed pose gets no second full fan");
 }
 
 static void test_slip_evidence(void)
