@@ -112,16 +112,21 @@ The station uses the local broker on TCP 1883, starting Mosquitto with
 listener over Wi-Fi. Set `MQTT_URL` to use another broker. Only a broker
 started by the station is stopped on exit.
 
-Native history is stored in `host/bridge/history.jsonl`. To carry over a
-container recording, stop the old recorder and copy its `/data/history.jsonl`
-to that path before the first native start, or set `BRIDGE_HISTORY_PATH` to
-the existing file. Keep a single writer for each history file.
+Native history is stored in `host/bridge/history.jsonl`. Set
+`BRIDGE_HISTORY_PATH` to use another file. Keep a single writer for each
+history file.
 
-An optional Compose deployment runs the station and broker with the existing
-`bridge-data` volume. When upgrading the former three-container setup,
-use `podman-compose -f deploy/compose.yaml down --remove-orphans` before
-`podman-compose -f deploy/compose.yaml up -d --build`. The named volume
-survives this shutdown.
+An optional Compose deployment runs the station and broker with the
+`bridge-data` volume for history:
+
+```sh
+podman-compose -f deploy/compose.yaml up -d --build
+```
+
+The broker publishes `BROKER_PORT` (default 1883) on every interface and the
+dashboard listens on `127.0.0.1:${DASHBOARD_LOCAL_PORT:-5281}`. Set either in
+`deploy/.env`. The bridge reconnects to the broker, so start order does not
+matter.
 
 ## Telemetry
 

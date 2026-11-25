@@ -1,16 +1,9 @@
-# Keep the image build context small: only host/, protocol/ and deploy/ are used.
+# Only the bridge, the dashboard and the protocol schema go into the image.
+*
+!host/bridge
+!host/dashboard
+!protocol
 **/node_modules
 **/.expo
 **/dist
 **/history.jsonl*
-deploy/.env
-.git
-build
-build-tests
-lib
-logs
-skills
-.claude
-.direnv
-.venv
-*.uf2

@@ -11,7 +11,7 @@ FROM node:24-alpine
 WORKDIR /app/host/bridge
 
 COPY host/bridge/package.json host/bridge/package-lock.json ./
-RUN npm ci
+RUN npm ci --omit=dev
 
 COPY host/bridge/tsconfig.json ./
 COPY host/bridge/src ./src

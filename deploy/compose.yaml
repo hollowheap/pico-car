@@ -2,15 +2,15 @@
 #
 #   podman-compose -f deploy/compose.yaml up -d --build
 #
-# The broker publishes 1883 on every interface so the car reaches it on the
-# Wi-Fi. The ground station is published on loopback.
+# The broker publishes BROKER_PORT (default 1883) on every interface so the
+# car reaches it on the Wi-Fi. The ground station is published on loopback.
 name: pico-car
 
 services:
   broker:
     image: docker.io/library/eclipse-mosquitto:2
     ports:
-      - "1883:1883"
+      - "${BROKER_PORT:-1883}:1883"
     volumes:
       - ../host/broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro,Z
     restart: unless-stopped
