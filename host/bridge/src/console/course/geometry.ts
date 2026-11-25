@@ -223,8 +223,10 @@ export function reconstruct(trail: TrailPoint[]) {
         hasGap = true;
       } else {
         if (headingReference === 'unavailable') headingReference = previous.headingDeg === null ? 'relative' : 'compass';
+        // After a rejected step only a compass-only step may restart from the
+        // raw compass. A wheel step keeps the wheel-integrated heading.
         const startHeading = samples[i - 1]!.headingDeg ??
-          (headingReference === 'compass' ? previous.headingDeg ?? lastHeading : lastHeading);
+          (headingReference === 'compass' && !step.wheelTurn ? previous.headingDeg ?? lastHeading : lastHeading);
         // A first pair of wheel observations can establish the initial bearing.
         if (i === 1 && samples[0]!.headingDeg === null) samples[0] = { ...previous, headingDeg: startHeading };
         const next = startHeading * RAD_PER_DEG + step.turn;

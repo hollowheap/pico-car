@@ -121,6 +121,16 @@ describe('wheel-based course reconstruction', () => {
     expect(course.points.at(-1)?.y).toBeGreaterThan(13);
   });
 
+  it('keeps the wheel heading after a gap step although the compass is valid there', () => {
+    const store = fold([status(0, 1000, 100, 0), wheels(0, 1000, 72, 72), status(1, 1200, 114, 0), wheels(1, 1200, 72, 72),
+      status(17, 4400, 150, 900), wheels(17, 4400, 72, 72), status(18, 4600, 164, 900), wheels(18, 4600, 72, 72)]);
+    const course = buildCourse(store.trail, []);
+    expect(course.hasGap).toBe(true);
+    expect(course.points.at(-1)?.y).toBeCloseTo(28);
+    expect(course.points.at(-1)?.x).toBeCloseTo(0);
+    expect(course.samples.at(-1)?.headingDeg).toBeCloseTo(0);
+  });
+
   it('does not reuse pending pre-reboot motion at the same low status sequence', () => {
     const store = fold([frame('heartbeat', 1000, { run_id: 7, uptime_s: 10 }), wheels(0, 1200),
       frame('heartbeat', 1300, { run_id: 8, uptime_s: 0 }), status(0, 1300, 0),
