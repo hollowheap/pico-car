@@ -15,7 +15,7 @@ prints a verdict for checks 1 to 3 of "Why the hump state may always read FLAT":
 car with main.uf2 on flat ground.
 
 Standard library only. Column order must match log_header() in
-src/physics_task.c.
+app_program/imu/physics_task.c.
 """
 
 import argparse

@@ -52,29 +52,30 @@ All C and C++ code in this repository must comply with the
 
 ## Layout
 
-Public subsystem headers live in `include/<subsystem>/`; implementations live in
-`src/<subsystem>/`. `src/main.c` is the composition root: it calls every `<subsystem>_init()`
-and then every `<subsystem>_start()`, which creates that subsystem's tasks. One
-startup task initialises the shared hardware.
+Firmware lives in `app_program/`. Its composition root, `app_main.c`, calls
+the subsystem init and start functions declared through `app.h`. Each
+subsystem owns its tasks and exposes its public API through `<subsystem>.h`.
+See [TEAM.md](TEAM.md) for subsystem ownership, pins and task priorities.
 
-| Path                                        | Contents                                                             |
-| ------------------------------------------- | -------------------------------------------------------------------- |
-| `include/navigation/obstacle.h`             | Obstacle API: commands, events, telemetry snapshot, line-task glue    |
-| `include/physics/physics.h`                 | IMU API: telemetry snapshot                                          |
-| `src/navigation/obstacle/`                  | Obstacle scan, planner, statechart, comms, flight log                |
-| `src/physics/`                              | IMU sensor, hump detection, pipeline, task                           |
-| `src/motion/`                               | Motor owner, PIO quadrature encoders, PID                            |
-| `src/track/`, `src/platform/`               | Line sensors and the shared GPIO IRQ dispatcher                      |
-| `src/telemetry/`                            | lwIP MQTT session, queues, command ingress                         |
-| `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and JSON bridge                               |
-| `protocol/telemetry.yaml`                   | Wire schema shared by firmware and host                              |
+| Path | Contents |
+| --- | --- |
+| `app_program/comms/` | Wi-Fi recovery, lwIP MQTT, telemetry and commands |
+| `app_program/motion/` | Motor control, quadrature encoders, PID and pilot |
+| `app_program/ir/` | Line following, IR capture and barcode actions |
+| `app_program/imu/` | Attitude, hump detection and lift detection |
+| `app_program/obstacle/` | Sonar scanning, clearance and obstacle service |
+| `app_program/platform/`, `app_program/supervisor/` | Shared hardware and lifecycle |
+| `app_program/bench/` | Standalone bench programs |
+| `tests/<subsystem>/` | Host tests and test fakes |
+| `host/dashboard`, `host/cli`, `host/bridge` | Ground station UI, CLI and bridge |
+| `protocol/telemetry.yaml` | Wire schema shared by firmware and host |
 
 Build the optional IMU bring-up image with `make physics_check` inside
 `build/`.
 
 ## Car dimensions
 
-`include/platform/chassis.h` holds every measured dimension, and all
+`app_program/platform/chassis.h` holds every measured dimension, and all
 subsystems read it from there. Distances along the car are from the drive axle.
 
 | Dimension | Value | Macro |
@@ -348,7 +349,7 @@ gravity and retain impact peaks at the telemetry sampling instants.
 
 A link outage during a run leaves local navigation active. With Wi-Fi configured,
 the car retries five seconds after a failed association or a lost link. The
-upstream kernel joins once and adopts DHCP once, so `src/telemetry/wifi_link.c`
+upstream kernel joins once and adopts DHCP once, so `app_program/comms/telemetry/drv_wifi_link.c`
 repeats the join and tracks the lease from a repeating lwIP timeout in the
 radio task. The USB
 console reports a connection fault during this wait and joining during the next

@@ -49,9 +49,9 @@ const TYPE_SIZE: Record<FieldType, number> = {
 const sourceUrl = new URL('./telemetry.yaml', import.meta.url);
 const dashboardUrl = new URL('../host/dashboard/src/lib/schema.generated.ts', import.meta.url);
 const bridgeUrl = new URL('../host/bridge/src/console/schema.generated.ts', import.meta.url);
-const cUrl = new URL('../include/telemetry/wire_schema.h', import.meta.url);
+const cUrl = new URL('../app_program/comms/telemetry/wire_schema.h', import.meta.url);
 const vectorsUrl = new URL('./vectors.json', import.meta.url);
-const testHeaderUrl = new URL('../tests/telemetry_vectors.h', import.meta.url);
+const testHeaderUrl = new URL('../tests/comms/telemetry_vectors.h', import.meta.url);
 const schema = parse(readFileSync(sourceUrl, 'utf8')) as Schema;
 
 if (schema.schema !== 3) throw new Error('unsupported schema version');

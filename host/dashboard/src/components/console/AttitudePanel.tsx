@@ -31,7 +31,7 @@ type Props = {
   style?: StyleProp<ViewStyle>;
 };
 
-/** The tilt that counts as a lift, as in src/physics/attitude.c. */
+/** The tilt that counts as a lift, as in app_program/imu/attitude.c. */
 const TILT_ENVELOPE_DEG = 20;
 const CDEG = 100;
 const COMPACT_COMPASS_SIZE = 112;

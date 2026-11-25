@@ -4,14 +4,15 @@ Pico W line-following firmware and LAN ground station.
 
 ## Scope
 
-- Firmware in `src` and `include`, host tests in `tests`, dashboard, bridge and CLI in `host`.
+- Firmware in `app_program`, host tests in `tests/<subsystem>`, dashboard, bridge and CLI in `host`.
 - See [README.md](README.md) for build and ground-station setup. Configure `cmake -S tests -B build-tests`, build with CMake, then run `ctest --test-dir build-tests --no-tests=error`.
 - See the [build](skills/pico-firmware-build/SKILL.md) and [lint](skills/barr-c-lint/SKILL.md) runbooks. Run dashboard typecheck and dashboard and bridge tests with npm in the Nix shell.
 
 ## Conventions
 
 - Build `pico_w` with the pinned SDK fork and the unmodified upstream `sirfonzie/mtk3smp-rp2040` kernel; never patch the kernel. Application, PIO and SDK use C99. Kernel uses GNU11. Follow BARR-C:2018, clang-format and clang-tidy. Keep `-Werror`, lint and tests enabled.
-- Match public `include/<subsystem>` to `src/<subsystem>`. Keep domain C driver-free. Create tasks only in each subsystem's `<subsystem>_start()` with literal attributes and no `PRIO_*` constants; `src/main.c` calls every `<subsystem>_init()` and then every `<subsystem>_start()`. With `CNF_SMP=1`, core 0 runs control at priorities 1–5 and CYW43/lwIP at 4. Core 1 runs MQTT at 6.
+- Keep source and headers together in `app_program/<subsystem>`. Include the public `<subsystem>.h` headers across subsystem boundaries. Public headers may include a narrower public type header to avoid a dependency cycle. Bench targets may use private headers through target-local include paths. Keep domain C driver-free. Create tasks only in each subsystem's `<subsystem>_start()` with literal attributes and no `PRIO_*` constants; `app_program/app_main.c` calls every `<subsystem>_init()` and then every `<subsystem>_start()`. With `CNF_SMP=1`, core 0 runs control at priorities 1–5 and CYW43/lwIP at 4. Core 1 runs MQTT at 6.
+- Name C host tests `<unit>_test.c`, keep their fakes in `fakes/`, and register them as `<subsystem>.<unit>.<case>`.
 - Keep register, SDK, BSP, and radio hardware access inside the owning `drv_*.{c,h}` files. Call driver APIs from application code.
 - Use SIO spinlocks, never `hw_set_bits` on SRAM. Use fixed buffers, packed fields and `STATIC_ASSERT`. Log with `LOG_*` as `[<SEV>](<task>:<module>)`, never `tm_printf`.
 - Read source before editing. Fix causes with minimal changes. Reproduce bugs with failing tests and preserve assertions. Explain non-obvious reasons in comments, document behavior changes and measure tuning on the car. Keep artifact IDs out of code, comments and commits.

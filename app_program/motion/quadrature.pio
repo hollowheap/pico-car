@@ -1,0 +1,62 @@
+;
+; Copyright (c) 2026 Muhamed Fauzi Bin Abbas
+;
+; SPDX-License-Identifier: Apache-2.0
+;
+; x4 quadrature counter, one state machine per wheel. The jump table
+; follows the pico-examples quadrature encoder (BSD-3-Clause, Raspberry Pi).
+;
+; The state machine samples the two encoder pins in a loop and counts every
+; step to an adjacent state. Y is the net step count. X counts down on every
+; step that skipped a state (both pins changed between two samples), so a
+; skip never adds distance. After every sample the state machine pushes one
+; word without blocking: bits 31..24 hold X, bits 23..0 hold Y. The reader
+; drains the FIFO and takes one fresh word.
+;
+; IN shifts left, OUT shifts right, no autopush or autopull. IN_BASE is the
+; A pin, and B must be the next pin. OSR holds the last state.
+;
+; Firmware and host test builds generate the header from this source.
+
+.program quadrature
+.origin 0
+
+; The table index is last state << 2 | new state; bit 0 is A, bit 1 is B.
+    jmp update      ; 00 -> 00
+    jmp decrement   ; 00 -> 01
+    jmp increment   ; 00 -> 10
+    jmp invalid     ; 00 -> 11
+    jmp increment   ; 01 -> 00
+    jmp update      ; 01 -> 01
+    jmp invalid     ; 01 -> 10
+    jmp decrement   ; 01 -> 11
+    jmp decrement   ; 10 -> 00
+    jmp invalid     ; 10 -> 01
+    jmp update      ; 10 -> 10
+    jmp increment   ; 10 -> 11
+    jmp invalid     ; 11 -> 00
+    jmp increment   ; 11 -> 01
+decrement:
+    ; The target is the next address, so this only decrements Y.
+    jmp y--, update ; 11 -> 10
+.wrap_target
+update:
+    ; 11 -> 11. ISR still holds the 4-bit index; the two INs shift it out.
+    in x, 8
+    in y, 24
+    push noblock
+    out isr, 2
+    in pins, 2
+    mov osr, isr
+    mov pc, isr
+increment:
+    ; PIO has no increment: negate, decrement, negate.
+    mov y, ~y
+    jmp y--, increment_end
+increment_end:
+    mov y, ~y
+.wrap
+invalid:
+    jmp x--, invalid_end
+invalid_end:
+    jmp update

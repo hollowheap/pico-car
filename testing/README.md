@@ -29,7 +29,9 @@ cmake --build build-tests -j8
 ctest --test-dir build-tests --no-tests=error
 ```
 
-Run one test by name with `ctest --test-dir build-tests -R <name> --output-on-failure`.
+Tests are named `<subsystem>.<unit>.<case>`. Run a subsystem with
+`ctest --test-dir build-tests -L '^motion$' --output-on-failure` or one case with
+`ctest --test-dir build-tests -R '^motion[.]quadrature[.]default$' --output-on-failure`.
 
 Run the ground-station tests with:
 
