@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "track/line_control.h"
 
@@ -883,6 +884,53 @@ static void test_hump_bridges_longer(void)
     assert(LINE_FOLLOW_BRIDGING == follow(&f, false, false, 0, 300 * (int64_t)UM_PER_MM, 10U, &t));
     line_follow_set_hump(&f, false);
     assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, 0, 300 * (int64_t)UM_PER_MM, 20U, &t));
+}
+
+static void gap_limit(bool on_hump, int64_t limit_um)
+{
+    line_follow_t f;
+    line_targets_t t;
+
+    line_follow_init(&f);
+    line_follow_set_hump(&f, on_hump);
+    (void)follow(&f, true, true, 0, 0, 0U, &t);
+    assert(LINE_FOLLOW_BRIDGING == follow(&f, false, false, 0, limit_um - 1, 10U, &t));
+    assert(t.left_um_s > 0 && t.right_um_s > 0);
+    assert(LINE_FOLLOW_SEARCHING == follow(&f, false, false, 0, limit_um, 20U, &t));
+}
+
+static void test_flat_gap_limit(void)
+{
+    gap_limit(false, 150000);
+}
+
+static void test_hump_gap_limit(void)
+{
+    gap_limit(true, 400000);
+}
+
+static void test_stuck_hump_flag_still_searches(void)
+{
+    line_follow_t f;
+    line_targets_t t;
+    int64_t travel_um;
+    uint32_t now_ms = 0U;
+    line_follow_status_t status;
+
+    line_follow_init(&f);
+    (void)follow(&f, true, true, 0, 0, 0U, &t);
+    for (travel_um = 1000; travel_um <= 400000; travel_um += 1000)
+    {
+        line_follow_set_hump(&f, true);
+        now_ms += 10U;
+        status = follow(&f, false, false, 0, travel_um, now_ms, &t);
+        if (LINE_FOLLOW_SEARCHING == status)
+        {
+            break;
+        }
+    }
+    assert(travel_um <= 400000);
+    assert(t.left_um_s == -t.right_um_s && t.left_um_s != 0);
 }
 
 /* The speed climbs at LINE_ACCEL_MM_S2 however short the pass is. */
@@ -1820,8 +1868,43 @@ static void test_step_without_start_aborts(void)
     expect_targets(&t, 0, 0);
 }
 
-int main(void)
+int main(int argc, char * argv[])
 {
+    static const struct
+    {
+        char const * name;
+        void (*test)(void);
+    } selectable[] = {
+        {"flat-gap-limit", test_flat_gap_limit},
+        {"hump-gap-limit", test_hump_gap_limit},
+        {"stuck-hump-flag", test_stuck_hump_flag_still_searches},
+        {"cleared-hump-flag", test_hump_bridges_longer},
+        {"reverse-retry", test_failed_search_turns_back_reverses_and_searches_again},
+        {"search-hit", test_retry_count_clears_on_a_search_hit},
+        {"dead-end", test_dead_end_stops_after_all_retries},
+        {"blocked-reverse", test_blocked_reverse_ends_as_a_failed_retry},
+        {"one-wheel-jammed", test_one_wheel_jammed_reverse_ends_as_a_failed_retry},
+        {"hit-while-reversing", test_hit_during_reverse_starts_from_the_reverse_speed},
+    };
+    size_t i;
+
+    if (2 == argc)
+    {
+        for (i = 0U; i < (sizeof(selectable) / sizeof(selectable[0])); ++i)
+        {
+            if (0 == strcmp(argv[1], selectable[i].name))
+            {
+                selectable[i].test();
+                return 0;
+            }
+        }
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+
     test_init();
     test_one_sensor_steers_toward_the_line();
     test_cap_limits_the_correction();
@@ -1841,6 +1924,9 @@ int main(void)
     test_retry_clears_across_the_cm_wrap_and_below_zero();
     test_hit_during_reverse_starts_from_the_reverse_speed();
     test_hump_bridges_longer();
+    test_flat_gap_limit();
+    test_hump_gap_limit();
+    test_stuck_hump_flag_still_searches();
     test_ramp_at_small_dt();
     test_blind_travel_counts_from_the_takeover();
     test_search_hit_follows_from_the_heading();

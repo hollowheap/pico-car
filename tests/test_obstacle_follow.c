@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "follow.h"
 #include "geometry.h"
@@ -595,8 +596,37 @@ static void test_virtual_bumper(void)
     }
 }
 
-int main(void)
+int main(int argc, char * argv[])
 {
+    static const struct
+    {
+        char const * name;
+        void (*test)(void);
+    } selectable[] = {
+        {"echo-loss-retries", test_echo_loss_backs_up_then_gives_up},
+        {"return-to-hit", test_circled_gives_up},
+        {"no-progress", test_no_progress_gives_up},
+        {"virtual-bumper", test_virtual_bumper},
+    };
+    size_t i;
+
+    if (2 == argc)
+    {
+        for (i = 0U; i < sizeof(selectable) / sizeof(selectable[0]); ++i)
+        {
+            if (0 == strcmp(argv[1], selectable[i].name))
+            {
+                selectable[i].test();
+                return (0 == g_failures) ? 0 : 1;
+            }
+        }
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+
     test_leg_trim_holds_the_gap();
     test_corner_on_the_last_miss();
     test_too_close_is_a_face_ahead();

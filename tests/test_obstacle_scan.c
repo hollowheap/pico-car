@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "obstacle_config.h"
 #include "obstacle_pack.h"
@@ -320,8 +321,50 @@ static void test_receding_edge(void)
     CHECK(scan_algo_target(&ctx) == (OBSTACLE_SLOT_CENTRE + (OBSTACLE_SERVO_LIMIT_DECI / OBSTACLE_SLOT_STEP_DECI) + 1U));
 }
 
-int main(void)
+static void test_partial_scan_keeps_unmeasured_edges_open(void)
 {
+    scan_algo_ctx_t ctx;
+    unsigned seq;
+
+    scan_algo_start(&ctx);
+    for (seq = 0U; seq < 100U && 0 == scan_algo_body_deci(&ctx); ++seq)
+    {
+        (void)feed_pair(&ctx, OBSTACLE_CLASS_VALID, 300U);
+    }
+    CHECK(scan_algo_body_deci(&ctx) > 0);
+    CHECK(scan_algo_finish_partial(&ctx));
+    CHECK(scan_algo_has_region(&ctx));
+    CHECK(SCAN_ALGO_NO_SLOT == scan_algo_target(&ctx));
+    CHECK(SCAN_ALGO_EDGE_UNBOUNDED == ctx.edge_state[SCAN_ALGO_LEFT]);
+    CHECK(SCAN_ALGO_EDGE_UNBOUNDED == ctx.edge_state[SCAN_ALGO_RIGHT]);
+}
+
+int main(int argc, char * argv[])
+{
+    if (2 == argc)
+    {
+        if (0 == strcmp(argv[1], "unmeasured-edges"))
+        {
+            test_partial_scan_keeps_unmeasured_edges_open();
+        }
+        else if (0 == strcmp(argv[1], "echo-classification"))
+        {
+            test_classify();
+            test_classify_each_class();
+        }
+        else
+        {
+            (void)fprintf(stderr, "unknown case %s\n", argv[1]);
+            return 2;
+        }
+        return (0 == g_failures) ? 0 : 1;
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "usage: %s [case]\n", argv[0]);
+        return 2;
+    }
+
     test_distance_and_angle();
     test_classify();
     test_classify_each_class();
@@ -332,6 +375,7 @@ int main(void)
     test_noise_flags();
     test_region_scan();
     test_receding_edge();
+    test_partial_scan_keeps_unmeasured_edges_open();
 
     if (g_failures == 0)
     {

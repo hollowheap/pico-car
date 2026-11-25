@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "pilot/drive.h"
 #include "pilot/pilot.h"
@@ -327,8 +328,18 @@ static void test_pilot_backoff_from_rest(void)
     assert(l == -DRIVE_START_MM_S * UM_PER_MM && r == l);
 }
 
-int main(void)
+int main(int argc, char * argv[])
 {
+    if (2 == argc && 0 == strcmp("sonar-sets-zero", argv[1]))
+    {
+        test_pilot_stop_with_reason();
+        return EXIT_SUCCESS;
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "Usage: %s [sonar-sets-zero]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
     test_straight();
     test_pure_turn();
     test_curve();

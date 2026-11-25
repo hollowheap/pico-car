@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "controller.h"
 #include "motion_inbox.h"
@@ -353,8 +354,51 @@ static void test_permit_lapse_and_age (void)
     }
 }
 
-int main (void)
+static void test_single_stop_sample_brakes_and_latches (void)
 {
+    controller_t                  control;
+    controller_config_t const     cfg = config();
+    motion_output_t const         out = {NULL, fake_apply, fake_brake};
+    motion_input_t                in = {0};
+    motion_command_t              cmd;
+    int                           applies;
+
+    assert(controller_init(&control, &cfg, &in, &out));
+    advance(&in, false);
+    cmd = drive(in.timestamp_us, SPEED_UM_S);
+    controller_tick(&control, &in, in.timestamp_us, &cmd, false);
+    assert(MOTION_RUNNING == control.status.state);
+
+    applies = g_applies;
+    advance(&in, false);
+    controller_tick(&control, NULL, in.timestamp_us, NULL, true);
+    assert(MOTION_STOPPED == control.status.state);
+    assert(g_last_latch);
+
+    advance(&in, false);
+    cmd = drive(in.timestamp_us, SPEED_UM_S);
+    controller_tick(&control, &in, in.timestamp_us, &cmd, false);
+    assert(MOTION_STOPPED == control.status.state);
+    assert(g_applies == applies);
+}
+
+int main (int argc, char ** argv)
+{
+    if ((2 == argc) && (0 == strcmp(argv[1], "single_stop_sample")))
+    {
+        test_single_stop_sample_brakes_and_latches();
+        return 0;
+    }
+    if ((2 == argc) && (0 == strcmp(argv[1], "permit_lease")))
+    {
+        test_permit_lapse_and_age();
+        return 0;
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "Usage: %s [single_stop_sample|permit_lease]\n", argv[0]);
+        return 2;
+    }
     test_no_edges_is_no_fault_and_output_is_bounded();
     test_feedback_fault_clears_after_rest();
     test_old_command_does_not_resume();
@@ -363,6 +407,7 @@ int main (void)
     test_odometry_valid_recovers_per_sample();
     test_invalid_samples_count_survives_a_clean_sample();
     test_permit_lapse_and_age();
-    puts("test_motion_controller: 8 tests passed");
+    test_single_stop_sample_brakes_and_latches();
+    puts("test_motion_controller: 9 tests passed");
     return 0;
 }

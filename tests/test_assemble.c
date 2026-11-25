@@ -131,6 +131,19 @@ static void test_status_run_state_and_estop (void)
     CHECK(out.hold_mask == 0U);
 }
 
+static void test_status_link_fault_keeps_running (void)
+{
+    telemetry_status_t out;
+    motion_status_t    m = running_motion();
+    uint16_t const     wifi_fault = BIT(TELEMETRY_FAULT_BIT_WIFI_DISCONN);
+
+    telemetry_assemble_status(&out, &m, NULL, NULL, NULL, wifi_fault, 0U, 0U, false);
+    CHECK(out.state == TELEMETRY_RUN_STATE_RUNNING);
+    CHECK(out.mode == TELEMETRY_VEHICLE_MODE_FOLLOW);
+    CHECK(out.faults == wifi_fault);
+    CHECK(out.hold_mask == 0U);
+}
+
 static void test_status_mode (void)
 {
     telemetry_status_t out;
@@ -498,11 +511,27 @@ static void test_profile (void)
     CHECK(out.flags == (1U << TELEMETRY_OBSTACLE_FLAGS_BIT_WALL));
 }
 
-int main (void)
+int main (int argc, char ** argv)
 {
+    if ((2 == argc) && (0 == strcmp(argv[1], "link_fault")))
+    {
+        test_status_link_fault_keeps_running();
+        return (g_fail == 0U) ? 0 : 1;
+    }
+    if ((2 == argc) && (0 == strcmp(argv[1], "estop_status")))
+    {
+        test_status_run_state_and_estop();
+        return (g_fail == 0U) ? 0 : 1;
+    }
+    if (1 != argc)
+    {
+        (void)fprintf(stderr, "Usage: %s [link_fault|estop_status]\n", argv[0]);
+        return 2;
+    }
     test_status_basic();
     test_status_stale_feedback_keeps_odometer();
     test_status_run_state_and_estop();
+    test_status_link_fault_keeps_running();
     test_status_mode();
     test_status_clamps_and_nulls();
     test_motion();
