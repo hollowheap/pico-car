@@ -19,6 +19,8 @@
 #endif
 
 #define WIFI_LINK_TICK_MS      2u
+#define WIFI_RSSI_POLL_MS      1000u
+#define WIFI_RSSI_RETRY_MS     2000u
 #define WIFI_LEASE_TIMEOUT_MS  30000u
 #define WIFI_JOIN_RETRY_MS     5000u
 #define WIFI_JOIN_TIMEOUT_MS   30000u
@@ -36,6 +38,7 @@ static volatile int32_t      g_rssi = INT32_MIN;
 static bool                  g_lease_started;
 static bool                  g_adopted;
 static uint32_t              g_lease_since_ms;
+static uint32_t              g_rssi_polled_ms;
 static ip4_addr_t            g_adopted_addr;
 static ip4_addr_t            g_adopted_mask;
 static ip4_addr_t            g_adopted_gw;
@@ -84,24 +87,34 @@ static void
 lease_update (uint32_t now_ms)
 {
     struct netif * netif = &gp_cyw43->netif[CYW43_ITF_STA];
+    uint32_t const rssi_interval_ms =
+        (g_rssi == INT32_MIN) ? WIFI_RSSI_RETRY_MS : WIFI_RSSI_POLL_MS;
 
     if (!netif_is_link_up(netif))
     {
         lease_reset();
         return;
     }
-    if (!g_lease_started)
+    if (!g_lease_started ||
+        ((uint32_t) (now_ms - g_rssi_polled_ms) >= rssi_interval_ms))
     {
         int32_t rssi = INT32_MIN;
+        int32_t const result = cyw43_wifi_get_rssi(gp_cyw43, &rssi);
 
+        /* The ioctl can dispatch a link-down event while waiting for a reply. */
+        if (!netif_is_link_up(netif))
+        {
+            lease_reset();
+            return;
+        }
+        g_rssi = (result == 0) ? rssi : INT32_MIN;
+        /* A timed-out ioctl gets the full retry interval after it returns. */
+        g_rssi_polled_ms = sys_now();
+    }
+    if (!g_lease_started)
+    {
         g_lease_started = true;
         g_lease_since_ms = now_ms;
-        /* Upstream records RSSI for its initial join only. Sample each
-         * association here, including joins initiated by this module. */
-        if (cyw43_wifi_get_rssi(gp_cyw43, &rssi) == 0)
-        {
-            g_rssi = rssi;
-        }
     }
     if (lease_usable(netif))
     {
