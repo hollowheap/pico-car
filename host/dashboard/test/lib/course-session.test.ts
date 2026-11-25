@@ -2,6 +2,8 @@ import { expect, it } from 'vitest';
 
 import { buildCourse } from '../../../bridge/src/console/course.js';
 import { courseSession } from '../../../bridge/src/console/course-session.js';
+import { SLOT_COUNT } from '../../../bridge/src/console/scan.js';
+import { BIT_FIELDS, ENUMS } from '../../../bridge/src/console/schema.generated.js';
 import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
 
 const storage = () => {
@@ -108,6 +110,29 @@ it('keeps distinct legacy poses delivered in the same millisecond on both sides 
   const restored = courseSession('car-a', memory).restore(replay, 1500);
   expect(restored.trail.map((sample) => sample.odometerMm)).toEqual([0, 20, 40]);
   expect(buildCourse(restored.trail, []).points.at(-1)?.y).toBeCloseTo(40);
+});
+
+it('restores a stationary two-point side survey on the same boot', () => {
+  const memory = storage();
+  const stopped = status(1200, 6, 20);
+  stopped.values.speed_mms = 0;
+  const slots = Object.fromEntries(Array.from({ length: SLOT_COUNT }, (_, slot) => [`slots_${slot}`, 0]));
+  slots.slots_17 = 0x8000 | 105;
+  slots.slots_18 = 0x8000 | 109;
+  slots.slots_19 = 0x9000;
+  const { stationaryContact, probeSideValid, endpointLsb } = BIT_FIELDS.profileFlags;
+  const profile = { packet: 'profile', timestamp: 1250, values: { ...slots, req_id: 1,
+    status: ENUMS.profileStatus.pilotSparse, side: ENUMS.hugSide.left,
+    flags: (1 << stationaryContact) | (1 << probeSideValid) | (5 << endpointLsb) } };
+  const before = [hb(1000), status(1100, 5, 0), stopped, profile].reduce(reduceStore, emptyStore());
+  const surfaces = buildCourse(before.trail, []).surfaces;
+  expect(surfaces[0]?.points).toHaveLength(2);
+
+  courseSession('car', memory).save(before);
+  const replay = [status(1400, 7, 30), hb(1500)].reduce(reduceStore, emptyStore());
+  const restored = courseSession('car', memory).restore(replay, 1500);
+  expect(restored.trail.map(({ seq }) => seq)).toEqual([5, 6, 7]);
+  expect(buildCourse(restored.trail, []).surfaces).toEqual(surfaces);
 });
 
 it('keeps the reset boundary on reload even when bridge history ends before the acceptance', () => {

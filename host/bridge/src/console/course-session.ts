@@ -29,10 +29,11 @@ function cachedObstacle(saved: Saved): ObstacleStamp | null {
 }
 
 function validSurvey(survey: Survey): boolean {
+  // Stationary side scans can produce a face from two measured returns.
   return finite(survey?.timestamp) && (survey.request === -1 || word(survey.request, 255)) &&
     Array.isArray(survey.surfaces) && survey.surfaces.length > 0 && survey.surfaces.length <= SLOT_COUNT &&
     survey.surfaces.every((face) => word(face?.firstSlot, SLOT_COUNT - 1) && Array.isArray(face.points) &&
-      face.points.length >= 3 && face.firstSlot + face.points.length <= SLOT_COUNT &&
+      face.points.length >= 2 && face.firstSlot + face.points.length <= SLOT_COUNT &&
       typeof face.boundedStart === 'boolean' && typeof face.boundedEnd === 'boolean' &&
       face.points.every((point) => finite(point?.x) && finite(point.y)));
 }
