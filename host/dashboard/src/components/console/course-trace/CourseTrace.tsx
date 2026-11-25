@@ -310,6 +310,7 @@ export function CourseTrace({
   const caption = [theme.typography.caption, { color: theme.colors.muted }];
   const seconds = Math.round(summary.durationS);
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  const travelScope = summary.partialTravel ? 'Recorded segment' : summary.scope;
   const hasPlot = plot.width > 0 && plot.height > 0;
   const baseScale = Math.min(
     Math.max(1, plot.width - 2 * INSET) / Math.max(MIN_SPAN_MM, plotBounds.maxX - plotBounds.minX),
@@ -364,7 +365,7 @@ export function CourseTrace({
           {speedMms === null ? 'Speed --' : `${speedLive ? 'Speed' : 'Last speed'} ${speedMms} mm/s`}
         </Text>
         {summary.hasTravel ? <Text testID="course-travel" style={caption}>
-          {`${summary.scope} ${metres(summary.distanceMm)} in ${elapsed}, avg ${Math.round(summary.averageMms)} mm/s`}
+          {`${travelScope} ${metres(summary.distanceMm)} in ${elapsed}, avg ${Math.round(summary.averageMms)} mm/s`}
         </Text> : null}
       </View>
       <View

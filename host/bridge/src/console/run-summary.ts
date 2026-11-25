@@ -5,6 +5,7 @@ import type { EventRow, TrailPoint } from './telemetry-store.js';
 export type RunSummary = {
   scope: 'This run' | 'Recorded';
   hasTravel: boolean;
+  partialTravel: boolean;
   distanceMm: number;
   durationS: number;
   averageMms: number;
@@ -24,6 +25,8 @@ export type RunSummary = {
 };
 
 const MS_PER_S = 1000;
+// Run events and periodic status can arrive in different bridge drains.
+const RUN_START_GRACE_MS = 1000;
 
 /** Longest completed recovery present in the retained event history. */
 export function longestLineRecovery(events: EventRow[], since: number | null = null): number | null {
@@ -69,6 +72,7 @@ export function summarizeRun(trail: TrailPoint[], events: EventRow[], bootStart:
   return {
     scope: startIndex < 0 ? 'Recorded' : 'This run',
     hasTravel: samples.length >= 2 && durationS > 0,
+    partialTravel: startIndex >= 0 && first !== undefined && first.timestamp - since > RUN_START_GRACE_MS,
     distanceMm,
     durationS,
     averageMms: durationS > 0 ? distanceMm / durationS : 0,

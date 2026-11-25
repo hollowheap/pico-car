@@ -40,4 +40,13 @@ describe('bridge console projection', () => {
     expect(after.view.course.samples.at(-1)?.odometerMm).toBe(0);
     expect(after.lastPacket).toMatchObject({ timestamp: 1000, receivedAt: 900 });
   });
+
+  it('marks a recorded travel segment when the run began before the retained poses', () => {
+    const start = { packet: 'event', timestamp: 1000, values: { event_id: 1,
+      event_type: ENUMS.eventType.runStart, source: ENUMS.eventSource.supervisor } };
+    const complete = createConsoleView([start, status(1, 0, 1200), status(2, 20, 1400)]).read();
+    const partial = createConsoleView([start, status(50, 980, 11000), status(51, 1000, 11200)]).read();
+    expect(complete.view.summary).toMatchObject({ scope: 'This run', partialTravel: false });
+    expect(partial.view.summary).toMatchObject({ scope: 'This run', partialTravel: true, distanceMm: 20 });
+  });
 });

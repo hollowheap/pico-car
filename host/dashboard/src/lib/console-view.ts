@@ -11,7 +11,7 @@ const view: ConsoleView = {
     bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 } },
   drawing: { 'north-up': { strokes: [], tapeRuns: [] }, 'car-up': { strokes: [], tapeRuns: [] } },
   pendingPose: null,
-  summary: { scope: 'Recorded', hasTravel: false, distanceMm: 0, durationS: 0, averageMms: 0,
+  summary: { scope: 'Recorded', hasTravel: false, partialTravel: false, distanceMm: 0, durationS: 0, averageMms: 0,
     turns: 0, barcodesOk: 0, barcodesNoAction: 0, barcodesBad: 0, obstacles: 0, bypasses: 0,
     humps: 0, tallestHumpMm: 0, lifts: 0, lineLosses: 0, faults: 0, faultBits: [], stops: 0 },
   speedMms: null,
