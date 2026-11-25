@@ -354,6 +354,16 @@ describe('events', () => {
     });
   });
 
+  it('decodes the signed rejoin heading and lateral offset from the entry line', () => {
+    expect(describeEvent(ENUMS.eventType.rejoin, -723, 65260)).toEqual({
+      kind: 'obstacle', title: 'Rejoin check',
+      detail: 'Heading change -72.3° since entry and lateral offset -276 mm from the entry line.',
+    });
+    expect(describeEvent(ENUMS.eventType.bypassEnd, 0, 0)).toMatchObject({
+      title: 'Bypass ended', detail: 'Width unknown, depth unknown.',
+    });
+  });
+
   it('labels signed sonar commands without implying shaft feedback', () => {
     expect(eventName(0x25)).toBe('sonarAim');
     expect(describeEvent(0x25, -65, 0)).toEqual({

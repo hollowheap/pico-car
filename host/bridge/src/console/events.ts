@@ -261,7 +261,15 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     case 'bypassStart':
       return { kind: 'obstacle', title: 'Bypass started', detail: `hugging the ${enumLabel('hugSide', p1).toLowerCase()} side` };
     case 'bypassEnd':
-      return { kind: 'obstacle', title: 'Bypass ended', detail: `back on the line; width ${p1 === 0 ? 'unknown' : `${p1} mm`}, breadth ${p2 === 0 ? 'unknown' : `${p2} mm`}` };
+      return { kind: 'obstacle', title: 'Bypass ended', detail: `Width ${p1 === 0 ? 'unknown' : `${p1} mm`}, depth ${p2 === 0 ? 'unknown' : `${p2} mm`}.` };
+    case 'rejoin': {
+      const offsetMm = (p2 << 16) >> 16;
+      return {
+        kind: 'obstacle',
+        title: 'Rejoin check',
+        detail: `Heading change ${p1 / 10}° since entry and lateral offset ${offsetMm} mm from the entry line.`,
+      };
+    }
     case 'obstacleStop':
       if (p1 === ENUMS.obstacleCause.external) {
         return { kind: 'command', title: 'External stop', detail: 'Navigation stopped by an external request.' };
