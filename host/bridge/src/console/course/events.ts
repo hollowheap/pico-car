@@ -1,4 +1,4 @@
-import type { EventKind } from '../events.js';
+import { reportableHumpPeakMm, type EventKind } from '../events.js';
 import { BIT_FIELDS, ENUMS } from '../schema.generated.js';
 import type { EventRow, TrailPoint } from '../telemetry-store.js';
 import { RAD_PER_DEG, SPEED_GAP_MS, WHEEL_TRACK_MM, sampleSpeed, type CourseHump, type CourseJunction, type CourseMarker, type CoursePoint } from './geometry.js';
@@ -87,7 +87,6 @@ function pointInSegment(trail: TrailPoint[], points: CoursePoint[], k: number, t
 
 const RAMP_DEFAULT_LENGTH_MM = 200;
 const RAMP_WIDTH_MM = 160;
-const HUMP_MIN_PEAK_MM = 8;
 const HUMP_ROLL_DEADBAND_DEG = 2.5;
 const HUMP_ROLL_FULL_DEG = 12;
 
@@ -168,10 +167,9 @@ export function placeCourseEvents(
         if (matchIdx !== -1) {
           usedEnds.add(matchIdx);
           const ev = humpEndEvents[matchIdx]!;
-          peakMm = ev.p2 === 1 && ev.p1 > 0 ? ev.p1 : null;
+          peakMm = reportableHumpPeakMm(ev.p1, ev.p2);
         }
-        const meetsThreshold = peakMm !== null && peakMm >= HUMP_MIN_PEAK_MM;
-        if (meetsThreshold) {
+        if (peakMm !== null) {
           let rollSum = 0;
           let rollCount = 0;
           for (let k = runStart; k <= runEnd; k += 1) {
@@ -205,7 +203,8 @@ export function placeCourseEvents(
   for (let idx = 0; idx < humpEndEvents.length; idx += 1) {
     if (usedEnds.has(idx)) continue;
     const ev = humpEndEvents[idx]!;
-    if (ev.p2 !== 1 || ev.p1 < HUMP_MIN_PEAK_MM) continue;
+    const peakMm = reportableHumpPeakMm(ev.p1, ev.p2);
+    if (peakMm === null) continue;
     const at = pointAtPacket(samples, points, ev.timestamp, ev.odometerMm);
     const sampleIdx = Math.min(Math.max(firstAtOrAfter(samples, ev.timestamp), 0), samples.length - 1);
     const sample = samples[sampleIdx];
@@ -222,7 +221,7 @@ export function placeCourseEvents(
         headingDeg,
         lengthMm: RAMP_DEFAULT_LENGTH_MM,
         widthMm: RAMP_WIDTH_MM,
-        peakMm: ev.p1,
+        peakMm,
         timestamp: ev.timestamp,
       });
     }

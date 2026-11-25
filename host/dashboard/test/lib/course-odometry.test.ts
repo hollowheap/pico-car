@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildCourse, courseStrokes, courseTapeRuns, courseTraceSegments, latestCourseSpeed, stabilizeStraightPoints } from '../../../bridge/src/console/course.js';
 import { describeEvent } from '../../../bridge/src/console/events.js';
+import { summarizeRun } from '../../../bridge/src/console/run-summary.js';
 import type { LinkPacket } from '../../src/lib/link';
 import { ENUMS, FAULT_BITS } from '../../src/lib/schema.generated';
 import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
@@ -332,4 +333,19 @@ it('projects 2D tape to front IR sensors, detects slip, and places 2D hump footp
   const postReset = buildCourse(humpStore.trail, humpStore.events, null, 500);
   expect(postReset.samples).toHaveLength(1);
   expect(postReset.humps).toHaveLength(0);
+});
+
+it.each([[9, 0], [10, 1]])('uses the 10 mm ramp reporting threshold for a %i mm finish', (peakMm, count) => {
+  const store = fold([
+    status(1, 0, 0, 0),
+    frame('physics', 200, { flags: 8, pitch_cdeg: 420, roll_cdeg: 0, hump_state: 1 }),
+    status(2, 200, 30, 0),
+    frame('physics', 400, { flags: 8, pitch_cdeg: -400, roll_cdeg: 0, hump_state: 3 }),
+    status(3, 400, 60, 0),
+    frame('event', 420, { event_id: 1, event_type: ENUMS.eventType.humpEnd, p1: peakMm, p2: 1, odometer_mm: 60 }),
+    frame('physics', 600, { flags: 8, pitch_cdeg: 0, roll_cdeg: 0, hump_state: 0 }),
+    status(4, 600, 90, 0),
+  ]);
+  expect(buildCourse(store.trail, store.events).humps).toHaveLength(count);
+  expect(summarizeRun(store.trail, store.events)).toMatchObject({ humps: count, tallestHumpMm: peakMm * count });
 });

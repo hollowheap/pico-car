@@ -18,6 +18,12 @@ export type EventKind =
 
 export type EventText = { title: string; detail: string; kind: EventKind };
 
+const HUMP_MIN_PEAK_MM = 10;
+
+export function reportableHumpPeakMm(peakMm: number, heightValid: number): number | null {
+  return heightValid === 1 && peakMm >= HUMP_MIN_PEAK_MM ? peakMm : null;
+}
+
 const SOURCES = ['', 'telemetry', 'barcode', 'button'];
 const TELEMETRY_SOURCE = 1;
 const TURNS = ['', 'Turn left', 'Turn right', 'U-turn', 'Straight'];

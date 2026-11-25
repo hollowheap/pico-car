@@ -1,4 +1,4 @@
-import { barcodeHasNoAction } from './events.js';
+import { barcodeHasNoAction, reportableHumpPeakMm } from './events.js';
 import { odometerDiscontinuous } from './odometer.js';
 import type { EventRow, TrailPoint } from './telemetry-store.js';
 
@@ -65,7 +65,7 @@ export function summarizeRun(trail: TrailPoint[], events: EventRow[], bootStart:
   const durationS = first !== undefined && last !== undefined ? (last.timestamp - first.timestamp) / MS_PER_S : 0;
   const count = (name: string) => inRun.filter((event) => event.name === name).length;
   const bits = new Set(inRun.filter((event) => event.name === 'faultSet').map((event) => event.p1));
-  const humps = inRun.filter((event) => event.name === 'humpEnd' && event.p2 === 1);
+  const humps = inRun.filter((event) => event.name === 'humpEnd' && reportableHumpPeakMm(event.p1, event.p2) !== null);
   return {
     scope: startIndex < 0 ? 'Recorded' : 'This run',
     hasTravel: samples.length >= 2 && durationS > 0,
