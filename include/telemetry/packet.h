@@ -115,10 +115,13 @@ STATIC_ASSERT (sizeof(telemetry_obstacle_t) == 24U, "telemetry_obstacle_t size")
 /* 1 Hz. Counters and health. */
 typedef struct
 {
+    uint32_t echo_total[TELEMETRY_DIAG_COUNTS_COUNT_ECHO_TOTAL];
+    uint32_t line_edges_total;
+    uint32_t line_raw_edges_total;
+    uint32_t sensor_sample_us;
     uint16_t sticky_faults;
     uint16_t task_alive_mask;
     uint16_t line_lost_count;
-    uint16_t line_search_mm;
     uint16_t barcode_ok;
     uint16_t barcode_bad;
     uint16_t barcode_edge_drops;
@@ -128,14 +131,6 @@ typedef struct
     uint16_t telemetry_overruns;
     uint8_t  last_barcode;
     uint8_t  last_barcode_action;
-    uint8_t  echo_valid;
-    uint8_t  echo_open;
-    uint8_t  echo_too_close;
-    uint8_t  echo_no_echo;
-    uint8_t  echo_glitch;
-    uint8_t  echo_stuck;
-    uint8_t  line_edges_per_s;
-    uint8_t  line_raw_edges_per_s;
     uint16_t supervisor_passes; /* a frozen value shows a hung supervisor */
     uint16_t stack_min_free;    /* smallest free stack since boot, bytes */
     uint8_t  stack_min_task;    /* its task, in main.c stack order */
@@ -148,8 +143,7 @@ typedef struct
     uint8_t  cmd_rej_age;
 } telemetry_diag_t;
 
-/* 45 B of fields and one byte of tail padding. */
-STATIC_ASSERT (sizeof(telemetry_diag_t) == 46U, "telemetry_diag_t size");
+STATIC_ASSERT (sizeof(telemetry_diag_t) == 72U, "telemetry_diag_t size");
 
 /* 1 Hz. Sent by the connection task. */
 typedef struct
@@ -163,6 +157,21 @@ typedef struct
 } telemetry_heartbeat_t;
 
 STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 12U, "telemetry_heartbeat_t size");
+
+/* One captured transition of the barcode IR input. UINT32_MAX means the
+ * odometer was unavailable at the edge. A zero interval starts a new span. */
+typedef struct
+{
+    uint32_t edge_us;
+    uint32_t interval_us;
+    uint32_t odometer_mm;
+    uint16_t width_um;
+    uint8_t  seq;
+    uint8_t  level_high;
+    uint8_t  width_valid;
+    uint8_t  capture_loss;
+} telemetry_barcode_sample_t;
+STATIC_ASSERT (sizeof(telemetry_barcode_sample_t) == 20U, "barcode sample size");
 
 /* On event. */
 typedef struct
@@ -192,6 +201,7 @@ typedef struct
 STATIC_ASSERT (sizeof(telemetry_profile_t) == 82U, "telemetry_profile_t size");
 
 uint16_t telemetry_pack_status (uint8_t * dst, const telemetry_status_t * p_src);
+uint16_t telemetry_pack_barcode_sample (uint8_t * dst, const telemetry_barcode_sample_t * p_src);
 uint16_t telemetry_pack_motion (uint8_t * dst, const telemetry_motion_t * p_src);
 uint16_t telemetry_pack_physics (uint8_t * dst,
                                  const telemetry_physics_t * p_src);

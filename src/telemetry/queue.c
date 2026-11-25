@@ -21,9 +21,11 @@
 #define FRAME_MOTION    (TELEMETRY_MOTION_WIRE_SIZE + 1u)
 #define FRAME_PHYSICS   (TELEMETRY_PHYSICS_WIRE_SIZE + 1u)
 #define FRAME_OBSTACLE  (TELEMETRY_OBSTACLE_WIRE_SIZE + 1u)
-#define FRAME_DIAG      (TELEMETRY_DIAG_WIRE_SIZE + 1u)
+#define FRAME_DIAG      (TELEMETRY_DIAG_COUNTS_WIRE_SIZE + 1u)
 #define FRAME_HEARTBEAT (TELEMETRY_HEARTBEAT_WIRE_SIZE + 1u)
 #define FRAME_PROFILE   (TELEMETRY_PROFILE_WIRE_SIZE + 1u)
+#define FRAME_BARCODE_SAMPLE (TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE + 1u)
+STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_BARCODE_SAMPLE, "barcode samples are evictable");
 
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_STATUS, "event length unique");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_MOTION, "event length unique");
@@ -112,6 +114,9 @@ frame_is_valid (const uint8_t * frame, uint16_t len)
             break;
         case (uint8_t) TELEMETRY_TOPIC_EVENT:
             want = TELEMETRY_EVENT_QUEUED_SIZE;
+            break;
+        case (uint8_t) TELEMETRY_TOPIC_BARCODE_SAMPLE:
+            want = FRAME_BARCODE_SAMPLE;
             break;
         case (uint8_t) TELEMETRY_TOPIC_PROFILE:
             want = FRAME_PROFILE;
@@ -233,6 +238,19 @@ push_frame (const uint8_t * frame, uint16_t len, uint8_t qos, TMO lock_timeout)
             (void) atomic_inc(&g_drop_count);
         }
         return result;
+    }
+    if (frame[0] == (uint8_t)TELEMETRY_TOPIC_BARCODE_SAMPLE)
+    {
+        /* A burst of IR edges must leave room for a complete telemetry pass
+         * and its command/fault events, even if the uplink stops draining. */
+        T_RMBF info;
+        result = tk_ref_mbf(g_mbf_telem_id, &info);
+        if ((E_OK != result) || (info.frbufsz < (SZ)(TELEMETRY_QUEUE_BYTES / TELEMETRY_RAW_HEADROOM_DIVISOR)))
+        {
+            (void)atomic_inc(&g_drop_count);
+            (void)tk_unl_mtx(g_push_mtx);
+            return (E_OK == result) ? E_TMOUT : result;
+        }
     }
     result = tk_snd_mbf(g_mbf_telem_id, frame, stored_len, TMO_POL);
     if (result == E_TMOUT)

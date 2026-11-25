@@ -2,6 +2,7 @@
  * @brief Core 1 Wi-Fi link, MQTT session, telemetry publish, and command ingress.
  */
 #include <tk/tkernel.h>
+#include <tk/smp.h>
 #include <tm/tmonitor.h>
 
 #include "cyw43_utk.h"
@@ -13,6 +14,7 @@
 #include "platform/log.h"
 #include "telemetry/cmd.h"
 #include "telemetry/connection.h"
+#include "telemetry/emit.h"
 #include "telemetry/mqtt.h"
 #include "telemetry/net_queue.h"
 #include "telemetry/packet.h"
@@ -32,7 +34,6 @@
 #define CONNECTION_RSSI_MAX     127
 #define CONNECTION_RSSI_MIN     (-128)
 #define CONNECTION_DROPS_MAX    255U
-#define CONNECTION_SLEEP_TIMEOUT_MS 50U
 /* No MQTT session for this long sets the wifi_disconn fault bit. */
 #define CONNECTION_LINK_DOWN_MS 3000U
 
@@ -43,12 +44,14 @@ static const char g_topic_obstacle[]  = TELEMETRY_TOPIC_PREFIX "/o";
 static const char g_topic_diag[]      = TELEMETRY_TOPIC_PREFIX "/d";
 static const char g_topic_event[]     = TELEMETRY_TOPIC_PREFIX "/e";
 static const char g_topic_profile[]   = TELEMETRY_TOPIC_PREFIX "/f";
+static const char g_topic_barcode[]   = TELEMETRY_TOPIC_PREFIX "/b";
 static const char g_topic_heartbeat[] = TELEMETRY_TOPIC_PREFIX "/h";
 static const char g_topic_command[]   = TELEMETRY_TOPIC_PREFIX "/c";
 
 static volatile connection_state_t g_state = CONNECTION_DISCONNECTED;
 static volatile bool               g_b_mqtt_seen;
 static mqtt_client_t               g_mqtt;
+static T_SPLOCK                    g_cmd_lock;
 static telemetry_cmd_state_t       g_cmd_state;
 static connection_cmd_dispatch_t   gp_dispatch;
 static void *                      gp_dispatch_context;
@@ -59,30 +62,6 @@ static bool                        g_transport_closing;
 static uint32_t                    g_busy_drops;
 static uint32_t                    g_heartbeat_ms;
 static T_CYW43_UTK_STATUS          g_status;
-static ID                          g_conn_task_id;
-static ID                          g_conn_cyc_id;
-static uint32_t                    g_conn_overruns;
-
-static void
-conn_cyclic_wakeup (void * p_exinf)
-{
-    (void) p_exinf;
-    (void) tk_wup_tsk(g_conn_task_id);
-}
-
-static void
-wait_connection_cycle (void)
-{
-    INT queued = 0;
-    ER const er = tk_slp_tsk((TMO) CONNECTION_SLEEP_TIMEOUT_MS);
-
-    queued = tk_can_wup(TSK_SELF);
-    if ((E_OK == er) && (queued > 0))
-    {
-        g_conn_overruns += (uint32_t) queued;
-    }
-}
-
 /* Run ID from 16 reads of the ring oscillator's noisy bit. The kernel never
    stops the ring oscillator, which runs from reset. */
 static uint16_t
@@ -100,26 +79,52 @@ boot_run_id (void)
 }
 
 static void
+publish_cmd_state (const telemetry_cmd_state_t * p_state)
+{
+    UINT saved = 0U;
+
+    (void)ISpinLock(&g_cmd_lock, &saved);
+    g_cmd_state = *p_state;
+    (void)ISpinUnlock(&g_cmd_lock, saved);
+}
+
+static void
 dispatch_command (const telemetry_cmd_t * cmd, void * context)
 {
-    (void) context;
+    bool const b_estop = ((uint8_t)TELEMETRY_CMD_ESTOP == cmd->opcode);
 
+    if (!b_estop)
+    {
+        publish_cmd_state(context);
+    }
     if (gp_dispatch != 0)
     {
         gp_dispatch(cmd, gp_dispatch_context);
+    }
+    if (b_estop)
+    {
+        /* Hand off the stop before taking the lock shared with diagnostics. */
+        publish_cmd_state(context);
     }
 }
 
 static void
 on_mqtt_command (const uint8_t * payload, uint16_t len, void * context)
 {
+    /* Only the connection task updates the state after startup. */
+    telemetry_cmd_state_t next = g_cmd_state;
+
     (void) context;
 
-    /* The clock and the units of the heartbeat uptime_s the command echoes.
-       A refusal is counted in g_cmd_state for the diag frame. */
-    (void) telemetry_cmd_receive(&g_cmd_state, payload, len,
-                                 tcp_transport_now_ms() / CONNECTION_MS_PER_S,
-                                 dispatch_command, 0);
+    /* Use the clock and units of the heartbeat uptime_s the command echoes.
+       The dispatch callback publishes accepted commands. */
+    if (TELEMETRY_CMD_OK !=
+        telemetry_cmd_receive(&next, payload, len,
+                              tcp_transport_now_ms() / CONNECTION_MS_PER_S,
+                              dispatch_command, &next))
+    {
+        publish_cmd_state(&next);
+    }
 }
 
 static int
@@ -164,6 +169,9 @@ publish_frame (const uint8_t * frame, uint16_t len)
         break;
     case (uint8_t) TELEMETRY_TOPIC_EVENT:
         topic = g_topic_event;
+        break;
+    case (uint8_t) TELEMETRY_TOPIC_BARCODE_SAMPLE:
+        topic = g_topic_barcode;
         break;
     case (uint8_t) TELEMETRY_TOPIC_PROFILE:
         topic = g_topic_profile;
@@ -211,7 +219,6 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     {
         return;
     }
-    g_heartbeat_ms = now_ms;
     if (rssi > CONNECTION_RSSI_MAX)
     {
         rssi = CONNECTION_RSSI_MAX;
@@ -239,9 +246,13 @@ publish_heartbeat (uint32_t now_ms, const T_CYW43_UTK_STATUS * status)
     {
         return;
     }
-    if (mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
-                            (uint16_t) sizeof(payload), now_ms) ==
-        MQTT_ERR_BUSY)
+    mqtt_result_t const result = mqtt_client_publish(&g_mqtt, g_topic_heartbeat, payload,
+                                                     (uint16_t) sizeof(payload), now_ms);
+    if (MQTT_OK == result)
+    {
+        g_heartbeat_ms = now_ms;
+    }
+    else if (MQTT_ERR_BUSY == result)
     {
         g_busy_drops++;
     }
@@ -256,6 +267,11 @@ classify (const T_CYW43_UTK_STATUS * status)
     }
     if (!status->link_up)
     {
+        if (status->join_complete)
+        {
+            return (status->join_result != 0) ? CONNECTION_FAULT
+                                              : CONNECTION_DISCONNECTED;
+        }
         return status->join_started ? CONNECTION_JOINING
                                     : CONNECTION_DISCONNECTED;
     }
@@ -301,6 +317,7 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     }
     /* A new run ID at each boot: a host must read it from the heartbeat,
        so a command for an earlier boot is refused. */
+    (void)InitSpinLock(&g_cmd_lock);
     telemetry_cmd_state_init(&g_cmd_state, boot_run_id());
     gp_dispatch         = dispatch;
     gp_dispatch_context = context;
@@ -335,29 +352,78 @@ open_transport (void)
     }
 }
 
+static void
+close_mqtt_transport (void)
+{
+    /* The next CONNECT must go out on a new stream. */
+    tcp_transport_close();
+    g_transport_started = false;
+    g_transport_closing = true;
+}
+
+static void
+note_mqtt_session (bool b_connected)
+{
+    uint8_t const type = b_connected ? TELEMETRY_EVT_LINK_UP : TELEMETRY_EVT_LINK_DOWN;
+
+    (void)telemetry_try_emit_event((uint8_t)TELEMETRY_EVENT_SOURCE_CONNECTION,
+                                   type, 0, 0U, 0U);
+}
+
+static bool
+service_mqtt (uint32_t now_ms, bool b_mqtt_up)
+{
+    if (!g_mqtt_ready)
+    {
+        return false;
+    }
+
+    bool const b_had_session = (mqtt_client_state(&g_mqtt) != MQTT_STATE_DISCONNECTED);
+
+    (void)mqtt_client_poll(&g_mqtt, now_ms);
+    mqtt_state_t const state = mqtt_client_state(&g_mqtt);
+    bool const b_connected = (state == MQTT_STATE_CONNECTED);
+
+    if (b_had_session && (state == MQTT_STATE_DISCONNECTED))
+    {
+        close_mqtt_transport();
+    }
+    if (b_connected != b_mqtt_up)
+    {
+        note_mqtt_session(b_connected);
+    }
+    if (!b_connected)
+    {
+        return false;
+    }
+    if (!b_mqtt_up)
+    {
+        g_heartbeat_ms = now_ms - CONNECTION_HEARTBEAT_MS;
+    }
+    g_b_mqtt_seen = true;
+    publish_heartbeat(now_ms, &g_status);
+    if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
+    {
+        telemetry_publisher_run(net_pull, publish_frame);
+    }
+    if (mqtt_client_state(&g_mqtt) == MQTT_STATE_DISCONNECTED)
+    {
+        close_mqtt_transport();
+        note_mqtt_session(false);
+        return false;
+    }
+    return true;
+}
+
 void
 connection_run (void)
 {
-    T_CCYC             ccyc = {0};
     connection_state_t previous = CONNECTION_DISCONNECTED;
+    bool              b_mqtt_up = false;
     uint32_t           last_poll_ms = 0u;
     uint32_t           last_status_ms = 0u;
     uint32_t           last_mqtt_up_ms = tcp_transport_now_ms();
     bool               first_status = true;
-
-    g_conn_task_id = tk_get_tid();
-    ccyc.cycatr    = TA_HLNG | TA_STA | TA_ASSPRC;
-    ccyc.cychdr    = (FP) conn_cyclic_wakeup;
-    ccyc.cyctim    = (RELTIM) CONNECTION_LOOP_MS;
-    ccyc.cycphs    = (RELTIM) CONNECTION_LOOP_MS;
-    ccyc.assprc    = TP_PRC2;
-    g_conn_cyc_id  = tk_cre_cyc(&ccyc);
-    if (g_conn_cyc_id < E_OK)
-    {
-        /* The loop still runs on its sleep timeout, but slower. */
-        LOG_ERROR(LOG_TASK_CONNECTION, LOG_MOD_NONE, "tk_cre_cyc failed, er=%d",
-                  (int) g_conn_cyc_id);
-    }
 
     for (;;)
     {
@@ -405,27 +471,10 @@ connection_run (void)
             }
         }
 
-        if (g_mqtt_ready)
+        b_mqtt_up = service_mqtt(now_ms, b_mqtt_up);
+        if (b_mqtt_up)
         {
-            const bool was_up = (mqtt_client_state(&g_mqtt) !=
-                                 MQTT_STATE_DISCONNECTED);
-
-            (void) mqtt_client_poll(&g_mqtt, now_ms);
-            if (was_up &&
-                (mqtt_client_state(&g_mqtt) == MQTT_STATE_DISCONNECTED))
-            {
-                /* The next CONNECT must go out on a new stream. */
-                tcp_transport_close();
-                g_transport_started = false;
-                g_transport_closing = true;
-            }
-            if (mqtt_client_state(&g_mqtt) == MQTT_STATE_CONNECTED)
-            {
-                g_b_mqtt_seen = true;
-                last_mqtt_up_ms = now_ms;
-                telemetry_publisher_run(net_pull, publish_frame);
-                publish_heartbeat(now_ms, &g_status);
-            }
+            last_mqtt_up_ms = now_ms;
         }
         system_fault_assign(FAULT_OWNER_LINK, FAULT_WIFI_DISCONN_BIT,
                             ((uint32_t) (now_ms - last_mqtt_up_ms) >=
@@ -433,7 +482,9 @@ connection_run (void)
                                 ? FAULT_WIFI_DISCONN_BIT
                                 : 0u);
 
-        wait_connection_cycle();
+        /* A queued frame wakes the publisher. The timeout services MQTT and Wi-Fi while idle. */
+        (void)tk_slp_tsk((TMO)CONNECTION_LOOP_MS);
+        (void)tk_can_wup(TSK_SELF);
     }
 }
 
@@ -452,10 +503,12 @@ connection_state (void)
 void
 connection_cmd_state (telemetry_cmd_state_t * p_out)
 {
-    /* No lock: only this task writes the state, each count is one byte and
-       the id one aligned halfword, so no field is read torn. */
+    UINT saved = 0U;
+
     if (p_out != 0)
     {
+        (void)ISpinLock(&g_cmd_lock, &saved);
         *p_out = g_cmd_state;
+        (void)ISpinUnlock(&g_cmd_lock, saved);
     }
 }

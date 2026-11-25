@@ -7,6 +7,8 @@
 #include "telemetry/packet.h"
 
 #define TELEMETRY_QUEUE_BYTES   1024u
+/* Admit optional raw IR samples only while at least half the queue is free. */
+#define TELEMETRY_RAW_HEADROOM_DIVISOR (2U)
 
 /* Size of the buffer a caller passes to telemetry_queue_pop: the topic byte
    plus the largest wire packet (profile, 82 B). It is also the kernel maxmsz. */

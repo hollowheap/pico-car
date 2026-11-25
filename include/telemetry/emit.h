@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <tk/tkernel.h>
+#include "telemetry/packet.h"
 
 /* Returns E_OK, E_TMOUT when the queue is full, or the queue's error. A full
    queue drops the event; the drop is counted by the queue. */
@@ -23,6 +24,8 @@ ER telemetry_emit_event(uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
    Task context only, outside locks. Contention and a full queue count drops. */
 ER telemetry_try_emit_event(uint8_t source, uint8_t type, int16_t p1,
                             uint16_t p2, uint32_t odometer_mm);
+
+ER telemetry_try_emit_barcode_sample(telemetry_barcode_sample_t const * p_sample);
 
 /* Event IDs issued since boot (including dropped events). */
 uint16_t telemetry_event_count(void);

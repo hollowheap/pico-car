@@ -193,41 +193,40 @@ static void
 test_diag (void)
 {
     telemetry_diag_t src = {
-        .sticky_faults        = TELEMETRY_VEC_DIAG_STICKY_FAULTS,
-        .task_alive_mask      = TELEMETRY_VEC_DIAG_TASK_ALIVE_MASK,
-        .line_lost_count      = TELEMETRY_VEC_DIAG_LINE_LOST_COUNT,
-        .line_search_mm       = TELEMETRY_VEC_DIAG_LINE_SEARCH_MM,
-        .barcode_ok           = TELEMETRY_VEC_DIAG_BARCODE_OK,
-        .barcode_bad          = TELEMETRY_VEC_DIAG_BARCODE_BAD,
-        .barcode_edge_drops   = TELEMETRY_VEC_DIAG_BARCODE_EDGE_DROPS,
-        .telem_queue_drops    = TELEMETRY_VEC_DIAG_TELEM_QUEUE_DROPS,
-        .net_queue_drops      = TELEMETRY_VEC_DIAG_NET_QUEUE_DROPS,
-        .physics_overruns     = TELEMETRY_VEC_DIAG_PHYSICS_OVERRUNS,
-        .telemetry_overruns   = TELEMETRY_VEC_DIAG_TELEMETRY_OVERRUNS,
-        .last_barcode         = TELEMETRY_VEC_DIAG_LAST_BARCODE,
-        .last_barcode_action  = TELEMETRY_VEC_DIAG_LAST_BARCODE_ACTION,
-        .echo_valid           = TELEMETRY_VEC_DIAG_ECHO_VALID,
-        .echo_open            = TELEMETRY_VEC_DIAG_ECHO_OPEN,
-        .echo_too_close       = TELEMETRY_VEC_DIAG_ECHO_TOO_CLOSE,
-        .echo_no_echo         = TELEMETRY_VEC_DIAG_ECHO_NO_ECHO,
-        .echo_glitch          = TELEMETRY_VEC_DIAG_ECHO_GLITCH,
-        .echo_stuck           = TELEMETRY_VEC_DIAG_ECHO_STUCK,
-        .line_edges_per_s     = TELEMETRY_VEC_DIAG_LINE_EDGES_PER_S,
-        .line_raw_edges_per_s = TELEMETRY_VEC_DIAG_LINE_RAW_EDGES_PER_S,
-        .supervisor_passes = TELEMETRY_VEC_DIAG_SUPERVISOR_PASSES,
-        .stack_min_free    = TELEMETRY_VEC_DIAG_STACK_MIN_FREE,
-        .stack_min_task    = TELEMETRY_VEC_DIAG_STACK_MIN_TASK,
-        .cmd_ring_drops    = TELEMETRY_VEC_DIAG_CMD_RING_DROPS,
-        .cmd_last_id       = TELEMETRY_VEC_DIAG_CMD_LAST_ID,
-        .cmd_rej_length    = TELEMETRY_VEC_DIAG_CMD_REJ_LENGTH,
-        .cmd_rej_opcode    = TELEMETRY_VEC_DIAG_CMD_REJ_OPCODE,
-        .cmd_rej_run       = TELEMETRY_VEC_DIAG_CMD_REJ_RUN,
-        .cmd_rej_old_id    = TELEMETRY_VEC_DIAG_CMD_REJ_OLD_ID,
-        .cmd_rej_age       = TELEMETRY_VEC_DIAG_CMD_REJ_AGE,
+        .sticky_faults        = TELEMETRY_VEC_DIAG_COUNTS_STICKY_FAULTS,
+        .task_alive_mask      = TELEMETRY_VEC_DIAG_COUNTS_TASK_ALIVE_MASK,
+        .line_lost_count      = TELEMETRY_VEC_DIAG_COUNTS_LINE_LOST_COUNT,
+        .barcode_ok           = TELEMETRY_VEC_DIAG_COUNTS_BARCODE_OK,
+        .barcode_bad          = TELEMETRY_VEC_DIAG_COUNTS_BARCODE_BAD,
+        .barcode_edge_drops   = TELEMETRY_VEC_DIAG_COUNTS_BARCODE_EDGE_DROPS,
+        .telem_queue_drops    = TELEMETRY_VEC_DIAG_COUNTS_TELEM_QUEUE_DROPS,
+        .net_queue_drops      = TELEMETRY_VEC_DIAG_COUNTS_NET_QUEUE_DROPS,
+        .physics_overruns     = TELEMETRY_VEC_DIAG_COUNTS_PHYSICS_OVERRUNS,
+        .telemetry_overruns   = TELEMETRY_VEC_DIAG_COUNTS_TELEMETRY_OVERRUNS,
+        .last_barcode         = TELEMETRY_VEC_DIAG_COUNTS_LAST_BARCODE,
+        .last_barcode_action  = TELEMETRY_VEC_DIAG_COUNTS_LAST_BARCODE_ACTION,
+        .line_edges_total     = TELEMETRY_VEC_DIAG_COUNTS_LINE_EDGES_TOTAL,
+        .line_raw_edges_total = TELEMETRY_VEC_DIAG_COUNTS_LINE_RAW_EDGES_TOTAL,
+        .sensor_sample_us     = TELEMETRY_VEC_DIAG_COUNTS_SENSOR_SAMPLE_US,
+        .supervisor_passes = TELEMETRY_VEC_DIAG_COUNTS_SUPERVISOR_PASSES,
+        .stack_min_free    = TELEMETRY_VEC_DIAG_COUNTS_STACK_MIN_FREE,
+        .stack_min_task    = TELEMETRY_VEC_DIAG_COUNTS_STACK_MIN_TASK,
+        .cmd_ring_drops    = TELEMETRY_VEC_DIAG_COUNTS_CMD_RING_DROPS,
+        .cmd_last_id       = TELEMETRY_VEC_DIAG_COUNTS_CMD_LAST_ID,
+        .cmd_rej_length    = TELEMETRY_VEC_DIAG_COUNTS_CMD_REJ_LENGTH,
+        .cmd_rej_opcode    = TELEMETRY_VEC_DIAG_COUNTS_CMD_REJ_OPCODE,
+        .cmd_rej_run       = TELEMETRY_VEC_DIAG_COUNTS_CMD_REJ_RUN,
+        .cmd_rej_old_id    = TELEMETRY_VEC_DIAG_COUNTS_CMD_REJ_OLD_ID,
+        .cmd_rej_age       = TELEMETRY_VEC_DIAG_COUNTS_CMD_REJ_AGE,
     };
 
-    CHECK_PACK (DIAG, diag, src, 0u);
-    CHECK_PACK (DIAG, diag, src, ODD_OFFSET);
+    for (unsigned i = 0u; i < TELEMETRY_DIAG_COUNTS_COUNT_ECHO_TOTAL; i++)
+    {
+        src.echo_total[i] = TELEMETRY_VEC_DIAG_COUNTS_ECHO_TOTAL[i];
+    }
+
+    CHECK_PACK (DIAG_COUNTS, diag, src, 0u);
+    CHECK_PACK (DIAG_COUNTS, diag, src, ODD_OFFSET);
     CHECK_NULLS (diag, src);
 }
 
@@ -295,6 +294,7 @@ test_sizes_and_topics (void)
     CHECK (TELEMETRY_STATUS_WIRE_SIZE == 16u);
     CHECK (TELEMETRY_EVENT_WIRE_SIZE == 12u);
     CHECK (TELEMETRY_DIAG_WIRE_SIZE == 45u);
+    CHECK (TELEMETRY_DIAG_COUNTS_WIRE_SIZE == 73u);
     CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 10u);
     CHECK (TELEMETRY_PROFILE_WIRE_SIZE == 82u);
     CHECK (TELEMETRY_WIRE_MAX == 82u);

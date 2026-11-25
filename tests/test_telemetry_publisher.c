@@ -274,9 +274,30 @@ static void test_null_publish_discards (void)
     pass("publisher_null_publish_discards", before);
 }
 
+static void test_burst_leaves_time_for_incoming_commands(void)
+{
+    reset();
+    for (unsigned i = 0; i < SCRIPT_MAX; i++)
+    {
+        add(1, 1U, (uint8_t)i);
+    }
+    telemetry_publisher_run(fake_pull, fake_publish);
+    CHECK(g_pub_calls > 0U && g_pub_calls < SCRIPT_MAX);
+    for (unsigned pass_index = 0; pass_index < SCRIPT_MAX && g_pub_calls < SCRIPT_MAX; pass_index++)
+    {
+        telemetry_publisher_run(fake_pull, fake_publish);
+    }
+    CHECK(g_pub_calls == SCRIPT_MAX);
+    for (unsigned i = 0; i < SCRIPT_MAX; i++)
+    {
+        CHECK(pub_got(i, 1U, (uint8_t)i));
+    }
+}
+
 int main (void)
 {
     test_publishes_until_empty();
+    test_burst_leaves_time_for_incoming_commands();
     test_any_positive_pull_is_a_frame();
     test_empty_pull_does_nothing();
     test_stops_on_pull_end_or_error();

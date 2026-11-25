@@ -54,3 +54,14 @@ telemetry_event_count (void)
 {
     return (uint16_t) atomic_add(&g_next_event_id, 0u);
 }
+
+ER telemetry_try_emit_barcode_sample (telemetry_barcode_sample_t const * p_sample)
+{
+    uint8_t frame[1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE];
+    frame[0] = (uint8_t)TELEMETRY_TOPIC_BARCODE_SAMPLE;
+    if (telemetry_pack_barcode_sample(&frame[1], p_sample) == 0U)
+    {
+        return E_PAR;
+    }
+    return telemetry_queue_try_push(frame, sizeof(frame));
+}
