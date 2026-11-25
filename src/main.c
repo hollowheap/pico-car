@@ -396,13 +396,14 @@ LOCAL void telemetry_send_obstacle (void)
 }
 
 /* Smallest free stack seen by stack_report (low 16 bits) and its task (bits
- * 16 to 23), for the diag packet. One word, written by the supervisor task
- * with one store and read once by the telemetry task, so a mark is never
- * paired with the task of another scan. */
+ * 16 to 23), for the diag packet. Kept packed in one word and updated by the
+ * telemetry task before sending a diag frame. */
 #define STACK_MARK_FREE_MASK  (0xFFFFU)
 #define STACK_MARK_TASK_SHIFT (16U)
 #define STACK_MARK_TASK_MASK  (0xFFU)
 static volatile uint32_t g_stack_mark = STACK_MARK_FREE_MASK;
+
+LOCAL void stack_report (void);
 
 /*!
  * @brief Queue the diag frame (1 Hz): counters and health.
@@ -525,6 +526,7 @@ LOCAL void telemetry_task (INT stacd, void * exinf)
             }
             if (ticks >= TELEMETRY_DIAG_PASSES - pass % TELEMETRY_DIAG_PASSES)
             {
+                stack_report();
                 telemetry_send_diag();
             }
             pass = (pass + ticks) % TELEMETRY_DIAG_PASSES;
@@ -585,8 +587,8 @@ static uint8_t g_barcode_stack[STACK_BARCODE_SZ] __attribute__((aligned(STACK_AL
 static uint8_t g_supervisor_stack[STACK_SUPERVISOR_SZ] __attribute__((aligned(STACK_ALIGN)));
 
 /* Stack marks. Before any task exists, every stack is filled with a
- * known byte. The supervisor reads how much of each stack is still untouched,
- * counted from the deep end, and logs the smallest margins. */
+ * known byte. The telemetry task reads how much of each stack is still
+ * untouched, counted from the deep end, and logs the smallest margins. */
 #define STACK_FILL_BYTE   (0xA5U)
 #define STACK_MIN_FREE    (512U)
 #define STACK_REPORT_CALLS (30U)
@@ -632,8 +634,10 @@ LOCAL uint32_t stack_free (uint32_t idx)
     return free_bytes;
 }
 
-/* The supervisor calls this once a second. Every STACK_REPORT_CALLS calls it
- * logs the free bytes of every stack, and a warning for a thin margin. */
+/* The telemetry task calls this once a second. Every STACK_REPORT_CALLS
+ * calls it logs the free bytes of every stack, and a warning for a thin
+ * margin. It runs at the telemetry priority, below every control task, so
+ * control load delays a scan instead of the scan delaying control. */
 LOCAL void stack_report (void)
 {
     static uint32_t s_calls = 0U;
@@ -662,16 +666,16 @@ LOCAL void stack_report (void)
             g_stack_mark = (idx << STACK_MARK_TASK_SHIFT) | free_bytes[idx];
         }
     }
-    LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
+    LOG_INFO(LOG_TASK_TELEMETRY, LOG_MOD_NONE,
              "stack free: startup %d motion %d physics %d obstacle %d",
              (int)free_bytes[0], (int)free_bytes[1], (int)free_bytes[2], (int)free_bytes[3]);
-    LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE,
+    LOG_INFO(LOG_TASK_TELEMETRY, LOG_MOD_NONE,
              "stack free: line %d telemetry %d connection %d barcode %d",
              (int)free_bytes[4], (int)free_bytes[5], (int)free_bytes[6], (int)free_bytes[7]);
-    LOG_INFO(LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "stack free: supervisor %d", (int)free_bytes[8]);
+    LOG_INFO(LOG_TASK_TELEMETRY, LOG_MOD_NONE, "stack free: supervisor %d", (int)free_bytes[8]);
     if (0U != thin)
     {
-        LOG_WARN(LOG_TASK_SUPERVISOR, LOG_MOD_NONE, "thin stack margin, mask=%d", (int)thin);
+        LOG_WARN(LOG_TASK_TELEMETRY, LOG_MOD_NONE, "thin stack margin, mask=%d", (int)thin);
     }
 }
 
@@ -933,7 +937,6 @@ LOCAL bool init_supervisor (task_set_t const * p_tasks)
     {
         config.required_mask |= (uint16_t)(1U << LIVE_BARCODE);
     }
-    config.p_background = stack_report;
     config.p_line_edges = ir_line_edges;
     config.p_telemetry_seen = connection_mqtt_seen;
     if (E_OK == button_result)

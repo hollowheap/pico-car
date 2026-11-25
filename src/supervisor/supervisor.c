@@ -37,9 +37,6 @@
 #define HEALTH_PASSES   (5U)
 #define HEALTH_CHECK_MS (SUPERVISOR_PASS_MS * HEALTH_PASSES)
 
-/* The background hook runs every 50 passes (1 s). */
-#define BACKGROUND_PASSES (50U)
-
 /* The boot self-test reads its facts after 100 passes (2 s). */
 #define SELFTEST_PASSES (100U)
 #define OFFLINE_START_MS (10000U)
@@ -1461,10 +1458,6 @@ static void pass (void)
     {
         g_b_selftest_done = true;
         selftest ();
-    }
-    if ((g_config.p_background != NULL) && (0U == (g_passes % BACKGROUND_PASSES)))
-    {
-        g_config.p_background ();
     }
     g_passes++;
 }
