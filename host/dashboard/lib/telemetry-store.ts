@@ -11,7 +11,6 @@ import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated';
 /** Keep up to 20 minutes at full resolution, then simplify the older geometry. */
 export const TRAIL_MAX = 6000;
 export const EVENTS_MAX = 500;
-export const SPEEDS_MAX = 150;
 /** Larger gaps are ambiguous and excluded from frame-loss statistics. */
 const SEQ_JUMP = 1000;
 const SEQ_WRAP = 65536;
@@ -146,8 +145,6 @@ export type TelemetryStore = {
   forwardReturn: ForwardReturnStamp | null;
   /** Oldest first. */
   events: EventRow[];
-  /** Newest last. */
-  speeds: number[];
   wheelHistory: WheelSample[];
   statusReceived: number;
   statusLost: number;
@@ -172,7 +169,6 @@ export function emptyStore(): TelemetryStore {
     obstacle: null,
     forwardReturn: null,
     events: [],
-    speeds: [],
     wheelHistory: [],
     statusReceived: 0,
     statusLost: 0,
@@ -199,7 +195,6 @@ function restartReadings(store: TelemetryStore, first: LinkPacket): TelemetrySto
     bootEventAt: null,
     obstacle: null,
     forwardReturn: null,
-    speeds: [],
     wheelHistory: [],
     lastSeq: null,
   };
@@ -355,7 +350,6 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
     trail,
     scanStart,
     pendingWheels,
-    speeds: cap([...current.speeds, v.speed_mms ?? 0], SPEEDS_MAX),
     statusReceived: current.statusReceived + 1,
     statusLost: lost,
     lastSeq: reordered ? current.lastSeq : seq ?? current.lastSeq,

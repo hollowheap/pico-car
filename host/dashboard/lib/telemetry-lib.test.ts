@@ -493,12 +493,12 @@ describe('telemetry store', () => {
     const before = previousBoot();
     expect(before.latest.status?.values.faults).toBe(1 << FAULT_BITS.estopLatched);
     expect(panelStatus('open', before.latest.status, restart.timestamp, 'status').kind).toBe('ready');
-    expect(before.speeds).toEqual([160, 0]);
+    expect(before.trail.map((sample) => sample.speedMms)).toEqual([160, 0]);
 
     const after = reduceStore(before, restart);
     expect(after.latest).toEqual({ [restart.packet]: restart });
     expect(panelStatus('open', after.latest.status, restart.timestamp, 'status').kind).toBe('loading');
-    expect(after.speeds).toEqual([]);
+    expect(after.trail.map((sample) => sample.speedMms)).toEqual([]);
     expect(after.trail).toEqual([]);
   });
 
@@ -513,7 +513,7 @@ describe('telemetry store', () => {
     const fresh = { ...currentStatus, timestamp: nextHeartbeat.timestamp + 1 };
     const after = reduceStore(rebooted, fresh);
     expect(after.latest).toEqual({ status: fresh, heartbeat: nextHeartbeat });
-    expect(after.speeds).toEqual([0]);
+    expect(after.trail.map((sample) => sample.speedMms)).toEqual([0]);
     expect(after.trail.map((sample) => sample.odometerMm)).toEqual([0]);
   });
 
@@ -522,7 +522,7 @@ describe('telemetry store', () => {
     const after = [nextHeartbeat, current, bootEvent].reduce(reduceStore, previousBoot());
 
     expect(after.latest).toEqual({ heartbeat: nextHeartbeat, status: current, event: bootEvent });
-    expect(after.speeds).toEqual([160]);
+    expect(after.trail.map((sample) => sample.speedMms)).toEqual([160]);
     expect(after.events.map((row) => row.name)).toEqual(['boot']);
   });
 
