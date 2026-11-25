@@ -447,7 +447,10 @@ target_link_libraries(motion_service PUBLIC platform motion_core motion_pio mtk3
     PRIVATE telemetry)
 target_compile_options(motion_service PRIVATE ${FIRMWARE_WARNINGS})
 
-add_library(line_control STATIC src/track/line_control.c)
+add_library(line_control STATIC
+    src/track/line_control/follow.c
+    src/track/line_control/junction.c
+    src/track/line_control/recovery.c)
 target_include_directories(line_control PUBLIC include)
 target_compile_options(line_control PRIVATE ${FIRMWARE_WARNINGS})
 

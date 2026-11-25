@@ -229,8 +229,13 @@ add_test(NAME telemetry_connection_cmd COMMAND test_telemetry_connection_cmd)
 add_test(NAME telemetry_connection_heartbeat_busy COMMAND test_telemetry_connection_cmd heartbeat-busy)
 add_test(NAME telemetry_connection_join_failure COMMAND test_telemetry_connection_cmd join-failure)
 
+set(LINE_CONTROL_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control/follow.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control/junction.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control/recovery.c)
+
 add_executable(test_line_control test_line_control.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+    ${LINE_CONTROL_SOURCES})
 target_include_directories(test_line_control PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 target_compile_options(test_line_control PRIVATE
@@ -242,7 +247,7 @@ add_test(NAME line_corner_wheel_demands COMMAND test_line_control corner-wheel-d
 
 add_executable(test_line_task_contract test_line_slope_contract.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_task.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c
+    ${LINE_CONTROL_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_filter.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/start_check.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/pilot.c
@@ -363,7 +368,7 @@ add_executable(test_pilot_observations test_pilot_observations.c
     ${PILOT_OBSTACLE_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+    ${LINE_CONTROL_SOURCES})
 target_include_directories(test_pilot_observations PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${OBSTACLE_SRC}
@@ -381,7 +386,7 @@ add_executable(test_pilot_line test_pilot_line.c
     ${PILOT_OBSTACLE_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+    ${LINE_CONTROL_SOURCES})
 target_include_directories(test_pilot_line PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${OBSTACLE_SRC}
@@ -404,7 +409,7 @@ add_executable(test_pilot_drive test_pilot_drive.c
     ${PILOT_OBSTACLE_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+    ${LINE_CONTROL_SOURCES})
 target_include_directories(test_pilot_drive PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${OBSTACLE_SRC})
@@ -714,7 +719,7 @@ target_compile_options(test_ir_edge PRIVATE
 add_test(NAME ir_edge COMMAND test_ir_edge)
 
 add_executable(test_ir_capture_contract test_ir_capture_startup_contract.c
-    ../src/track/ir_capture.c ../src/track/line_filter.c ../src/track/line_control.c
+    ../src/track/ir_capture.c ../src/track/line_filter.c ${LINE_CONTROL_SOURCES}
     ../src/barcode/action.c ../src/pilot/pilot.c ../src/pilot/avoidance.c ../src/pilot/contour.c ../src/pilot/drive.c
     ${PILOT_OBSTACLE_SOURCES} ../src/pilot/look.c ${OBSTACLE_SRC}/geometry.c)
 target_include_directories(test_ir_capture_contract PRIVATE
@@ -741,7 +746,7 @@ add_executable(test_pilot_latches test_pilot_latches.c
     ${PILOT_OBSTACLE_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+    ${LINE_CONTROL_SOURCES})
 target_include_directories(test_pilot_latches PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${OBSTACLE_SRC})
@@ -808,7 +813,7 @@ add_executable(test_pilot_rejoin test_pilot_rejoin.c
     ${PILOT_OBSTACLE_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/pilot/look.c
     ${OBSTACLE_SRC}/geometry.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/track/line_control.c)
+    ${LINE_CONTROL_SOURCES})
 target_include_directories(test_pilot_rejoin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
     ${OBSTACLE_SRC})
