@@ -120,6 +120,19 @@ target_compile_options(test_motion_feedforward PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME motion.motion_feedforward.default COMMAND test_motion_feedforward)
 
+add_executable(test_motion_duty_contract motion/motion_duty_contract_test.c
+    ../app_program/motion/motor_setup.c ../app_program/motion/controller.c
+    ../app_program/motion/pid.c ../app_program/motion/odometry.c
+    ../app_program/motion/encoder_math.c ../app_program/motion/motion_inbox.c)
+target_include_directories(test_motion_duty_contract PRIVATE
+    ${APP_INCLUDE} ../app_program/motion platform/fakes)
+target_compile_options(test_motion_duty_contract PRIVATE
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+foreach(case IN ITEMS unloaded loaded pivot stationary-limit obstacle-duty)
+    string(REPLACE "-" "_" test_name "${case}")
+    add_test(NAME motion.motion_duty_contract.${test_name} COMMAND test_motion_duty_contract ${case})
+endforeach()
+
 add_executable(test_motion_feedback motion/motion_feedback_test.c
     ../app_program/motion/controller.c ../app_program/motion/pid.c ../app_program/motion/odometry.c
     ../app_program/motion/encoder_math.c ../app_program/motion/motion_inbox.c
@@ -133,7 +146,7 @@ target_link_options(test_motion_feedback PRIVATE -Wl,--gc-sections)
 foreach(case signed-snapshot feedback-age-boundary reject-delayed-feedback
              estop-brake-failure boot-estop-brake-failure estop-remote-wake
              estop-gpio-wake estop-gpio-queued estop-final-admission estop-feedback-until-rest
-             estop-unavailable-irq normal-output-admission state-events feedback-after-hold-release)
+             estop-unavailable-irq normal-output-admission state-events feedback-after-hold-release half-speed)
     string(REPLACE "-" "_" test_name "${case}")
     add_test(NAME motion.motion_feedback.motion_${test_name} COMMAND test_motion_feedback ${case})
 endforeach()

@@ -18,6 +18,9 @@
 #define MOTION_WHEELS              2U
 #define MOTION_FEEDBACK_MAX_AGE_US 25000U
 
+/* The motion service divides every admitted wheel target by this value. */
+#define MOTION_SPEED_DIVISOR (2)
+
 /* State and fault values are the controller's; the dashboard owns the
  * decoded names. */
 #define MOTION_STATE_IDLE      (0U)
@@ -48,13 +51,15 @@ typedef struct
     int64_t  right_displacement_um;
     uint32_t timestamp_us;
     uint32_t age_us;
+    uint32_t odometry_span_us; /* Consecutive valid paired odometry ending at timestamp_us. */
+    uint32_t stationary_span_us; /* Consecutive valid intervals with no edges on either wheel. */
     bool     speed_valid[MOTION_WHEELS];
     bool     odometry_valid[MOTION_WHEELS];
     bool     fresh;
     uint8_t  invalid_samples[MOTION_WHEELS]; /* Wraps; see motion_wheel_sample_t. */
 } motion_feedback_t;
 
-STATIC_ASSERT (sizeof(motion_feedback_t) == 40U, "motion_feedback_t size");
+STATIC_ASSERT (sizeof(motion_feedback_t) == 48U, "motion_feedback_t size");
 
 typedef struct
 {
@@ -72,8 +77,8 @@ typedef struct
 
 STATIC_ASSERT (sizeof(motion_status_t) == 20U, "motion_status_t size");
 
-/* What the controller is doing, for telemetry. Targets are what the last
- * speed command asked for; duty is what the controller applied, signed
+/* What the controller is doing, for telemetry. Targets are the scaled speeds
+ * used by the speed loop; duty is what the controller applied, signed
  * permille. overruns counts cyclic wake-ups the motion task missed. */
 typedef struct
 {
@@ -94,15 +99,13 @@ int motion_snapshot (motion_status_t * p_status, motion_feedback_t * p_feedback,
                      motion_diag_t * p_diag);
 
 int motion_set_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us);
-/* A scan aiming pivot uses the normal speed-loop duty ceiling. */
-int motion_set_scan_pivot (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us);
+/* Obstacle duty is 2× in travel and 4× in a centered pivot, up to full PWM. */
+int motion_set_obstacle_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us);
 int motion_set_hold (uint32_t reason, bool held);
 int motion_request_stop (void);
 
-/* The supervisor renews the run permit for lease_ms. When the permit lapses,
- * the motion task sets MOTION_HOLD_SUPERVISOR by itself, and the car brakes
- * even if the supervisor hangs. The permit is not enforced until the first
- * renewal. */
+/* The supervisor renews the run permit for lease_ms. The motion task holds
+ * the wheels before the first renewal and brakes when the permit expires. */
 int motion_renew_permit (uint32_t lease_ms);
 /* Whole ms since the last renewal, rounded up, on the motion clock that holds
  * the wheels. UINT32_MAX before the first renewal. */

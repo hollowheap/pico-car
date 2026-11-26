@@ -39,6 +39,35 @@ static void open_course(pilot_meas_t * p_meas)
     p_meas->ping_seq = (uint8_t)((p_meas->now_ms / 60U) & OBSTACLE_PING_SEQ_MK);
 }
 
+static void test_external_avoidance_owns_range(void)
+{
+    pilot_state_t st;
+    pilot_cmd_t cmd;
+    pilot_meas_t m = {.b_external_avoidance = true, .b_line_left = true,
+                      .ping_echo = LOOK_ECHO_VALID, .ping_mm = 235U};
+
+    pilot_init(&st);
+    for (uint8_t seq = 1U; seq <= HUG_TRIGGER_HITS; seq++)
+    {
+        m.ping_seq = seq;
+        m.now_ms += 60U;
+        m.stamp_ms = m.now_ms;
+        m.left_um += 3000;
+        m.right_um = m.left_um;
+        pilot_step(&st, &m, &cmd);
+        check(PILOT_BEHAVIOUR_FOLLOW_LINE == cmd.behaviour && cmd.speed_mm_s > 0,
+              "external navigator owns obstacle range while the pilot follows tape", 0U);
+        check(0U == cmd.b_ping_req, "the pilot leaves servo ownership with the scanner", 0U);
+    }
+    m.b_commanded_turn = true;
+    pilot_step(&st, &m, &cmd);
+    check(PILOT_BEHAVIOUR_NONE == cmd.behaviour, "the shared route turn can own the wheels", 0U);
+    m.b_held = true;
+    pilot_step(&st, &m, &cmd);
+    check(PILOT_REASON_HELD == cmd.reason && 0 == cmd.speed_mm_s,
+          "a supervisor hold still overrides an admitted turn", 0U);
+}
+
 /* A hug that ends while the follower was lost: the follower starts afresh, and
  * that is no line-found. A stop is reported once. */
 static void test_watch_direct(void)
@@ -872,6 +901,7 @@ int main(int argc, char * argv[])
         return EXIT_FAILURE;
     }
     test_watch_direct();
+    test_external_avoidance_owns_range();
     test_tape_is_a_direction_guide();
     test_barcode_direct();
     test_barcode_reader_crosses_unmarked_bend(true);

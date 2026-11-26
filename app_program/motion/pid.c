@@ -100,9 +100,11 @@ void pid_reset (pid_t * p_pid)
     }
 }
 
-bool pid_update (pid_t * p_pid, int32_t target_um_s,
-                       const motion_sample_t * p_sample, unsigned int wheel,
-                       uint32_t now_us, int16_t * p_duty)
+/* On saturation freeze the integral. A stationary wheel still gets the
+ * full capped output for that tick so it can reach its starting limit. */
+bool pid_update_limited (pid_t * p_pid, int32_t target_um_s,
+                        const motion_sample_t * p_sample, unsigned int wheel,
+                        uint32_t now_us, uint16_t cap_permille, int16_t * p_duty)
 {
     pid_t                   next;
     const motion_wheel_sample_t * p_feedback    = NULL;
@@ -148,11 +150,9 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
         return false;
     }
     integral_delta /= INT64_C(1000000);
-    limit = (int64_t)next.config.max_duty_permille * PID_Q16;
-    if (next.config.base_duty_permille != 0U)
-    {
-        limit = (int64_t)tracking_limit(&next.config, target_um_s, p_feedback->velocity_um_s) * PID_Q16;
-    }
+    uint16_t const tracking = (next.config.base_duty_permille == 0U) ? next.config.max_duty_permille :
+        tracking_limit(&next.config, target_um_s, p_feedback->velocity_um_s);
+    limit = (int64_t)((tracking < cap_permille) ? tracking : cap_permille) * PID_Q16;
     if (!add(next.integral_q16, integral_delta, &integral))
     {
         return false;
@@ -181,10 +181,10 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     }
     if (((sum > limit) && (error > 0)) || ((sum < -limit) && (error < 0)))
     {
-        /* Reject integration pushing further into saturation. */
         integral = clamp(next.integral_q16, limit);
-        if (!add(proportional, -derivative, &sum) || !add(sum, integral, &sum) ||
-            !add(sum, feedforward, &sum))
+        if ((p_feedback->velocity_um_s != 0) &&
+            (!add(proportional, -derivative, &sum) || !add(sum, integral, &sum) ||
+             !add(sum, feedforward, &sum)))
         {
             return false;
         }
@@ -202,4 +202,12 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
     *p_duty = (int16_t)(clamp(sum, limit) / PID_Q16);
     *p_pid  = next;
     return true;
+}
+
+bool pid_update (pid_t * p_pid, int32_t target_um_s,
+                const motion_sample_t * p_sample, unsigned int wheel,
+                uint32_t now_us, int16_t * p_duty)
+{
+    return pid_update_limited(p_pid, target_um_s, p_sample, wheel,
+                             now_us, PID_DUTY_PERMILLE_FULL, p_duty);
 }

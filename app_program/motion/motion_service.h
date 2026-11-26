@@ -50,7 +50,7 @@ ER motion_service_init (const motion_service_config_t * p_config, ID task_id);
  * Pending motion cannot overwrite stop. Stop/fault rejects later commands.
  * API struct widths are internal, not a final minimum-bit wire format. */
 ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
-                             uint32_t ttl_us, bool b_scan_pivot);
+                             uint32_t ttl_us, bool b_obstacle_drive);
 /* Decoded sensor intent; original sensed_us/valid_for_us is preserved.
  * Invalid/stale requests cancel pending motion and request an ordinary brake.
  * E_BUSY means a sensor/operator hold prevents motion. No sensor GPIO reads. */

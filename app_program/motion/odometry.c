@@ -72,7 +72,20 @@ bool odometry_rebase (odometry_t * p_sampler, const motion_input_t * p_baseline)
         return false;
     }
     p_sampler->previous = *p_baseline;
+    p_sampler->stationary_span_us = 0U;
+    for (uint32_t wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
+    {
+        p_sampler->odometry_span_us[wheel] = 0U;
+    }
     return true;
+}
+
+/* Valid intervals and existing spans each fit in INT32_MAX. */
+static uint32_t extend_span (uint32_t previous_us, uint32_t interval_us)
+{
+    uint32_t const span_us = previous_us + interval_us;
+
+    return (span_us > (uint32_t)INT32_MAX) ? (uint32_t)INT32_MAX : span_us;
 }
 
 bool odometry_update (odometry_t *     p_sampler,
@@ -81,6 +94,7 @@ bool odometry_update (odometry_t *     p_sampler,
 {
     odometry_t next;
     motion_sample_t  output = {0};
+    bool             b_stationary = true;
     unsigned int     wheel = 0U;
 
     if ((p_sampler == NULL) || (p_input == NULL) || (p_output == NULL) ||
@@ -133,12 +147,22 @@ bool odometry_update (odometry_t *     p_sampler,
             (p_result->invalid_delta == 0U) &&
             (output.elapsed_us <= next.config.max_interval_us);
         p_result->odometry_valid = p_result->speed_valid;
-        if (!p_result->speed_valid)
+        if (p_result->speed_valid)
+        {
+            next.odometry_span_us[wheel] = extend_span(next.odometry_span_us[wheel], output.elapsed_us);
+        }
+        else
         {
             next.invalid_samples[wheel]++;
+            next.odometry_span_us[wheel] = 0U;
         }
         p_result->invalid_samples = next.invalid_samples[wheel];
+        p_result->odometry_span_us = next.odometry_span_us[wheel];
+        /* A reversal can have zero net counts while both raw counters moved. */
+        b_stationary = b_stationary && p_result->speed_valid && (0U == positive) && (0U == negative);
     }
+    next.stationary_span_us = b_stationary ? extend_span(next.stationary_span_us, output.elapsed_us) : 0U;
+    output.stationary_span_us = next.stationary_span_us;
     next.previous = *p_input;
     *p_sampler    = next;
     *p_output     = output;

@@ -15,6 +15,11 @@
 /* [Measured] Wheel centre to wheel centre. */
 #define CHASSIS_WHEEL_TRACK_MM   (107)
 
+/* Effective track for spins on the spot. A 90-degree spin by the wheel
+ * track turned about 120 degrees on the car, so 75 % of it. Rolling turns
+ * keep the wheel track. Observed once, not measured. */
+#define CHASSIS_PIVOT_TRACK_UM   ((CHASSIS_WHEEL_TRACK_MM * 1000 * 75) / 100)
+
 /* [Measured] Outside tire face to outside tire face. */
 #define CHASSIS_OUTER_WIDTH_MM   (126U)
 /* The outer left barcode corner is 45 mm ahead of the drive axle and
@@ -28,20 +33,23 @@
 #define CHASSIS_NOSE_FORWARD_MM  (110)
 #define CHASSIS_NOSE_WIDTH_MM    (90)
 #define CHASSIS_NOSE_LEFT_MM     (65)
-#define CHASSIS_IR_EXTENSION_MM  (20)
+/* [Measured] The front-most point is 133 mm ahead of the axle. */
+#define CHASSIS_IR_EXTENSION_MM  (23)
 #define CHASSIS_IR_WIDTH_MM      (45)
 #define CHASSIS_FRONT_TIP_MM     (CHASSIS_NOSE_FORWARD_MM + CHASSIS_IR_EXTENSION_MM)
 
 /* Axle-centred envelope of the nominal 200 × 126 mm body (sensors excluded). */
 #define CHASSIS_BODY_RADIUS_MM   (119)
+/* Nominal: the body envelope above puts the tail 100 mm behind the axle. */
+#define CHASSIS_TAIL_MM          (100)
 
-/* [Measured 2026-11-12] Line sensors: 25 mm between the sensor midpoints and
- * 130 mm ahead of the drive axle. */
+/* [Measured] Line sensors: 25 mm between the sensor midpoints and 123.5 mm
+ * ahead of the drive axle, rounded up. */
 #define CHASSIS_LINE_SENSOR_SPACING_MM (25)
-#define CHASSIS_LINE_SENSOR_LEAD_MM    (130)
+#define CHASSIS_LINE_SENSOR_LEAD_MM    (124)
 
-/* Nominal sonar offset ahead of the axle. */
-#define CHASSIS_SONAR_FORWARD_MM (70)
+/* [Measured] Sonar servo shaft 68.5 mm ahead of the axle, rounded up. */
+#define CHASSIS_SONAR_FORWARD_MM (69)
 
 /* At 300 mm range the near edge dropped out at 50 mm left and 65 mm
  * right. The narrower observed half-angle is 9.5 degrees. */

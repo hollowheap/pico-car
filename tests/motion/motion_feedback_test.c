@@ -297,6 +297,13 @@ static void test_signed_snapshot(void)
     value.left_displacement_um = 0;
     assert(E_OK == motion_feedback_snapshot(&value));
     assert(value.left_speed_um_s == -125000 && value.left_displacement_um == -10425);
+
+    g_published.control.sample.wheel[ENCODER_LEFT].odometry_span_us = 30000U;
+    g_published.control.sample.wheel[ENCODER_RIGHT].speed_valid = true;
+    g_published.control.sample.wheel[ENCODER_RIGHT].odometry_valid = true;
+    g_published.control.sample.wheel[ENCODER_RIGHT].odometry_span_us = 10000U;
+    assert(E_OK == motion_feedback_snapshot(&value));
+    assert(value.fresh && value.odometry_span_us == 10000U);
 }
 
 static void test_age_boundary(void)
@@ -399,6 +406,32 @@ static void start_service (motion_input_t * p_input)
     assert(E_OK == service_start(&output, p_input));
     service_first_status();
     assert(E_OK == motion_service_renew_permit(200U));
+}
+
+static void test_half_speed (void)
+{
+    motion_input_t input;
+    motion_diag_t diag;
+
+    start_service(&input);
+    assert(E_PAR == motion_set_speed(300001, -160003, 200000U));
+    assert(E_OK == motion_set_speed(161003, -160003, 200000U));
+    g_test_clock_us = 10000U;
+    service_cycle(&input);
+    assert(E_OK == motion_diag_snapshot(&diag));
+    assert(diag.left_target_um_s == 80501 && diag.right_target_um_s == -80001);
+
+    assert(E_OK == motion_set_obstacle_speed(160000, -160000, 200000U));
+    g_test_clock_us += 10000U;
+    service_cycle(&input);
+    assert(E_OK == motion_diag_snapshot(&diag));
+    assert(diag.left_target_um_s == 80000 && diag.right_target_um_s == -80000);
+
+    assert(E_OK == motion_set_speed(0, 0, 200000U));
+    g_test_clock_us += 10000U;
+    service_cycle(&input);
+    assert(E_OK == motion_diag_snapshot(&diag));
+    assert(diag.left_target_um_s == 0 && diag.right_target_um_s == 0);
 }
 
 static void test_estop_request_status (void)
@@ -821,6 +854,10 @@ int main(int argc, char * argv[])
     else if (argc == 2 && strcmp(argv[1], "state-events") == 0)
     {
         test_motion_state_events();
+    }
+    else if (argc == 2 && strcmp(argv[1], "half-speed") == 0)
+    {
+        test_half_speed();
     }
     else
     {

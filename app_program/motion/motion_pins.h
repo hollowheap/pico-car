@@ -1,5 +1,5 @@
 /** @file motion_pins.h
- * @brief Motion wiring verified on the assembled car.
+ * @brief Pin assignments for the motion subsystem.
  */
 #ifndef MOTION_PINS_H
 #define MOTION_PINS_H
@@ -10,8 +10,9 @@
 #define MOTOR_RIGHT_B 11U
 #define MOTOR_ENCODER_LEFT_A 4U
 #define MOTOR_ENCODER_LEFT_B 5U
-#define MOTOR_ENCODER_RIGHT_A 16U
-#define MOTOR_ENCODER_RIGHT_B 17U
+/* The upstream boot table drives GP16 as its external LED output. */
+#define MOTOR_ENCODER_RIGHT_A 6U
+#define MOTOR_ENCODER_RIGHT_B 7U
 
 /* GPIO pad control bits: unsigned copies of the kernel's signed GPIO_PUE,
  * GPIO_PDE, GPIO_IE and GPIO_SHEMITT, which BARR-C 5.3.b forbids in bitwise

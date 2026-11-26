@@ -93,7 +93,9 @@ STATIC_ASSERT((HUG_REFINE_ZONE_DECI <= HUG_SERVO_MAX_DECI) &&
  *  endpoints permit a tighter straight diagonal between pivot-safe poses.
  *  An approach shorter than HUG_APPROACH_MIN_MM is not driven. */
 #define HUG_BODY_MM           CHASSIS_BODY_RADIUS_MM
-#define HUG_SWEEP_RADIUS_MM   (169)
+/* Smallest whole radius over the front tip and the left reach; hug/motion.c
+ * asserts it against the chassis values. */
+#define HUG_SWEEP_RADIUS_MM   (171)
 /* Buddy 5's working margin outside our full axle-centred turning envelope. */
 #define HUG_BODY_GAP_MM       (50)
 #define HUG_AXLE_OFF_MM       (HUG_SWEEP_RADIUS_MM + HUG_BODY_GAP_MM)

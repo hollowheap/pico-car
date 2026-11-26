@@ -32,6 +32,7 @@ typedef struct
         displacement_um;    /* Signed displacement, not absolute path length. */
     int32_t  velocity_um_s; /* Signed interval average, positive car-forward. */
     uint32_t invalid_delta;
+    uint32_t odometry_span_us; /* Time covered by consecutive valid intervals, capped at INT32_MAX. */
     bool     speed_valid;
     bool     odometry_valid; /* This sample only; same as speed_valid. */
     uint8_t  invalid_samples; /* Samples without speed_valid since init; wraps. */
@@ -41,6 +42,7 @@ typedef struct
 {
     uint32_t              timestamp_us;
     uint32_t              elapsed_us;
+    uint32_t              stationary_span_us; /* Valid time with no edges on either wheel. */
     motion_wheel_sample_t wheel[ENCODER_WHEELS];
 } motion_sample_t;
 
@@ -49,6 +51,8 @@ typedef struct
     motion_config_t config;
     motion_input_t  previous;
     int64_t         net_edges[ENCODER_WHEELS];
+    uint32_t        odometry_span_us[ENCODER_WHEELS];
+    uint32_t        stationary_span_us;
     uint8_t         invalid_samples[ENCODER_WHEELS];
     bool            initialised;
 } odometry_t;
@@ -61,7 +65,8 @@ bool odometry_init (odometry_t *      p_sampler,
                           const motion_input_t *  p_baseline);
 
 /* Resume from a fresh capture, discarding the unobserved interval while
- * preserving accumulated travel and sample diagnostics. */
+ * preserving accumulated travel and sample diagnostics. Valid and stationary
+ * spans start over at the new baseline. */
 bool odometry_rebase (odometry_t * p_sampler, const motion_input_t * p_baseline);
 
 /* Failure (null/uninitialised input, zero dt or arithmetic overflow) changes

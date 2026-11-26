@@ -4,8 +4,9 @@
 #define PROBE_US           (500000U)
 #define PROBE_TRAVEL_UM    (35000)
 #define MIN_TRAVEL_UM      (2000)
-#define WHEEL_RISE_UM_S    (45000)
-#define RESPONSE_GRACE_US  (40000U) /* Two IMU periods to see the end of the speed rise. */
+#define WHEEL_RISE_UM_S    (45000 / MOTION_SPEED_DIVISOR)
+/* The slower probe takes longer to corroborate the IMU response. */
+#define RESPONSE_GRACE_US  (40000U * (uint32_t)MOTION_SPEED_DIVISOR)
 #define BASELINE_SAMPLES   (3U)
 #define BASELINE_SPREAD_MG (15)
 #define RESPONSE_MG        (10)

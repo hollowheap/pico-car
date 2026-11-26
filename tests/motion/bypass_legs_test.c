@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "motion/pilot/hug.h"
+#include "motion/pilot/bypass/internal.h"
+#include "ir/ir.h"
 
 /* Nine bearings plus the single decision-critical repeat. */
 #define FAN_ALLOWANCE (10U)
@@ -591,7 +593,7 @@ static void off_center_guided_post(int side)
     turn_encoder(&f, side * 900);
     wait_motion(&f, LOOK_ECHO_OPEN, 0, 1, 0);
     /* Model both first looks missing the post and reaching the tape limit. */
-    translate(&f, 142);
+    translate(&f, GUIDED_LATERAL_MM + 1);
     wait_motion(&f, LOOK_ECHO_OPEN, 0, 0, -side);
     turn_encoder(&f, -side * 900);
     fixture_t missing_forward = f;

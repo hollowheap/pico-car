@@ -13,11 +13,8 @@
 #define FORWARD_AGE_MS  (400U)
 #define LOOK_FIRST_STEP_MM (SWING_MM / HALF_DIVISOR)
 
-/* Reserve the entire optical sweep while the axle turns at a lateral station. */
-#define READER_RADIUS_MM (LINE_SENSOR_LEAD_MM + 1)
 STATIC_ASSERT(READER_RADIUS_MM * READER_RADIUS_MM >= LINE_SENSOR_LEAD_MM * LINE_SENSOR_LEAD_MM +
               ((LINE_SENSOR_SPACING_MM + 1) / 2) * ((LINE_SENSOR_SPACING_MM + 1) / 2), "reader pivot radius");
-#define GUIDED_LATERAL_MM (HUG_PARALLEL_SPACING_MM - (LINE_WIDTH_MM + 1) / 2 - READER_RADIUS_MM - SPIN_GAP_MM)
 #define MS_PER_SECOND   (1000U)
 
 /* Keep Buddy 5's larger turning allowance. Check each measured station

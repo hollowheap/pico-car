@@ -57,4 +57,9 @@ bool pid_update (pid_t * p_pid, int32_t target_um_s,
                        const motion_sample_t * p_sample, unsigned int wheel,
                        uint32_t now_us, int16_t * p_duty);
 
+/* Apply an extra output cap within anti-windup before the owner scales duty. */
+bool pid_update_limited (pid_t * p_pid, int32_t target_um_s,
+                        const motion_sample_t * p_sample, unsigned int wheel,
+                        uint32_t now_us, uint16_t cap_permille, int16_t * p_duty);
+
 #endif /* WHEEL_PID_H */

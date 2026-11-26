@@ -37,7 +37,7 @@ typedef struct
     uint32_t issued_us;
     uint32_t ttl_us;
     int32_t  target_um_s[ENCODER_WHEELS];
-    bool     b_scan_pivot;
+    bool     b_obstacle_drive;
 } motion_command_t;
 
 typedef struct
@@ -82,9 +82,9 @@ typedef struct
 } controller_status_t;
 
 /* Copied across tasks under a spinlock: widest fields first, so padding is at
- * the tail only. The enums are 1 byte on the firmware (96 bytes) and 4 on the
- * host (104 bytes). */
-STATIC_ASSERT ((sizeof(controller_status_t) <= 104U) &&
+ * the tail only. The enums are 1 byte on the firmware (104 bytes) and 4 on the
+ * host (112 bytes). */
+STATIC_ASSERT ((sizeof(controller_status_t) <= 112U) &&
                    ((sizeof(controller_status_t) % 8U) == 0U),
                "controller_status_t size");
 

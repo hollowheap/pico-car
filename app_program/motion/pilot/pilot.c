@@ -173,7 +173,10 @@ static bool check_wheel_progress(pilot_state_t * p_state, pilot_meas_t const * p
             p_state->b_check_right = b_need_r && !b_right;
         }
     }
-    if (avoidance_recover(&p_state->avoidance, &progress, p_meas, p_cmd))
+    bool const b_new_window = p_meas->b_external_avoidance
+        ? !progress.b_moving || progress.b_advanced || (progress.age_ms >= PILOT_STUCK_MS)
+        : avoidance_recover(&p_state->avoidance, &progress, p_meas, p_cmd);
+    if (b_new_window)
     {
         p_state->ref_left_um = (uint32_t)p_meas->left_um;
         p_state->ref_right_um = (uint32_t)p_meas->right_um;
@@ -249,6 +252,14 @@ static bool forward_ping_stale(pilot_state_t * p_state, pilot_meas_t const * p_m
 static pilot_reason_t data_stop(pilot_state_t * p_state,
                                 pilot_meas_t const * p_meas, bool b_fresh_forward)
 {
+    if (p_meas->b_external_avoidance)
+    {
+        /* The external navigator owns any measured obstacle. Tape following
+         * still needs current wheel data when sonar cannot see ahead. */
+        return (!p_meas->b_held && (p_meas->now_ms - p_meas->stamp_ms) > PILOT_STALE_MS)
+            ? PILOT_REASON_STALE : PILOT_REASON_NONE;
+    }
+
     /* The unsigned difference is right across the wrap of the clock. */
     bool const b_forward_stale = forward_ping_stale(p_state, p_meas, b_fresh_forward);
     bool const b_sonar = p_meas->b_sonar_fault || b_forward_stale;
@@ -899,6 +910,47 @@ static bool apply_safety(pilot_state_t * p_state, pilot_meas_t const * p_meas,
     return b_inhibited;
 }
 
+/* Turn the avoider's result into the pilot command. */
+static void apply_avoidance(pilot_state_t * p_state, pilot_meas_t const * p_meas,
+                            avoidance_result_t result, bool b_inhibited, pilot_cmd_t * p_cmd)
+{
+    switch (result)
+    {
+        case AVOIDANCE_TIMEOUT:
+        default:
+            p_state->b_timeout = 1U;
+            pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_HUG_TIMEOUT);
+            break;
+        case AVOIDANCE_REJOINED:
+            line_follow_init(&p_state->follow);
+            behaviour_follow_line(p_state, p_meas, p_cmd);
+            p_cmd->b_rejoined = true;
+            rejoin_begin(p_state, p_meas);
+            break;
+        case AVOIDANCE_FIND_TAPE:
+            begin_local_search(p_state, p_cmd, PILOT_REASON_REJOIN_SEARCH);
+            break;
+        case AVOIDANCE_NO_EXIT:
+            p_state->avoidance.recovery_phase = (uint8_t)PILOT_PHASE_BACKOFF;
+            line_follow_start_search(&p_state->follow);
+            pilot_set_command(p_cmd, -PILOT_BACKOFF_MM_S, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_STUCK);
+            break;
+        case AVOIDANCE_RELEASE:
+        case AVOIDANCE_IDLE:
+            if (AVOIDANCE_RELEASE == result)
+            {
+                line_follow_init(&p_state->follow);
+            }
+            if (!b_inhibited && !p_meas->b_commanded_turn)
+            {
+                behaviour_follow_line(p_state, p_meas, p_cmd);
+            }
+            break;
+        case AVOIDANCE_COMMAND:
+            break;
+    }
+}
+
 void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_meas,
                              pilot_contour_t * p_contour,
                              pilot_contour_plan_t const * p_offer, pilot_cmd_t * p_cmd)
@@ -915,7 +967,14 @@ void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_mea
     {
         b_inhibited = check_wheel_progress(p_state, p_meas, b_fresh_forward, &b_backoff_done, p_cmd);
     }
-    if (line_follow_local_search(&p_state->follow))
+    if (p_meas->b_external_avoidance)
+    {
+        if (!b_inhibited && !p_meas->b_commanded_turn)
+        {
+            behaviour_follow_line(p_state, p_meas, p_cmd);
+        }
+    }
+    else if (line_follow_local_search(&p_state->follow))
     {
         rejoin_search_tick(p_state, p_meas, b_inhibited, b_fresh_forward, p_cmd);
     }
@@ -936,41 +995,7 @@ void pilot_step_with_contour(pilot_state_t * p_state, pilot_meas_t const * p_mea
     {
         avoidance_result_t const result = avoidance_step(&p_state->avoidance, p_meas,
             traced_radius_mm(p_state, p_meas), drift_corr_um, b_inhibited, b_fresh_forward, b_backoff_done, p_cmd);
-        switch (result)
-        {
-            case AVOIDANCE_TIMEOUT:
-            default:
-                p_state->b_timeout = 1U;
-                pilot_set_command(p_cmd, 0, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_HUG_TIMEOUT);
-                break;
-            case AVOIDANCE_REJOINED:
-                line_follow_init(&p_state->follow);
-                behaviour_follow_line(p_state, p_meas, p_cmd);
-                p_cmd->b_rejoined = true;
-                rejoin_begin(p_state, p_meas);
-                break;
-            case AVOIDANCE_FIND_TAPE:
-                begin_local_search(p_state, p_cmd, PILOT_REASON_REJOIN_SEARCH);
-                break;
-            case AVOIDANCE_NO_EXIT:
-                p_state->avoidance.recovery_phase = (uint8_t)PILOT_PHASE_BACKOFF;
-                line_follow_start_search(&p_state->follow);
-                pilot_set_command(p_cmd, -PILOT_BACKOFF_MM_S, 0, PILOT_BEHAVIOUR_SAFETY, PILOT_REASON_STUCK);
-                break;
-            case AVOIDANCE_RELEASE:
-            case AVOIDANCE_IDLE:
-                if (AVOIDANCE_RELEASE == result)
-                {
-                    line_follow_init(&p_state->follow);
-                }
-                if (!b_inhibited && !p_meas->b_commanded_turn)
-                {
-                    behaviour_follow_line(p_state, p_meas, p_cmd);
-                }
-                break;
-            case AVOIDANCE_COMMAND:
-                break;
-        }
+        apply_avoidance(p_state, p_meas, result, b_inhibited, p_cmd);
     }
     rejoin_check(p_state, p_meas, p_cmd);
     b_moving = (0 != p_cmd->speed_mm_s) || (0 != p_cmd->turn_deci_s);

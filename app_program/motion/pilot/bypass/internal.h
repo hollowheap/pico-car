@@ -3,8 +3,8 @@
 
 #include "../hug_internal.h"
 
-/* Dimensions on Buddy 5's measured assembly, rounded outward. */
-#define SHAFT_MM        (69)
+/* Sonar shaft ahead of the axle, from chassis.h. */
+#define SHAFT_MM        ((int32_t)CHASSIS_SONAR_FORWARD_MM)
 
 /* Owner's sonar PCB plane is 5 mm ahead of its shaft. The acoustic face
  * offset is unmeasured, so use the board plane as the near origin. */
@@ -13,8 +13,11 @@
 #define HALF_LEFT_MM    ((int32_t)CHASSIS_LEFT_REACH_MM)
 #define SWING_MM        (172)
 #define SPIN_GAP_MM     (20)
+/* Reserve the entire optical sweep while the axle turns at a lateral station. */
+#define READER_RADIUS_MM (LINE_SENSOR_LEAD_MM + 1)
+#define GUIDED_LATERAL_MM (HUG_PARALLEL_SPACING_MM - (LINE_WIDTH_MM + 1) / 2 - READER_RADIUS_MM - SPIN_GAP_MM)
 
-/* Use the nominal 70 mm range origin (behind the projected PCB face).
+/* Use the shaft as the range origin (behind the projected PCB face).
  * Reserve the part of the car ahead of it plus the stopped clearance. */
 #define FRONT_RESERVE_MM (CHASSIS_FRONT_TIP_MM - CHASSIS_SONAR_FORWARD_MM + SPIN_GAP_MM)
 #define MAP_LIMIT_DECI  (3600)

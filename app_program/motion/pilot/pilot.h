@@ -160,7 +160,8 @@ typedef struct
     bool     b_ping_reply;  /* the ping answers a request                 */
     bool     b_sonar_fault; /* the sonar task reports a fault             */
     bool     b_held;        /* motion holds the wheels: no command runs   */
-    bool     b_barcode;     /* a barcode edge was seen within 250 ms      */
+    bool     b_barcode;     /* verified marker with a recent optical edge  */
+    bool     b_external_avoidance; /* the scanner's navigator owns detours */
     uint16_t ping_mm;       /* distance of the ping, 0 for OPEN           */
     int16_t  ping_servo_deci; /* servo angle of the ping, left positive   */
     uint8_t  ping_echo;     /* LOOK_ECHO_VALID, _OPEN or _TOO_CLOSE       */

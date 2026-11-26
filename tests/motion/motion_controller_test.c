@@ -479,6 +479,30 @@ static void test_missing_capture_raises_feedback (void)
 
 /* Validity follows the current sample: a bad sample is invalid, the next
  * good one is valid again. */
+static void test_stationary_span_uses_raw_edges (void)
+{
+    odometry_t odo;
+    motion_input_t in = {0};
+    motion_sample_t out;
+    controller_config_t const cfg = config();
+
+    assert(odometry_init(&odo, &cfg.sampling, &in));
+    in.timestamp_us += TICK_US;
+    assert(odometry_update(&odo, &in, &out));
+    assert(TICK_US == out.stationary_span_us);
+
+    in.timestamp_us += TICK_US;
+    in.wheel[ENCODER_LEFT].positive++;
+    in.wheel[ENCODER_LEFT].negative++;
+    assert(odometry_update(&odo, &in, &out));
+    assert(out.wheel[ENCODER_LEFT].speed_valid && 0 == out.wheel[ENCODER_LEFT].velocity_um_s);
+    assert(0U == out.stationary_span_us);
+
+    in.timestamp_us += TICK_US;
+    assert(odometry_update(&odo, &in, &out));
+    assert(TICK_US == out.stationary_span_us);
+}
+
 static void test_odometry_valid_recovers_per_sample (void)
 {
     odometry_t              odo;
@@ -508,6 +532,45 @@ static void test_odometry_valid_recovers_per_sample (void)
     advance(&in, false);
     assert(odometry_update(&odo, &in, &out));
     assert(out.wheel[0].odometry_valid);
+}
+
+static void test_odometry_span_wrap_and_rebase (void)
+{
+    odometry_t odo;
+    motion_input_t in = {.timestamp_us = UINT32_MAX - (TICK_US / 2U)};
+    motion_sample_t out;
+    motion_config_t cfg = config().sampling;
+
+    assert(odometry_init(&odo, &cfg, &in));
+    advance(&in, false);
+    assert(odometry_update(&odo, &in, &out));
+    assert(out.timestamp_us < TICK_US);
+    assert(out.wheel[0].odometry_span_us == TICK_US && out.wheel[1].odometry_span_us == TICK_US);
+
+    advance(&in, false);
+    in.wheel[0].invalid++;
+    assert(odometry_update(&odo, &in, &out));
+    assert(out.wheel[0].odometry_span_us == 0U && out.wheel[1].odometry_span_us == 2U * TICK_US);
+
+    advance(&in, false);
+    assert(odometry_update(&odo, &in, &out));
+    assert(out.wheel[0].odometry_span_us == TICK_US && out.wheel[1].odometry_span_us == 3U * TICK_US);
+
+    in.timestamp_us += 5U * TICK_US;
+    assert(odometry_rebase(&odo, &in));
+    advance(&in, false);
+    assert(odometry_update(&odo, &in, &out));
+    assert(out.wheel[0].odometry_span_us == TICK_US && out.wheel[1].odometry_span_us == TICK_US);
+    assert(out.wheel[0].invalid_samples == 1U && out.wheel[1].invalid_samples == 0U);
+
+    cfg.max_interval_us = (uint32_t)INT32_MAX;
+    assert(odometry_init(&odo, &cfg, &in));
+    in.timestamp_us += (uint32_t)INT32_MAX - TICK_US;
+    assert(odometry_update(&odo, &in, &out));
+    in.timestamp_us += 2U * TICK_US;
+    assert(odometry_update(&odo, &in, &out));
+    assert(out.wheel[0].odometry_span_us == (uint32_t)INT32_MAX);
+    assert(out.wheel[1].odometry_span_us == (uint32_t)INT32_MAX);
 }
 
 /* A reader that polls every other sample sees an invalid one in the count. */
@@ -679,6 +742,8 @@ int main (int argc, char ** argv)
     test_command_fault_stays_latched();
     test_missing_capture_raises_feedback();
     test_odometry_valid_recovers_per_sample();
+    test_stationary_span_uses_raw_edges();
+    test_odometry_span_wrap_and_rebase();
     test_invalid_samples_count_survives_a_clean_sample();
     test_permit_lapse_and_age();
     test_single_stop_sample_brakes_and_latches();

@@ -106,6 +106,8 @@
 #include "motion/motion_service.h"
 #include "navigation.h"
 #include "obstacle/extras/extras.h"
+#include "obstacle/obstacle.h"
+#include "obstacle/obstacle_pack.h"
 
 /* Micrometres per millimetre. */
 #define UM_PER_MM (1000)
@@ -214,6 +216,7 @@
 typedef struct
 {
     bool     b_enabled;
+    bool     b_armed;
     bool     b_scan_pending;
     bool     b_servo_wait;
     bool     b_pausing;
@@ -228,6 +231,7 @@ typedef struct
     uint8_t  req_id;
     uint8_t  next_id;
     uint8_t  no_path_count;
+    uint8_t  start_count;
     uint8_t  last_state;
     uint8_t  side;
     uint8_t  phase;
@@ -401,10 +405,10 @@ static bool     is_ping_at_look (uint32_t status);
 static void     set_look (int16_t deci);
 static void     start_servo_wait (void);
 static bool     check_bump (uint32_t now);
-static bool     is_obstacle_close (uint32_t status);
+static bool     is_obstacle_close (void);
 static bool     is_servo_moving (uint32_t status, uint32_t now);
 static void     report_state (uint32_t status);
-static void     step_stopped (uint32_t status, uint32_t now);
+static bool     step_stopped (uint32_t status, uint32_t now);
 static void     keep_plan (extras_plan_result_t const * p_result, uint32_t side);
 static void     explain_scan (uint16_t const *   p_profile,
                               extras_plan_result_t * p_result);
@@ -420,7 +424,7 @@ static ER      nav_stop (void);
 static ER      nav_distance_mm (uint32_t * p_distance_mm);
 
 /*!
- * @brief Start Buddy 5 with the motion links, then RESET and START it.
+ * @brief Set up Buddy 5 with the motion links. The supervisor starts it.
  *
  * Call once during startup on core 0, after drv_gpio_irq_init(),
  * motion_setup() and ir_capture_init(). If it fails, extras_nav_step()
@@ -439,12 +443,23 @@ ER extras_nav_init (void)
     if (E_OK == result)
     {
         g_nav.b_enabled = true;
-        g_nav.retry_ms  = now_ms();
-        post(EXTRAS_CMD_RESET, 0U);
-        post(EXTRAS_CMD_START, 0U);
     }
 
     return (result);
+}
+
+static void reset_route (uint32_t now)
+{
+    g_nav.b_scan_pending = false;
+    g_nav.b_servo_wait = false;
+    g_nav.b_no_retry = false;
+    g_nav.no_path_count = 0U;
+    g_nav.req_id = NAV_UNSEEN;
+    g_nav.last_state = NAV_UNSEEN;
+    g_nav.phase = PHASE_DONE;
+    g_nav.retry_ms = now;
+    obstacle_extras_set_track(false);
+    obstacle_extras_set_sweep(false);
 }
 
 /*!
@@ -452,11 +467,15 @@ ER extras_nav_init (void)
  *
  * @param[in] b_line_left  Left IR sensor sees the line.
  * @param[in] b_line_right Right IR sensor sees the line.
+ * @param[in] b_armed Supervisor's current run permission.
+ * @param[in] start_count Supervisor's START generation.
+ * @param[in] b_drive_allowed The line task's motion and tape inputs are usable.
  *
  * @return True if Buddy 5 is in charge of the motors this pass, so the
  *         line follower must not send a speed.
  */
-bool extras_nav_step (bool b_line_left, bool b_line_right)
+bool extras_nav_step (bool b_line_left, bool b_line_right, bool b_armed,
+                      uint8_t start_count, bool b_drive_allowed)
 {
     bool     b_in_charge = false;
     uint32_t evt         = 0U;
@@ -464,15 +483,40 @@ bool extras_nav_step (bool b_line_left, bool b_line_right)
     uint32_t status      = 0U;
     uint32_t now         = 0U;
 
-    extras_log_service();
+    extras_log_service(b_armed);
     update_motion();
 
     if (g_nav.b_enabled)
     {
         now = now_ms();
+        if ((g_nav.b_armed != b_armed) || (g_nav.start_count != start_count))
+        {
+            reset_route(now);
+            g_nav.b_armed = b_armed;
+            g_nav.start_count = start_count;
+        }
+        if (!b_armed)
+        {
+            /* STOP is owned by the supervisor. Retire old navigation events
+             * and the navigator's hold before the next START probe. */
+            while (E_OK == obstacle_extras_get_event(&evt, TMO_POL))
+            {
+                /* Discard queued detour state from the stopped run. */
+            }
+            hold_car(false);
+            return true;
+        }
+
         while (E_OK == obstacle_extras_get_event(&evt, TMO_POL))
         {
-            handle_event(evt, now);
+            uint32_t const type = extras_pack_get(evt, EXTRAS_EV_TYPE_SH, EXTRAS_EV_TYPE_MK);
+
+            status = obstacle_extras_get_status();
+            state  = extras_pack_get(status, EXTRAS_ST_STATE_SH, EXTRAS_ST_STATE_MK);
+            if ((EXTRAS_EVT_OBSTACLE != type) || (EXTRAS_STATE_WAIT_STOP == state))
+            {
+                handle_event(evt, now);
+            }
         }
 
         if (g_nav.b_scan_pending && ((now - g_nav.hold_ms) >= EXTRAS_NAV_BRAKE_MS))
@@ -490,21 +534,32 @@ bool extras_nav_step (bool b_line_left, bool b_line_right)
         {
             case EXTRAS_STATE_MONITOR:
                 b_in_charge = (is_servo_moving(status, now)) ||
-                              (is_obstacle_close(status));
+                              (is_obstacle_close());
                 hold_car(b_in_charge);
+                if (!b_in_charge)
+                {
+                    g_nav.req_id = NAV_UNSEEN;
+                }
             break;
 
             case EXTRAS_STATE_BYPASS:
             case EXTRAS_STATE_REACQUIRE:
                 /* NOTE: the side comes from the plan, never from the STEER
                  * word, which is read at a different moment. */
-                step_bypass(state, status, b_line_left || b_line_right, now);
+                if (b_drive_allowed &&
+                    (g_nav.req_id == extras_pack_get(status, EXTRAS_ST_ID_SH, EXTRAS_ST_ID_MK)))
+                {
+                    step_bypass(state, status, b_line_left || b_line_right, now);
+                }
+                else
+                {
+                    hold_car(true);
+                }
                 b_in_charge = true;
             break;
 
             case EXTRAS_STATE_STOPPED:
-                step_stopped(status, now);
-                b_in_charge = true;
+                b_in_charge = step_stopped(status, now);
             break;
 
             default:
@@ -1088,7 +1143,7 @@ static bool track_spin (int32_t target_deci)
     }
     else
     {
-        /* Cast is safe: the speed is 46 666 um/s. */
+        /* Cast is safe: the speed is 70 000 um/s. */
         spin_drive((error > 0) ? INTENT_AWAY : INTENT_TOWARD,
                    (int32_t)EXTRAS_TRACK_SPIN_UM_S);
     }
@@ -1599,8 +1654,7 @@ static void drive_speeds (uint32_t steer, int32_t left_um_s, int32_t right_um_s)
         }
     }
 
-    (void)motion_set_speed(speed[WHEEL_LEFT], speed[WHEEL_RIGHT],
-                                   EXTRAS_NAV_TTL_US);
+    (void)motion_set_obstacle_speed(speed[WHEEL_LEFT], speed[WHEEL_RIGHT], EXTRAS_NAV_TTL_US);
 }
 
 /*!
@@ -1697,7 +1751,7 @@ static bool spin_to (int32_t target_deci)
     }
     else
     {
-        /* Casts are safe: the speeds are 46 666 and 70 000 um/s. */
+        /* Casts are safe: the speeds are 46 666 and 140 000 um/s. */
         int32_t const speed_um_s = (left <= EXTRAS_NAV_TURN_SLOW_DECI)
                                        ? (int32_t)EXTRAS_NAV_SPIN_SLOW_UM_S
                                        : (int32_t)EXTRAS_NAV_SPIN_UM_S;
@@ -1878,10 +1932,10 @@ static void start_servo_wait (void)
 }
 
 /*!
- * @brief Virtual bumper: a wheel told to run at EXTRAS_BUMP_MIN_UM_S or more
- *        that measures under EXTRAS_BUMP_PERCENT of it for EXTRAS_BUMP_MS has hit
- *        something. Not checked while held, nor for EXTRAS_BUMP_SETTLE_MS after
- *        a wheel was told to go faster.
+ * @brief Virtual bumper: when the nominal command reaches EXTRAS_BUMP_MIN_UM_S,
+ *        compare the measured wheel speed to its scaled target. Report a bump
+ *        after EXTRAS_BUMP_MS below EXTRAS_BUMP_PERCENT of that target. Wait for
+ *        EXTRAS_BUMP_SETTLE_MS after the last release or speed increase.
  *
  * @param[in] now Current time, ms.
  *
@@ -1896,13 +1950,13 @@ static bool check_bump (uint32_t now)
 
     for (wheel = 0U; wheel < WHEELS; wheel++)
     {
-        int32_t const cmd     = g_nav.last_cmd[wheel];
+        int32_t const cmd     = g_nav.last_cmd[wheel] / MOTION_SPEED_DIVISOR;
         int32_t const vel     = g_nav.vel_um_s[wheel];
         int32_t const cmd_abs = (cmd < 0) ? -cmd : cmd;
         int32_t const vel_abs = (vel < 0) ? -vel : vel;
         bool const    b_slow =
             b_settled && g_nav.b_vel_ok[wheel] &&
-            (cmd_abs >= EXTRAS_BUMP_MIN_UM_S) &&
+            (cmd_abs >= (EXTRAS_BUMP_MIN_UM_S / MOTION_SPEED_DIVISOR)) &&
             ((vel_abs * PERCENT_FULL) < (cmd_abs * EXTRAS_BUMP_PERCENT));
 
         if (!b_slow)
@@ -1943,7 +1997,7 @@ static int32_t side_sign (void)
 
 /*!
  * @brief Heading since BYPASS began, from the total wheel difference:
- *        (right - left) / track, positive = left.
+ *        (right - left) / calibrated track, positive = left.
  *
  * @return Heading in deci-degrees.
  */
@@ -1953,7 +2007,7 @@ static int32_t heading_deci (void)
         g_nav.wheel_um[WHEEL_LEFT] - g_nav.base_um[WHEEL_LEFT];
     int64_t const right_um =
         g_nav.wheel_um[WHEEL_RIGHT] - g_nav.base_um[WHEEL_RIGHT];
-    int64_t const track_um = (int64_t)EXTRAS_WHEEL_TRACK_MM * UM_PER_MM;
+    int64_t const track_um = (int64_t)EXTRAS_NAV_TRACK_UM;
 
     /* Cast is safe: a bypass turns the car far less than 2^31 deci-deg. */
     return ((int32_t)(((right_um - left_um) * EXTRAS_NAV_DECI_PER_RAD) / track_um));
@@ -2092,16 +2146,16 @@ static bool is_reverse_pause (int32_t const p_speed[WHEELS])
  * @brief Tell whether Buddy 5's latest reading is an obstacle within the
  *        detection distance, so the line follower must not drive on.
  *
- * @param[in] status Packed Buddy 5 status word.
- *
- * @return True for a VALID reading at or below EXTRAS_DETECT_MM.
+ * @return True for a recent centered hit at or below EXTRAS_DETECT_MM.
  */
-static bool is_obstacle_close (uint32_t status)
+static bool is_obstacle_close (void)
 {
-    uint32_t const cls = extras_pack_get(status, EXTRAS_ST_CLASS_SH, EXTRAS_ST_CLASS_MK);
-    uint32_t const dist_mm = extras_pack_get(status, EXTRAS_ST_DIST_SH, EXTRAS_ST_DIST_MK);
+    uint32_t const ping = obstacle_ping_recent();
+    uint16_t const mm = obstacle_pack_ping_mm(ping);
 
-    return ((EXTRAS_CLASS_VALID == cls) && (dist_mm <= EXTRAS_DETECT_MM));
+    return 0 != ping && 0 == obstacle_pack_ping_servo(ping) &&
+        OBSTACLE_CLASS_VALID == obstacle_pack_ping_echo(ping) &&
+        0 < mm && mm <= EXTRAS_DETECT_MM;
 }
 
 /*!
@@ -2142,7 +2196,8 @@ static void report_state (uint32_t status)
             begin_bypass();
         }
 
-        if ((EXTRAS_STATE_BYPASS == state) || (EXTRAS_STATE_MONITOR == state) ||
+        if ((EXTRAS_STATE_BYPASS == state) ||
+            ((EXTRAS_STATE_MONITOR == state) && (NAV_UNSEEN != g_nav.req_id)) ||
             ((EXTRAS_STATE_REACQUIRE == state) && (0 != g_nav.look_deci)))
         {
             /* The servo turns on entering these states (back to 0 after
@@ -2166,11 +2221,13 @@ static void report_state (uint32_t status)
  * @param[in] status Packed Buddy 5 status word.
  * @param[in] now    Current time, ms.
  */
-static void step_stopped (uint32_t status, uint32_t now)
+static bool step_stopped (uint32_t status, uint32_t now)
 {
     uint32_t const cause = extras_pack_get(status, EXTRAS_ST_CAUSE_SH, EXTRAS_ST_CAUSE_MK);
+    bool const b_sensor = (EXTRAS_CAUSE_NO_ECHO == cause) || (EXTRAS_CAUSE_ECHO_STUCK == cause);
+    bool const b_hold = !b_sensor || (NAV_UNSEEN != g_nav.req_id);
 
-    hold_car(true);
+    hold_car(b_hold);
 
     if ((EXTRAS_CAUSE_COLLISION == cause) && (!g_nav.b_no_retry))
     {
@@ -2193,12 +2250,14 @@ static void step_stopped (uint32_t status, uint32_t now)
                 away_deci());
     }
 
-    if ((!g_nav.b_no_retry) && ((now - g_nav.retry_ms) >= EXTRAS_NAV_RETRY_MS))
+    if ((!g_nav.b_no_retry) && (EXTRAS_CAUSE_EXTERNAL != cause) &&
+        (EXTRAS_CAUSE_BOOT != cause) && ((now - g_nav.retry_ms) >= EXTRAS_NAV_RETRY_MS))
     {
         g_nav.retry_ms = now;
         post(EXTRAS_CMD_RESET, 0U);
         post(EXTRAS_CMD_START, 0U);
     }
+    return b_hold;
 }
 
 /*!
@@ -2395,8 +2454,7 @@ static void handle_event (uint32_t evt, uint32_t now)
         uint32_t const faults =
             extras_pack_get(evt, EXTRAS_EV_FAULTS_SH, EXTRAS_EV_FAULTS_MK);
 
-        LOG_CONT("[b5-nav] FAULT cause=%d: holding, retry in 3 s\n",
-                  (INT)cause);
+        LOG_CONT("[b5-nav] FAULT cause=%d: holding\n", (INT)cause);
 
         /* Casts are safe: the cause is 4 bits, the faults 8 bits. */
         log_rec(EXTRAS_LOG_FAULT, (uint8_t)cause, 0U, (uint8_t)faults, 0, 0, 0);

@@ -566,6 +566,7 @@ static ER post_command (motion_command_t command, bool stamp_now)
         {
             return E_PAR;
         }
+        command.target_um_s[wheel] /= MOTION_SPEED_DIVISOR;
     }
     (void)ISpinLock(&g_service_lock, &saved);
     if (!g_published.ready || g_inbox.stopped)
@@ -603,9 +604,9 @@ static ER post_command (motion_command_t command, bool stamp_now)
 }
 
 ER motion_service_set_speed (int32_t left_um_s, int32_t right_um_s,
-                             uint32_t ttl_us, bool b_scan_pivot)
+                             uint32_t ttl_us, bool b_obstacle_drive)
 {
-    motion_command_t command = {0U, 0U, ttl_us, {left_um_s, right_um_s}, b_scan_pivot};
+    motion_command_t command = {0U, 0U, ttl_us, {left_um_s, right_um_s}, b_obstacle_drive};
 
     return post_command(command, true);
 }
@@ -718,6 +719,8 @@ static void fill_feedback (const motion_service_status_t * p_status,
     /* The sample was copied before reading the clock. Unsigned subtraction
      * keeps its age across a timer rollover. */
     uint32_t const age_us = now_us() - p_status->control.sample.timestamp_us;
+    uint32_t const left_span_us = p_status->control.sample.wheel[ENCODER_LEFT].odometry_span_us;
+    uint32_t const right_span_us = p_status->control.sample.wheel[ENCODER_RIGHT].odometry_span_us;
 
     p_feedback->left_speed_um_s  = p_status->control.sample.wheel[ENCODER_LEFT].velocity_um_s;
     p_feedback->right_speed_um_s = p_status->control.sample.wheel[ENCODER_RIGHT].velocity_um_s;
@@ -725,8 +728,10 @@ static void fill_feedback (const motion_service_status_t * p_status,
         p_status->control.sample.wheel[ENCODER_LEFT].displacement_um;
     p_feedback->right_displacement_um =
         p_status->control.sample.wheel[ENCODER_RIGHT].displacement_um;
-    p_feedback->timestamp_us = p_status->control.sample.timestamp_us;
-    p_feedback->age_us       = age_us;
+    p_feedback->timestamp_us     = p_status->control.sample.timestamp_us;
+    p_feedback->age_us           = age_us;
+    p_feedback->odometry_span_us = (left_span_us < right_span_us) ? left_span_us : right_span_us;
+    p_feedback->stationary_span_us = p_status->control.sample.stationary_span_us;
     p_feedback->speed_valid[ENCODER_LEFT] =
         p_status->control.sample.wheel[ENCODER_LEFT].speed_valid;
     p_feedback->speed_valid[ENCODER_RIGHT] =
@@ -869,7 +874,7 @@ ER motion_set_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
     return motion_service_set_speed(left_um_s, right_um_s, ttl_us, false);
 }
 
-ER motion_set_scan_pivot (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
+ER motion_set_obstacle_speed (int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
 {
     return motion_service_set_speed(left_um_s, right_um_s, ttl_us, true);
 }

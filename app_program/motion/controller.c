@@ -5,11 +5,14 @@
 #include <stddef.h>
 #include "controller.h"
 #include "platform/log.h"
+#include "platform/units.h"
 
 /* Consecutive invalid speed samples tolerated per wheel before FEEDBACK.
  * One sample is 10 ms, so a single encoder glitch (e.g. a motor switching
  * spike) is ridden through, while a dead encoder still faults in ~30 ms. */
 #define MAX_BAD_SAMPLES 3U
+#define OBSTACLE_DUTY_GAIN (2)
+#define OBSTACLE_PIVOT_DUTY_GAIN (4)
 
 /* Names of motion_fault_t, in enum order. */
 static char const * const g_fault_name[] = {"NONE",    "COMMAND", "EXPIRED",
@@ -312,24 +315,49 @@ static void tick_idle (controller_t * p_control, uint32_t now_us)
     }
 }
 
+static bool centered_pivot (const controller_t * p_control)
+{
+    int32_t const left = p_control->command.target_um_s[ENCODER_LEFT];
+    int32_t const right = p_control->command.target_um_s[ENCODER_RIGHT];
+    return (0 != left) && ((int64_t)left + (int64_t)right == 0) &&
+           (0U != p_control->config.pivot_duty_permille);
+}
+
+static int32_t drive_duty_gain (bool b_obstacle_drive, bool b_pivot)
+{
+    int32_t gain = 1;
+
+    if (b_obstacle_drive)
+    {
+        gain = b_pivot ? OBSTACLE_PIVOT_DUTY_GAIN : OBSTACLE_DUTY_GAIN;
+    }
+    return gain;
+}
+
+static int16_t scaled_duty (int16_t duty, int32_t gain)
+{
+    int32_t const full = (int32_t)PID_DUTY_PERMILLE_FULL;
+    return (int16_t)clamp_i32((int32_t)duty * gain, -full, full);
+}
+
 /* Run the speed PID per wheel. A wheel without edges is not a fault here (the
  * pilot judges it); the duty stays within the PID limit. Fills p_requested and
  * sets *p_reversal when a wheel asks to reverse its drive direction.
  * Returns false after a fault. */
 static bool speed_loop (controller_t * p_control, uint32_t now_us,
-                        int16_t * p_requested, bool * p_reversal)
+                        int32_t previous_gain, int16_t * p_requested, bool * p_reversal)
 {
     unsigned int wheel = 0U;
-    int32_t const left = p_control->command.target_um_s[ENCODER_LEFT];
-    int32_t const right = p_control->command.target_um_s[ENCODER_RIGHT];
-    bool const b_pivot = (0 != left) && ((int64_t)left + (int64_t)right == 0) &&
-                         !p_control->command.b_scan_pivot &&
-                         (0U != p_control->config.pivot_duty_permille);
+    bool const b_pivot = centered_pivot(p_control);
+    int32_t const gain = drive_duty_gain(p_control->command.b_obstacle_drive, b_pivot);
+    uint16_t const pid_cap = (uint16_t)(PID_DUTY_PERMILLE_FULL / (uint32_t)gain);
 
     for (wheel = 0U; wheel < ENCODER_WHEELS; wheel++)
     {
         motion_sample_t const * const p_sample = &p_control->status.sample;
         pid_config_t const * const p_speed = &p_control->config.speed[wheel];
+        uint16_t const configured_max = b_pivot ? p_control->config.pivot_duty_permille :
+            p_speed->max_duty_permille;
 
         /* Only a timely quadrature glitch qualifies for the ride-through. */
         if (!p_sample->wheel[wheel].speed_valid &&
@@ -338,27 +366,26 @@ static bool speed_loop (controller_t * p_control, uint32_t now_us,
             motion_sample_fresh(p_sample, now_us, p_speed->max_sample_age_us) &&
             (p_control->bad_samples[wheel] < MAX_BAD_SAMPLES))
         {
-            int16_t const previous = p_control->status.duty[wheel];
+            int16_t const applied = p_control->status.duty[wheel];
+            int16_t const previous = (gain < previous_gain) ?
+                (int16_t)(((int32_t)applied * gain) / previous_gain) : applied;
             int32_t const target = p_control->command.target_um_s[wheel];
             int16_t const duty = (sign(previous) == sign(target)) ? previous : 0;
-            int16_t const base = (int16_t)p_control->config.speed[wheel].base_duty_permille;
+            int16_t const base = (int16_t)((p_speed->base_duty_permille != 0U) ?
+                p_speed->base_duty_permille : configured_max);
+            int16_t const ceiling = scaled_duty(base, gain);
 
-            /* Ride through an isolated glitch only in the commanded direction,
-             * with the extra duty for current tracking feedback removed. */
+            /* Reuse actual PWM. A lower gain takes effect on an invalid
+             * sample, while additional duty needs fresh feedback. */
             p_control->bad_samples[wheel]++;
-            p_requested[wheel] = duty;
-            if ((base > 0) && ((duty > base) || (duty < -base)))
-            {
-                p_requested[wheel] = (int16_t)(sign(duty) * base);
-            }
+            p_requested[wheel] = (int16_t)clamp_i32(duty, -ceiling, ceiling);
             continue;
         }
         p_control->bad_samples[wheel] = 0U;
-        p_control->pid[wheel].config.max_duty_permille = b_pivot ?
-            p_control->config.pivot_duty_permille : p_control->config.speed[wheel].max_duty_permille;
-        if (!pid_update(
+        p_control->pid[wheel].config.max_duty_permille = configured_max;
+        if (!pid_update_limited(
                 &p_control->pid[wheel], p_control->command.target_um_s[wheel],
-                &p_control->status.sample, wheel, now_us, &p_requested[wheel]))
+                &p_control->status.sample, wheel, now_us, pid_cap, &p_requested[wheel]))
         {
             fault(p_control, now_us, MOTION_FAULT_FEEDBACK);
             return false;
@@ -381,6 +408,7 @@ static bool speed_loop (controller_t * p_control, uint32_t now_us,
         {
             *p_reversal = true;
         }
+        p_requested[wheel] = scaled_duty(p_requested[wheel], gain);
     }
     return true;
 }
@@ -473,6 +501,8 @@ void controller_tick (controller_t *     p_control,
         }
         return;
     }
+    int32_t const previous_gain = drive_duty_gain(p_control->command.b_obstacle_drive,
+                                                  centered_pivot(p_control));
     if ((p_command != NULL) && !accept_command(p_control, p_command, now_us))
     {
         return;
@@ -499,7 +529,7 @@ void controller_tick (controller_t *     p_control,
         return;
     }
 
-    if (!speed_loop(p_control, now_us, requested, &reversal))
+    if (!speed_loop(p_control, now_us, previous_gain, requested, &reversal))
     {
         return;
     }

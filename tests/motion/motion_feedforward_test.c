@@ -1,6 +1,6 @@
 /** @file motion_feedforward_test.c
  * @brief Host checks for the speed feed-forward and static-friction terms of
- *        pid_update, and for the motor configuration keeping its old duty.
+ *        pid_update, and for the production setup's PID-only duty.
  */
 
 #include <assert.h>
@@ -108,7 +108,8 @@ static void check_zero_target (void)
 static void check_default_motor_duty (void)
 {
     static const int32_t speed[] = {0, 40000, 80000, 110000, 130000, 140000, 145000, 150000};
-    static const int16_t duty_before_feedforward[] = {400, 417, 288, 190, 122, 90, 74, 55};
+    /* Reference for the production gains and 600/675 permille driving limits. */
+    static const int16_t duty_without_feedforward[] = {600, 460, 331, 233, 165, 133, 117, 98};
     size_t const count = sizeof(speed) / sizeof(speed[0]);
     pid_t pid;
     int16_t duty = 0;
@@ -124,7 +125,7 @@ static void check_default_motor_duty (void)
 
         assert(pid_update(&pid, CRUISE_UM_S, sample_at(now_us, speed[i]), 0U,
                           now_us, &duty));
-        assert(duty == duty_before_feedforward[i]);
+        assert(duty == duty_without_feedforward[i]);
     }
 }
 
