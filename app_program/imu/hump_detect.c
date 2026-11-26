@@ -4,10 +4,9 @@
  *
  * State machine: FLAT -> CLIMB -> CREST -> DESCEND -> FLAT.
  *
- * While in FLAT, height from samples that already exceed the enter threshold
- * is accumulated as pending. When the enter debounce completes, the pending
- * height is kept, so the debounce delay does not cut off the start of the
- * climb.
+ * While in FLAT, height from forward samples above the enter threshold is
+ * accumulated as pending. The pending height is kept when a climb starts,
+ * so the debounce does not cut off the start of the climb.
  *
  * The pitch formula atan2(fwd, sqrt(other1^2 + other2^2)) does not change
  * with roll about the forward axis, so subtracting theta_0 as an angle
@@ -34,13 +33,17 @@
  * quarters of each new value, so it adds well under a sample of lag. */
 #define DEFAULT_MEDIAN_LEN         (5U)
 #define DEFAULT_ALPHA              (0.75f)
-/* The car replaces the enter and exit angles with 4 and 2 degrees from logged
- * humps (physics_car_config); 3 samples (60 ms) to enter, 10 (200 ms) of
- * level ground to leave. */
+/* The car replaces the angles with 3 and 2 degrees (physics_car_config).
+ * At 50 Hz, confirm pitch over 100 ms and level ground over 200 ms. */
 #define DEFAULT_ENTER_DEG          (6.0f)
 #define DEFAULT_EXIT_BAND_DEG      (2.5f)
-#define DEFAULT_ENTER_SAMPLES      (3U)
+#define DEFAULT_ENTER_SAMPLES      (5U)
 #define DEFAULT_EXIT_SAMPLES       (10U)
+/* A slight wheel imbalance during a pivot can report positive travel.
+ * Confirm that forward travel continues while the nose is up. */
+#define HUMP_ENTER_TRAVEL_M        (0.004f)
+/* A long level stretch without a descent ends an incomplete hump. */
+#define HUMP_CREST_MAX_TRAVEL_M    (0.250f)
 /* 10 s at 50 Hz: a "hump" still open after that is a sloped floor. */
 #define DEFAULT_MAX_HUMP_SAMPLES   (500U)
 /* At 80 mm/s a 10 ms motion period holds about 10 encoder edges, so the
@@ -162,7 +165,9 @@ static void reset_hump (hump_ctx_t * p_ctx)
     p_ctx->up_count = 0U;
     p_ctx->down_count = 0U;
     p_ctx->flat_count = 0U;
+    p_ctx->no_forward_count = 0U;
     p_ctx->hump_samples = 0U;
+    p_ctx->phase_travel_m = 0.0f;
     p_ctx->pending_height_m = 0.0f;
     p_ctx->pending_peak_pitch_deg = 0.0f;
     p_ctx->pending_valid = true;
@@ -437,16 +442,19 @@ static float update_pitch (hump_ctx_t * p_ctx, const hump_sample_t * p_sample,
     return raw;
 }
 
-/* FLAT state: count samples above the enter threshold and start the hump
- * when the debounce completes. */
+/* FLAT state: wait for a sustained positive pitch with forward travel. */
 static void track_flat (hump_ctx_t * p_ctx, float pitch, float delta_m,
-                        bool speed_ok, hump_output_t * p_out)
+                        float forward_m, bool speed_ok, hump_output_t * p_out)
 {
     const hump_config_t * p_cfg = &p_ctx->cfg;
 
-    if (pitch > p_cfg->enter_deg)
+    if ((pitch > p_cfg->enter_deg) && (forward_m > 0.0f))
     {
-        p_ctx->up_count++;
+        if (p_ctx->up_count < p_cfg->enter_samples)
+        {
+            p_ctx->up_count++;
+        }
+        p_ctx->phase_travel_m += forward_m;
         p_ctx->pending_height_m += delta_m;
         p_ctx->pending_valid = p_ctx->pending_valid && speed_ok;
         if (pitch > p_ctx->pending_peak_pitch_deg)
@@ -454,7 +462,8 @@ static void track_flat (hump_ctx_t * p_ctx, float pitch, float delta_m,
             p_ctx->pending_peak_pitch_deg = pitch;
         }
 
-        if (p_ctx->up_count >= p_cfg->enter_samples)
+        if ((p_ctx->up_count >= p_cfg->enter_samples)
+            && (p_ctx->phase_travel_m >= HUMP_ENTER_TRAVEL_M))
         {
             p_ctx->state = HUMP_STATE_CLIMB;
             p_ctx->height_m = p_ctx->pending_height_m;
@@ -472,6 +481,7 @@ static void track_flat (hump_ctx_t * p_ctx, float pitch, float delta_m,
     else
     {
         p_ctx->up_count = 0U;
+        p_ctx->phase_travel_m = 0.0f;
         p_ctx->pending_height_m = 0.0f;
         p_ctx->pending_peak_pitch_deg = 0.0f;
         p_ctx->pending_valid = true;
@@ -480,7 +490,8 @@ static void track_flat (hump_ctx_t * p_ctx, float pitch, float delta_m,
 
 /* CLIMB, CREST and DESCEND transitions. Sets *p_finished and *p_complete
  * when the hump ends. */
-static void advance_state (hump_ctx_t * p_ctx, bool * p_finished,
+static void advance_state (hump_ctx_t * p_ctx, float forward_m,
+                           bool no_forward, bool * p_finished,
                            bool * p_complete)
 {
     const hump_config_t * p_cfg = &p_ctx->cfg;
@@ -496,6 +507,7 @@ static void advance_state (hump_ctx_t * p_ctx, bool * p_finished,
             else if (p_ctx->flat_count >= p_cfg->exit_samples)
             {
                 p_ctx->state = HUMP_STATE_CREST;
+                p_ctx->phase_travel_m = 0.0f;
                 p_ctx->flat_count = 0U;
                 p_ctx->down_count = 0U;
             }
@@ -510,6 +522,14 @@ static void advance_state (hump_ctx_t * p_ctx, bool * p_finished,
             {
                 p_ctx->state = HUMP_STATE_DESCEND;
                 p_ctx->flat_count = 0U;
+            }
+            else
+            {
+                p_ctx->phase_travel_m += forward_m;
+                p_ctx->no_forward_count = no_forward
+                    ? (uint16_t)(p_ctx->no_forward_count + 1U) : 0U;
+                *p_finished = (p_ctx->no_forward_count >= p_cfg->exit_samples)
+                    || (p_ctx->phase_travel_m >= HUMP_CREST_MAX_TRAVEL_M);
             }
             break;
 
@@ -528,9 +548,9 @@ static void advance_state (hump_ctx_t * p_ctx, bool * p_finished,
 
 /* Hump in progress (CLIMB, CREST or DESCEND): integrate height, update the
  * flat and downhill counts, then advance the state machine. */
-static void track_hump (hump_ctx_t * p_ctx, float pitch, float abs_pitch,
-                        float delta_m, bool speed_ok, bool * p_finished,
-                        bool * p_complete)
+static void track_hump (hump_ctx_t * p_ctx, float pitch, float delta_m,
+                        float forward_m, bool speed_ok, bool no_forward,
+                        bool * p_finished, bool * p_complete)
 {
     const hump_config_t * p_cfg = &p_ctx->cfg;
 
@@ -547,7 +567,7 @@ static void track_hump (hump_ctx_t * p_ctx, float pitch, float abs_pitch,
     p_ctx->hump_samples++;
 
     /* Count samples inside the flat band and samples steeply downhill. */
-    if (abs_pitch <= p_cfg->exit_band_deg)
+    if (fabsf (pitch) <= p_cfg->exit_band_deg)
     {
         p_ctx->flat_count++;
     }
@@ -565,7 +585,7 @@ static void track_hump (hump_ctx_t * p_ctx, float pitch, float abs_pitch,
         p_ctx->down_count = 0U;
     }
 
-    advance_state (p_ctx, p_finished, p_complete);
+    advance_state (p_ctx, forward_m, no_forward, p_finished, p_complete);
 
     if (!*p_finished && (p_ctx->hump_samples >= p_cfg->max_hump_samples))
     {
@@ -582,9 +602,9 @@ bool hump_update (hump_ctx_t * p_ctx,
     float axes[HUMP_AXIS_COUNT];
     float raw = 0.0f;
     float pitch = 0.0f;
-    float abs_pitch = 0.0f;
     float magnitude = 0.0f;
     float delta_m = 0.0f;
+    float forward_m = 0.0f;
     bool motion_fresh = false;
     bool speed_ok = false;
     bool finished = false;
@@ -623,7 +643,6 @@ bool hump_update (hump_ctx_t * p_ctx,
     }
 
     pitch = p_ctx->filt_deg - p_ctx->theta0_deg;
-    abs_pitch = fabsf (pitch);
 
     /* Height step for this sample, if the motion data is usable. */
     speed_ok = motion_fresh && (p_sample->speed_mps >= p_cfg->min_speed_mps);
@@ -632,6 +651,11 @@ bool hump_update (hump_ctx_t * p_ctx,
     {
         delta_m = p_sample->ds_m * sinf (pitch * DEG_TO_RAD);
     }
+    if (motion_fresh && (p_sample->speed_mps > 0.0f)
+        && (p_sample->ds_m > 0.0f))
+    {
+        forward_m = p_sample->ds_m;
+    }
 
     if (!p_ctx->calibrated)
     {
@@ -639,12 +663,15 @@ bool hump_update (hump_ctx_t * p_ctx,
     }
     else if (HUMP_STATE_FLAT == p_ctx->state)
     {
-        track_flat (p_ctx, pitch, delta_m, speed_ok, p_out);
+        track_flat (p_ctx, pitch, delta_m, forward_m, speed_ok, p_out);
     }
     else
     {
-        track_hump (p_ctx, pitch, abs_pitch, delta_m, speed_ok, &finished,
-                    &complete);
+        bool const no_forward = motion_fresh && (p_sample->speed_mps <= 0.0f)
+                                && (p_sample->ds_m <= 0.0f);
+
+        track_hump (p_ctx, pitch, delta_m, forward_m, speed_ok, no_forward,
+                    &finished, &complete);
     }
 
     /* Fill the output before a finished hump is cleared. */

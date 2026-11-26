@@ -129,6 +129,10 @@ bool motion_adapter_convert (motion_adapter_t * p_ad, const motion_reading_t * p
     p_out->v_right_mps = (float)p_reading->velocity_um_s[PHYSICS_WHEEL_RIGHT]
                          * UM_TO_M;
     p_out->wheels_valid = speeds_ok;
+    /* Physics samples every other motion tick. A zero speed sample must
+     * cover the interval back to the last observation. */
+    p_out->wheels_moved = (0U == p_reading->stationary_span_us) || (p_ad->have_speed &&
+        ((p_reading->timestamp_us - p_ad->prev_ts_us) > p_reading->stationary_span_us));
     speed = WHEEL_MEAN_WEIGHT * (p_out->v_left_mps + p_out->v_right_mps);
     p_out->speed_mps = speed;
     p_out->age_s = (float)age_us * US_TO_S;

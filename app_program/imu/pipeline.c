@@ -224,13 +224,15 @@ static void prepare_inputs (pipeline_t * p_pipe, const float * p_acc_g,
 }
 
 static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
-                          const imu_motion_input_t * p_motion, pipeline_step_t * p_out);
+                          const imu_motion_input_t * p_motion, bool b_wheels_moved,
+                          pipeline_step_t * p_out);
 
 static void judge_hump (pipeline_t * p_pipe, pipeline_step_t * p_out);
 
 /* Run hump detection and motion classification on one prepared sample. */
 static void run_detectors (pipeline_t * p_pipe, hump_sample_t * p_sample,
-                           imu_motion_input_t * p_in, pipeline_step_t * p_out)
+                           imu_motion_input_t * p_in, bool b_wheels_moved,
+                           pipeline_step_t * p_out)
 {
     /* Bad numbers from Buddy 2 make hump_update refuse the sample;
      * retry once with the motion data marked invalid. */
@@ -260,7 +262,7 @@ static void run_detectors (pipeline_t * p_pipe, hump_sample_t * p_sample,
     if (p_out->sensors_ok)
     {
         judge_hump (p_pipe, p_out);
-        run_attitude (p_pipe, p_sample, p_in, p_out);
+        run_attitude (p_pipe, p_sample, p_in, b_wheels_moved, p_out);
     }
 }
 
@@ -309,7 +311,8 @@ static void judge_hump (pipeline_t * p_pipe, pipeline_step_t * p_out)
  * hump is in progress and the car drives forward; the travel cap only catches
  * a hump state that never ends, such as wheels spinning on a lifted car. */
 static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
-                          const imu_motion_input_t * p_motion, pipeline_step_t * p_out)
+                          const imu_motion_input_t * p_motion, bool b_wheels_moved,
+                          pipeline_step_t * p_out)
 {
     attitude_input_t in;
     float const cap_m = (float)PIPELINE_HUMP_MASK_MM * MM_TO_M;
@@ -339,7 +342,8 @@ static void run_attitude (pipeline_t * p_pipe, const hump_sample_t * p_sample,
     in.calibrated = hump_rest_gravity (&p_pipe->hump, in.g0);
     in.fwd[p_pipe->hump.cfg.fwd_axis] = (float)p_pipe->hump.cfg.fwd_sign;
     in.b_wheels_free = p_pipe->wheels_free;
-    in.b_wheels_still = p_motion->wheels_valid && !p_out->hump.motion_stale &&
+    in.b_wheels_still = p_motion->wheels_valid && !b_wheels_moved &&
+                        !p_out->hump.motion_stale &&
                         (fabsf (p_motion->v_left_mps) < WHEEL_SPEED_QUANTUM_MPS) &&
                         (fabsf (p_motion->v_right_mps) < WHEEL_SPEED_QUANTUM_MPS);
     in.b_on_hump = (HUMP_STATE_FLAT != p_out->hump.state)
@@ -450,7 +454,7 @@ bool pipeline_step (pipeline_t * p_pipe,
     {
         p_pipe->failed_cycles = 0U;
         prepare_inputs (p_pipe, p_acc_g, p_mag_g, p_motion, dt_s, &sample, &in);
-        run_detectors (p_pipe, &sample, &in, p_out);
+        run_detectors (p_pipe, &sample, &in, p_motion->wheels_moved, p_out);
     }
 
     if (p_out->sensors_ok)

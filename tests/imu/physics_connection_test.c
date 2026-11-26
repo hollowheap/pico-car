@@ -19,6 +19,7 @@
 
 #define SAMPLE_PERIOD_MS     (20U)
 #define SNAPSHOT_LOSS_MS     (500U)
+#define SNAPSHOT_DRIVE_CYCLE (2U)
 #define SNAPSHOT_FREEZE_CYCLE (8U)
 
 static jmp_buf g_done;
@@ -408,28 +409,42 @@ uint32_t physics_time_us (void)
 
 bool motion_glue_read (motion_reading_t * p_reading)
 {
+    if (g_stationary_start || g_stationary_setdown || g_repeated_loss)
+    {
+        uint32_t const now_us = physics_time_us ();
+        *p_reading = (motion_reading_t){.available = true, .timestamp_us = now_us,
+            .stationary_span_us = now_us,
+            .speed_valid = {true, true}, .odometry_valid = {true, true}};
+        return true;
+    }
     if (g_start_witness)
     {
         /* A previous cycle clock is 500 us behind this otherwise fresh sample. */
         g_witness_motion_read = true;
         int32_t const speed = g_cycle > 60U ? (int32_t)(g_cycle - 60U) * 10000 : 0;
         *p_reading = (motion_reading_t){.available = true, .timestamp_us = physics_time_us (),
-            .velocity_um_s = {speed, speed}, .speed_valid = {true, true}, .odometry_valid = {true, true}};
+            .velocity_um_s = {speed, speed}, .stationary_span_us = (0 == speed) ? physics_time_us () : 0U,
+            .speed_valid = {true, true}, .odometry_valid = {true, true}};
         return true;
     }
-    if (g_attitude_events || g_hump_events)
+    if (g_snapshot_case || g_attitude_events || g_hump_events)
     {
-        int32_t const speed = (g_hump_events && g_cycle >= 60U) ? 150000 : 0;
-        uint32_t const travel_cycles = (g_cycle >= 60U) ? g_cycle - 60U : 0U;
+        uint32_t const start_cycle = g_snapshot_case ? SNAPSHOT_DRIVE_CYCLE : 60U;
+        int32_t const speed = (!g_attitude_events && g_cycle >= start_cycle) ? 150000 : 0;
+        uint32_t const travel_cycles = (g_cycle >= start_cycle) ? g_cycle - start_cycle : 0U;
         int64_t const distance = 100000 + ((int64_t)speed * travel_cycles * SAMPLE_PERIOD_MS) / 1000;
 
-        /* A braked car can lose fresh wheel speed while retaining its odometer. */
-        *p_reading = (motion_reading_t){.available = !g_attitude_events || g_cycle < 95U,
+        /* The expiry probe calibrates first, then receives a running encoder. */
+        /* Restore both sensor streams after the lift trace's short outage. */
+        bool const available = (!g_attitude_events || g_cycle < 95U || g_cycle >= 100U)
+                               && (!g_snapshot_case || g_cycle >= start_cycle);
+        *p_reading = (motion_reading_t){.available = available,
             .timestamp_us = physics_time_us (),
             .velocity_um_s = {speed, speed}, .displacement_um = {distance, distance},
+            .stationary_span_us = (0 == speed) ? physics_time_us () : 0U,
             .speed_valid = {true, true}, .odometry_valid = {true, true}};
     }
-    return g_attitude_events || g_hump_events;
+    return g_snapshot_case || g_attitude_events || g_hump_events;
 }
 
 lsm303_result_t lsm303_init (lsm303_t * p_dev, const i2c_bus_t * p_bus, uint8_t attempts)
@@ -550,7 +565,7 @@ lsm303_result_t lsm303_read_accel (lsm303_t * p_dev, lsm303_vec_t * p_out)
         }
         return LSM303_OK;
     }
-    if (g_snapshot_case && (g_cycle > 1U))
+    if (g_snapshot_case && (g_cycle >= SNAPSHOT_DRIVE_CYCLE))
     {
         p_out->value[LSM303_AXIS_X] = 0.13f;
         p_out->value[LSM303_AXIS_Y] = 0.14f;
@@ -621,10 +636,15 @@ int main (int argc, char ** argv)
     g_calibration_gap = (2 == argc) && (0 == strcmp (argv[1], "calibration-gap"));
     g_repeated_loss = (2 == argc) && (0 == strcmp (argv[1], "repeated-read-loss"));
     g_start_witness = (2 == argc) && (0 == strcmp (argv[1], "start-witness"));
+    if (g_stationary_start || g_stationary_setdown || g_repeated_loss)
+    {
+        cfg.read_motion = motion_glue_read;
+    }
     if (g_snapshot_case)
     {
         cfg.hump.cal_samples = 1U;
         cfg.hump.enter_samples = 1U;
+        cfg.read_motion = motion_glue_read;
         /* The sample is published just before a low-word clock wrap. */
         g_now_ms = (uint64_t)UINT32_MAX - 200U;
     }

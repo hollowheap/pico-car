@@ -57,6 +57,7 @@ typedef struct
     SYSTIM   sample_time;        /* Operating time when this cycle began.  */
     uint32_t cycles;
     uint32_t forward_sample_us;
+    uint32_t settled_motion_us; /* Wheel sample timestamp when level_still is true. */
     uint32_t reference_request;
     uint32_t overruns;           /* Wake-ups missed while still working.   */
     uint32_t max_work_us;        /* Longest cycle, read to send.           */

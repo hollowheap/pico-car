@@ -137,7 +137,9 @@ typedef struct
     uint16_t up_count;
     uint16_t down_count;
     uint16_t flat_count;
+    uint16_t no_forward_count;
     uint32_t hump_samples;
+    float    phase_travel_m;    /* Forward travel during onset or crest. */
     float    pending_height_m;
     float    pending_peak_pitch_deg;
     bool     pending_valid;

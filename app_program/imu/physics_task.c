@@ -565,6 +565,7 @@ void physics_task_run (void)
         }
         update_heading (&local, &step);
         update_attitude (&local, &step);
+        local.settled_motion_us = local.level_still ? reading.timestamp_us : 0U;
         (void)hump_unpack (step.word, &hump);
         dispatch_faults (&hump, !acc_ok || b_mag_fault, &last_faults);
 
@@ -667,6 +668,8 @@ void physics_task_get_stats (physics_task_stats_t * p_stats)
 /* With +Z upright, raising the nose increased the old (-Y) roll channel. */
 #define CAR_HUMP_ENTER_DEG     (3.0f)
 #define CAR_HUMP_EXIT_BAND_DEG (2.0f)
+/* A 120 ms excursion can survive the median while crossing flat floor. */
+#define CAR_HUMP_ENTER_SAMPLES (7U)
 
 void physics_car_config (physics_task_config_t * p_cfg)
 {
@@ -675,6 +678,7 @@ void physics_car_config (physics_task_config_t * p_cfg)
     p_cfg->hump.fwd_sign      = -1;
     p_cfg->hump.enter_deg     = CAR_HUMP_ENTER_DEG;
     p_cfg->hump.exit_band_deg = CAR_HUMP_EXIT_BAND_DEG;
+    p_cfg->hump.enter_samples = CAR_HUMP_ENTER_SAMPLES;
 }
 
 void physics_task_set_wheels_free (bool b_free)

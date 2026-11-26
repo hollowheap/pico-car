@@ -54,6 +54,7 @@ ER physics_snapshot (physics_status_t * p_status)
         p_status->calibrated = stats.calibrated;
         p_status->attitude_sample_valid = p_status->ready && stats.attitude_sample_valid;
         p_status->level_still = p_status->ready && stats.level_still;
+        p_status->settled_motion_us = p_status->level_still ? stats.settled_motion_us : 0U;
         p_status->collecting_rest = p_status->ready && stats.collecting_rest;
         p_status->rest_interruptions = stats.rest_interruptions;
 

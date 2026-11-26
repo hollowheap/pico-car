@@ -236,8 +236,11 @@ static void step_lift (attitude_ctx_t * p_ctx, const attitude_output_t * p_out,
     p_ctx->rise_count = consecutive (p_ctx->rise_count, b_rising && (up_g > rise_threshold));
     p_ctx->parked_rise_count = consecutive (p_ctx->parked_rise_count,
         b_rising && p_in->b_wheels_still && (up_g > p_cfg->clear_dev_g));
+    /* The rebound guard applies to acceleration onset. A gravity-sized
+     * sample can still establish tilt while the landing load settles. */
     p_ctx->tilt_count = consecutive (p_ctx->tilt_count,
-        b_supported && (p_out->tilt_deg > p_cfg->tilt_envelope_deg));
+        (b_supported || (fabsf (load) <= p_cfg->lift_dev_g)) &&
+        (p_out->tilt_deg > p_cfg->tilt_envelope_deg));
     bool const b_confirmed = (p_ctx->tilt_count >= p_cfg->lift_samples) ||
                              (p_ctx->rise_count >= p_cfg->lift_samples) ||
                              (p_ctx->parked_rise_count >= PARKED_RISE_SAMPLES);
@@ -301,7 +304,8 @@ bool attitude_update (attitude_ctx_t * p_ctx, const attitude_input_t * p_in,
         float const rest_g = measure (p_in, p_out, &up_g);
         bool const b_level = (p_out->tilt_deg < p_ctx->cfg.clear_tilt_deg) &&
                              (fabsf (p_out->amag_g - rest_g) < p_ctx->cfg.clear_dev_g);
-        if (!b_level || p_in->b_wheels_free)
+        /* START uses this live evidence even after the lift clears. */
+        if (!b_level || p_in->b_wheels_free || !p_in->b_wheels_still)
         {
             p_ctx->clear_count = 0U;
         }

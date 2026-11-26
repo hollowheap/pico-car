@@ -30,6 +30,7 @@ typedef struct
     uint32_t reference_request; /* Latest new-run request applied to this sample. */
     uint32_t overruns;       /* Wake-ups missed while still working.    */
     uint32_t forward_sample_us; /* Hardware timer of independent accelerometer sample. */
+    uint32_t settled_motion_us; /* Wheel sample timestamp when level_still is true. */
     int16_t  pitch_cdeg;     /* Pitch in centi-degrees.                 */
     int16_t  yaw_rate_cdps;  /* Best available yaw rate, 0.01 deg/s.    */
     int16_t  a_fwd_mg;       /* Forward acceleration residual, mg.      */
@@ -65,7 +66,7 @@ typedef struct
 } physics_status_t;
 
 /* Fixed-size supervisor and telemetry snapshot. */
-STATIC_ASSERT (sizeof(physics_status_t) == 56U, "physics_status_t size");
+STATIC_ASSERT (sizeof(physics_status_t) == 60U, "physics_status_t size");
 
 /* Register the task stack. */
 void physics_init (void);

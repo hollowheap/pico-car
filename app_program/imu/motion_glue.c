@@ -28,6 +28,7 @@ bool motion_glue_read (motion_reading_t * p_reading)
 
     p_reading->available    = feedback.fresh;
     p_reading->timestamp_us = feedback.timestamp_us;
+    p_reading->stationary_span_us = feedback.stationary_span_us;
     p_reading->velocity_um_s[0] = feedback.left_speed_um_s;
     p_reading->velocity_um_s[1] = feedback.right_speed_um_s;
     p_reading->displacement_um[0] = feedback.left_displacement_um;

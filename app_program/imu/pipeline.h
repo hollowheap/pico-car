@@ -72,6 +72,7 @@ typedef struct
     float ds_m;                  /* Distance since the previous cycle.     */
     float accel_mps2;            /* Forward dv/dt.                         */
     bool  wheels_valid;
+    bool  wheels_moved;          /* Encoder activity between motion observations. */
     float v_left_mps;
     float v_right_mps;
 } motion_input_t;

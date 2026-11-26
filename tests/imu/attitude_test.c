@@ -126,7 +126,14 @@ static void test_lift_carry_level (void)
     }
     CHECK (ATTITUDE_LIFTED == rig.out.state);
 
-    /* Set down. Level and still for 1 s clears it, not before. */
+    /* A level pose with wheel activity cannot clear a lift. */
+    for (idx = 0U; idx < rig.ctx.cfg.clear_samples; idx++)
+    {
+        sample (&rig, 1.0f, 0.0f, 0.0f, 0.01f);
+        CHECK (ATTITUDE_LIFTED == rig.out.state && !rig.out.level_still);
+    }
+    /* Set down. The full level and still window clears the lift. */
+    rig.in.b_wheels_still = true;
     for (idx = 0U; idx < (rig.ctx.cfg.clear_samples - 1U); idx++)
     {
         sample (&rig, 1.0f, 0.0f, 0.0f, 0.01f);
@@ -144,13 +151,36 @@ static void test_lift_and_tilt (void)
 
     rig_init (&rig);
     run (&rig, 50U, 1.0f, 0.0f, 0.0f, 0.02f);
+    sample (&rig, 0.4f, 0.0f, 0.0f, 0.01f);
     for (idx = 1U; idx < rig.ctx.cfg.lift_samples; idx++)
     {
-        sample (&rig, 1.0f, 30.0f, 0.0f, 0.01f);
+        sample (&rig, 1.08f, 30.0f, 0.0f, 0.01f);
         CHECK (ATTITUDE_LIFTED != rig.out.state);
     }
-    sample (&rig, 1.0f, 30.0f, 0.0f, 0.01f);
+    sample (&rig, 1.08f, 30.0f, 0.0f, 0.01f);
     CHECK (ATTITUDE_LIFTED == rig.out.state);
+}
+
+/* Supported, a loaded tilted carry lifts. While a landing settles, only a
+ * gravity-sized tilted sample counts. */
+static void test_tilt_gate (void)
+{
+    rig_t    rig;
+    unsigned idx = 0U;
+
+    rig_init (&rig);
+    run (&rig, 50U, 1.0f, 0.0f, 0.0f, 0.02f);
+    run (&rig, rig.ctx.cfg.lift_samples, 1.2f, 37.0f, 0.0f, 0.01f);
+    CHECK (ATTITUDE_LIFTED == rig.out.state);
+
+    rig_init (&rig);
+    run (&rig, 50U, 1.0f, 0.0f, 0.0f, 0.02f);
+    sample (&rig, 0.4f, 0.0f, 0.0f, 0.01f);
+    for (idx = 0U; idx < rig.ctx.cfg.lift_samples; idx++)
+    {
+        sample (&rig, 1.3f, 30.0f, 0.0f, 0.01f);
+        CHECK (ATTITUDE_LIFTED != rig.out.state);
+    }
 }
 
 static void test_short_breach_is_ignored (void)
@@ -307,6 +337,7 @@ static void test_tip_on_side (void)
     CHECK (fabsf (rig.out.roll_deg) < 1.0f && !rig.out.level_still);
     run (&rig, rig.ctx.cfg.clear_samples, 1.2f, 0.0f, 0.0f, 0.0f);
     CHECK (!rig.out.level_still);
+    rig.in.b_wheels_still = true;
     run (&rig, rig.ctx.cfg.clear_samples - 1U, 1.0f, 0.0f, 0.0f, 0.0f);
     CHECK (!rig.out.level_still);
     sample (&rig, 1.0f, 0.0f, 0.0f, 0.0f);
@@ -393,6 +424,7 @@ static void test_zero_reference_keeps_lift (void)
     rig.in.g0[2] = 1.0f;
     sample (&rig, 0.0f, 0.0f, 0.0f, 0.0f);
     CHECK (ATTITUDE_LIFTED == rig.out.state && rig.out.amag_g == 0.0f);
+    rig.in.b_wheels_still = true;
     run (&rig, rig.ctx.cfg.clear_samples, 1.0f, 0.0f, 0.0f, 0.0f);
     CHECK (ATTITUDE_OK == rig.out.state);
 }
@@ -546,6 +578,7 @@ int main (int argc, char * argv[])
         {"hump-wheels-free", test_hump_keeps_wheels_free_candidate},
         {"hump-tilt", test_hump_keeps_tilt_breach},
         {"lift-set-down", test_lift_carry_level},
+        {"tilt-gate", test_tilt_gate},
         {"interrupted-floor-tilt", test_interrupted_floor_tilt},
         {"floor-bounce-ends", test_floor_bounce_ends_before_confirmation},
         {"level-hand-pickup", test_level_hand_pickup},
@@ -577,6 +610,7 @@ int main (int argc, char * argv[])
     test_hump_is_not_a_lift ();
     test_lift_carry_level ();
     test_lift_and_tilt ();
+    test_tilt_gate ();
     test_short_breach_is_ignored ();
     test_bump_is_not_a_lift ();
     test_interrupted_floor_tilt ();

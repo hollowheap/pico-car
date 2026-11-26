@@ -37,6 +37,7 @@ typedef struct
 {
     bool     available;          /* the motion service has published a sample.        */
     uint32_t timestamp_us;
+    uint32_t stationary_span_us;
     int32_t  velocity_um_s[PHYSICS_WHEEL_COUNT]; /* Signed, positive car-forward.          */
     int64_t  displacement_um[PHYSICS_WHEEL_COUNT]; /* Signed, since the motion service's sampler init.  */
     bool     speed_valid[PHYSICS_WHEEL_COUNT];
