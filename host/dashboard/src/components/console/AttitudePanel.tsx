@@ -17,6 +17,7 @@ import { LevelGauge } from './LevelGauge';
 import { EventCounts } from './EventCounts';
 import { MetricCell } from './MetricCell';
 import { Panel, useDense } from './Panel';
+import { Sparkline } from './Sparkline';
 import { StatusPill } from './StatusPill';
 
 type Props = {
@@ -25,7 +26,6 @@ type Props = {
   statusPacket: LinkPacket | undefined;
   physics: LinkPacket | undefined;
   pitchHistory?: readonly PitchSample[];
-  nowMs?: number;
   recorded?: { packet: LinkPacket; returnToLive: () => void };
   status?: PanelStatus;
   style?: StyleProp<ViewStyle>;
@@ -79,11 +79,12 @@ function GForceReticle({ aFwdMg = 0, yawRateDps = 0, azMg, size = 92 }: { aFwdMg
   );
 }
 
-function HumpTerrainViz({ hump, pitchDeg, currentPeak, runPeak, svgHeight = 68 }: {
+function HumpTerrainViz({ hump, pitchDeg, currentPeak, runPeak, heightLabel, svgHeight = 68 }: {
   hump?: number;
   pitchDeg: number | null;
   currentPeak?: number;
   runPeak: number;
+  heightLabel: string;
   svgHeight?: number;
 }) {
   const theme = useTheme();
@@ -165,7 +166,7 @@ function HumpTerrainViz({ hump, pitchDeg, currentPeak, runPeak, svgHeight = 68 }
       </Svg>
       <View style={styles.humpMetrics}>
         <MetricCell label="Grade" value={signed(pitchDeg, 1)} tone={Math.abs(livePitch) >= 4 ? 'warning' : 'default'} />
-        <MetricCell label="Peak" value={currentPeak && currentPeak > 0 ? `${currentPeak} mm` : runPeak > 0 ? `${runPeak} mm` : '--'}
+        <MetricCell label="Hump height" value={heightLabel} tone={heightLabel === 'Invalid' ? 'warning' : 'default'}
           style={[styles.colDivider, { borderLeftColor: theme.colors.border }]} />
       </View>
     </View>
@@ -179,7 +180,7 @@ const signed = (value: number | null, digits = 1) =>
  * Heading compass, pitch and roll gauges, and the lift state. The heading is
  * the magnetometer heading and it is not valid until the IMU has data.
  */
-export function AttitudePanel({ statusPacket, physics, status, style, recorded, summary }: Props) {
+export function AttitudePanel({ statusPacket, physics, pitchHistory, status, style, recorded, summary }: Props) {
   const theme = useTheme();
   const heading = headingDegrees(physics?.values.heading_ddeg ?? statusPacket?.values.heading_ddeg);
   const calibrated = ((physics?.values.flags ?? 0) & (1 << BIT_FIELDS.physicsFlags.calibrated)) !== 0;
@@ -189,8 +190,6 @@ export function AttitudePanel({ statusPacket, physics, status, style, recorded, 
   const attitude = calibrated ? physics?.values.attitude_state : undefined;
   const hump = physics?.values.hump_state;
   const motion = physics?.values.motion_class;
-  const heightValid = physics?.values.flags === undefined || (physics.values.flags & (1 << BIT_FIELDS.physicsFlags.heightValid)) !== 0;
-  const currentPeak = heightValid && hump !== undefined && hump !== ENUMS.humpState.flat ? physics?.values.hump_peak_mm : undefined;
   const runPeak = Math.max(physics?.values.run_peak_mm ?? 0, summary?.tallestHumpMm ?? 0);
   // The firmware saturates its seven-bit run peak at 127 mm.
   const peakLabel = runPeak === 127 ? 'peak ≥127 mm' : `peak ${runPeak} mm`;
@@ -252,6 +251,15 @@ export function AttitudePanel({ statusPacket, physics, status, style, recorded, 
           Turn {signed(pv?.yaw_rate_cdps === undefined ? null : yawRate, 0)}/s
         </Text>
       </View>
+      {pitchHistory !== undefined && pitchHistory.length >= 2 ? (
+        <Sparkline
+          color={theme.colors.info}
+          height={28}
+          label="Pitch history"
+          range={[-25, 25]}
+          values={pitchHistory.map((sample) => sample.pitchDeg)}
+        />
+      ) : null}
     </Panel>
   );
 }
@@ -264,10 +272,23 @@ export function DynamicsPanel({ physics, status, style, summary }: Pick<Props, '
   const pitch = calibrated && pv?.pitch_cdeg !== undefined ? pv.pitch_cdeg / CDEG : null;
   const yawRate = pv?.yaw_rate_cdps === undefined ? 0 : pv.yaw_rate_cdps / CDEG;
   const hump = pv?.hump_state;
-  const heightValid = pv?.flags === undefined || (pv.flags & (1 << BIT_FIELDS.physicsFlags.heightValid)) !== 0;
-  const currentPeak = heightValid && hump !== undefined && hump !== ENUMS.humpState.flat ? pv?.hump_peak_mm : undefined;
-  const runPeak = Math.max(pv?.run_peak_mm ?? 0, summary?.tallestHumpMm ?? 0);
+  const lastHump = summary?.lastHump;
+  const sampledAt = physics?.timestamp ?? -Infinity;
   const active = hump !== undefined && hump !== ENUMS.humpState.flat;
+  const measuring = active && (lastHump === undefined ||
+    (lastHump.state === 'measuring' && sampledAt >= lastHump.timestamp));
+  const heightValid = pv?.flags === undefined || (pv.flags & (1 << BIT_FIELDS.physicsFlags.heightValid)) !== 0;
+  const currentPeak = measuring && heightValid ? pv?.hump_peak_mm : undefined;
+  const runPeak = Math.max(pv?.run_peak_mm ?? 0, summary?.tallestHumpMm ?? 0);
+  let heightLabel = 'Unmeasured';
+  if (measuring) {
+    heightLabel = !heightValid ? 'Invalid' : (currentPeak ?? 0) > 0 ? `${currentPeak} mm` : 'Measuring';
+  } else if (lastHump) {
+    heightLabel = lastHump.state === 'measured' ? `${lastHump.mm} mm`
+      : lastHump.state === 'invalid' ? 'Invalid' : 'Measuring';
+  } else if (runPeak > 0) {
+    heightLabel = runPeak === 127 ? '≥127 mm' : `${runPeak} mm`;
+  }
   const [rowHeight, setRowHeight] = useState(0);
   const reticleSize = fitTo(rowHeight, 36, 92, 180);
   const rampHeight = fitTo(rowHeight, 58, 68, 170);
@@ -291,7 +312,8 @@ export function DynamicsPanel({ physics, status, style, summary }: Pick<Props, '
       <View onLayout={(e) => setRowHeight(Math.round(e.nativeEvent.layout.height))} style={styles.dynamicsRow}>
         <GForceReticle aFwdMg={pv?.a_fwd_mg} yawRateDps={yawRate} azMg={pv?.az_mg} size={reticleSize} />
         <View style={[styles.humpWrap, styles.colDivider, { borderLeftColor: theme.colors.border }]}>
-          <HumpTerrainViz hump={hump} pitchDeg={pitch} currentPeak={currentPeak} runPeak={runPeak} svgHeight={rampHeight} />
+          <HumpTerrainViz hump={hump} pitchDeg={pitch} currentPeak={currentPeak} runPeak={runPeak}
+            heightLabel={heightLabel} svgHeight={rampHeight} />
         </View>
       </View>
     </Panel>

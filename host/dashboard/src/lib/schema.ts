@@ -43,3 +43,8 @@ export function heartbeatAgeMs(nowMs: number, lastHeartbeatMs: number): number |
   const age = nowMs - lastHeartbeatMs;
   return age >= 0 ? age : null;
 }
+
+export function isObstacleFaultStop(values: Record<string, number> | undefined): boolean {
+  return values !== undefined && values.state === 0 && values.cause !== undefined && values.cause !== 0 &&
+    values.cause !== ENUMS.obstacleCause.boot && values.cause !== ENUMS.obstacleCause.external;
+}

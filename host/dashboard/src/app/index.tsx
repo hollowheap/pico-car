@@ -199,7 +199,7 @@ function ConsoleDashboard() {
                   status={state('status')} statusPacket={latest.status} style={threeColumns && styles.fillCard} />
               </View>
               <View ref={panelRef('obstacle')} tabIndex={-1} testID="console-obstacle" style={threeColumns && { height: obstacleHeight }}>
-                <ObstaclePanel scan={view.scan} nowMs={nowMs} obstacle={latest.obstacle} ping={store.obstaclePing} summary={summary}
+                <ObstaclePanel course={course} scan={view.scan} nowMs={nowMs} obstacle={latest.obstacle} ping={store.obstaclePing} summary={summary}
                   profile={latest.profile} status={state('obstacle')} style={threeColumns && styles.fillCard} />
               </View>
               <View ref={panelRef('motion')} tabIndex={-1} testID="console-motion" style={threeColumns && { height: motionHeight }}>
@@ -216,7 +216,7 @@ function ConsoleDashboard() {
             <View style={[styles.group, { gap: gridGap }, threeColumns && styles.column, threeColumns && { height: gridHeight }]}>
               <View accessibilityLabel="Physics" nativeID="physics-card" role="region" ref={panelRef('physics')} tabIndex={-1}
                 testID="console-physics" style={threeColumns && { height: physicsHeight }}>
-                <AttitudePanel physics={latest.physics} pitchHistory={store.pitchHistory} nowMs={nowMs}
+                <AttitudePanel physics={latest.physics} pitchHistory={store.pitchHistory}
                   status={state('physics')} statusPacket={latest.status} summary={summary}
                   style={threeColumns && styles.fillCard}
                   recorded={receipt?.packet.packet === 'physics' ? {

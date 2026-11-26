@@ -113,3 +113,20 @@ it('retains a short oblique side and marks only the endpoint confirmed by the ca
   expect(face?.boundedEnd).toBe(true);
   expect(profileSurfaces({...side, slots_18: 0})).toHaveLength(0);
 });
+
+it('projects stationary contact surfaces in the same servo frame as profileHits and tolerates omitted slots', () => {
+  const sparseSide = {
+    slots_10: measured(open),
+    slots_11: measured(valid, 200),
+    slots_12: measured(valid, 202),
+    slots_13: measured(valid, 204),
+    slots_14: measured(open),
+    status: ENUMS.profileStatus.pilotSparse,
+    flags: 4 | 2,
+  };
+  const [surface] = profileSurfaces(sparseSide);
+  const hits = profileHits(sparseSide);
+  expect(surface?.points).toEqual(hits);
+  expect(surface?.boundedStart).toBe(true);
+  expect(surface?.boundedEnd).toBe(true);
+});

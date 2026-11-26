@@ -4,7 +4,7 @@ import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } fro
 import type { ConsoleView } from '../../lib/console-view';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
-import { bitLabels, enumLabel } from '../../lib/schema';
+import { bitLabels, enumLabel, isObstacleFaultStop } from '../../lib/schema';
 import type { DiagRates } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 import { MetricCell } from './MetricCell';
@@ -65,8 +65,8 @@ export function FaultGrid({ level, tiles, obstacle, diag, rates, lossPercent, st
   const o = obstacle?.values;
   const d = diag?.values;
   const obstacleFaults = o === undefined ? [] : bitLabels('obstacleFaults', o.faults);
-  const stopped = o !== undefined && o.state === 0 && o.cause !== 0;
-  const stopCause = stopped ? enumLabel('obstacleCause', o.cause) : null;
+  const stopped = isObstacleFaultStop(o);
+  const stopCause = stopped ? enumLabel('obstacleCause', o?.cause) : null;
   const activeCount = tiles.filter((t) => t.state === 'set').length;
   const historyCount = tiles.filter((t) => t.state === 'was-set').length;
 
@@ -203,7 +203,7 @@ export function FaultGrid({ level, tiles, obstacle, diag, rates, lossPercent, st
           <View style={styles.metricRow}>
             <MetricCell
               label="Stack min"
-              value={d?.stack_min_free === undefined ? '--' : `${d.stack_min_free} B`}
+              value={d?.stack_min_free === undefined ? '--' : `${d.stack_min_free} B${d.stack_min_task !== undefined ? ` (${TASKS[d.stack_min_task] ?? `T${d.stack_min_task}`})` : ''}`}
               tone={d?.stack_min_free !== undefined && d.stack_min_free < 256 ? 'danger' : 'default'}
             />
             <MetricCell
@@ -220,6 +220,11 @@ export function FaultGrid({ level, tiles, obstacle, diag, rates, lossPercent, st
               label="Cmd rej"
               value={d === undefined ? '--' : String((d.cmd_rej_length ?? 0) + (d.cmd_rej_opcode ?? 0) + (d.cmd_rej_run ?? 0) + (d.cmd_rej_old_id ?? 0) + (d.cmd_rej_age ?? 0))}
             />
+            {d?.line_search_mm !== undefined ? (
+              <MetricCell label="Line search" value={`${d.line_search_mm} mm`} />
+            ) : null}
+            <MetricCell label="Cmd last" value={d?.cmd_last_id === undefined ? '--' : `#${d.cmd_last_id}`} />
+            <MetricCell label="Sup passes" value={d?.supervisor_passes === undefined ? '--' : String(d.supervisor_passes)} />
           </View>
           <View style={styles.echoRow}>
             <View style={styles.echoHead}>
@@ -273,7 +278,7 @@ const styles = StyleSheet.create({
   foldSection: { borderTopWidth: 1, paddingTop: 8 },
   taskRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
   taskChip: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 1 },
-  metricRow: { flexDirection: 'row', gap: 8 },
+  metricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   echoRow: { gap: 3 },
   echoHead: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   echoTrack: { flexDirection: 'row', height: 5, borderRadius: 3, overflow: 'hidden' },

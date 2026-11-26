@@ -8,26 +8,36 @@ import type { EventKind } from '../../../../../bridge/src/console/events.js';
 import { useTheme } from '../../../lib/theme-provider';
 import { SurfaceStroke } from '../SurfaceStroke';
 
-export const SPEED_MAX_MMS = 180;
-export const SPEED_STOPS: readonly { mms: number; rgb: [number, number, number] }[] = [
-  { mms: 0, rgb: [59, 130, 246] },    // blue (stopped / creep)
-  { mms: 45, rgb: [6, 182, 212] },    // cyan (slow / crawl)
-  { mms: 90, rgb: [34, 197, 94] },    // green (cruise)
-  { mms: 135, rgb: [250, 204, 21] },  // yellow (fast)
-  { mms: 180, rgb: [239, 68, 68] },   // red-orange (sprint)
+const FALLBACK_SPEED_SCALE_MMS = 180;
+const RAMP_CLIMB_COLOR = '#F59E0B';
+export const SPEED_STOPS: readonly { fraction: number; rgb: [number, number, number] }[] = [
+  { fraction: 0, rgb: [59, 130, 246] },
+  { fraction: 0.25, rgb: [6, 182, 212] },
+  { fraction: 0.5, rgb: [34, 197, 94] },
+  { fraction: 0.75, rgb: [250, 204, 21] },
+  { fraction: 1, rgb: [239, 68, 68] },
 ];
-export const RAMP_CLIMB_COLOR = '#F59E0B';
 export const UNKNOWN_DASH = '5 4';
 const LABEL_SIZE = 13;
 
-function speedGradientColor(speedMms: number | null, fallback: string): string {
+export function courseSpeedScaleMms(strokes: readonly CourseTraceSegment[]): number {
+  let peak = 0;
+  for (const { band, slip, speedMms } of strokes) {
+    if (!slip && band !== 'unknown' && speedMms !== null && Number.isFinite(speedMms)) {
+      peak = Math.max(peak, speedMms);
+    }
+  }
+  return peak || FALLBACK_SPEED_SCALE_MMS;
+}
+
+function speedGradientColor(speedMms: number | null, speedScaleMms: number, fallback: string): string {
   if (speedMms === null || !Number.isFinite(speedMms)) return fallback;
-  const clamped = Math.max(0, Math.min(SPEED_MAX_MMS, speedMms));
+  const fraction = Math.max(0, Math.min(1, speedMms / speedScaleMms));
   for (let i = 1; i < SPEED_STOPS.length; i += 1) {
     const a = SPEED_STOPS[i - 1]!;
     const b = SPEED_STOPS[i]!;
-    if (clamped <= b.mms) {
-      const t = (clamped - a.mms) / Math.max(1, b.mms - a.mms);
+    if (fraction <= b.fraction) {
+      const t = (fraction - a.fraction) / (b.fraction - a.fraction);
       const r = Math.round(a.rgb[0] + (b.rgb[0] - a.rgb[0]) * t);
       const g = Math.round(a.rgb[1] + (b.rgb[1] - a.rgb[1]) * t);
       const bl = Math.round(a.rgb[2] + (b.rgb[2] - a.rgb[2]) * t);
@@ -103,13 +113,14 @@ type CourseLayersProps = {
   plot: { width: number; height: number };
   scaleText: string;
   selectedMarker: CourseMarker | undefined;
+  speedScaleMms: number;
   strokes: CourseTraceSegment[];
   tapeRuns: CoursePoint[][];
 };
 
 export function CourseLayers({
   accessibilityLabel, cellPx, course, frame, gridId, interactiveMarkers, northDeg, origin, plot,
-  scaleText, selectedMarker, strokes, tapeRuns,
+  scaleText, selectedMarker, speedScaleMms, strokes, tapeRuns,
 }: CourseLayersProps) {
   const theme = useTheme();
   const { scale, midX, midY, carX, carY, heading: drawnHeading } = frame;
@@ -125,11 +136,11 @@ export function CourseLayers({
   const sy = (y: number) => plot.height / 2 - (y - midY) * scale;
   const drawing = useMemo(() => strokes.map(({ points: path, band, speedMms: segSpeed, slip, recent }) => ({
     points: path.map(({ x, y }) => `${(plot.width / 2 + (x - midX) * scale).toFixed(1)},${(plot.height / 2 - (y - midY) * scale).toFixed(1)}`).join(' '),
-    color: slip ? theme.colors.danger : band === 'unknown' ? theme.colors.muted : speedGradientColor(segSpeed, theme.colors.muted),
+    color: slip ? theme.colors.danger : band === 'unknown' ? theme.colors.muted : speedGradientColor(segSpeed, speedScaleMms, theme.colors.muted),
     dash: slip ? '4 3' : band === 'unknown' ? UNKNOWN_DASH : undefined,
     opacity: slip ? 0.95 : recent ? 0.92 : 0.68,
     width: slip ? 3.2 : recent ? 2.8 : 2,
-  })), [strokes, plot, midX, midY, scale, theme.colors.muted, theme.colors.danger]);
+  })), [strokes, plot, midX, midY, scale, speedScaleMms, theme.colors.muted, theme.colors.danger]);
   const tapePolylines = useMemo(() => tapeRuns.map((run) =>
     run.map(({ x, y }) => `${(plot.width / 2 + (x - midX) * scale).toFixed(1)},${(plot.height / 2 - (y - midY) * scale).toFixed(1)}`).join(' '),
   ), [tapeRuns, plot, midX, midY, scale]);
@@ -214,6 +225,11 @@ export function CourseLayers({
       ) : null}
       {contact ? <Circle testID="course-front-contact" cx={sx(contact.x)} cy={sy(contact.y)}
         r={3} fill={theme.colors.danger} /> : null}
+      {course.forwardReturn?.beam ? (
+        <Line testID="course-forward-return" x1={sx(course.forwardReturn.beam.from.x)} y1={sy(course.forwardReturn.beam.from.y)}
+          x2={sx(course.forwardReturn.beam.to.x)} y2={sy(course.forwardReturn.beam.to.y)}
+          stroke={theme.colors.info} strokeDasharray="3 3" strokeWidth={1.6} opacity={0.85} />
+      ) : null}
       {course.surfaces.map((face, index) => (
         <SurfaceStroke key={index} surface={face} project={(p) => ({ x: sx(p.x), y: sy(p.y) })}
           color={theme.colors.text} pathId={`course-surface-${index}`}

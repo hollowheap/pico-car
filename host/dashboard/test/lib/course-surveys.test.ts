@@ -7,6 +7,7 @@ import type { LinkPacket } from '../../src/lib/link';
 import { obstacleView } from '../../../bridge/src/console/obstacle-view.js';
 import { profileSurfaces } from '../../../bridge/src/console/scan.js';
 import { emptyStore, reduceStore } from '../../../bridge/src/console/telemetry-store.js';
+import { createConsoleView } from '../../../bridge/src/console/view.js';
 
 const profile = (timestamp: number, first = 16, status = 0, req_id = 1): LinkPacket => {
   const slots = Object.fromEntries(Array.from({ length: 37 }, (_, i) => [
@@ -22,6 +23,16 @@ const start = [hb(100), pose(100, 1), obstacle(110, 2), pose(300, 2, 20, 90), ob
 const complete = [...start, obstacle(450, 3, 400), pose(500, 3, 20, 50), obstacle(510, 4), profile(520, 26)];
 const fold = (packets: LinkPacket[]) => packets.reduce(reduceStore, emptyStore());
 const courseOf = (packets: LinkPacket[]) => buildCourse(fold(packets).trail, []);
+
+it('keeps the recorded axle trace, surfaces and local sonar samples in the console view', () => {
+  const { view } = createConsoleView(complete).read();
+
+  expect(view.course.points).toEqual(courseOf(complete).points);
+  expect(view.course.surfaces).toEqual(courseOf(complete).surfaces);
+  expect(view.scan.readings.map(({ mark }) => mark)).toEqual(['open', 'echo', 'echo', 'echo', 'echo', 'open']);
+  expect(view.drawing['north-up'].strokes.length).toBeGreaterThan(0);
+  expect(view.drawing['north-up']).toHaveProperty('tapeRuns');
+});
 
 it('places each surveyed bearing from the sonar mount at its body pivot, in the scan-start axle frame', () => {
   const [local] = profileSurfaces(profile(520, 26).values); // +40° slot is straight on a +40° body pivot.

@@ -6,7 +6,7 @@ import type { LinkPacket } from './link.js';
 import { odometerDiscontinuous } from './odometer.js';
 import { hasSpeedFault, headingDegrees, pivotScalePercent } from './schema.js';
 import { profileSurfaces, stationaryContact, type Survey } from './scan.js';
-import { BIT_FIELDS, COMMANDS, ENUMS } from './schema.generated.js';
+import { BIT_FIELDS, COMMANDS, ENUMS, PACKETS } from './schema.generated.js';
 
 /** Keep up to 20 minutes at full resolution, then simplify the older geometry. */
 export const TRAIL_MAX = 6000;
@@ -57,6 +57,8 @@ export type TrailPoint = {
   odometerMm: number;
   /** Compass heading in degrees, null while invalid. */
   headingDeg: number | null;
+  /** Original wire compass heading preserved for slip detection. */
+  wireHeadingDeg?: number | null;
   /** Signed measured speed in mm/s, null when the packet omits it. */
   speedMms: number | null;
   /** Invalid feedback can appear as zero in a status packet. */
@@ -119,6 +121,12 @@ export type EventRow = {
 export type PitchSample = { at: number; pitchDeg: number; humpActive: boolean };
 export const PITCH_HISTORY_MAX = 60;
 
+export type Measurements = {
+  obstacleSeenAt?: number;
+  obstacleWidth?: { mm: number; timestamp: number; fromScan: boolean };
+  lastHump?: { mm: number; timestamp: number; state: 'measuring' | 'measured' | 'invalid' };
+};
+
 export type TelemetryStore = {
   /** The newest packet of each kind, by packet name. */
   latest: Record<string, LinkPacket>;
@@ -145,6 +153,7 @@ export type TelemetryStore = {
   forwardReturn: ForwardReturnStamp | null;
   /** Oldest first. */
   events: EventRow[];
+  measurements: Measurements;
   wheelHistory: WheelSample[];
   statusReceived: number;
   statusLost: number;
@@ -169,6 +178,7 @@ export function emptyStore(): TelemetryStore {
     obstacle: null,
     forwardReturn: null,
     events: [],
+    measurements: {},
     wheelHistory: [],
     statusReceived: 0,
     statusLost: 0,
@@ -195,6 +205,7 @@ function restartReadings(store: TelemetryStore, first: LinkPacket): TelemetrySto
     bootEventAt: null,
     obstacle: null,
     forwardReturn: null,
+    measurements: {},
     wheelHistory: [],
     lastSeq: null,
   };
@@ -221,13 +232,19 @@ function replaceTrailSample(store: TelemetryStore, index: number, point: TrailPo
   };
 }
 
-function addMotion(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
-  const { seq, left_mms: leftMms, right_mms: rightMms, motion_fault: fault } = packet.values;
-  if (seq === undefined || !Number.isInteger(seq) || seq < 0 || seq >= MOTION_SEQ_WRAP ||
-      leftMms === undefined || rightMms === undefined || !Number.isFinite(leftMms) || !Number.isFinite(rightMms) ||
-      (fault !== undefined && fault !== 0)) return store;
+function measuredWheels(packet: LinkPacket): TrailPoint['wheels'] {
+  const { left_mms: leftMms, right_mms: rightMms, motion_fault: fault } = packet.values;
+  if (leftMms === undefined || rightMms === undefined || !Number.isFinite(leftMms) || !Number.isFinite(rightMms) ||
+      (fault !== undefined && fault !== 0)) return undefined;
+  return { leftMms, rightMms };
+}
 
-  const pending = { seq, timestamp: packet.timestamp, wheels: { leftMms, rightMms } };
+function addMotion(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
+  const seq = packet.values.seq;
+  const wheels = measuredWheels(packet);
+  if (seq === undefined || !Number.isInteger(seq) || seq < 0 || seq >= MOTION_SEQ_WRAP || wheels === undefined) return store;
+
+  const pending = { seq, timestamp: packet.timestamp, wheels };
   const start = Math.max(0, store.trail.length - MOTION_PAIR_PASSES);
   const offset = store.trail.slice(start).findLastIndex((point) =>
     point.seq !== undefined && sameMotionPass(point.seq, point.timestamp, pending));
@@ -245,6 +262,40 @@ function addMotion(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
   const fresh = store.pendingWheels.filter((p) => Math.abs(p.timestamp - pending.timestamp) <= MOTION_PAIR_AGE_MS);
   if (fresh.some((p) => p.seq === pending.seq)) return store;
   return { ...store, pendingWheels: cap([...fresh, pending], MOTION_PAIR_PASSES) };
+}
+
+// Keep the existing panel interfaces while recording only the received status frame.
+function bundledReading(packet: LinkPacket, kind: 'motion' | 'physics'): LinkPacket {
+  const values: LinkPacket['values'] = {};
+  for (const { name } of PACKETS[kind].fields) {
+    const value = packet.values[name === 'heading_ddeg' ? 'physics_heading_ddeg' : name];
+    if (value !== undefined) values[name] = name === 'seq' ? value % MOTION_SEQ_WRAP : value;
+  }
+  if (kind === 'motion') {
+    const flags = packet.values.sample_flags ?? 0;
+    const bits = BIT_FIELDS.statusSampleFlags;
+    const fresh = (flags & (1 << bits.wheelFresh)) !== 0;
+    if (!fresh || (flags & (1 << bits.leftSpeedValid)) === 0) delete values.left_mms;
+    if (!fresh || (flags & (1 << bits.rightSpeedValid)) === 0) delete values.right_mms;
+    if (fresh && (flags & (1 << bits.leftTravelValid)) !== 0 && packet.values.left_travel_mm !== undefined) {
+      values.left_travel_mm = packet.values.left_travel_mm;
+    }
+    if (fresh && (flags & (1 << bits.rightTravelValid)) !== 0 && packet.values.right_travel_mm !== undefined) {
+      values.right_travel_mm = packet.values.right_travel_mm;
+    }
+    if (packet.values.wheel_age_us !== undefined && packet.values.wheel_age_us !== 65535) {
+      values.wheel_age_us = packet.values.wheel_age_us;
+    }
+  }
+  return { ...packet, packet: kind, values };
+}
+
+function recordPitch(history: PitchSample[], packet: LinkPacket): PitchSample[] {
+  const { pitch_cdeg: pitchCdeg, flags, hump_state: humpState } = packet.values;
+  const calibrated = ((flags ?? 0) & (1 << BIT_FIELDS.physicsFlags.calibrated)) !== 0;
+  if (!calibrated || pitchCdeg === undefined || !Number.isFinite(pitchCdeg) ||
+      packet.timestamp < (history.at(-1)?.at ?? -Infinity)) return history;
+  return cap([...history, { at: packet.timestamp, pitchDeg: pitchCdeg / 100, humpActive: (humpState ?? 0) !== 0 }], PITCH_HISTORY_MAX);
 }
 
 function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore {
@@ -275,6 +326,10 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
   }
   const reordered = insertAt < current.trail.length;
   if (!reordered && receiptDelta < 0) return current;
+  const bundled = v.device_sample_us !== undefined;
+  const motion = bundled ? bundledReading(packet, 'motion') : undefined;
+  const physics = bundled ? bundledReading(packet, 'physics') : undefined;
+  const attitudeValid = !bundled || ((v.sample_flags ?? 0) & (1 << BIT_FIELDS.statusSampleFlags.attitudeValid)) !== 0;
   let lost = current.statusLost;
   if (reordered && insertAt > 0 && seq !== undefined) {
     const before = current.trail[insertAt - 1]?.seq;
@@ -291,8 +346,8 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
   let trail = current.trail;
   let pendingWheels = current.pendingWheels;
   if (v.odometer_mm !== undefined) {
-    const phys = current.latest.physics;
-    const physFresh = phys !== undefined && Math.abs(packet.timestamp - phys.timestamp) <= 1000;
+    const phys = physics ?? current.latest.physics;
+    const physFresh = attitudeValid && phys !== undefined && Math.abs(packet.timestamp - phys.timestamp) <= 1000;
     const physCal = physFresh && ((phys.values.flags ?? 0) & (1 << BIT_FIELDS.physicsFlags.calibrated)) !== 0;
     const pitchDeg = physCal && phys.values.pitch_cdeg !== undefined ? Math.round(phys.values.pitch_cdeg / 10) / 10 : undefined;
     const rollDeg = physCal && phys.values.roll_cdeg !== undefined ? Math.round(phys.values.roll_cdeg / 10) / 10 : undefined;
@@ -312,10 +367,9 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
       seq,
     };
     const pending = seq === undefined ? undefined : pendingWheels.find((p) => sameMotionPass(seq, packet.timestamp, p));
-    if (pending !== undefined) {
-      point.wheels = pending.wheels;
-      pendingWheels = pendingWheels.filter((p) => p !== pending);
-    }
+    const wheels = motion === undefined ? pending?.wheels : measuredWheels(motion);
+    if (wheels !== undefined) point.wheels = wheels;
+    if (pending !== undefined) pendingWheels = pendingWheels.filter((p) => p !== pending);
     trail = reordered ? [...trail.slice(0, insertAt), point, ...trail.slice(insertAt)] : [...trail, point];
   }
   let scanStart = current.scanStart;
@@ -341,7 +395,7 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
     }
   }
   const signal = { timestamp: signals[signalAt]?.timestamp ?? packet.timestamp, seq, bits: v.line_bits ?? null };
-  const next = {
+  const next: TelemetryStore = {
     ...current,
     latest: reordered ? current.latest : { ...current.latest, status: packet },
     firstTimestamp: current.firstTimestamp ?? packet.timestamp,
@@ -354,6 +408,29 @@ function addStatus(current: TelemetryStore, packet: LinkPacket): TelemetryStore 
     statusLost: lost,
     lastSeq: reordered ? current.lastSeq : seq ?? current.lastSeq,
   };
+  if (!reordered && motion !== undefined && physics !== undefined) {
+    next.latest.motion = motion;
+    next.wheelHistory = recordWheels(current.wheelHistory, motion);
+    if (attitudeValid) {
+      next.latest.physics = physics;
+      next.pitchHistory = recordPitch(current.pitchHistory, physics);
+      next.measurements = recordHump(next.measurements, physics);
+    }
+  }
+  if (!reordered && bundled) {
+    const forwardPing = bundledForwardPing(packet);
+    if (forwardPing !== undefined && (current.obstaclePing === undefined || forwardPing.timestamp >= current.obstaclePing.timestamp)) {
+      next.obstaclePing = forwardPing;
+      if ((current.latest.obstacle?.values.hug_state ?? HUG_IDLE) === HUG_IDLE) {
+        const pose = trail[sonarPoseIndex(trail, forwardPing.timestamp, SONAR_POSE_MAX_AGE_MS)] ?? null;
+        const rangeMm = forwardPing.values.dist_mm;
+        if (forwardPing.values.echo_class === ENUMS.echoClass.valid && rangeMm !== undefined &&
+            rangeMm > 0 && rangeMm <= NEAR_RETURN_PLOT_MM) {
+          next.forwardReturn = { rangeMm, pose };
+        }
+      }
+    }
+  }
   // A CONTACT and the first status of its pass can be drained in either order.
   const contact = current.latest.obstacle;
   const anchored = next.obstacle === null && contact?.values.hug_state === HUG_CONTACT && contact.values.body_deci !== undefined &&
@@ -376,6 +453,76 @@ export function precedesReset(packet: LinkPacket, timestamp: number | null, orde
 function isCurrentReset(store: TelemetryStore, packet: LinkPacket): boolean {
   return store.resetAt === packet.timestamp && store.resetReceiptId === packet.receiptId &&
     store.resetOrder === packet.receiptOrder;
+}
+
+function recordHump(previous: Measurements, packet: LinkPacket): Measurements {
+  const { hump_state: humpState, hump_peak_mm: peakMm, flags } = packet.values;
+  const flagBits = flags ?? 0;
+  const active = (humpState !== undefined && humpState !== ENUMS.humpState.flat) ||
+    (flagBits & (1 << BIT_FIELDS.physicsFlags.humpActive)) !== 0;
+  const finished = (flagBits & (1 << BIT_FIELDS.physicsFlags.finished)) !== 0;
+  const heightValid = (flagBits & (1 << BIT_FIELDS.physicsFlags.heightValid)) !== 0;
+  if (active) {
+    if (previous.lastHump !== undefined && previous.lastHump.timestamp > packet.timestamp) return previous;
+    const mm = heightValid ? (peakMm ?? 0) : 0;
+    const state = finished ? (heightValid ? 'measured' : 'invalid') : 'measuring';
+    return { ...previous, lastHump: { mm, timestamp: packet.timestamp, state } };
+  }
+  if (finished && previous.lastHump?.state === 'measuring' && packet.timestamp >= previous.lastHump.timestamp) {
+    return {
+      ...previous,
+      lastHump: {
+        mm: peakMm ?? previous.lastHump.mm,
+        timestamp: packet.timestamp,
+        state: heightValid ? 'measured' : 'invalid',
+      },
+    };
+  }
+  return previous;
+}
+
+function bundledForwardPing(packet: LinkPacket): LinkPacket | undefined {
+  const { forward_dist_mm: rawDist, forward_echo_class: echo, forward_age_ms: ageMs } = packet.values;
+  if (echo === undefined || ageMs === undefined || echo === 255 || ageMs === 255 ||
+      !Number.isInteger(echo) || echo < ENUMS.echoClass.valid || echo > ENUMS.echoClass.stuck) {
+    return undefined;
+  }
+  const distMm = rawDist === undefined || rawDist === 65535 ? 0 : rawDist;
+  if (distMm === 0 && echo === ENUMS.echoClass.valid) return undefined;
+  return {
+    ...packet,
+    packet: 'obstacle',
+    timestamp: packet.timestamp - ageMs,
+    values: { dist_mm: distMm, echo_class: echo, servo_deci: 0 },
+  };
+}
+
+function recordWidth(previous: Measurements, mm: number, timestamp: number, fromScan: boolean): Measurements {
+  if (mm <= 0 || timestamp < Math.max(previous.obstacleSeenAt ?? -Infinity, previous.obstacleWidth?.timestamp ?? -Infinity)) {
+    return previous;
+  }
+  return { ...previous, obstacleWidth: { mm, timestamp, fromScan } };
+}
+
+function recordMeasurementEvent(previous: Measurements, event: EventRow): Measurements {
+  switch (event.name) {
+    case 'obstacleSeen':
+      return event.timestamp < Math.max(previous.obstacleSeenAt ?? -Infinity, previous.obstacleWidth?.timestamp ?? -Infinity)
+        ? previous : { lastHump: previous.lastHump, obstacleSeenAt: event.timestamp };
+    case 'scanDone':
+      return event.p1 === ENUMS.profileStatus.ok || event.p1 === ENUMS.profileStatus.noSafePath
+        ? recordWidth(previous, event.p2, event.timestamp, true) : previous;
+    case 'bypassEnd':
+      return recordWidth(previous, event.p1, event.timestamp, false);
+    case 'humpStart':
+      return event.timestamp < (previous.lastHump?.timestamp ?? -Infinity)
+        ? previous : { ...previous, lastHump: { mm: 0, timestamp: event.timestamp, state: 'measuring' } };
+    case 'humpEnd':
+      return event.timestamp < (previous.lastHump?.timestamp ?? -Infinity)
+        ? previous : { ...previous, lastHump: { mm: event.p1, timestamp: event.timestamp, state: event.p2 === 1 ? 'measured' : 'invalid' } };
+    default:
+      return previous;
+  }
 }
 
 function addEvent(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
@@ -409,7 +556,8 @@ function addEvent(store: TelemetryStore, packet: LinkPacket): TelemetryStore {
       resetAt: packet.timestamp, resetReceiptId: packet.receiptId, resetOrder: packet.receiptOrder,
       trailStart: packet.timestamp, firstTimestamp: packet.timestamp };
   }
-  if (row.name !== 'boot') return { ...store, events: cap([...store.events, row], EVENTS_MAX) };
+  if (row.name !== 'boot') return { ...store, events: cap([...store.events, row], EVENTS_MAX),
+    measurements: recordMeasurementEvent(store.measurements, row) };
   // Firmware publishes its heartbeat before draining queued events. Readings
   // after a heartbeat-confirmed reboot already belong to that boot.
   const heartbeatReason = store.latest.heartbeat?.values.reset_reason;
@@ -620,6 +768,9 @@ export function reduceStore(store: TelemetryStore, packet: LinkPacket): Telemetr
     firstTimestamp: store.firstTimestamp ?? packet.timestamp,
   };
   if (packet.packet === 'obstacle') {
+    if (packet.values.hug_state !== undefined && packet.values.hug_state !== HUG_IDLE) {
+      next.measurements = recordWidth(store.measurements, packet.values.width_mm ?? 0, packet.timestamp, false);
+    }
     next.scanStart = observeScanStart(store, packet, previousObstacle);
     next.obstaclePing = observeObstaclePing(store.obstaclePing, packet);
     const newPing = next.obstaclePing !== undefined && next.obstaclePing !== store.obstaclePing;
@@ -631,7 +782,10 @@ export function reduceStore(store: TelemetryStore, packet: LinkPacket): Telemetr
         (previous.values.edge_us === packet.values.edge_us && previous.values.seq === packet.values.seq))) return store;
     next.barcodeEdges = cap([...store.barcodeEdges, packet], 2048);
   }
-  if (packet.packet === 'profile') next = recordProfile(next, packet);
+  if (packet.packet === 'profile') {
+    next.measurements = recordWidth(store.measurements, packet.values.width_mm ?? 0, packet.timestamp, true);
+    next = recordProfile(next, packet);
+  }
   if (packet.packet === 'motion') {
     next.wheelHistory = recordWheels(store.wheelHistory, packet);
     if (packet.timestamp < (store.latest.motion?.timestamp ?? -Infinity)) next.latest.motion = store.latest.motion!;
@@ -641,15 +795,8 @@ export function reduceStore(store: TelemetryStore, packet: LinkPacket): Telemetr
   if (packet.packet === 'heartbeat') next = addHeartbeat(next, packet, previousHeartbeat);
   if (packet.packet === 'diag') next = addDiag(next, packet, previousDiag);
   if (packet.packet === 'physics') {
-    const pitchCdeg = packet.values.pitch_cdeg;
-    const calibrated = ((packet.values.flags ?? 0) & 8) !== 0;
-    if (calibrated && pitchCdeg !== undefined && Number.isFinite(pitchCdeg)) {
-      const humpActive = (packet.values.hump_state ?? 0) !== 0;
-      const lastPitch = store.pitchHistory.at(-1);
-      if (!lastPitch || packet.timestamp >= lastPitch.at) {
-        next.pitchHistory = cap([...store.pitchHistory, { at: packet.timestamp, pitchDeg: pitchCdeg / 100, humpActive }], PITCH_HISTORY_MAX);
-      }
-    }
+    next.pitchHistory = recordPitch(store.pitchHistory, packet);
+    next.measurements = recordHump(next.measurements, packet);
   }
   return next;
 }

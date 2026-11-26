@@ -18,9 +18,16 @@ Environment:
 - `MQTT_TOPIC_PREFIX` — default `car/PICO-CAR`.
 - `BRIDGE_HTTP_HOST`, `BRIDGE_HTTP_PORT` — default `127.0.0.1:5281`.
 - `PROTOCOL_SCHEMA` — defaults to the repository's `protocol/telemetry.yaml`.
-- `BRIDGE_HISTORY_PATH` — defaults to `host/bridge/history.jsonl`.
+- `BRIDGE_HISTORY_PATH` — defaults to `testing/logs/bridge/history.jsonl`.
+  Earlier bridges wrote `host/bridge/history.jsonl`. Move that file and its
+  `.course`, `.barcode.sqlite` and `.barcode-map.json` sidecars to keep them.
 
 `GET /health` returns MQTT connection state and the last decoded packet.
+
+The car retains 256 barcode captures in memory and retries until the bridge
+commits each batch to `<BRIDGE_HISTORY_PATH>.barcode.sqlite`. The bridge
+deduplicates by car, boot and record ID. `/health` reports archive gaps and
+overflow. A car reboot or full capture buffer can lose unacknowledged records.
 
 `POST /command` takes `{"action": "<name>"}` with a command name from the
 protocol schema. The bridge numbers each command and adds the run ID and

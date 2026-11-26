@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ComponentRef } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
-import Svg, { Circle, Defs, Line, LinearGradient, Rect, Stop } from 'react-native-svg';
+import Svg, { Defs, Line, LinearGradient, Rect, Stop } from 'react-native-svg';
 
 import type { CourseDrawing } from '../../../lib/console-view';
 import { eventKey, orientCourse, type Course, type CourseMarker, type CourseOrientation, type CoursePoint } from '../../../lib/course';
@@ -13,7 +13,7 @@ import { useReducedMotion } from '../../../lib/useReducedMotion';
 import { Button } from '../../ui/button';
 import { metres } from '../format';
 import { Panel } from '../Panel';
-import { CourseLayers, Mark, RAMP_CLIMB_COLOR, scaleBarMm, SPEED_MAX_MMS, SPEED_STOPS, UNKNOWN_DASH, type TraceFrame } from './layers';
+import { CourseLayers, courseSpeedScaleMms, Mark, scaleBarMm, SPEED_STOPS, UNKNOWN_DASH, type TraceFrame } from './layers';
 
 type Props = {
   course: Course;
@@ -288,23 +288,10 @@ export function CourseTrace({
   const carUp = orientation === 'car-up' && heading !== null;
   const compass = course.headingReference === 'compass';
   const upLabel = compass ? 'North up' : 'Trace up';
-  const { bounds, points, markers, obstacle, forwardReturn } = course;
-  const plotBounds = useMemo(() => {
-    let { minX, maxX, minY, maxY } = bounds;
-    for (const run of tapeRuns) {
-      for (const pt of run) {
-        if (pt.x < minX) minX = pt.x;
-        if (pt.x > maxX) maxX = pt.x;
-        if (pt.y < minY) minY = pt.y;
-        if (pt.y > maxY) maxY = pt.y;
-      }
-    }
-    return { minX, maxX, minY, maxY };
-  }, [bounds, tapeRuns]);
-  const beam = forwardReturn?.beam;
-  const returnLabel = forwardReturn === null ? null : `Last near sonar return ${forwardReturn.rangeMm} mm`;
+  const { bounds, points, markers } = course;
   const last = points.at(-1);
   const hasPositions = last !== undefined;
+  const speedScaleMms = useMemo(() => courseSpeedScaleMms(strokes), [strokes]);
   const showUnknown = strokes.some((stroke) => stroke.band === 'unknown');
   const showSlip = strokes.some((stroke) => stroke.slip);
   const caption = [theme.typography.caption, { color: theme.colors.muted }];
@@ -312,12 +299,12 @@ export function CourseTrace({
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   const hasPlot = plot.width > 0 && plot.height > 0;
   const baseScale = Math.min(
-    Math.max(1, plot.width - 2 * INSET) / Math.max(MIN_SPAN_MM, plotBounds.maxX - plotBounds.minX),
-    Math.max(1, plot.height - 2 * INSET - 24) / Math.max(MIN_SPAN_MM, plotBounds.maxY - plotBounds.minY),
+    Math.max(1, plot.width - 2 * INSET) / Math.max(MIN_SPAN_MM, bounds.maxX - bounds.minX),
+    Math.max(1, plot.height - 2 * INSET - 24) / Math.max(MIN_SPAN_MM, bounds.maxY - bounds.minY),
   );
   const targetScale = baseScale * zoom;
-  const targetMidX = (plotBounds.minX + plotBounds.maxX) / 2 - pan.x / Math.max(targetScale, 1e-6);
-  const targetMidY = (plotBounds.minY + plotBounds.maxY) / 2 + pan.y / Math.max(targetScale, 1e-6);
+  const targetMidX = (bounds.minX + bounds.maxX) / 2 - pan.x / Math.max(targetScale, 1e-6);
+  const targetMidY = (bounds.minY + bounds.maxY) / 2 + pan.y / Math.max(targetScale, 1e-6);
   const targetCarX = last?.x ?? 0;
   const targetCarY = last?.y ?? 0;
   const isDefaultView = zoom === 1 && pan.x === 0 && pan.y === 0;
@@ -385,9 +372,6 @@ export function CourseTrace({
               carUp ? 'car heading up' : upLabel.toLowerCase(),
               hasPositions ? `${scaleText} per grid square` : null,
               course.positionKnown ? null : 'current position unavailable',
-              obstacle === null ? null : 'Front contact',
-              course.surfaces.length ? `${course.surfaces.length} observed obstacle surfaces` : null,
-              beam == null ? null : returnLabel,
             ].filter(Boolean).join(', ')}
             cellPx={cellPx}
             course={course}
@@ -399,6 +383,7 @@ export function CourseTrace({
             plot={plot}
             scaleText={scaleText}
             selectedMarker={selectedMarker}
+            speedScaleMms={speedScaleMms}
             strokes={strokes}
             tapeRuns={tapeRuns}
           />
@@ -453,13 +438,6 @@ export function CourseTrace({
             </View>
           </View>
         ) : null}
-        {returnLabel === null ? null : (
-          <View pointerEvents="none" style={[styles.returnPill, { backgroundColor: theme.colors.dangerSurface, borderColor: theme.colors.danger, borderRadius: theme.radii.control }]}>
-            <Text numberOfLines={1} style={[theme.typography.caption, { color: theme.colors.danger }]}>
-              {beam == null ? `${returnLabel} (no loc)` : returnLabel}
-            </Text>
-          </View>
-        )}
         <View
           accessibilityLabel="Course legend"
           pointerEvents="none"
@@ -471,35 +449,16 @@ export function CourseTrace({
             <Svg aria-hidden height={6} width={44}>
               <Defs>
                 <LinearGradient id={gradId} x1="0%" x2="100%" y1="0%" y2="0%">
-                  {SPEED_STOPS.map(({ mms, rgb }) => (
-                    <Stop key={mms} offset={`${Math.round((mms / SPEED_MAX_MMS) * 100)}%`} stopColor={`rgb(${rgb[0]},${rgb[1]},${rgb[2]})`} />
+                  {SPEED_STOPS.map(({ fraction, rgb }) => (
+                    <Stop key={fraction} offset={`${Math.round(fraction * 100)}%`} stopColor={`rgb(${rgb[0]},${rgb[1]},${rgb[2]})`} />
                   ))}
                 </LinearGradient>
               </Defs>
               <Rect fill={`url(#${gradId})`} height={4} rx={2} width={44} x={0} y={1} />
             </Svg>
-            <Text style={caption}>{SPEED_MAX_MMS}+</Text>
+            <Text style={caption}>{speedScaleMms} mm/s</Text>
           </View>
-          <View style={styles.band}>
-            <Svg aria-hidden height={8} width={12}>
-              <Line stroke={theme.colors.text} strokeOpacity={0.92} strokeWidth={3.5} strokeLinecap="round" x1={2} x2={10} y1={4} y2={4} />
-            </Svg>
-            <Text style={caption}>Tape</Text>
-          </View>
-          <View style={styles.band}>
-            <Svg aria-hidden height={8} width={12}>
-              <Line stroke={RAMP_CLIMB_COLOR} strokeWidth={4} strokeLinecap="round" x1={2} x2={10} y1={4} y2={4} />
-            </Svg>
-            <Text style={caption}>Ramp</Text>
-          </View>
-          <Text style={caption}>○ Junc</Text>
           <Text style={caption}>{course.positionKnown ? '▲ Car' : '○ Last'}</Text>
-          <View style={styles.band}>
-            <Svg aria-hidden height={8} width={8}>
-              <Circle cx={4} cy={4} r={3} fill={theme.colors.danger} />
-            </Svg>
-            <Text style={caption}>Contact</Text>
-          </View>
           {showSlip ? (
             <View style={styles.band}>
               <Svg aria-hidden height={8} width={12}>
@@ -547,15 +506,6 @@ const styles = StyleSheet.create({
   zoomBtn: { alignItems: 'center', height: 32, justifyContent: 'center', width: 32 },
   zoomReset: { alignItems: 'center', borderLeftWidth: 1, borderRightWidth: 1, height: 32, justifyContent: 'center', minWidth: 40, paddingHorizontal: 8 },
   zoomText: { fontVariant: ['tabular-nums'] },
-  returnPill: {
-    borderWidth: 1,
-    bottom: 30,
-    opacity: 0.94,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    position: 'absolute',
-    right: 6,
-  },
   embeddedLegend: {
     alignItems: 'center',
     borderWidth: 1,

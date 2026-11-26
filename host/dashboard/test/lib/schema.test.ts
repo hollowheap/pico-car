@@ -71,6 +71,11 @@ describe('wire schema', () => {
     });
   });
 
+  it('decodes the bundled layout as status', () => {
+    const bundle = vectors.vectors.status_bundle;
+    expect(decodePacket('status', hexBytes(bundle.hex))).toEqual(flatten(bundle.values));
+  });
+
   it('reports non-negative heartbeat age and rejects clock rollback', () => {
     expect(heartbeatAgeMs(1200, 1000)).toBe(200);
     expect(heartbeatAgeMs(900, 1000)).toBeNull();

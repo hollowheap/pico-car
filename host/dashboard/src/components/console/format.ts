@@ -1,5 +1,6 @@
 import type { LinkPacket } from '../../lib/link';
 import { enumLabel, headingDegrees } from '../../lib/schema';
+import { SCAN_WIDTH_LIMIT_MM } from '../../../../bridge/src/console/events.js';
 
 export function faultHex(mask: number | undefined): string {
   if (mask === undefined) {
@@ -68,7 +69,7 @@ export function packetSummary(packet: LinkPacket): string {
         `rssi ${values.wifi_rssi ?? '--'} dBm  ${enumLabel('linkState', values.link_state)}`
       );
     case 'profile':
-      return `req ${values.req_id ?? '--'}  closest ${values.closest_mm ?? '--'} mm  width ${values.width_mm ?? '--'} mm`;
+      return `req ${values.req_id ?? '--'}  closest ${values.closest_mm ?? '--'} mm  width ${scanWidthLabel(values.width_mm)}`;
     default:
       return packet.packet;
   }
@@ -77,6 +78,10 @@ export function packetSummary(packet: LinkPacket): string {
 /** A size from the hug; 0 means the car has not seen it. */
 export function sizeMm(mm: number | undefined): string {
   return mm === undefined ? '--' : mm === 0 ? 'unknown' : `${mm} mm`;
+}
+
+export function scanWidthLabel(mm: number | undefined): string {
+  return mm === SCAN_WIDTH_LIMIT_MM ? 'Out of range' : sizeMm(mm);
 }
 
 export function formatTime(timestamp: number): string {

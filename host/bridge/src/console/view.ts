@@ -1,6 +1,6 @@
 import { groupActivity } from './activity.js';
 import { commandReplies } from './command-replies.js';
-import { buildCourse, courseTapeRuns, courseTraceSegments, latestCourseSpeed, orientCourse, type Course } from './course.js';
+import { buildCourse, courseTapeRuns, courseTraceSegments, latestCourseSpeed, rotateToCarUp, type Course } from './course.js';
 import { courseSession, type StoragePort } from './course-session.js';
 import { barcodeActionLabel } from './events.js';
 import { faultTiles } from './faults.js';
@@ -44,14 +44,21 @@ function consoleStore(s: TelemetryStore): ConsoleStore {
     events, wheelHistory };
 }
 
-function drawing(course: Course) {
-  return { strokes: courseTraceSegments(course), tapeRuns: courseTapeRuns(course) };
-}
-
 function projectCourse(s: TelemetryStore) {
   const course = buildCourse(s.trail, s.events, s.obstacle, s.trailStart, s.forwardReturn);
+  const strokes = courseTraceSegments(course);
+  const tapeRuns = courseTapeRuns(course);
+  const car = course.points.at(-1);
+  const heading = course.samples.at(-1)?.headingDeg;
+  const known = course.positionKnown && car !== undefined && heading != null;
+  const carUp = known
+    ? strokes.map((stroke) => ({ ...stroke, points: stroke.points.map((point) => rotateToCarUp(point, car, heading)) }))
+    : strokes;
+  const carUpTapeRuns = known
+    ? tapeRuns.map((run) => run.map((point) => rotateToCarUp(point, car, heading)))
+    : tapeRuns;
   return { course: { ...course, samples: course.samples.slice(-1) },
-    drawing: { 'north-up': drawing(course), 'car-up': drawing(orientCourse(course, 'car-up').course) } };
+    drawing: { 'north-up': { strokes, tapeRuns }, 'car-up': { strokes: carUp, tapeRuns: carUpTapeRuns } } };
 }
 
 export type CourseDrawing = ReturnType<typeof projectCourse>['drawing'];
@@ -111,9 +118,9 @@ export function createConsoleView(records: readonly LinkPacket[] = [], storage?:
       if (snapshot && store === previous && frameLog === snapshot.frameLog && lastPacket === snapshot.lastPacket) return snapshot;
       const old = snapshot?.view;
       const hasCourseChanges = old === undefined || store.trail !== previous?.trail || store.events !== previous?.events ||
-        store.trailStart !== previous?.trailStart;
-      const course = hasCourseChanges || store.obstacle !== previous?.obstacle || store.forwardReturn !== previous?.forwardReturn
-        ? projectCourse(store) : old;
+        store.trailStart !== previous?.trailStart || store.obstacle !== previous?.obstacle ||
+        store.forwardReturn !== previous?.forwardReturn;
+      const course = hasCourseChanges ? projectCourse(store) : old;
       const eventChanges = old === undefined || store.events !== previous?.events || store.trailStart !== previous?.trailStart;
       const profile = store.latest.profile;
       const pose = store.trail.at(-1);
@@ -122,7 +129,8 @@ export function createConsoleView(records: readonly LinkPacket[] = [], storage?:
         drawing: course.drawing,
         pendingPose: !course.course.positionKnown && pose?.headingDeg === null && pose.seq !== undefined && pose.wheels === undefined
           ? `${store.trailStart ?? ''}/${pose.seq}/${pose.timestamp}` : null,
-        summary: hasCourseChanges ? summarizeRun(store.trail, store.events, store.trailStart) : old.summary,
+        summary: hasCourseChanges || store.measurements !== previous?.measurements
+          ? { ...summarizeRun(store.trail, store.events, store.trailStart), ...store.measurements } : old.summary,
         speedMms: latestCourseSpeed(store.latest.status, pose),
         lossPercent: statusLossPercent(store),
         groups: eventChanges ? groupActivity(store.events) : old.groups,

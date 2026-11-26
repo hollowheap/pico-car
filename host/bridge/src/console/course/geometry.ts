@@ -177,7 +177,7 @@ function courseStep(a: TrailPoint, b: TrailPoint): CourseStep | null {
     const credibleWheels = (!aZero || !a.speedMms) && (!bZero || !b.speedMms) && (!aZero || !bZero || distance === 0);
     const aSpeed = (aw.leftMms + aw.rightMms) / 2;
     const bSpeed = (bw.leftMms + bw.rightMms) / 2;
-    const consistentTurn = Math.sign(aw.leftMms - aw.rightMms) === Math.sign(bw.leftMms - bw.rightMms);
+    const consistentTurn = Math.sign(aw.leftMms - aw.rightMms) * Math.sign(bw.leftMms - bw.rightMms) >= 0;
     const consistentTravel = distance >= dt * Math.min(aSpeed, bSpeed) - ODOMETER_PAIR_SLACK_MM &&
       distance <= dt * Math.max(aSpeed, bSpeed) + ODOMETER_PAIR_SLACK_MM;
     if (credibleWheels && ((gap === 1 && !lateReceipt) || (consistentTurn && consistentTravel))) {
@@ -233,12 +233,21 @@ export function reconstruct(trail: TrailPoint[]) {
         const halfTurn = step.wheelTurn || Math.abs(step.turn) < Math.PI / 2 ? step.turn / 2 : 0;
         const distance = halfTurn === 0 ? step.distance : step.distance * Math.sin(halfTurn) / halfTurn;
         point = { x: point.x + distance * Math.sin(next - halfTurn), y: point.y + distance * Math.cos(next - halfTurn) };
-        headingDeg = headingWrap(next / RAD_PER_DEG);
+        let fused = next;
+        if (step.wheelTurn && headingReference === 'compass' && sample.headingDeg !== null) {
+          const compassRad = sample.headingDeg * RAD_PER_DEG;
+          const consistentWithPrev = previous.headingDeg === null ||
+            Math.abs(angleDiff(angleDiff(compassRad, previous.headingDeg * RAD_PER_DEG), step.turn)) <= 25 * RAD_PER_DEG;
+          if (consistentWithPrev && Math.abs(angleDiff(compassRad, next)) <= 25 * RAD_PER_DEG) {
+            fused = next + angleDiff(compassRad, next) * 0.2;
+          }
+        }
+        headingDeg = headingWrap(fused / RAD_PER_DEG);
       }
     }
     if (headingDeg !== null) lastHeading = headingDeg;
     points.push(point);
-    samples.push(headingDeg === sample.headingDeg ? sample : { ...sample, headingDeg });
+    samples.push(headingDeg === sample.headingDeg ? sample : { ...sample, headingDeg, wireHeadingDeg: sample.headingDeg });
   }
   return { points, samples, headingReference, hasGap };
 }
@@ -331,8 +340,10 @@ export function isStepSlip(prev: TrailPoint, curr: TrailPoint): boolean {
   const wheels = curr.wheels;
   const dtMs = curr.timestamp - prev.timestamp;
   if (wheels === undefined || dtMs <= 0 || dtMs > SPEED_GAP_MS) return false;
-  if (prev.headingDeg === null || curr.headingDeg === null) return false;
-  const actualYawDeg = ((curr.headingDeg - prev.headingDeg + 540) % 360) - 180;
+  const prevH = prev.wireHeadingDeg !== undefined ? prev.wireHeadingDeg : prev.headingDeg;
+  const currH = curr.wireHeadingDeg !== undefined ? curr.wireHeadingDeg : curr.headingDeg;
+  if (prevH === null || currH === null) return false;
+  const actualYawDeg = ((currH - prevH + 540) % 360) - 180;
   const wheelYawDeg = (wheelYaw(wheels, curr.pivotScalePct) * (dtMs / 1000)) * (180 / Math.PI);
   if (Math.abs(wheelYawDeg - actualYawDeg) >= SLIP_YAW_DIFF_DEG) return true;
   const diff = Math.abs(wheels.leftMms - wheels.rightMms);

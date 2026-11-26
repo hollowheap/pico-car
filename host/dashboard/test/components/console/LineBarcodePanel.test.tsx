@@ -17,6 +17,8 @@ vi.mock('react-native', () => ({
   StyleSheet: { create: (styles: unknown) => styles },
   View: ({ children, testID }: Props) => <div data-testid={testID}>{children}</div>,
   Text: ({ children, testID }: Props) => <span data-testid={testID}>{children}</span>,
+  Pressable: ({ children }: Props) => <button>{children}</button>,
+  Modal: ({ children, visible }: Props & { visible: boolean }) => visible ? <div>{children}</div> : null,
 }));
 vi.mock('react-native-svg', () => ({ default: () => null, Path: () => null }));
 vi.mock('../../../src/lib/theme-provider', () => ({ useTheme: () => themeFor('dark') }));

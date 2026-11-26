@@ -28,6 +28,7 @@ const BARCODE_BAD = ['', 'Unexpected stripe width or bar/space order.',
   'Parity check failed.', 'Delimiter missing or invalid.', 'Speed outside the read range.', 'Duplicate code suppressed.',
   'Symbol outside the A–Z route alphabet.', 'Barcode sensor transitions were lost during the read.'];
 const PLAN_STATUS = ['ok', 'clear', 'no safe path', 'failed'];
+export const SCAN_WIDTH_LIMIT_MM = 1023;
 const RUN_STATES = ['boot', 'running', 'stopped', 'held', 'latched'];
 const STALLS: Record<number, string> = {
   0x80: 'the car does not move',
@@ -77,6 +78,13 @@ const word = (list: string[], index: number, fallback = String(index)) => list[i
 export const barcodeHasNoAction = (action: number) => action === ENUMS.barcodeAction.rejected || action === ENUMS.barcodeAction.none;
 export const barcodeActionLabel = (action: number | undefined) => action === undefined ? 'Action unavailable'
   : barcodeHasNoAction(action) ? 'No driving action' : sentence(enumLabel('barcodeAction', action));
+
+export function scanWidthLabel(widthMm: number | undefined): string {
+  if (widthMm === undefined || widthMm <= 0) return 'Unmeasured';
+  // Extras uses this code when an edge is open or the width reaches the cap.
+  return widthMm === SCAN_WIDTH_LIMIT_MM ? 'Out of range' : `${widthMm} mm`;
+}
+
 const eventKey = Object.fromEntries(
   Object.entries(ENUMS.eventType).map(([name, code]) => [code, name]),
 ) as Record<number, string>;
@@ -251,11 +259,19 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
       if (p1 === 4) {
         return { kind: 'obstacle', title: 'Stationary scan complete', detail: 'Course clearance is unverified.' };
       }
-      return { kind: 'obstacle', title: 'Scan done', detail: `plan ${word(PLAN_STATUS, p1)}; width ${p2} mm` };
+      return { kind: 'obstacle', title: 'Scan done', detail: `plan ${word(PLAN_STATUS, p1)}; width ${scanWidthLabel(p2).toLowerCase()}` };
     case 'bypassStart':
       return { kind: 'obstacle', title: 'Bypass started', detail: `hugging the ${enumLabel('hugSide', p1).toLowerCase()} side` };
     case 'bypassEnd':
       return { kind: 'obstacle', title: 'Bypass ended', detail: `back on the line; width ${p1 === 0 ? 'unknown' : `${p1} mm`}, breadth ${p2 === 0 ? 'unknown' : `${p2} mm`}` };
+    case 'rejoin': {
+      const offsetMm = (p2 << 16) >> 16;
+      return {
+        kind: 'obstacle',
+        title: 'Rejoin check',
+        detail: `Heading change ${p1 / 10}° since entry and lateral offset ${offsetMm} mm from the entry line.`,
+      };
+    }
     case 'obstacleStop':
       if (p1 === ENUMS.obstacleCause.external) {
         return { kind: 'command', title: 'External stop', detail: 'Navigation stopped by an external request.' };
@@ -274,7 +290,7 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
     case 'humpStart':
       return { kind: 'hump', title: 'Hump started', detail: '' };
     case 'humpEnd':
-      return { kind: 'hump', title: 'Hump ended', detail: p2 === 1 ? `peak ${p1} mm` : 'height not valid' };
+      return { kind: 'hump', title: 'Hump ended', detail: p2 === 1 ? `height ${p1} mm` : `invalid height (raw ${p1} mm)` };
     case 'liftStart':
       return { kind: 'attitude', title: 'Car lifted', detail: attitudeDetail('pickup detected', p1, p2) };
     case 'liftEnd':
@@ -332,6 +348,28 @@ export function describeEvent(type: number, p1: number, p2: number): EventText {
       return { kind: 'link', title: 'Link up', detail: '' };
     case 'linkDown':
       return { kind: 'link', title: 'Link down', detail: '' };
+    case 'stopTiming':
+      return {
+        kind: 'command',
+        title: 'Stop timing',
+        detail: `duty 0 in ${p1} ms; ${p2 === 65535 ? 'wheels did not rest' : `wheels at rest in ${p2} ms`}`,
+      };
+    case 'build': {
+      const flags = (p1 >>> 12) & 0xf;
+      const hash = (((p1 & 0x0fff) << 16) | (p2 & 0xffff)) >>> 0;
+      const unknown = (flags & ENUMS.buildFlag.unknown) !== 0;
+      const tags = [
+        (flags & ENUMS.buildFlag.pilot) !== 0 ? 'pilot' : null,
+        (flags & ENUMS.buildFlag.watchdog) !== 0 ? 'watchdog' : null,
+        (flags & ENUMS.buildFlag.dirty) !== 0 ? 'dirty' : null,
+      ].filter(Boolean);
+      const rev = unknown ? 'unknown rev' : hash.toString(16).padStart(7, '0');
+      return {
+        kind: 'system',
+        title: 'Firmware build',
+        detail: tags.length > 0 ? `${rev} (${tags.join(', ')})` : rev,
+      };
+    }
     default:
       return { kind: 'system', title: `Event ${type}`, detail: `type ${type}, p1 ${p1}, p2 ${p2}` };
   }

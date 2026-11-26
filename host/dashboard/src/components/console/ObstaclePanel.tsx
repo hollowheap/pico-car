@@ -1,21 +1,27 @@
+import { useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { ConsoleView } from '../../lib/console-view';
+import type { Course } from '../../lib/course';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
+import { obstacleView } from '../../../../bridge/src/console/obstacle-view.js';
 import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
 import { isRecentSonarPing } from '../../lib/scan';
-import { enumLabel } from '../../lib/schema';
+import { bitLabels, enumLabel, isObstacleFaultStop } from '../../lib/schema';
 import { BIT_FIELDS, ENUMS } from '../../lib/schema.generated';
 import { useTheme } from '../../lib/theme-provider';
-import { formatTime, sizeMm } from './format';
+import { formatTime, scanWidthLabel, sizeMm } from './format';
 import { EventCounts } from './EventCounts';
 import { MetricCell } from './MetricCell';
-import { Panel, useDense } from './Panel';
+import { Panel, useDense, useExpanded } from './Panel';
+import { ScanPlot } from './ScanPlot';
 import { ScanReadings } from './ScanReadings';
+import { SectionPicker } from './SectionPicker';
 import { StatusPill } from './StatusPill';
 
 type Props = {
+  course?: Course;
   summary?: RunSummary;
   scan: ConsoleView['scan'];
   obstacle: LinkPacket | undefined;
@@ -28,22 +34,33 @@ type Props = {
 };
 
 const DECI = 10;
+const VIEWS = { sonar: 'Sonar', map: 'Map' } as const;
 
 const degrees = (deci: number) => `${deci / DECI}°`;
 const hugDistance = (mm: number | undefined) =>
   mm !== undefined && Number.isFinite(mm) && mm > 0 ? `${mm} mm` : null;
 
-export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, style, summary, summaryOnly = false }: Props) {
+export function ObstaclePanel({ course, obstacle, ping, profile, scan, nowMs, status, style, summary, summaryOnly = false }: Props) {
   const theme = useTheme();
+  const expanded = useExpanded();
+  const [view, setView] = useState<keyof typeof VIEWS>('sonar');
   const counts = summary && <EventCounts testID="obstacle-events" scope={summary.scope}
     counts={[[summary.obstacles, 'obstacle'], [summary.bypasses, 'bypass', 'bypasses']]} />;
   const o = obstacle?.values;
   const ready = status?.kind === 'ready';
   const measurement = ready && isRecentSonarPing(ping, nowMs) ? ping.values : undefined;
-  const servoDeci = measurement?.servo_deci;
-  const range = measurement?.dist_mm;
+  const fallback = measurement === undefined && ready && o !== undefined && (o.dist_mm ?? 0) > 0 ? o : undefined;
+  const pingOrObstacle = measurement ?? fallback;
+  const servoDeci = pingOrObstacle?.servo_deci;
+  const range = pingOrObstacle?.dist_mm;
+  const echoClass = pingOrObstacle?.echo_class;
+  const closest = ready && (o?.closest_mm ?? 0) > 0 ? o?.closest_mm : undefined;
   const bodyDeci = ready ? o?.body_deci : undefined;
-  const stopped = o !== undefined && o.state === 0 && o.cause !== 0;
+  const stopped = isObstacleFaultStop(o);
+  const obstacleFaults = o === undefined ? [] : bitLabels('obstacleFaults', o.faults);
+  const mappedView = course === undefined ? undefined : obstacleView(course, profile);
+  const hasMap = mappedView !== undefined &&
+    (mappedView.surfaces.length > 0 || mappedView.contact !== null || (mappedView.hits?.length ?? 0) > 0);
   const hasEventCounts = summary !== undefined && (summary.obstacles > 0 || summary.bypasses > 0);
   const dense = useDense();
   const profileStatus = profile?.values.status;
@@ -59,10 +76,12 @@ export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, st
       ? 'Following wall' : enumLabel('hugState', o.hug_state).toLowerCase();
   const hug = o?.hug_state === undefined || o.hug_state === ENUMS.hugState.idle ? undefined : o;
   const hugSide = hug?.hug_side;
+  const reportedWidth = summary?.obstacleWidth;
+  const width = reportedWidth?.fromScan ? scanWidthLabel(reportedWidth.mm)
+    : hugDistance(reportedWidth?.mm) ?? 'Unmeasured';
   const hugMetrics = [
     ['Side', hugSide === ENUMS.hugSide.left || hugSide === ENUMS.hugSide.right ? enumLabel('hugSide', hugSide).toLowerCase() : null],
     ['Front', hugDistance(hug?.face_mm)],
-    ['Width', hugDistance(hug?.width_mm)],
     ['Depth', hugDistance(hug?.breadth_mm)],
   ] as const;
 
@@ -71,15 +90,20 @@ export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, st
   return (
     <Panel
       fill
-      empty={!summaryOnly && obstacle === undefined && ping === undefined && profile === undefined}
+      empty={!summaryOnly && obstacle === undefined && ping === undefined && profile === undefined && reportedWidth === undefined}
       icon="obstacle"
       right={
-        hugInPill ? (
-          <StatusPill accessibilityLabel={`Hug phase ${hugPhase}`} label={hugPhase.toUpperCase()} tone="warning" />
-        ) : (
-          <StatusPill label={o === undefined ? 'NO DATA' : enumLabel('obstacleState', o.state)}
-            tone={o === undefined ? 'muted' : stopped ? 'danger' : o.state === ENUMS.obstacleState.monitor ? 'success' : 'warning'} />
-        )
+        <View style={styles.headerRight}>
+          {hugInPill ? (
+            <StatusPill accessibilityLabel={`Hug phase ${hugPhase}`} label={hugPhase.toUpperCase()} tone="warning" />
+          ) : (
+            <StatusPill label={o === undefined ? 'NO DATA' : enumLabel('obstacleState', o.state)}
+              tone={o === undefined ? 'muted' : stopped ? 'danger' : o.state === ENUMS.obstacleState.monitor ? 'success' : 'warning'} />
+          )}
+          {!summaryOnly && !expanded && hasMap ? (
+            <SectionPicker id="obstacle-view" label="Obstacle views" options={VIEWS} value={view} onChange={setView} />
+          ) : null}
+        </View>
       }
       status={summaryOnly || status?.kind === 'stale' ? status : undefined}
       style={style}
@@ -89,7 +113,7 @@ export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, st
       {summaryOnly ? (
         <View testID="hug-status" style={styles.sonarHug}>
           <Text accessibilityLabel={`Hug phase ${hugPhase}`} style={[text, { color: theme.colors.text }]}>Hug {hugPhase}</Text>
-          {hugMetrics.filter(([, value]) => value !== null).map(([label, value]) => (
+          {([['Width', width], ...hugMetrics] as const).filter(([, value]) => value !== null).map(([label, value]) => (
             <Text key={label} style={[theme.typography.caption, styles.hugValue, { color: theme.colors.muted }]}>
               {label} <Text style={{ color: theme.colors.text }}>{value}</Text>
             </Text>
@@ -98,33 +122,46 @@ export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, st
         </View>
       ) : (
         <View style={styles.scan}>
-          <ScanReadings key={`${profile?.timestamp}/${profile?.values.req_id}`} profile={profile} scan={scan}
-            live={measurement} hugging={hug !== undefined}>
-            <View style={styles.info}>
-              <View accessibilityLabel="Range and bearings" style={styles.grid}>
-                {[
-                  ['Range', range !== undefined && range > 0 ? `${range} mm` : '--'],
-                  ['Echo', measurement === undefined ? '--' : enumLabel('echoClass', measurement.echo_class).toLowerCase()],
-                  ['Servo', servoDeci === undefined ? '--' : degrees(servoDeci)],
-                  ['Body', bodyDeci === undefined ? '--' : degrees(bodyDeci)],
-                ].map(([label, value]) => <MetricCell key={label} label={label!} value={value!} style={styles.cell} />)}
-              </View>
-              {hug !== undefined ? (
-                <View style={[styles.grid, styles.hugGrid, { borderTopColor: theme.colors.border }]} testID="hug-status">
-                  {hugInPill ? null : <MetricCell label="Phase" value={hugPhase} tone="warning" style={styles.cell} />}
-                  {hugMetrics.filter(([, value]) => value !== null).map(([label, value]) => (
-                    <MetricCell key={label} label={label} value={value!} style={styles.cell} />
-                  ))}
+          {!hasMap || expanded || view === 'sonar' ? (
+            <ScanReadings key={`${profile?.timestamp}/${profile?.values.req_id}`} profile={profile} scan={scan}
+              live={pingOrObstacle} hugging={hug !== undefined}>
+              <View style={styles.info}>
+                <View accessibilityLabel="Range and bearings" style={styles.grid}>
+                  {[
+                    ['Range', range !== undefined && range > 0 ? `${range} mm` : '--'],
+                    ['Width', width],
+                    ['Echo', echoClass === undefined ? '--' : enumLabel('echoClass', echoClass).toLowerCase()],
+                    ['Servo', servoDeci === undefined ? '--' : degrees(servoDeci)],
+                    ['Body', bodyDeci === undefined ? '--' : degrees(bodyDeci)],
+                    ...(closest !== undefined ? [['Closest', `${closest} mm`] as const] : []),
+                  ].map(([label, value]) => <MetricCell key={label} label={label!} value={value!} style={styles.cell} />)}
                 </View>
-              ) : null}
-              {profile ? (
-                <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
-                  {scanTime + ((profile?.values.closest_mm ?? 0) > 0 ? `Closest return ${sizeMm(profile?.values.closest_mm)}.` : '')}
-                </Text>
-              ) : null}
-              {hasEventCounts ? counts : null}
-            </View>
-          </ScanReadings>
+                {stopped || obstacleFaults.length > 0 ? (
+                  <Text style={[theme.typography.caption, { color: theme.colors.danger }]}>
+                    {[
+                      stopped ? `Cause ${enumLabel('obstacleCause', o?.cause).toLowerCase()}` : null,
+                      obstacleFaults.length > 0 ? `Faults ${obstacleFaults.join(', ').toLowerCase()}` : null,
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
+                ) : null}
+                {hug !== undefined ? (
+                  <View style={[styles.grid, styles.hugGrid, { borderTopColor: theme.colors.border }]} testID="hug-status">
+                    {hugInPill ? null : <MetricCell label="Phase" value={hugPhase} tone="warning" style={styles.cell} />}
+                    {hugMetrics.filter(([, value]) => value !== null).map(([label, value]) => (
+                      <MetricCell key={label} label={label} value={value!} style={styles.cell} />
+                    ))}
+                  </View>
+                ) : null}
+                {profile ? (
+                  <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>
+                    {scanTime + ((profile?.values.closest_mm ?? 0) > 0 ? `Closest return ${sizeMm(profile?.values.closest_mm)}.` : '')}
+                  </Text>
+                ) : null}
+                {hasEventCounts ? counts : null}
+              </View>
+            </ScanReadings>
+          ) : null}
+          {hasMap && (expanded || view === 'map') ? <ScanPlot {...mappedView} /> : null}
         </View>
       )}
       {!summaryOnly && status?.kind === 'error' ? <Text accessibilityLiveRegion="polite"
@@ -134,6 +171,7 @@ export function ObstaclePanel({ obstacle, ping, profile, scan, nowMs, status, st
 }
 
 const styles = StyleSheet.create({
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   sonarHug: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 8, rowGap: 2 },
   hugValue: { fontVariant: ['tabular-nums'] },
   scan: { flex: 1, gap: 6, minHeight: 0, position: 'relative' },

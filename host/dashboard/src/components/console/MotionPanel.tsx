@@ -287,6 +287,14 @@ export function MotionPanel({ motion, history, nowMs, clockOffsetMs, status, sty
             <Text numberOfLines={1} style={[theme.typography.caption, { color: theme.colors.muted }]}>
               Solid: meas · Dashed: target/est
             </Text>
+          ) : v?.left_travel_mm !== undefined || v?.right_travel_mm !== undefined || v?.wheel_age_us !== undefined ? (
+            <Text numberOfLines={1} style={[theme.typography.caption, styles.value, { color: theme.colors.muted }]}>
+              {[
+                v?.left_travel_mm !== undefined || v?.right_travel_mm !== undefined
+                  ? `Travel ${v.left_travel_mm ?? '--'}/${v.right_travel_mm ?? '--'} mm` : null,
+                v?.wheel_age_us !== undefined ? `age ${(v.wheel_age_us / 1000).toFixed(1)} ms` : null,
+              ].filter(Boolean).join(' · ')}
+            </Text>
           ) : null}
         </View>
       }

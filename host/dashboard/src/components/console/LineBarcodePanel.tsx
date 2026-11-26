@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
+import { BarcodeMapSettings } from '../controls/BarcodeMapSettings';
 
 import type { ConsoleView } from '../../lib/console-view';
 import { barcodeElementLabel, barcodePhaseLabel, LINE_SIGNAL_WINDOW_MS, lineSignalPlotData, type LineSignalSample } from '../../lib/line-signals';
 import type { LinkPacket } from '../../lib/link';
 import type { PanelStatus } from '../../lib/panel-state';
 import type { RunSummary } from '../../../../bridge/src/console/run-summary.js';
-import { BIT_FIELDS } from '../../lib/schema.generated';
+import { barcodeSpanKind } from '../../lib/barcode-span';
+import { BIT_FIELDS, ENUMS } from '../../lib/schema.generated';
 import type { DiagRates } from '../../../../bridge/src/console/telemetry-store.js';
 import { useTheme } from '../../lib/theme-provider';
 import { clampX, timeToX } from '../../lib/time-plot';
@@ -127,13 +129,14 @@ const VIEWS = { live: 'Live', history: 'History' } as const;
 
 function BarcodeStrip({ edges, bits }: { edges: readonly LinkPacket[]; bits: number | undefined }) {
   const theme = useTheme();
-  const recent = edges.slice(-32).filter((e) => (e.values.width_um ?? 0) > 0 || (e.values.interval_us ?? 0) > 0);
+  const window = edges.slice(-32).map((edge) => ({ edge, kind: barcodeSpanKind(edge.values), widthUm: edge.values.width_um ?? 0 }));
+  const recent = window.filter(({ kind }) => kind !== ENUMS.barcodeElement.unknown);
+  const lossCount = window.filter(({ edge }) => edge.values.capture_loss === 1).length;
   const leftOn = bits !== undefined && (bits & (1 << BIT_FIELDS.lineBits.left)) !== 0;
   const rightOn = bits !== undefined && (bits & (1 << BIT_FIELDS.lineBits.right)) !== 0;
   const barOn = bits !== undefined && (bits & (1 << BIT_FIELDS.lineBits.barcode)) !== 0;
   const barState = bits === undefined ? '--' : barOn ? 'Dark' : 'Light';
-  const widths = recent.map((e) => (e.values.width_valid ? e.values.width_um : Math.round((e.values.interval_us ?? 0) / 100)) || 1);
-  const total = widths.reduce((sum, w) => sum + w, 0) || 1;
+  const total = recent.reduce((sum, { widthUm }) => sum + widthUm, 0);
   return (
     <View style={styles.scannerRow} testID="barcode-spatial-strip">
       {/* Live 3-pod optical sensor array under the nose */}
@@ -162,9 +165,9 @@ function BarcodeStrip({ edges, bits }: { edges: readonly LinkPacket[]; bits: num
       {/* Optical barcode stripe scanner with read-head crosshair */}
       <View style={[styles.stripWrap, styles.colDivider, { borderLeftColor: theme.colors.border }]}>
         <View style={styles.podHead}>
-          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>STRIPES</Text>
+          <Text style={[theme.typography.caption, { color: theme.colors.muted }]}>BARCODE SPANS</Text>
           <Text style={[theme.typography.caption, styles.tabular, { color: theme.colors.muted }]}>
-            {recent.length > 0 ? `${recent.length} · ${Math.round(total / 1000)} mm` : '--'}
+            {recent.length} measured · {lossCount} missing · {Math.round(total / 1000)} mm
           </Text>
         </View>
         {recent.length === 0 ? (
@@ -173,16 +176,18 @@ function BarcodeStrip({ edges, bits }: { edges: readonly LinkPacket[]; bits: num
           </View>
         ) : (
           <View style={[styles.stripBar, { borderColor: theme.colors.border }]}>
-            {recent.map((edge, i) => {
-              const dark = edge.values.level_high === 0;
-              const loss = (edge.values.capture_loss ?? 0) !== 0;
+            {recent.map(({ edge, kind, widthUm }, i) => {
+              const dark = kind !== ENUMS.barcodeElement.space;
+              const block = kind === ENUMS.barcodeElement.block;
+              const label = block ? 'Block' : dark ? 'Stripe' : 'Space';
               return (
                 <View
                   key={`${edge.values.seq ?? i}-${edge.values.edge_us ?? i}`}
+                  accessibilityLabel={`${label} ${widthUm / 1000} mm`}
                   style={{
-                    flex: Math.max(1, widths[i]!),
-                    backgroundColor: loss ? theme.colors.danger : dark ? theme.colors.text : 'transparent',
-                    opacity: loss ? 0.85 : dark ? 0.92 : 0.12,
+                    flex: widthUm,
+                    backgroundColor: block ? theme.colors.accent : dark ? theme.colors.text : 'transparent',
+                    opacity: dark ? 0.92 : 0.12,
                   }}
                 />
               );
@@ -230,6 +235,7 @@ export function LineBarcodePanel({ statusPacket, diag, rates, barcode, junction,
     <Panel fill icon="line" status={status} style={style} testID="line-panel" title="Line and barcode"
       bodyStyle={styles.spread} empty={!summaryOnly && statusPacket === undefined && diag === undefined}
       footer={summaryOnly ? null : <>
+        <BarcodeMapSettings />
         {firmwareCounts || d?.line_lost_count !== undefined ? <View style={styles.counts}>
           <Text style={caption}>Since boot</Text>
           {firmwareCounts ? <Text style={[text, { color: theme.colors.text }]}>{firmwareCounts}</Text> : null}

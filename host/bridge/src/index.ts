@@ -1,10 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import sirv from "sirv";
 import { loadConfig } from "./config.js";
 import { randomInt } from "node:crypto";
 import { CommandTimeoutError, createCommandSession, parseCommandRequest, PUBACK_TIMEOUT_MS, publishWithTimeout, type CommandRequest } from "./command.js";
+import { createBarcodeArchive } from "./barcode-archive.js";
+import { barcodeMapBytes, DEFAULT_BARCODE_MAP, loadBarcodeMap, parseBarcodeMap, saveBarcodeMap, type BarcodeMap } from "./barcode-map.js";
+import { ENUMS, EVENTS } from "./console/schema.generated.js";
 import { createHistoryStore } from "./history.js";
 import { courseStorage } from "./console/retention.js";
 import { createConsoleView } from "./console/view.js";
@@ -20,7 +23,18 @@ const dashboard = existsSync(join(config.dashboardPath, "index.html"))
   : undefined;
 if (station && !dashboard) throw new Error("Dashboard export missing. Run npm run build from the repository root.");
 const schema = loadProtocolSchema(config.schemaPath);
+mkdirSync(dirname(config.historyPath), { recursive: true });
 const history = createHistoryStore(config.historyPath, config.historyMaxRecords, config.historyMaxEvents);
+const barcode = createBarcodeArchive(`${config.historyPath}.barcode.sqlite`);
+const barcodeKey = (values: Record<string, number>) => `${values.car_id}/${values.boot_id}/${values.record_id}`;
+const retained = new Set(history.list().filter((record) => record.packet === "barcode_sample").map((record) => barcodeKey(record.values)));
+try {
+  for (const record of barcode.recent(`${config.topicPrefix}/${schema.topics.barcode_sample}`, config.historyMaxRecords)) {
+    if (!retained.has(barcodeKey(record.values))) history.append(record);
+  }
+} catch (error) {
+  console.error(`barcode archive: ${(error as Error).message}`);
+}
 const view = createConsoleView(history.list(config.historyMaxRecords).reverse(), courseStorage(config.historyPath));
 const COURSE_SAVE_INTERVAL_MS = 10_000;
 const saveCourse = setInterval(view.save, COURSE_SAVE_INTERVAL_MS);
@@ -28,12 +42,52 @@ const broker = station && !process.env.MQTT_URL ? await startLocalBroker() : und
 process.once("exit", () => broker?.kill());
 let live: ReturnType<typeof createLiveServer> | null = null;
 const commands = createCommandSession(randomInt(0x10000));
+const barcodeMapPath = `${config.historyPath}.barcode-map.json`;
+let savedBarcodeMap: BarcodeMap | null = null;
+try {
+  savedBarcodeMap = loadBarcodeMap(barcodeMapPath);
+} catch (error) {
+  console.error(`barcode mapping: ${(error as Error).message}`);
+}
+let barcodeMapRun: number | undefined;
+let barcodeMapCmdId: number | null = null;
+let barcodeMapApplied = false;
+let barcodeMapLastSent = 0;
+let barcodeMapAttempts = 0;
+const BARCODE_MAP_RETRY_MS = 2000;
+const BARCODE_MAP_MAX_ATTEMPTS = 3;
+
+function syncBarcodeMap(): void {
+  const now = Date.now();
+  if (!savedBarcodeMap || barcodeMapApplied || barcodeMapAttempts >= BARCODE_MAP_MAX_ATTEMPTS ||
+      now - barcodeMapLastSent < BARCODE_MAP_RETRY_MS || !ingest.client.connected) return;
+  const frame = commands.frame(schema, barcodeMapBytes(savedBarcodeMap), now);
+  if (frame === null) return;
+  barcodeMapLastSent = now;
+  barcodeMapAttempts++;
+  barcodeMapCmdId = frame.readUInt16BE(0);
+  ingest.client.publish(`${config.topicPrefix}/${schema.topics.command}`, frame, { qos: 1 });
+}
+
 const ingest = createMqttIngest(config, schema, (packet, topic) => {
   const timestamp = Date.now();
   if (packet.name === "heartbeat") {
     commands.noteHeartbeat(packet.values, timestamp);
+    if (packet.values.run_id !== barcodeMapRun) {
+      barcodeMapRun = packet.values.run_id;
+      barcodeMapApplied = false;
+      barcodeMapCmdId = null;
+      barcodeMapAttempts = 0;
+    }
+    syncBarcodeMap();
   } else if (packet.name === "diag") {
     commands.noteDiag(packet.values);
+    syncBarcodeMap();
+  } else if (packet.name === "event" && packet.values.event_type === EVENTS.cmdAccept &&
+             packet.values.source === ENUMS.eventSource.connection &&
+             ((packet.values.p1 ?? 0) & 255) === ENUMS.commandConfig.barcodeMap &&
+             packet.values.p2 === barcodeMapCmdId) {
+    barcodeMapApplied = true;
   }
   const receipt = history.append({
     timestamp,
@@ -44,14 +98,20 @@ const ingest = createMqttIngest(config, schema, (packet, topic) => {
   view.append(receipt);
   live?.broadcast(receipt);
   console.log(`${packet.name}: ${JSON.stringify(packet.values)}`);
-});
+}, barcode);
 
-ingest.client.on("connect", () => live?.broadcastStatus());
+ingest.client.on("connect", () => {
+  if (!barcodeMapApplied) {
+    barcodeMapAttempts = 0;
+    barcodeMapLastSent = 0;
+  }
+  live?.broadcastStatus();
+});
 ingest.client.on("close", () => live?.broadcastStatus());
 
 const corsHeaders = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
   "access-control-allow-headers": "content-type",
 };
 
@@ -124,6 +184,39 @@ async function handleCommand(
   sendJson(response, 202, { ok: true, cmdId });
 }
 
+function barcodeMapView() {
+  const exhausted = barcodeMapAttempts >= BARCODE_MAP_MAX_ATTEMPTS &&
+    Date.now() - barcodeMapLastSent >= BARCODE_MAP_RETRY_MS;
+  return {
+    bindings: savedBarcodeMap ?? DEFAULT_BARCODE_MAP,
+    status: !savedBarcodeMap ? "default" : barcodeMapApplied ? "applied" : exhausted ? "unconfirmed" : "pending",
+  };
+}
+
+async function handleBarcodeMap(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  let map: BarcodeMap;
+  try {
+    map = parseBarcodeMap(JSON.parse(await readBody(request)));
+  } catch (error) {
+    sendJson(response, 400, { error: (error as Error).message });
+    return;
+  }
+  try {
+    saveBarcodeMap(barcodeMapPath, map);
+  } catch (error) {
+    console.error(`barcode mapping: ${(error as Error).message}`);
+    sendJson(response, 503, { error: "Could not save barcode mapping" });
+    return;
+  }
+  savedBarcodeMap = map;
+  barcodeMapApplied = false;
+  barcodeMapCmdId = null;
+  barcodeMapLastSent = 0;
+  barcodeMapAttempts = 0;
+  syncBarcodeMap();
+  sendJson(response, 202, barcodeMapView());
+}
+
 const server = createServer((request, response) => {
   const url = new URL(request.url ?? "/", "http://localhost");
 
@@ -137,6 +230,18 @@ const server = createServer((request, response) => {
     void handleCommand(request, response);
     return;
   }
+  if (url.pathname === "/barcode-map") {
+    if (request.method === "GET") {
+      response.setHeader("cache-control", "no-store");
+      sendJson(response, 200, barcodeMapView());
+    } else if (request.method === "PUT") {
+      void handleBarcodeMap(request, response);
+    } else {
+      response.setHeader("allow", "GET, PUT, OPTIONS");
+      sendJson(response, 405, { error: "Use GET or PUT for the barcode mapping" });
+    }
+    return;
+  }
 
   if (url.pathname === "/health") {
     sendJson(response, 200, {
@@ -145,6 +250,7 @@ const server = createServer((request, response) => {
       lastPacketAt: ingest.stats.lastPacketAt,
       lastPacket: ingest.stats.lastPacket,
       historyStorage: history.storageStatus(),
+      barcode: barcode.health(),
     });
     return;
   }
@@ -202,6 +308,7 @@ function shutdown(): void {
   live?.close();
   server.close();
   ingest.client.end(true);
+  barcode.close();
   broker?.kill();
 }
 

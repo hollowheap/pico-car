@@ -73,6 +73,7 @@ export function profileHits(values: LinkPacket['values']): XY[] {
 export function sparseProfileSurfaces(values: LinkPacket['values']): MeasuredSurface[] {
   if (values.status !== ENUMS.profileStatus.pilotSparse) return [];
   const all = scanPoints(values);
+  const bySlot = new Map(all.map((point) => [point.slot, point]));
   const echoes = all.filter((point) => isPlottedEcho(point));
   if (echoes.length < 2) return [];
   const surfaces: MeasuredSurface[] = [];
@@ -81,8 +82,8 @@ export function sparseProfileSurfaces(values: LinkPacket['values']): MeasuredSur
     if (cluster.length >= 2) {
       const first = cluster[0]!;
       const last = cluster.at(-1)!;
-      const before = all[first.slot - 1];
-      const after = all[last.slot + 1];
+      const before = bySlot.get(first.slot - 1);
+      const after = bySlot.get(last.slot + 1);
       const boundedStart = before?.mark === 'open' || (before !== undefined && isPlottedEcho(before) && Math.abs(before.distMm - first.distMm) > 120);
       const boundedEnd = after?.mark === 'open' || (after !== undefined && isPlottedEcho(after) && Math.abs(after.distMm - last.distMm) > 120);
       surfaces.push({
@@ -114,21 +115,25 @@ export function profileSurfaces(values: LinkPacket['values']): MeasuredSurface[]
   const contact = stationaryContact(values);
   if (!contact && status !== undefined && (status < ENUMS.profileStatus.ok || status > ENUMS.profileStatus.noSafePath)) return [];
   const points = scanPoints(values);
+  const project = contact ? servoPosition : scanPosition;
   const sideFan = contact && Boolean((values.flags ?? 0) & (1 << BIT_FIELDS.profileFlags.probeSideValid));
   if (sideFan) {
+    const bySlot = new Map(points.map((point) => [point.slot, point]));
     const surfaces: MeasuredSurface[] = [];
     let run: ScanPoint[] = [];
     const finish = () => {
       if (run.length >= 2) {
         const first = run[0]!;
         const last = run.at(-1)!;
+        const prevSlot = bySlot.get(first.slot - 1);
+        const nextSlot = bySlot.get(last.slot + 1);
         const boundedStart = run.length >= SURFACE_MIN_SLOTS
-          ? supportedEdge(first, run[2]!, points[first.slot - 1])
-          : points[first.slot - 1]?.mark === 'open';
+          ? supportedEdge(first, run[2]!, prevSlot, project)
+          : prevSlot?.mark === 'open';
         const boundedEnd = run.length >= SURFACE_MIN_SLOTS
-          ? supportedEdge(last, run.at(-3)!, points[last.slot + 1])
-          : points[last.slot + 1]?.mark === 'open';
-        surfaces.push({ firstSlot: first.slot, points: run.map(scanPosition), boundedStart, boundedEnd });
+          ? supportedEdge(last, run.at(-3)!, nextSlot, project)
+          : nextSlot?.mark === 'open';
+        surfaces.push({ firstSlot: first.slot, points: run.map(project), boundedStart, boundedEnd });
       }
       run = [];
     };
@@ -144,8 +149,8 @@ export function profileSurfaces(values: LinkPacket['values']): MeasuredSurface[]
     finish();
     return surfaces;
   }
-  return scanSurfaces(points).map(({ points: run, edges }) => ({
-    firstSlot: run[0]!.slot, points: run.map(scanPosition),
+  return scanSurfaces(points, SCAN_MAX_MM, undefined, project).map(({ points: run, edges }) => ({
+    firstSlot: run[0]!.slot, points: run.map(project),
     boundedStart: edges.includes(run[0]!), boundedEnd: edges.includes(run.at(-1)!),
   }));
 }
@@ -208,10 +213,10 @@ export function scanPoints(values: Record<string, number>): ScanPoint[] {
   return points;
 }
 
-function supportedEdge(edge: ScanPoint, inner: ScanPoint, flank?: ScanPoint): boolean {
+function supportedEdge(edge: ScanPoint, inner: ScanPoint, flank?: ScanPoint, project: (point: ScanPoint) => XY = scanPosition): boolean {
   if (flank?.mark !== 'open') return false;
-  const a = scanPosition(edge);
-  const b = scanPosition(inner);
+  const a = project(edge);
+  const b = project(inner);
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const span = Math.hypot(dx, dy);
@@ -222,7 +227,12 @@ function supportedEdge(edge: ScanPoint, inner: ScanPoint, flank?: ScanPoint): bo
 }
 
 /** Join observed slots of a complete profile without bridging unknown space or depth jumps. */
-export function scanSurfaces(points: ScanPoint[], maxMm = SCAN_MAX_MM, profileStatus?: number): ScanSurface[] {
+export function scanSurfaces(
+  points: ScanPoint[],
+  maxMm = SCAN_MAX_MM,
+  profileStatus?: number,
+  project: (point: ScanPoint) => XY = scanPosition,
+): ScanSurface[] {
   if (points.length !== SLOT_COUNT || profileStatus === ENUMS.profileStatus.pilotSparse) return [];
   const surfaces: ScanSurface[] = [];
   let run: ScanPoint[] = [];
@@ -231,8 +241,8 @@ export function scanSurfaces(points: ScanPoint[], maxMm = SCAN_MAX_MM, profileSt
       const first = run[0]!;
       const last = run.at(-1)!;
       const edges: ScanPoint[] = [];
-      if (supportedEdge(first, run[2]!, points[first.slot - 1])) edges.push(first);
-      if (supportedEdge(last, run.at(-3)!, points[last.slot + 1])) edges.push(last);
+      if (supportedEdge(first, run[2]!, points[first.slot - 1], project)) edges.push(first);
+      if (supportedEdge(last, run.at(-3)!, points[last.slot + 1], project)) edges.push(last);
       surfaces.push({ points: run, edges });
     }
     run = [];

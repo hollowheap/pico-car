@@ -1,4 +1,5 @@
 import type { ProtocolSchema } from './schema.js';
+import { ENUMS, PACKETS } from './console/schema.generated.js';
 
 export type CommandRequest = {
   action: string;
@@ -95,7 +96,11 @@ export function encodeCommand(
   if (opcode === null) {
     throw new Error('unknown command action');
   }
-  const frame = Buffer.alloc(9);
+  return encodeHeader(opcode, cmdId, runId, uptimeS);
+}
+
+function encodeHeader(opcode: number, cmdId: number, runId: number, uptimeS: number): Buffer {
+  const frame = Buffer.alloc(PACKETS.command.wireSize);
   frame.writeUInt16BE(cmdId & 0xffff, 0);
   frame.writeUInt16BE(runId & 0xffff, 2);
   frame.writeUInt8(opcode & 0xff, 4);
@@ -148,11 +153,16 @@ export function createCommandSession(firstCmdId: number) {
       }
     },
     /** The frame for an action, or null without a fresh heartbeat and a diag frame. */
-    frame(schema: ProtocolSchema, action: string, atMs: number): Buffer | null {
+    frame(schema: ProtocolSchema, action: string | Uint8Array, atMs: number): Buffer | null {
       if (runId === null || floor === null || atMs - seenMs > HEARTBEAT_FRESH_MS) {
         return null;
       }
-      const frame = encodeCommand(schema, action, next, runId, uptimeS);
+      const frame = typeof action === 'string'
+        ? encodeCommand(schema, action, next, runId, uptimeS)
+        : Buffer.concat([encodeHeader(ENUMS.commandConfig.barcodeMap, next, runId, uptimeS), action]);
+      if (typeof action !== 'string' && frame.length !== PACKETS.barcode_map.wireSize) {
+        throw new Error('invalid barcode map size');
+      }
       floor = next;
       next = (next + 1) & 0xffff;
       return frame;

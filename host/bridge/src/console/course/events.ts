@@ -99,6 +99,7 @@ export function placeCourseEvents(
   trailStart: number | null,
   minOdometer: number,
   maxOdometer: number,
+  detailed: boolean,
 ) {
   const junctions: CourseJunction[] = [];
   const TURN_DIR: Partial<Record<number, CourseJunction['direction']>> = {
@@ -122,6 +123,7 @@ export function placeCourseEvents(
     const at = pointAtPacket(samples, points, event.timestamp, event.odometerMm);
     if (at !== null) {
       markers.push({ ...at, kind: event.text.kind, title: event.text.title, eventId: event.eventId, odometerMm: event.odometerMm, event });
+      if (!detailed) continue;
       if (event.name === 'junction' && event.p1 === ENUMS.junctionKind.stripe) {
         const left = (event.p2 & (1 << BIT_FIELDS.junctionStripe.left)) !== 0;
         const right = (event.p2 & (1 << BIT_FIELDS.junctionStripe.right)) !== 0;
@@ -146,6 +148,7 @@ export function placeCourseEvents(
   // Project ONLY firmware-flagged humps/ramps meeting the noise threshold, offset laterally
   // relative to the wheels based on roll (positive roll = left down -> right wheel on ramp).
   const humps: CourseHump[] = [];
+  if (!detailed) return { markers, junctions, humps };
   const humpEndEvents = events.filter((e) => e.name === 'humpEnd' && (trailStart === null || e.timestamp >= trailStart));
   const usedEnds = new Set<number>();
   let runStart = -1;

@@ -34,6 +34,7 @@ export function buildCourse(
   stamp: ObstacleStamp | null = null,
   trailStart: number | null = null,
   forwardStamp: ForwardReturnStamp | null = null,
+  layers: 'detailed' | 'trace' = 'detailed',
 ): Course {
   const sessionTrail = trailStart === null ? trail : trail.filter((sample) => sample.timestamp >= trailStart);
   const { points, samples, headingReference, hasGap } = reconstruct(sessionTrail);
@@ -42,10 +43,11 @@ export function buildCourse(
   let maxOdometer = -Infinity;
   const surfaces: Course['surfaces'] = [];
   const seen = new Set<string>();
+  const detailed = layers === 'detailed';
   for (const [i, sample] of samples.entries()) {
     minOdometer = Math.min(minOdometer, sample.odometerMm);
     maxOdometer = Math.max(maxOdometer, sample.odometerMm);
-    if (sample.headingDeg === null || !sample.surveys) continue;
+    if (!detailed || sample.headingDeg === null || !sample.surveys) continue;
     for (const survey of sample.surveys) {
       const id = `${survey.timestamp}/${survey.request}`;
       if (seen.has(id)) continue;
@@ -56,10 +58,10 @@ export function buildCourse(
     }
   }
 
-  const { markers, junctions, humps } = placeCourseEvents(samples, points, events, trailStart, minOdometer, maxOdometer);
+  const { markers, junctions, humps } = placeCourseEvents(samples, points, events, trailStart, minOdometer, maxOdometer, detailed);
   let obstacle: Course['obstacle'] = null;
   // A missing face distance cannot locate the contact.
-  if (stamp !== null && wireMm(stamp.faceMm) > 0) {
+  if (detailed && stamp !== null && wireMm(stamp.faceMm) > 0) {
     const faceIndex = sessionTrail.indexOf(stamp.sample);
     const at = points[faceIndex];
     const headingIndex = sessionTrail.indexOf(stamp.headingSample ?? stamp.sample);
@@ -77,7 +79,7 @@ export function buildCourse(
         timestamp: stamp.faceTime ?? stamp.sample.timestamp };
     }
   }
-  const forwardReturn = obstacle === null ? placeForwardReturn(sessionTrail, samples, points, forwardStamp) : null;
+  const forwardReturn = detailed && obstacle === null ? placeForwardReturn(sessionTrail, samples, points, forwardStamp) : null;
   return { points, samples, hasGap, positionKnown, headingReference, bootTimestamp: trailStart,
     markers, junctions, humps, obstacle, forwardReturn, surfaces, bounds: courseBounds(points, obstacle, surfaces, humps) };
 }
