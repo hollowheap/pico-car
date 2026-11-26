@@ -26,6 +26,11 @@
 #include "ir/line/track.h"
 #include "ir_pins.h"
 
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+#include "motion/obstacle_extras/navigation.h"
+#include "obstacle/extras/extras.h"
+#endif
+
 /* Line following. The cruise speed, the search limits and the turn speeds
  * live in track/line_control.h (tune them there on the car). The duty cap in
  * motion_setup() must leave headroom for them. The follower steers by a
@@ -37,10 +42,10 @@
 #define LINE_SAMPLE_MAX_AGE_US    (25000U)
 /* Upper bound on one turn, so a blocked car cannot pivot for ever. Tune on
  * the car: it must exceed the longest U-turn, including the slow phase. */
-#define LINE_TURN_MAX_MS         (4000U)
+#define LINE_TURN_MAX_MS         (4000U * MOTION_SPEED_DIVISOR)
 /* Crossing back to the only verified exit can take one more quarter turn
  * at tape-capture speed. The limit still runs from the start of the scan. */
-#define LINE_FALLBACK_ALIGN_MS   (1000U)
+#define LINE_FALLBACK_ALIGN_MS   (1000U * MOTION_SPEED_DIVISOR)
 /* Apply trim only after at least one tape width of heading drift. */
 #define LINE_ROUTE_HEADING_TRIM_DECI ((LINE_WIDTH_MM * DECI_PER_RAD) / LINE_SENSOR_LEAD_MM)
 
@@ -439,7 +444,7 @@ static line_turn_status_t line_turn_targets (line_turn_state_t * p_state,
     {
         return LINE_TURN_ABORTED;
     }
-    if (SUPERVISOR_NO_TURN == p_event->route_opcode)
+    if (p_event->started && (VEHICLE_CMD_UTURN == p_event->route_opcode))
     {
         return line_turn_update(p_state, p_feedback->left_displacement_um,
                                 p_feedback->right_displacement_um, p_feedback->fresh,
@@ -447,8 +452,17 @@ static line_turn_status_t line_turn_targets (line_turn_state_t * p_state,
     }
     if (!p_event->started && !supervisor_route_pending(p_event->route_opcode, false))
     {
-        return LINE_TURN_ABORTED;
+        /* A barcode U can replace the pending choice during the probe.
+         * Keep the measured axle position and the exits already observed. */
+        if ((VEHICLE_CMD_UTURN == p_event->route_opcode) ||
+            !supervisor_route_pending(VEHICLE_CMD_UTURN, false))
+        {
+            return LINE_TURN_ABORTED;
+        }
+        p_event->route_opcode = VEHICLE_CMD_UTURN;
+        g_route.kind = (uint8_t)LINE_TURN_KIND_UTURN;
     }
+
     line_turn_status_t const status = line_route_probe(&g_route, p_feedback->left_displacement_um,
                                                        p_feedback->right_displacement_um,
                                                        sensors.left || sensors.right, p_targets);
@@ -460,21 +474,28 @@ static line_turn_status_t line_turn_targets (line_turn_state_t * p_state,
     {
         return LINE_TURN_ABORTED;
     }
-    line_report_turn_start(p_event, line_turn_of(p_event->route_opcode));
+    line_turn_kind_t const turn = line_turn_of(p_event->route_opcode);
+    if (LINE_TURN_KIND_UTURN == turn)
+    {
+        int64_t const left = p_feedback->left_displacement_um;
+        int64_t const right = p_feedback->right_displacement_um;
+        int32_t const yaw = line_heading_deci(left, right) - g_route.heading_deci;
+        line_turn_start(p_state, turn, left, right);
+        p_state->side = (uint8_t)((yaw < 0) ? LINE_SIDE_RIGHT : LINE_SIDE_LEFT);
+        p_state->target_deci = LINE_TURN_HALF_DECI - ((yaw < 0) ? -yaw : yaw);
+    }
+    line_report_turn_start(p_event, turn);
     return LINE_TURN_TURNING;
 }
 
 static bool line_turn_origin (line_turn_state_t * p_state, motion_feedback_t * p_feedback,
-                              line_turn_kind_t turn, bool b_keep_approach)
+                              line_turn_kind_t turn)
 {
     if ((E_OK != motion_feedback_snapshot(p_feedback)) || !line_turn_odometry_valid(p_feedback))
     {
         return false;
     }
-    /* A U that interrupts a scan must return down the original approach tape. */
-    int64_t const left_um = b_keep_approach ? p_state->start_left_um : p_feedback->left_displacement_um;
-    int64_t const right_um = b_keep_approach ? p_state->start_right_um : p_feedback->right_displacement_um;
-    line_turn_start(p_state, turn, left_um, right_um);
+    line_turn_start(p_state, turn, p_feedback->left_displacement_um, p_feedback->right_displacement_um);
     return true;
 }
 
@@ -485,15 +506,10 @@ static uint32_t line_turn_limit_ms (line_turn_event_t const * p_event)
     return b_returning ? LINE_TURN_MAX_MS + LINE_FALLBACK_ALIGN_MS : LINE_TURN_MAX_MS;
 }
 
-static void line_begin_turn (line_turn_event_t * p_event, line_turn_kind_t turn)
+static void line_begin_turn (void)
 {
     g_turning = true;
     supervisor_set_turning(true);
-    if (SUPERVISOR_NO_TURN == p_event->route_opcode)
-    {
-        g_route = (line_route_t){0};
-        line_report_turn_start(p_event, turn);
-    }
 }
 
 /* Send the turn's wheel targets. The drive layer holds the last pilot
@@ -512,8 +528,8 @@ static int line_turn_drive (line_targets_t * p_targets, uint32_t * p_rise_ms)
  * snapshot and the line sensors, then line_turn_update() decides the wheel
  * targets. A pilot safety or obstacle decision ends the turn before it can
  * renew the wheel targets. */
-static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t turn,
-                               uint8_t route_opcode, bool b_keep_approach)
+static void line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t turn,
+                               uint8_t route_opcode)
 {
     line_targets_t     targets = {0, 0};
     motion_feedback_t  feedback = {0};
@@ -525,11 +541,18 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
     pilot_cmd_t        cmd = {0};
     uint8_t const      recovery_at_entry = g_recovery_seen;
 
-    line_begin_turn(&event, turn);
-    bool const b_origin_valid = line_turn_origin(p_state, &feedback, turn, b_keep_approach);
+    line_begin_turn();
+    bool const b_origin_valid = line_turn_origin(p_state, &feedback, turn);
     line_turn_status_t status = b_origin_valid ? LINE_TURN_TURNING : LINE_TURN_ABORTED;
-    while ((LINE_TURN_TURNING == status) && (line_now_ms() - start_ms < line_turn_limit_ms(&event)))
+    while (LINE_TURN_TURNING == status)
     {
+        uint32_t const budget_start = (event.started && (VEHICLE_CMD_UTURN == event.route_opcode))
+            ? event.start_ms : start_ms;
+        if (line_now_ms() - budget_start >= line_turn_limit_ms(&event))
+        {
+            break;
+        }
+
         line_sample_t const sample = ir_get_line_sample();
         ir_sensors_state_t const sensors = sample.state;
 
@@ -538,6 +561,15 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
             status = LINE_TURN_ABORTED;
             break;
         }
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+        bool b_armed = false;
+        uint8_t const generation = supervisor_armed_start(&b_armed);
+        if (extras_nav_step(sensors.left, sensors.right, b_armed, generation, false))
+        {
+            status = LINE_TURN_ABORTED;
+            break;
+        }
+#endif
 
         pilot_meas_t meas;
 
@@ -582,19 +614,16 @@ static bool line_execute_turn (line_turn_state_t * p_state, line_turn_kind_t tur
     {
         line_pilot_note(&cmd);
     }
-    if (SUPERVISOR_NO_TURN != route_opcode)
+    g_route = (line_route_t){.was_crossing = true};
+    line_turn_kind_t const actual_turn = line_turn_of(event.route_opcode);
+    if (!event.started)
     {
-        g_route = (line_route_t){.was_crossing = true};
-        if (!event.started)
-        {
-            line_report_probe(turn, status);
-            line_route_unselected(status);
-            return b_origin_valid && !b_recovered && (LINE_TURN_ABORTED == status);
-        }
+        line_report_probe(actual_turn, status);
+        line_route_unselected(status);
+        return;
     }
-    line_finish_turn(turn, p_state, status, line_now_ms() - event.start_ms,
+    line_finish_turn(actual_turn, p_state, status, line_now_ms() - event.start_ms,
                      b_recovered || ((uint8_t)PILOT_BEHAVIOUR_NONE != cmd.behaviour));
-    return false;
 }
 
 #define PILOT_SCAN_CLEARANCE_UNVERIFIED (4)
@@ -749,7 +778,11 @@ static void line_pilot_note (pilot_cmd_t const * p_cmd)
  */
 static void line_pilot_ping_meas (pilot_meas_t * p_meas)
 {
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    uint32_t const word = obstacle_ping_recent();
+#else
     uint32_t const word = obstacle_ping_read();
+#endif
 
     p_meas->ping_mm        = obstacle_pack_ping_mm(word);
     p_meas->ping_servo_deci = (int16_t)obstacle_pack_ping_servo(word);
@@ -940,7 +973,10 @@ static bool line_pilot_measure (ir_sensors_state_t state, bool b_line_fresh, uin
     p_meas->b_line_left   = state.left;
     p_meas->b_line_right  = state.right;
     p_meas->b_held        = b_held || !b_line_fresh;
-    p_meas->b_barcode     = ir_barcode_recent();
+    p_meas->b_barcode     = ir_barcode_recent() && barcode_read_framed();
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    p_meas->b_external_avoidance = true;
+#endif
     p_meas->b_marker_progress = !g_turning && line_barcode_advanced(&p_meas->marker_prefix_mm);
     p_meas->b_bounded_course = !b_continuous_floor;
     if (b_feedback_fresh && p_feedback->speed_valid[0] && p_feedback->speed_valid[1])
@@ -998,6 +1034,17 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
         line_route_trim_approach(&feedback, &meas);
     }
     line_step_with_profile(&meas, &cmd);
+    if (!b_feedback_fresh || meas.b_held || ((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE != cmd.behaviour) ||
+        ((uint8_t)LINE_FOLLOW_FOLLOWING != g_pilot.follow.status))
+    {
+        barcode_set_tape_heading(BARCODE_TAPE_HEADING_UNKNOWN);
+    }
+    else if (!meas.b_barcode)
+    {
+        int32_t const body_deci = line_heading_deci(meas.left_um, meas.right_um) + g_pilot.witness_corr / PERCENT;
+        int32_t const encoder_deci = line_heading_deci(feedback.left_displacement_um, feedback.right_displacement_um);
+        barcode_set_tape_heading(encoder_deci + g_pilot.follow.ref_deci - body_deci);
+    }
     if (((uint8_t)PILOT_BEHAVIOUR_FOLLOW_LINE != cmd.behaviour) && (SUPERVISOR_NO_TURN != route_opcode))
     {
         /* The approach evidence belongs to this location. The choice remains
@@ -1022,9 +1069,10 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
         right_um_s = g_drive.right_um_s;
     }
     g_pilot_last_ms = now_ms;
-    if (cmd.b_scan_pivot)
+    if (((uint8_t)PILOT_BEHAVIOUR_HUG == cmd.behaviour) ||
+        ((uint8_t)PILOT_BEHAVIOUR_REJOIN_SEARCH == cmd.behaviour))
     {
-        (void)motion_set_scan_pivot(left_um_s, right_um_s, LINE_LEASE_US);
+        (void)motion_set_obstacle_speed(left_um_s, right_um_s, LINE_LEASE_US);
     }
     else
     {
@@ -1034,6 +1082,7 @@ static void line_pilot_step (ir_sensors_state_t state, bool b_line_fresh, uint8_
 }
 
 /* Keep the line task as the owner of wheel commands while verifying START. */
+#ifndef PICO_CAR_OBSTACLE_EXTRAS
 static bool line_start_clearance (uint8_t * p_seq, uint32_t * p_since_us,
                                   bool * p_clear, uint32_t now_us)
 {
@@ -1054,19 +1103,16 @@ static bool line_start_clearance (uint8_t * p_seq, uint32_t * p_since_us,
     }
     return *p_clear && now_us - *p_since_us <= PILOT_FORWARD_PING_STALE_MS * LINE_US_PER_MS;
 }
-
-static bool line_start_check (bool b_line_fresh)
+static bool line_start_check (bool b_line_fresh, bool b_armed, uint8_t generation)
 {
     static start_check_t s_check;
     static uint32_t s_arm_us;
     static uint32_t s_ping_us;
     static uint8_t s_ping_seq;
+    static bool s_clear;
     static uint8_t s_generation;
     static bool s_armed;
-    static bool s_clear;
-    bool armed = false;
-    uint8_t const generation = supervisor_armed_start(&armed);
-    if (!armed)
+    if (!b_armed)
     {
         s_armed = false;
         return false;
@@ -1121,6 +1167,37 @@ static bool line_start_check (bool b_line_fresh)
     }
     return true;
 }
+#endif
+
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+static bool line_extras_step (ir_sensors_state_t state, bool b_line_fresh, bool b_armed,
+                              uint8_t generation)
+{
+    static bool s_nav_owned;
+    motion_status_t motion;
+    bool const b_allowed = b_armed && b_line_fresh &&
+        (E_OK == motion_status(&motion)) && motion.ready && !motion.stop_requested &&
+        (MOTION_STATE_FAULT != motion.state) && (0U == (motion.hold_mask & ~MOTION_HOLD_OBSTACLE));
+    bool const b_owns = extras_nav_step(state.left, state.right, b_armed, generation, b_allowed);
+
+    if (b_owns)
+    {
+        g_route = (line_route_t){0};
+        pilot_log_init(&g_pilot_log);
+        line_turn_ended();
+    }
+    else if (s_nav_owned)
+    {
+        /* Motion along the detour belongs to the navigator. Restart tape
+         * tracking and the centered-ping deadline at the handback pose. */
+        pilot_change_floor(&g_pilot, g_continuous_floor);
+        pilot_release_sonar(&g_pilot);
+        g_pilot.b_forward_timer_started = false;
+    }
+    s_nav_owned = b_owns;
+    return b_owns;
+}
+#endif
 
 void line_task_stats (line_task_stats_t * p_stats)
 {
@@ -1144,7 +1221,6 @@ void line_task_hug (uint32_t * p_words)
 void line_task_run (void)
 {
     line_turn_state_t turn_state = {0};
-    bool b_interrupted_probe = false;
     /* Set up before the loop: a turn that ends first sets the side on the
      * follower, and a later init would wipe it. */
     pilot_init(&g_pilot);
@@ -1157,19 +1233,22 @@ void line_task_run (void)
     {
         line_sample_t const sample       = ir_get_line_sample();
         bool const          b_line_fresh = line_sample_fresh(sample.timestamp_us);
+        bool                b_armed      = false;
         liveness_kick(LIVE_LINE);
-        if (line_start_check(b_line_fresh))
+        uint8_t const generation = supervisor_armed_start(&b_armed);
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+        if (line_extras_step(sample.state, b_line_fresh, b_armed, generation))
+#else
+        if (line_start_check(b_line_fresh, b_armed, generation))
+#endif
         {
+            barcode_set_tape_heading(BARCODE_TAPE_HEADING_UNKNOWN);
             ir_wait_change(IR_TYPE_LINE, LINE_POLL_MS);
             continue;
         }
         uint8_t             source       = 0U;
         uint8_t const       taken        = supervisor_poll_turn(&source);
-        uint8_t const       route_opcode = ((VEHICLE_SRC_BARCODE == source) && vehicle_is_junction_choice(taken)) ?
-                                           taken : SUPERVISOR_NO_TURN;
-        bool const b_keep_approach = b_interrupted_probe && (VEHICLE_SRC_BARCODE == source) &&
-                                     (VEHICLE_CMD_UTURN == taken);
-        b_interrupted_probe = false;
+        uint8_t const       route_opcode = vehicle_is_junction_choice(taken) ? taken : SUPERVISOR_NO_TURN;
 
         line_follow_set_route_candidate(line_follower(),
                                         (SUPERVISOR_NO_TURN != route_opcode) && line_route_has_candidate(&g_route));
@@ -1179,14 +1258,11 @@ void line_task_run (void)
             if (!b_line_fresh || !b_available)
             {
                 g_route = (line_route_t){0};
-                if (SUPERVISOR_NO_TURN == route_opcode)
-                {
-                    supervisor_turn_refused(taken);
-                }
             }
-            else if ((SUPERVISOR_NO_TURN == route_opcode) || line_route_at_junction(line_turn_of(taken), sample.state))
+            else if (line_route_at_junction(line_turn_of(taken), sample.state))
             {
-                b_interrupted_probe = line_execute_turn(&turn_state, line_turn_of(taken), route_opcode, b_keep_approach);
+                barcode_set_tape_heading(BARCODE_TAPE_HEADING_UNKNOWN);
+                line_execute_turn(&turn_state, line_turn_of(taken), route_opcode);
                 continue;
             }
         }

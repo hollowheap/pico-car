@@ -43,13 +43,8 @@ void barcode_init (void)
 bool barcode_start (void)
 {
     ID const tid = tk_cre_tsk(&g_ctsk_barcode);
-    bool const b_made = platform_task_made("tsk(barcode)", tid);
-
-    if (b_made)
-    {
-        (void)platform_task_started("tsk(barcode)", tid);
-    }
-    return b_made;
+    return platform_task_made("tsk(barcode)", tid) &&
+           platform_task_started("tsk(barcode)", tid);
 }
 
 /*** end of file ***/

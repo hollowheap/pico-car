@@ -310,11 +310,15 @@ int32_t line_recovery_blind(line_follow_t * p_follow, int32_t heading_deci,
     int64_t const gap_um   = (0U != (p_follow->flags & LINE_FOLLOW_HUMP)) ? HUMP_GAP_UM : GAP_UM;
     int32_t probe_deci = 0;
     bool b_at_corner = false;
+    bool b_corner_near = false;
     if ((p_follow->flags & (FOLLOW_STRIPE_READY | FOLLOW_ROUTE_CANDIDATE)) == FOLLOW_STRIPE_READY)
     {
         uint16_t const since = (uint16_t)((uint16_t)(travel_um / UM_PER_MM) - p_follow->progress.stripe.anchor_mm);
         b_at_corner = (since >= LINE_SENSOR_LEAD_MM + LINE_WIDTH_MM / ROUTE_MIDPOINT_DIVISOR) &&
                       (since <= INT16_MAX);
+        b_corner_near = (since >= LINE_SENSOR_LEAD_MM + LINE_WIDTH_MM / ROUTE_MIDPOINT_DIVISOR -
+                                  (LINE_GAP_MM - LINE_PROBE_FROM_MM)) &&
+                        (since <= INT16_MAX);
     }
 
     if ((uint8_t)LINE_FOLLOW_FOLLOWING == p_follow->status)
@@ -351,8 +355,10 @@ int32_t line_recovery_blind(line_follow_t * p_follow, int32_t heading_deci,
             return 0;
         }
         /* Settle the previous correction first. Keep that heading through
-         * the early gap so steady wheel mismatch cannot pull the target away. */
-        if ((blind_um >= LINE_PROBE_FROM_MM * UM_PER_MM) &&
+         * the early gap so steady wheel mismatch cannot pull the target away.
+         * A stripe searches at its axle projection, before the gap ends, so
+         * the probe also starts the same distance before that point. */
+        if (((blind_um >= LINE_PROBE_FROM_MM * UM_PER_MM) || b_corner_near) &&
             ((p_follow->flags & (BLIND_SETTLED | LINE_FOLLOW_HUMP)) == BLIND_SETTLED))
         {
             probe_deci = ((uint8_t)LINE_SIDE_RIGHT == p_follow->side) ? -PROBE_ANGLE_DECI : PROBE_ANGLE_DECI;

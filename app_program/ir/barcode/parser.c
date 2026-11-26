@@ -25,15 +25,16 @@
 #define START_MIN_UM 638U
 #define START_MAX_UM 12765U
 #define PERCENT_FULL        (100U)
-#define NARROW_MIN_PCT      (60U)
-#define NARROW_MAX_PCT      (150U)
+/* A gap must stay narrower than the narrowest printed wide space (2x).
+ * The recorded reverse Z read its gaps at about 1.6x the narrow space. */
+#define INTERCHAR_GAP_MAX_RATIO (2U)
 #define GLITCH_MAX_PCT      (30U)
-#define FIRST_WIDE_MIN_PCT  (180U)
-#define FIRST_WIDE_MAX_PCT  (360U)
-#define LEARNED_WIDE_MIN_PCT (80U)
-#define LEARNED_WIDE_MAX_PCT (120U)
-#define WIDTH_FILTER_WEIGHT (4U)
-#define RATIO_ONE           (256U)
+/* The narrowest wide element of a colour is more than 1.5 times its widest
+ * narrow one. Code 39 prints wide elements 2 to 3 times the narrow. */
+#define WIDE_SEPARATION_NUM (3U)
+#define WIDE_SEPARATION_DEN (2U)
+#define CHARACTER_BARS      (5U)
+#define CHARACTER_SPACES    (4U)
 
 /* Bar code table: 3 bits per entry, bar indices 0 to 4 */
 #define BAR_CODE_BITS 3U
@@ -50,19 +51,6 @@
 #define DATA_ONES_SKIP  10U
 #define DATA_TENS_STEP  10U
 #define LETTER_COUNT    26U
-
-typedef enum
-{
-    ELEM_TYPE_INVALID,
-    ELEM_TYPE_NARROW,
-    ELEM_TYPE_WIDE,
-} elem_type_t;
-
-static bool in_width_band (uint16_t sample, uint32_t reference, uint32_t low, uint32_t high)
-{
-    uint32_t const scaled = (uint32_t)sample * PERCENT_FULL;
-    return (scaled >= (uint32_t)reference * low) && (scaled <= (uint32_t)reference * high);
-}
 
 /**
  * Returns the value of a bar given its index.
@@ -103,29 +91,6 @@ static uint8_t decode_space_value (uint8_t idx, bool is_reverse)
                      << SPACE_VALUE_SHIFT);
 }
 
-static elem_type_t get_elem_type (barcode_parser_t * state,
-                                  uint16_t           elem_width_um)
-{
-    bool const b_narrow = in_width_band(elem_width_um, state->narrow_width_um, NARROW_MIN_PCT, NARROW_MAX_PCT);
-    uint32_t const wide_um = (uint32_t)state->narrow_width_um * state->wide_ratio_q8 / RATIO_ONE;
-    bool const b_wide = (0U == state->wide_ratio_q8)
-        ? in_width_band(elem_width_um, state->narrow_width_um, FIRST_WIDE_MIN_PCT, FIRST_WIDE_MAX_PCT)
-        : in_width_band(elem_width_um, wide_um, LEARNED_WIDE_MIN_PCT, LEARNED_WIDE_MAX_PCT);
-    if (b_narrow == b_wide)
-    {
-        return ELEM_TYPE_INVALID;
-    }
-    return b_narrow ? ELEM_TYPE_NARROW : ELEM_TYPE_WIDE;
-}
-
-/* A candidate learns only from unambiguous bars and spaces. Its separator
- * and every rejected element are excluded from the two running estimates. */
-static uint16_t learn_width (uint16_t previous, uint16_t sample)
-{
-    return (0U == previous) ? sample :
-        (uint16_t)(((WIDTH_FILTER_WEIGHT - 1U) * previous + sample + (WIDTH_FILTER_WEIGHT >> 1U)) / WIDTH_FILTER_WEIGHT);
-}
-
 /** Converts the internal encoding to 0-25, representing 'A'-'Z'. */
 static uint8_t decode_data (uint8_t data)
 {
@@ -139,92 +104,114 @@ static uint8_t decode_data (uint8_t data)
     return (uint8_t)((tens * DATA_TENS_STEP) + ones);
 }
 
-/**
- * Add value of the this element to the current character,
- * and determine if the barcode is in reverse.
- * Returns whether there was an error.
- */
-static bool handle_elem (barcode_parser_t * state, bool is_elem_space,
-                         elem_type_t elem_type, uint8_t * p_reason)
+/** Width classes of one colour: the `wide` widest elements are wide. */
+typedef struct
 {
-    const bool is_second_elem =
-        (state->char_index == 0) && (state->elem_index == 1);
-    switch (elem_type)
+    uint16_t wide_mask;   /* element indices of the wide elements */
+    uint32_t narrow_sum;  /* summed narrow widths                 */
+    bool     b_separated; /* wide and narrow widths are distinct  */
+} width_rank_t;
+
+/* Ranking within one colour cancels the reader's bar and space bias, and
+ * the speed error between distant elements of the character. */
+static width_rank_t rank_widths (const uint16_t * p_width, uint8_t first, uint8_t count,
+                                 uint8_t wide)
+{
+    width_rank_t rank = {0U, 0U, false};
+    uint32_t     min_wide = UINT32_MAX;
+    uint32_t     max_narrow = 0U;
+
+    for (uint8_t n = 0U; n < wide; n++)
     {
-        case ELEM_TYPE_NARROW:
-            if (is_second_elem)
+        uint8_t widest = CHARACTER_ELEM_COUNT;
+        for (uint8_t k = 0U; k < count; k++)
+        {
+            uint8_t const i = (uint8_t)(first + (2U * k));
+            if ((0U == (rank.wide_mask & (1U << i))) &&
+                ((CHARACTER_ELEM_COUNT == widest) || (p_width[i] > p_width[widest])))
             {
-                state->is_reverse = true;
+                widest = i;
             }
-            break;
-        case ELEM_TYPE_WIDE:
-            if (is_second_elem)
-            {
-                state->is_reverse = false;
-            }
-            if (is_elem_space)
-            {
-                if (state->wide_space_count >= WIDE_SPACES_PER_CHARACTER)
-                {
-                    *p_reason = BARCODE_REJECT_PARITY;
-                    return true;
-                }
-                state->wide_space_count = (uint8_t)(state->wide_space_count + 1U);
-                state->curr_value = (uint8_t)(state->curr_value +
-                    decode_space_value(state->elem_index >> 1U,
-                                       state->is_reverse));
-            }
-            else
-            {
-                if (state->wide_bar_count >= WIDE_BARS_PER_CHARACTER)
-                {
-                    *p_reason = BARCODE_REJECT_PARITY;
-                    return true;
-                }
-                state->wide_bar_count = (uint8_t)(state->wide_bar_count + 1U);
-                state->curr_value = (uint8_t)(state->curr_value +
-                    decode_bar_value(state->elem_index >> 1U,
-                                     state->is_reverse));
-            }
-            break;
-        case ELEM_TYPE_INVALID:
-        default:
-            return true;
+        }
+        rank.wide_mask = (uint16_t)(rank.wide_mask | (1U << widest));
+        min_wide = (p_width[widest] < min_wide) ? p_width[widest] : min_wide;
     }
-    state->elem_index = (uint8_t)(state->elem_index + 1U);
-    return false;
+    for (uint8_t k = 0U; k < count; k++)
+    {
+        uint8_t const i = (uint8_t)(first + (2U * k));
+        if (0U == (rank.wide_mask & (1U << i)))
+        {
+            rank.narrow_sum += p_width[i];
+            max_narrow = (p_width[i] > max_narrow) ? p_width[i] : max_narrow;
+        }
+    }
+    rank.b_separated = (min_wide * WIDE_SEPARATION_DEN) > (max_narrow * WIDE_SEPARATION_NUM);
+    return rank;
 }
 
-static bool handle_end_of_character (barcode_parser_t * state,
-                                     bool is_elem_space, elem_type_t elem_type,
-                                     uint8_t * p_reason)
+static uint8_t character_value (uint16_t wide_mask, bool is_reverse)
 {
-    if (state->wide_bar_count != WIDE_BARS_PER_CHARACTER ||
-        state->wide_space_count != WIDE_SPACES_PER_CHARACTER)
+    uint8_t value = 0U;
+
+    for (uint8_t i = 0U; i < CHARACTER_ELEM_COUNT; i++)
+    {
+        if (0U != (wide_mask & (1U << i)))
+        {
+            uint8_t const idx = (uint8_t)(i >> 1U);
+            value = (uint8_t)(value + ((0U != (i & 1U)) ? decode_space_value(idx, is_reverse)
+                                                         : decode_bar_value(idx, is_reverse)));
+        }
+    }
+    return value;
+}
+
+/**
+ * Classify the nine elements of a complete character.
+ * Returns whether the character is invalid.
+ */
+static bool classify_character (barcode_parser_t * state, uint8_t * p_reason)
+{
+    width_rank_t const bars = rank_widths(state->elem_width_um, 0U, CHARACTER_BARS,
+                                          WIDE_BARS_PER_CHARACTER);
+    width_rank_t const spaces = rank_widths(state->elem_width_um, 1U, CHARACTER_SPACES,
+                                            WIDE_SPACES_PER_CHARACTER);
+    uint16_t const wide_mask = (uint16_t)(bars.wide_mask | spaces.wide_mask);
+
+    if (!bars.b_separated || !spaces.b_separated)
     {
         *p_reason = BARCODE_REJECT_PARITY;
         return true;
     }
-    /* The element between characters must be a narrow space */
-    if (!is_elem_space || (elem_type != ELEM_TYPE_NARROW))
+    if (0U == state->char_index)
     {
-        *p_reason = BARCODE_REJECT_ELEMENT;
-        return true;
+        /* The delimiter is not symmetric, so it gives the direction. */
+        state->is_reverse = (DELIM_CHARACTER != character_value(wide_mask, false));
     }
-    /* First character must be the delimiter */
-    if ((state->char_index == 0) && (state->curr_value != DELIM_CHARACTER))
+    uint8_t const value = character_value(wide_mask, state->is_reverse);
+    if ((1U != state->char_index) && (DELIM_CHARACTER != value))
     {
         *p_reason = BARCODE_REJECT_DELIMITER;
         return true;
     }
-    /* Second character contains the data */
-    if (state->char_index == 1)
+    if (1U == state->char_index)
     {
-        state->data_value = state->curr_value;
+        state->data_value = value;
     }
-    state->wide_bar_count   = 0;
-    state->wide_space_count = 0;
-    state->curr_value       = 0;
+    state->narrow_width_um = (uint16_t)(bars.narrow_sum / (CHARACTER_BARS - WIDE_BARS_PER_CHARACTER));
+    state->narrow_space_um = (uint16_t)(spaces.narrow_sum / (CHARACTER_SPACES - WIDE_SPACES_PER_CHARACTER));
+    return false;
+}
+
+static bool handle_end_of_character (barcode_parser_t * state,
+                                     uint16_t gap_um,
+                                     uint8_t * p_reason)
+{
+    /* A separator is not a character element and cannot train its widths. */
+    if ((0U == gap_um) || (gap_um >= (uint32_t)state->narrow_space_um * INTERCHAR_GAP_MAX_RATIO))
+    {
+        *p_reason = BARCODE_REJECT_ELEMENT;
+        return true;
+    }
     state->elem_index       = 0;
     state->char_index += 1;
     return false;
@@ -247,44 +234,33 @@ static bool process_elem (barcode_parser_t * state, bool is_elem_space,
     const bool expect_space = (((uint32_t)state->elem_index & 1U) == 1U);
     const bool is_first_elem =
         (state->char_index == 0) && (state->elem_index == 0);
-    bool        b_invalid = (expect_space != is_elem_space);
-    elem_type_t elem_type = ELEM_TYPE_INVALID;
 
     *p_reason = BARCODE_REJECT_ELEMENT;
 
-    if (!b_invalid && is_first_elem)
+    if (expect_space != is_elem_space)
     {
-        b_invalid = is_start_invalid(is_elem_space, elem_width_um);
-        /* First element is assumed to be narrow */
+        return true;
+    }
+    if (state->elem_index == CHARACTER_ELEM_COUNT)
+    {
+        return handle_end_of_character(state, elem_width_um, p_reason);
+    }
+    if (is_first_elem)
+    {
+        if (is_start_invalid(is_elem_space, elem_width_um))
+        {
+            return true;
+        }
+        /* Scales glitches until the start character is classified. */
         state->narrow_width_um = elem_width_um;
     }
-
-    if (!b_invalid)
+    if (0U == elem_width_um)
     {
-        elem_type = get_elem_type(state, elem_width_um);
-        b_invalid = handle_elem(state, is_elem_space, elem_type, p_reason);
-        if (!b_invalid && (state->elem_index <= CHARACTER_ELEM_COUNT))
-        {
-            if (ELEM_TYPE_NARROW == elem_type)
-            {
-                state->narrow_width_um = learn_width(state->narrow_width_um, elem_width_um);
-            }
-            else
-            {
-                /* Track the printed ratio so subsequent narrow samples
-                 * also rescale the expected wide element during a turn. */
-                uint16_t const ratio = (uint16_t)((uint32_t)elem_width_um * RATIO_ONE / state->narrow_width_um);
-                state->wide_ratio_q8 = learn_width(state->wide_ratio_q8, ratio);
-            }
-        }
+        return true;
     }
-
-    if (!b_invalid && (state->elem_index > CHARACTER_ELEM_COUNT))
-    {
-        b_invalid = handle_end_of_character(state, is_elem_space, elem_type, p_reason);
-    }
-
-    return b_invalid;
+    state->elem_width_um[state->elem_index] = elem_width_um;
+    state->elem_index = (uint8_t)(state->elem_index + 1U);
+    return (state->elem_index == CHARACTER_ELEM_COUNT) && classify_character(state, p_reason);
 }
 
 uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
@@ -300,27 +276,12 @@ uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
 
     if (b_at_end)
     {
-        /* Last character must be the delimiter with valid parity */
-        if ((state->wide_bar_count != WIDE_BARS_PER_CHARACTER) ||
-            (state->wide_space_count != WIDE_SPACES_PER_CHARACTER))
+        result = decode_data(state->data_value);
+        if (result >= LETTER_COUNT)
         {
             b_invalid = true;
-            reason    = BARCODE_REJECT_PARITY;
-        }
-        else if (state->curr_value != DELIM_CHARACTER)
-        {
-            b_invalid = true;
-            reason    = BARCODE_REJECT_DELIMITER;
-        }
-        else
-        {
-            result = decode_data(state->data_value);
-            if (result >= LETTER_COUNT)
-            {
-                b_invalid = true;
-                reason    = BARCODE_REJECT_SYMBOL;
-                result    = BARCODE_NO_CHAR;
-            }
+            reason    = BARCODE_REJECT_SYMBOL;
+            result    = BARCODE_NO_CHAR;
         }
     }
 
@@ -350,9 +311,14 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
     return barcode_parser_input_info(state, is_elem_space, elem_width_um, NULL);
 }
 
+uint16_t barcode_parser_glitch_limit_um (const barcode_parser_t * state)
+{
+    return (uint16_t)((uint32_t)state->narrow_width_um * GLITCH_MAX_PCT / PERCENT_FULL);
+}
+
 bool barcode_parser_is_glitch (barcode_parser_t const * state, uint16_t elem_width_um)
 {
-    return in_width_band(elem_width_um, state->narrow_width_um, 0U, GLITCH_MAX_PCT);
+    return elem_width_um <= barcode_parser_glitch_limit_um(state);
 }
 
 /*** end of file ***/

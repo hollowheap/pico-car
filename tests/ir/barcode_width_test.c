@@ -210,21 +210,21 @@ static void test_block_event_length (void)
 
     barcode_block_init(&block);
     /* A white edge with no black edge before it reports nothing. */
-    assert(0U == barcode_block_edge(&block, false, 100U, NULL));
+    assert(0U == barcode_block_edge(&block, false, 100U, NULL, NULL));
     /* A bar of 50 mm is not a block; 51 mm is. */
-    assert(0U == barcode_block_edge(&block, true, 1000U, NULL));
-    assert(0U == barcode_block_edge(&block, false, 1050U, NULL));
-    assert(0U == barcode_block_edge(&block, true, 2000U, NULL));
-    assert(51U == barcode_block_edge(&block, false, 2051U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 1000U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, false, 1050U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, true, 2000U, NULL, NULL));
+    assert(51U == barcode_block_edge(&block, false, 2051U, NULL, NULL));
     /* A long block keeps its true length. */
-    assert(0U == barcode_block_edge(&block, true, 3000U, NULL));
-    assert(300U == barcode_block_edge(&block, false, 3300U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 3000U, NULL, NULL));
+    assert(300U == barcode_block_edge(&block, false, 3300U, NULL, NULL));
     /* The length saturates at the int16 event parameter. */
-    assert(0U == barcode_block_edge(&block, true, 10000U, NULL));
-    assert(INT16_MAX == barcode_block_edge(&block, false, 110000U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 10000U, NULL, NULL));
+    assert(INT16_MAX == barcode_block_edge(&block, false, 110000U, NULL, NULL));
     /* The car backed up over the block: no length, no event. */
-    assert(0U == barcode_block_edge(&block, true, 200000U, NULL));
-    assert(0U == barcode_block_edge(&block, false, 199900U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 200000U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, false, 199900U, NULL, NULL));
 }
 
 /* At most one block event per BARCODE_BLOCK_EVENT_MM of travel, so a striped
@@ -235,21 +235,21 @@ static void test_block_event_rate (void)
 
     barcode_block_init(&block);
     /* The first block reports even at odometer 0. */
-    assert(0U == barcode_block_edge(&block, true, 0U, NULL));
-    assert(60U == barcode_block_edge(&block, false, 60U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 0U, NULL, NULL));
+    assert(60U == barcode_block_edge(&block, false, 60U, NULL, NULL));
     /* A second block that ends inside the spacing is silent. */
-    assert(0U == barcode_block_edge(&block, true, 80U, NULL));
-    assert(0U == barcode_block_edge(&block, false, 60U + BARCODE_BLOCK_EVENT_MM - 1U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 80U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, false, 60U + BARCODE_BLOCK_EVENT_MM - 1U, NULL, NULL));
     /* The next one past the spacing reports. */
-    assert(0U == barcode_block_edge(&block, true, 400U, NULL));
-    assert(60U == barcode_block_edge(&block, false, 460U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 400U, NULL, NULL));
+    assert(60U == barcode_block_edge(&block, false, 460U, NULL, NULL));
     /* The car backed up behind the last event: a block there is silent. */
-    assert(0U == barcode_block_edge(&block, true, 300U, NULL));
-    assert(0U == barcode_block_edge(&block, false, 360U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 300U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, false, 360U, NULL, NULL));
     /* A repeated black edge moves the start of the stretch. */
-    assert(0U == barcode_block_edge(&block, true, 700U, NULL));
-    assert(0U == barcode_block_edge(&block, true, 760U, NULL));
-    assert(0U == barcode_block_edge(&block, false, 800U, NULL));
+    assert(0U == barcode_block_edge(&block, true, 700U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, true, 760U, NULL, NULL));
+    assert(0U == barcode_block_edge(&block, false, 800U, NULL, NULL));
     assert(8U == sizeof(barcode_block_t));
 }
 
@@ -282,6 +282,79 @@ static void test_sample_outside_element (void)
                              &width_um));
 }
 
+static void test_paired_wheel_travel (void)
+{
+    uint32_t const start_us = UINT32_MAX - 3999U;
+    uint32_t const end_us = 6000U;
+    motion_feedback_t start = {
+        .fresh = true, .speed_valid = {true, true}, .odometry_valid = {true, true},
+        .timestamp_us = start_us - 1000U,
+        .odometry_span_us = 20000U,
+        .left_speed_um_s = 100000, .right_speed_um_s = 100000,
+        .left_displacement_um = INT64_MAX - 2300, .right_displacement_um = -1000,
+        .invalid_samples = {UINT8_MAX, 0U},
+    };
+    motion_feedback_t end = start;
+    uint16_t width_um = 0U;
+
+    end.timestamp_us = end_us + 1000U;
+    end.left_speed_um_s = 200000;
+    end.right_speed_um_s = 200000;
+    end.left_displacement_um = INT64_MAX;
+    end.right_displacement_um = 1300;
+    assert(barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+    assert(width_um == 2000U);
+
+    end.odometry_span_us = 10999U;
+    assert(!barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+    end.odometry_span_us = 11000U;
+    assert(barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+
+    end.invalid_samples[0] = 0U;
+    assert(!barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+    end.invalid_samples[0] = UINT8_MAX;
+    end.right_displacement_um = -1500;
+    assert(!barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+    end.right_displacement_um = 1300;
+    start.timestamp_us = start_us - BARCODE_SPEED_SLACK_US - 1U;
+    assert(!barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+
+    start.timestamp_us = start_us;
+    start.left_speed_um_s = 0;
+    start.right_speed_um_s = 0;
+    end = start;
+    assert(!barcode_width_between_edges(start_us, end_us, &start, &end,
+                                      BARCODE_TAPE_HEADING_UNKNOWN, &width_um));
+}
+
+static void test_sensor_travel_on_tape (void)
+{
+    motion_feedback_t const start = {
+        .fresh = true, .speed_valid = {true, true}, .odometry_valid = {true, true},
+        .left_speed_um_s = 82000, .right_speed_um_s = 82000,
+    };
+    motion_feedback_t end = start;
+    uint16_t width_um = 0U;
+
+    end.timestamp_us = 100000U;
+    end.odometry_span_us = end.timestamp_us;
+    end.left_displacement_um = 6929;
+    end.right_displacement_um = 6929;
+    assert(barcode_width_between_edges(0U, end.timestamp_us, &start, &end, -300, &width_um));
+    assert(width_um == 6000U);
+
+    end.left_displacement_um = 6000;
+    end.right_displacement_um = 8000;
+    assert(barcode_width_between_edges(0U, end.timestamp_us, &start, &end, 0, &width_um));
+    assert(width_um == 4991U);
+}
+
 int main (void)
 {
     test_block_is_not_a_bar();
@@ -292,6 +365,8 @@ int main (void)
     test_saturation();
     test_rejection_conditions();
     test_sample_outside_element();
+    test_paired_wheel_travel();
+    test_sensor_travel_on_tape();
 
     return 0;
 }

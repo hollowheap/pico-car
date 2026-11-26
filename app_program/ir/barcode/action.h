@@ -1,8 +1,8 @@
 /** @file action.h
  * @brief Map decoded letters to vehicle commands.
  *
- * H requests a halt, S straight, L left, R right and U a U-turn.
- * Other decoded letters are reported without a driving action.
+ * action_config.h binds letters to the driving commands. Unbound letters
+ * are reported without a driving action.
  */
 
 #ifndef BARCODE_ACTION_H
@@ -43,6 +43,7 @@ STATIC_ASSERT (sizeof(barcode_action_t) == 2U, "barcode_action_t size");
 
 /* The action of a decoded character (0..25 for 'A'..'Z'). */
 barcode_action_t barcode_action_of (uint8_t code);
+barcode_action_t barcode_action_for_command (uint8_t opcode);
 
 typedef struct
 {

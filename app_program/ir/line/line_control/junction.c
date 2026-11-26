@@ -143,7 +143,7 @@ bool line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_le
         /* The left detector can stay on the approach tape into a T. The
          * right detector's clean crossing still fixes the axle position. */
         p_route->right_branch = (LINE_TURN_KIND_RIGHT == kind) ||
-                                ((LINE_TURN_KIND_STRAIGHT == kind) && !b_crossing);
+                                (((LINE_TURN_KIND_STRAIGHT == kind) || (LINE_TURN_KIND_UTURN == kind)) && !b_crossing);
         p_route->kind = (uint8_t)kind;
     }
     /* Retire the projected axle position if steering moves it out of the crossing. */
@@ -307,6 +307,10 @@ static bool route_probe_opposite(line_route_t * p_route, int32_t yaw, bool b_tap
     if (b_tape && p_route->clear_seen && route_side_sector(-yaw))
     {
         p_route->opposite_seen = true;
+        if ((p_route->kind == (uint8_t)LINE_TURN_KIND_UTURN) && p_route->through_seen)
+        {
+            return true;
+        }
         if (p_route->kind == (uint8_t)LINE_TURN_KIND_STRAIGHT)
         {
             bool const b_through = p_route->through_seen;

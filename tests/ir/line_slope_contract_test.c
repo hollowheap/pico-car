@@ -118,6 +118,7 @@ typedef enum
 typedef enum
 {
     ROUTE_SETUP_NORMAL,
+    ROUTE_SETUP_DASHBOARD,
     ROUTE_SETUP_RIGHT_ALTERNATIVE,
     ROUTE_SETUP_READER_BACK,
     ROUTE_SETUP_READER_FRONT,
@@ -147,6 +148,7 @@ typedef struct
     bool right_exit;
     bool straight;
     bool uturn;
+    bool dashboard;
     uint8_t posted;
     uint8_t slot;
     bool safety;
@@ -252,6 +254,7 @@ static bool g_ir_resumed;
 static int32_t g_left_target;
 static int32_t g_right_target;
 static bool g_turn_case;
+static bool g_fixture_choice_consumed;
 static bool g_rise_case;
 static int32_t g_rise_first;
 static int32_t g_rise_last;
@@ -318,6 +321,40 @@ static bool g_start_follow_seen;
 static unsigned g_start_failures;
 static int32_t g_start_speed;
 
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+#include "motion/obstacle_extras/navigation.h"
+#include "obstacle/obstacle_pack.h"
+
+static bool g_extras_drive_allowed;
+static bool g_extras_owns;
+static bool g_extras_echo_failed;
+static unsigned g_extras_owned_passes;
+
+bool extras_nav_step(bool b_line_left, bool b_line_right, bool b_armed,
+                     uint8_t start_count, bool b_drive_allowed)
+{
+    (void)b_line_left;
+    (void)b_line_right;
+    assert(b_armed && 1U == start_count);
+    g_extras_drive_allowed |= b_drive_allowed;
+    /* Model the scanner briefly holding the car while a choice is pending. */
+    g_extras_owns = b_drive_allowed && (SUPERVISOR_NO_TURN != g_route_sim.slot) &&
+                    (g_extras_owned_passes < 3U);
+    if (g_extras_owns)
+    {
+        g_left_target = 0;
+        g_right_target = 0;
+        g_extras_owned_passes++;
+    }
+    return g_extras_owns;
+}
+
+uint32_t obstacle_ping_recent(void)
+{
+    return g_extras_echo_failed ? 0U : obstacle_ping_read();
+}
+#endif
+
 ER ISpinLock(T_SPLOCK * p_lock, UINT * p_saved)
 {
     g_hug_locks++;
@@ -383,10 +420,6 @@ static double route_tape_dist_mm(double px, double py)
 static bool route_junction_on_tape(double px, double py)
 {
     double const half = ROUTE_TAPE_HALF_MM;
-    if (g_route_sim.uturn && !g_route_sim.replace_left)
-    {
-        return fabs(py) <= half;
-    }
     if ((px <= ROUTE_ROUND_BEND_X_MM) && (fabs(py) <= half))
     {
         return true;
@@ -699,8 +732,7 @@ int motion_feedback_snapshot(motion_feedback_t * p_feedback)
         bool const b_bad_origin = g_route_sim.invalid_origin && (TURN_TICK == g_tick) &&
                                   !g_route_sim.origin_recovered;
         bool const b_bad_capture = g_route_sim.invalid_capture && g_turning &&
-            (g_route_sim.theta_rad < (-150.0 * PI_RAD / 180.0)) &&
-            (g_route_sim.left_debounced || g_route_sim.right_debounced);
+            (1U == g_route_sim.turns) && (g_tick >= g_route_sim.start_tick + 10U);
         if (b_bad_origin || b_bad_capture)
         {
             unsigned const wheel = b_bad_origin ? 0U : 1U;
@@ -718,6 +750,9 @@ int motion_set_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
     bool const b_was_moving = g_left_target != 0 || g_right_target != 0;
 
     assert(ttl_us > 0U);
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    assert(!g_extras_owns);
+#endif
     if (g_route_sim.active)
     {
         if (g_route_sim.hold_on_replacement && (0U != g_route_sim.replacement_tick))
@@ -728,7 +763,7 @@ int motion_set_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
         {
             assert(!b_moving);
         }
-        if (!route_is_plain() && !g_route_sim.uturn && !g_route_sim.first_pivot && g_turning &&
+        if (!route_is_plain() && !g_route_sim.first_pivot && g_turning &&
             ((left_um_s < 0 && right_um_s > 0) || (left_um_s > 0 && right_um_s < 0)))
         {
             assert(left_um_s == -right_um_s);
@@ -737,8 +772,8 @@ int motion_set_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
             g_route_sim.pivot_y_mm = g_route_sim.y_mm;
         }
         if ((1U == g_route_sim.turns) && (0U == g_route_sim.done) && (0U == g_route_sim.aborts) &&
-            (g_route_sim.straight ? ((0 != left_um_s) && (right_um_s == -left_um_s)) :
-             (g_route_sim.right_exit || g_route_sim.uturn) ? ((left_um_s > 0) && (right_um_s < 0)) :
+            ((g_route_sim.straight || g_route_sim.uturn) ? ((0 != left_um_s) && (right_um_s == -left_um_s)) :
+             g_route_sim.right_exit ? ((left_um_s > 0) && (right_um_s < 0)) :
                                                               ((left_um_s < 0) && (right_um_s > 0))))
         {
             g_route_sim.alignment_pivots++;
@@ -780,8 +815,13 @@ int motion_set_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
         assert(left_um_s == -right_um_s);
         g_rise_last = size;
     }
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    g_left_target = left_um_s / MOTION_SPEED_DIVISOR;
+    g_right_target = right_um_s / MOTION_SPEED_DIVISOR;
+#else
     g_left_target = left_um_s;
     g_right_target = right_um_s;
+#endif
     if ((g_motion_snapshot_case || g_motion_fault_case) && (left_um_s != 0 || right_um_s != 0))
     {
         g_motion_approached = g_motion_approached || g_tick < MOTION_LOST_TICK;
@@ -837,7 +877,7 @@ int motion_set_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
     return E_OK;
 }
 
-int motion_set_scan_pivot(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
+int motion_set_obstacle_speed(int32_t left_um_s, int32_t right_um_s, uint32_t ttl_us)
 {
     assert(!g_course_case);
     return motion_set_speed(left_um_s, right_um_s, ttl_us);
@@ -914,6 +954,14 @@ ER physics_snapshot(physics_status_t * p_status)
         p_status->forward_specific_mg = g_start_noisy_baseline ? (g_tick < 8U ? 20 : 60) :
                                        (int16_t)(20 + (response ? 40 : 0));
     }
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    if (g_route_sim.active)
+    {
+        p_status->attitude_sample_valid = true;
+        p_status->forward_sample_us = ir_timer_at(g_tick - g_tick % 2U);
+        p_status->forward_specific_mg = (g_route_sim.enc_left_speed > 0) ? 60 : 20;
+    }
+#endif
     return E_OK;
 }
 
@@ -1027,15 +1075,18 @@ static void route_advance_course(void)
     unsigned const tick_limit = b_plain ? ROUTE_MAX_TICKS :
         (((ROUTE_LAYOUT_END_T == p_sim->layout) && p_sim->straight) ? ROUTE_LATER_JUNCTION_TICKS
                                                                       : ROUTE_JUNCTION_MAX_TICKS);
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    unsigned const scaled_tick_limit = tick_limit * MOTION_SPEED_DIVISOR;
+#else
+    unsigned const scaled_tick_limit = tick_limit;
+#endif
     if ((p_sim->interrupt_alignment && (0U != p_sim->aborts) &&
          (g_tick > (p_sim->end_tick + (2U * ROUTE_MOTION_FRAME_MS / TICK_MS)))) ||
-        ((0U != p_sim->invalid_tick) && (0U != (p_sim->aborts + p_sim->done + p_sim->refusals))) ||
-        (p_sim->repeat_manual && (2U == p_sim->done) && ((p_sim->x_mm - p_sim->end_x_mm) > 100.0)) ||
+        (p_sim->invalid_capture && (0U != p_sim->invalid_tick) && (0U != p_sim->aborts)) ||
         (p_sim->hold_on_replacement && (p_sim->stopped_frames >= 2U)) ||
-        (g_tick > tick_limit) ||
-        (b_mid_probe && (0U != p_sim->done) && (p_sim->y_mm < (ROUTE_JUNCTION_Y_MM - 170.0))) ||
-        (p_sim->uturn && !b_mid_probe && (p_sim->x_mm < -100.0)) ||
-        (!p_sim->uturn && route_at_destination()))
+        (g_tick > scaled_tick_limit) ||
+        (p_sim->uturn && (0U != p_sim->done) && (p_sim->y_mm < (ROUTE_JUNCTION_Y_MM - 170.0))) ||
+        ((!p_sim->uturn || ROUTE_LAYOUT_SINGLE_SIDE == p_sim->layout) && route_at_destination()))
     {
         longjmp(g_finished, 1);
     }
@@ -1122,6 +1173,16 @@ uint8_t barcode_progress_count(uint8_t * p_prefix_mm)
     return 0U;
 }
 
+void barcode_set_tape_heading(int32_t heading_deci)
+{
+    (void)heading_deci;
+}
+
+bool barcode_read_framed(void)
+{
+    return false;
+}
+
 bool ir_barcode_recent(void)
 {
     if (g_route_sim.active)
@@ -1134,6 +1195,9 @@ bool ir_barcode_recent(void)
 
 uint8_t supervisor_poll_turn(uint8_t * p_source)
 {
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    assert(!g_extras_owns);
+#endif
     if (g_route_sim.active)
     {
         uint8_t const opcode = g_route_sim.slot;
@@ -1146,11 +1210,8 @@ uint8_t supervisor_poll_turn(uint8_t * p_source)
             assert((g_tick >= TURN_TICK) && (opcode == g_route_sim.posted));
             g_route_sim.command_polled = true;
         }
-        *p_source = (0U != g_route_sim.repeat_tick) ? VEHICLE_SRC_TELEMETRY : VEHICLE_SRC_BARCODE;
-        if (VEHICLE_CMD_UTURN == opcode)
-        {
-            g_route_sim.slot = SUPERVISOR_NO_TURN;
-        }
+        *p_source = (g_route_sim.dashboard || (0U != g_route_sim.repeat_tick))
+            ? VEHICLE_SRC_TELEMETRY : VEHICLE_SRC_BARCODE;
         return opcode;
     }
     if (g_route_hold && g_tick >= 8U && g_route_pending)
@@ -1168,6 +1229,11 @@ uint8_t supervisor_poll_turn(uint8_t * p_source)
 
 bool supervisor_route_pending(uint8_t expected_opcode, bool b_consume)
 {
+    if (g_turn_case && (g_turn_opcode == expected_opcode) && !g_fixture_choice_consumed)
+    {
+        g_fixture_choice_consumed = b_consume;
+        return true;
+    }
     if (g_route_sim.active)
     {
         bool const b_pending = (SUPERVISOR_NO_TURN != g_route_sim.slot) &&
@@ -1186,6 +1252,38 @@ bool supervisor_route_pending(uint8_t expected_opcode, bool b_consume)
     bool const present = g_route_pending && expected_opcode == VEHICLE_CMD_LEFT;
     if (present && b_consume) g_route_pending = false;
     return present;
+}
+
+/* The timing and stop fixtures begin at a verified junction. The course
+ * replays below use the real detector and probe against optical and wheel data. */
+bool __real_line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_left, bool b_right,
+                               bool b_side_tape, int64_t left_um, int64_t right_um);
+line_turn_status_t __real_line_route_probe(line_route_t * p_route, int64_t left_um, int64_t right_um,
+                                          bool b_tape, line_targets_t * p_targets);
+
+bool __wrap_line_route_observe(line_route_t * p_route, line_turn_kind_t kind, bool b_left, bool b_right,
+                               bool b_side_tape, int64_t left_um, int64_t right_um)
+{
+    if (g_turn_case && g_tick == TURN_TICK)
+    {
+        p_route->kind = (uint8_t)kind;
+        p_route->heading_deci = line_heading_deci(left_um, right_um) + 1;
+        return true;
+    }
+    return __real_line_route_observe(p_route, kind, b_left, b_right, b_side_tape, left_um, right_um);
+}
+
+line_turn_status_t __wrap_line_route_probe(line_route_t * p_route, int64_t left_um, int64_t right_um,
+                                          bool b_tape, line_targets_t * p_targets)
+{
+    if (g_turn_case)
+    {
+        bool const b_straight = (uint8_t)LINE_TURN_KIND_STRAIGHT == p_route->kind;
+        *p_targets = b_straight ? (line_targets_t){LINE_CRUISE_UM_S, LINE_CRUISE_UM_S}
+                               : (line_targets_t){LINE_TURN_FAST_UM_S, -LINE_TURN_FAST_UM_S};
+        return g_fixture_choice_consumed ? LINE_TURN_TURNING : LINE_TURN_BRANCH_SELECTED;
+    }
+    return __real_line_route_probe(p_route, left_um, right_um, b_tape, p_targets);
 }
 
 void supervisor_turn_refused(uint8_t opcode)
@@ -1239,6 +1337,9 @@ uint8_t supervisor_start_snapshot(bool * floor)
 uint8_t supervisor_armed_start(bool * p_armed)
 {
     *p_armed = g_start_check;
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    *p_armed = *p_armed || g_route_sim.active;
+#endif
     return 1U;
 }
 
@@ -1259,6 +1360,12 @@ uint8_t supervisor_recovery_snapshot(bool * clear)
 
 uint32_t obstacle_ping_read(void)
 {
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    if (g_extras_echo_failed)
+    {
+        return obstacle_pack_ping(1U, OBSTACLE_CLASS_VALID, 95U, 0);
+    }
+#endif
     if (g_course_case && g_course_look_requests != 0U && g_tick == g_course_reply_tick)
     {
         uint32_t const servo = (uint32_t)(g_course_reply_servo / OBSTACLE_PING_DECI_PER_DEG +
@@ -1411,6 +1518,12 @@ uint16_t obstacle_get_faults(void)
 
 uint32_t system_fault_get(void)
 {
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    if (g_extras_echo_failed)
+    {
+        return FAULT_SONAR_NO_ECHO_BIT | FAULT_ECHO_LINE_BIT;
+    }
+#endif
     return (g_turn_case && !g_pose_return && !g_turn_obstacle && !g_ir_capture_case && g_tick >= SONAR_FAULT_TICK)
         ? FAULT_SONAR_NO_ECHO_BIT : 0U;
 }
@@ -1504,7 +1617,7 @@ static void route_note_turn_event(uint8_t type, int16_t p1, uint16_t p2)
         p_sim->turns++;
         p_sim->start_tick = g_tick;
         p_sim->turn_start_x_mm = p_sim->x_mm;
-        if (!p_sim->uturn && (p_sim->y_mm < (ROUTE_JUNCTION_Y_MM - 40.0)))
+        if (p_sim->y_mm < (ROUTE_JUNCTION_Y_MM - 40.0))
         {
             p_sim->early = true;
         }
@@ -1836,6 +1949,9 @@ static route_case_t const g_route_cases[] = {
      ROUTE_SETUP_RIGHT_ALTERNATIVE},
     {"route-t-left", VEHICLE_CMD_LEFT, ROUTE_LAYOUT_END_T, ROUTE_SETUP_NORMAL},
     {"route-t-right", VEHICLE_CMD_RIGHT, ROUTE_LAYOUT_END_T, ROUTE_SETUP_NORMAL},
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    {"route-t-sonar-unavailable", VEHICLE_CMD_LEFT, ROUTE_LAYOUT_END_T, ROUTE_SETUP_NORMAL},
+#endif
     {"route-t-straight-later", VEHICLE_CMD_STRAIGHT, ROUTE_LAYOUT_END_T, ROUTE_SETUP_NORMAL},
     {"route-missing-left", VEHICLE_CMD_LEFT, ROUTE_LAYOUT_OPPOSITE_BRANCH, ROUTE_SETUP_NORMAL},
     {"route-missing-right", VEHICLE_CMD_RIGHT, ROUTE_LAYOUT_OPPOSITE_BRANCH, ROUTE_SETUP_NORMAL},
@@ -1849,6 +1965,11 @@ static route_case_t const g_route_cases[] = {
     {"route-straight-obstacle", VEHICLE_CMD_STRAIGHT, ROUTE_LAYOUT_THROUGH_BRANCH,
      ROUTE_SETUP_OBSTACLE_DURING_ALIGNMENT},
     {"route-u", VEHICLE_CMD_UTURN, ROUTE_LAYOUT_THROUGH_BRANCH, ROUTE_SETUP_NORMAL},
+    {"route-dashboard-left", VEHICLE_CMD_LEFT, ROUTE_LAYOUT_END_T, ROUTE_SETUP_DASHBOARD},
+    {"route-dashboard-right", VEHICLE_CMD_RIGHT, ROUTE_LAYOUT_END_T, ROUTE_SETUP_DASHBOARD},
+    {"route-dashboard-straight", VEHICLE_CMD_STRAIGHT, ROUTE_LAYOUT_THROUGH_BRANCH, ROUTE_SETUP_DASHBOARD},
+    {"route-dashboard-u", VEHICLE_CMD_UTURN, ROUTE_LAYOUT_END_T, ROUTE_SETUP_DASHBOARD},
+    {"route-u-single", VEHICLE_CMD_UTURN, ROUTE_LAYOUT_SINGLE_SIDE, ROUTE_SETUP_NORMAL},
     {"route-u-replaces-left", VEHICLE_CMD_UTURN, ROUTE_LAYOUT_THROUGH_BRANCH, ROUTE_SETUP_REPLACE_LEFT},
     {"route-u-during-probe", VEHICLE_CMD_UTURN, ROUTE_LAYOUT_THROUGH_BRANCH, ROUTE_SETUP_REPLACE_PROBE},
     {"route-u-during-late-probe", VEHICLE_CMD_UTURN, ROUTE_LAYOUT_THROUGH_BRANCH,
@@ -1906,57 +2027,44 @@ static void route_check_plain(void)
 static void route_check_u_turn(void)
 {
     route_sim_t const * const p_sim = &g_route_sim;
-    if (p_sim->invalid_origin || p_sim->invalid_capture)
+    assert(!p_sim->early && !p_sim->early_scan);
+    if (ROUTE_LAYOUT_SINGLE_SIDE == p_sim->layout)
     {
-        assert((0U != p_sim->invalid_tick) && (0U == p_sim->done));
-        assert((1U == (p_sim->aborts + p_sim->refusals)) && (p_sim->turns == p_sim->aborts));
-        assert(SUPERVISOR_NO_TURN == p_sim->slot);
-        if (p_sim->invalid_origin)
-        {
-            assert((TURN_TICK == p_sim->invalid_tick) && (0U == p_sim->alignment_pivots));
-        }
-        else
-        {
-            assert((p_sim->alignment_pivots > 0U) && (p_sim->invalid_tick == p_sim->end_tick));
-        }
-        return;
-    }
-    if (p_sim->repeat_manual)
-    {
-        assert((2U == p_sim->turns) && (2U == p_sim->done) && (0U == p_sim->aborts));
-        assert((0U != p_sim->repeat_tick) && (p_sim->start_tick == p_sim->repeat_tick));
-        assert((p_sim->end_tick > p_sim->start_tick) && ((p_sim->x_mm - p_sim->end_x_mm) >= 100.0));
-        assert((fabs(p_sim->y_mm) < (double)LINE_SENSOR_SPACING_MM) && (cos(p_sim->theta_rad) > 0.9));
+        assert(route_at_destination() && (VEHICLE_CMD_UTURN == p_sim->slot));
+        assert((0U == p_sim->turns) && (0U == p_sim->consumed));
         return;
     }
     if (p_sim->hold_on_replacement)
     {
         assert((0U != p_sim->replacement_tick) && (p_sim->stopped_frames >= 2U));
-        assert((SUPERVISOR_NO_TURN == p_sim->slot) && (0U == p_sim->done) && (0U == p_sim->consumed));
-        assert((1U == (p_sim->refusals + p_sim->aborts)) && (p_sim->turns == p_sim->aborts));
+        assert((0U == p_sim->done) && (0U == p_sim->consumed));
         return;
     }
-    if (p_sim->replace_probe_deg > 0.0)
+
+    assert(p_sim->first_pivot);
+    assert(hypot(p_sim->pivot_x_mm - ROUTE_THROUGH_X_MM, p_sim->pivot_y_mm - ROUTE_JUNCTION_Y_MM) < LINE_WIDTH_MM);
+    assert((1U == p_sim->consumed) && (1U == p_sim->turns) && (p_sim->start_tick > TURN_TICK));
+    if (p_sim->replace_left)
     {
-        assert((p_sim->replacement_tick > 0U) && (p_sim->start_tick >= p_sim->replacement_tick) &&
-               (p_sim->start_tick <= (p_sim->replacement_tick + 1U)));
-        double const yaw_at_marker =
-            (p_sim->replacement_theta_rad - p_sim->probe_origin_theta_rad) * 180.0 / PI_RAD;
-        assert((yaw_at_marker >= p_sim->replace_probe_deg) &&
-               (yaw_at_marker < (p_sim->replace_probe_deg + 2.0)));
-        assert((fabs(p_sim->x_mm - ROUTE_THROUGH_X_MM) < (double)LINE_SENSOR_SPACING_MM) &&
-               (sin(p_sim->theta_rad) < -0.9));
-        assert((p_sim->y_mm < (ROUTE_JUNCTION_Y_MM - 170.0)) && ((p_sim->end_y_mm - p_sim->y_mm) >= 100.0));
+        assert((0U != p_sim->replacement_tick) && (p_sim->start_tick > p_sim->replacement_tick));
     }
-    else
+    if (p_sim->invalid_capture)
     {
-        double const marker_x = p_sim->replace_left ? ROUTE_U_MARKER_X_MM : 0.0;
-        assert((fabs(p_sim->turn_start_x_mm - marker_x) < 20.0) && (p_sim->x_mm < -100.0));
-        assert(p_sim->start_tick == (p_sim->replace_left ? p_sim->replacement_tick : TURN_TICK));
-        assert((fabs(p_sim->y_mm) < (double)LINE_SENSOR_SPACING_MM) && (cos(p_sim->theta_rad) < -0.9));
-        assert((p_sim->end_x_mm - p_sim->x_mm) >= 100.0);
+        assert((0U == p_sim->done) && (1U == p_sim->aborts));
+        assert((0U != p_sim->invalid_tick) && (p_sim->invalid_tick == p_sim->end_tick));
+        return;
     }
-    assert((0U == p_sim->consumed) && (0U == p_sim->aborts) && (p_sim->alignment_pivots > 0U));
+    if (p_sim->invalid_origin)
+    {
+        /* The first poll's bad wheel pair must not consume the queued U. */
+        assert((TURN_TICK == p_sim->invalid_tick) && p_sim->origin_recovered);
+    }
+
+    assert((1U == p_sim->done) && (0U == p_sim->aborts) && (p_sim->alignment_pivots > 0U));
+    assert((p_sim->y_mm < (ROUTE_JUNCTION_Y_MM - 170.0)) && ((p_sim->end_y_mm - p_sim->y_mm) >= 100.0));
+    assert((fabs(p_sim->x_mm - ROUTE_THROUGH_X_MM) < (double)LINE_SENSOR_SPACING_MM) &&
+           (sin(p_sim->theta_rad) < -0.9));
+    assert(p_sim->slot == (p_sim->repeat_manual ? VEHICLE_CMD_UTURN : SUPERVISOR_NO_TURN));
 }
 
 static void route_check_unavailable_exit(void)
@@ -1991,11 +2099,7 @@ static void route_check_junction(void)
     if (p_sim->uturn)
     {
         route_check_u_turn();
-        if (p_sim->invalid_origin || p_sim->invalid_capture || p_sim->repeat_manual ||
-            p_sim->hold_on_replacement)
-        {
-            return;
-        }
+        return;
     }
     else
     {
@@ -2061,6 +2165,9 @@ static void route_check_junction(void)
 
 static int run_route_case(route_case_t const * p_case, int argc, char * argv[])
 {
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    g_extras_echo_failed = (0 == strcmp(p_case->p_name, "route-t-sonar-unavailable"));
+#endif
     route_setup_t const setup = p_case->setup;
     bool const b_plain = (ROUTE_LAYOUT_SQUARE == p_case->layout) || (ROUTE_LAYOUT_ROUND == p_case->layout);
     bool const b_round = ROUTE_LAYOUT_ROUND == p_case->layout;
@@ -2107,6 +2214,7 @@ static int run_route_case(route_case_t const * p_case, int argc, char * argv[])
                       (!b_plain && (VEHICLE_CMD_RIGHT == p_case->command)),
         .straight = VEHICLE_CMD_STRAIGHT == p_case->command,
         .uturn = VEHICLE_CMD_UTURN == p_case->command,
+        .dashboard = ROUTE_SETUP_DASHBOARD == setup,
         .posted = b_replace_left ? VEHICLE_CMD_LEFT : p_case->command,
         .slot = SUPERVISOR_NO_TURN,
         .safety = ROUTE_SETUP_HOLD_BEFORE_JUNCTION == setup,
@@ -2132,6 +2240,10 @@ static int run_route_case(route_case_t const * p_case, int argc, char * argv[])
     {
         line_task_run();
     }
+#ifdef PICO_CAR_OBSTACLE_EXTRAS
+    assert(g_extras_drive_allowed && g_start_failures == 0U);
+    assert(3U == g_extras_owned_passes);
+#endif
     if (b_plain)
     {
         route_check_plain();

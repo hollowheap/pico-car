@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "ir/barcode/action.h"
+#include "ir/barcode/action_config.h"
 #include "ir/barcode/parser.h"
 #include "supervisor/command.h"
 
@@ -64,23 +65,26 @@ static void test_letter_map (void)
 {
     uint8_t code = 0U;
 
-    CHECK (BARCODE_ACTION_STRAIGHT == barcode_action_of ('S' - 'A').action);
-    CHECK (VEHICLE_CMD_STRAIGHT == barcode_action_of ('S' - 'A').opcode);
-    CHECK (BARCODE_ACTION_STOP == barcode_action_of ('H' - 'A').action);
-    CHECK (VEHICLE_CMD_STOP == barcode_action_of ('H' - 'A').opcode);
-    CHECK (BARCODE_ACTION_LEFT == barcode_action_of ('L' - 'A').action);
-    CHECK (VEHICLE_CMD_LEFT == barcode_action_of ('L' - 'A').opcode);
-    CHECK (BARCODE_ACTION_RIGHT == barcode_action_of ('R' - 'A').action);
-    CHECK (VEHICLE_CMD_RIGHT == barcode_action_of ('R' - 'A').opcode);
-    CHECK (BARCODE_ACTION_UTURN == barcode_action_of ('U' - 'A').action);
-    CHECK (VEHICLE_CMD_UTURN == barcode_action_of ('U' - 'A').opcode);
+    CHECK (BARCODE_ACTION_STRAIGHT == barcode_action_of (BARCODE_CHAR_STRAIGHT - 'A').action);
+    CHECK (VEHICLE_CMD_STRAIGHT == barcode_action_of (BARCODE_CHAR_STRAIGHT - 'A').opcode);
+    CHECK (BARCODE_ACTION_STOP == barcode_action_of (BARCODE_CHAR_STOP - 'A').action);
+    CHECK (VEHICLE_CMD_STOP == barcode_action_of (BARCODE_CHAR_STOP - 'A').opcode);
+    CHECK (BARCODE_ACTION_LEFT == barcode_action_of (BARCODE_CHAR_LEFT - 'A').action);
+    CHECK (VEHICLE_CMD_LEFT == barcode_action_of (BARCODE_CHAR_LEFT - 'A').opcode);
+    CHECK (BARCODE_ACTION_RIGHT == barcode_action_of (BARCODE_CHAR_RIGHT - 'A').action);
+    CHECK (VEHICLE_CMD_RIGHT == barcode_action_of (BARCODE_CHAR_RIGHT - 'A').opcode);
+    CHECK (BARCODE_ACTION_UTURN == barcode_action_of (BARCODE_CHAR_UTURN - 'A').action);
+    CHECK (VEHICLE_CMD_UTURN == barcode_action_of (BARCODE_CHAR_UTURN - 'A').opcode);
 
     /* Every other letter is rejected. */
     for (code = 0U; code < 26U; code++)
     {
         char const letter = (char) ('A' + (char) code);
 
-        if ((letter != 'S') && (letter != 'H') && (letter != 'L') && (letter != 'R') && (letter != 'U'))
+        if ((letter != BARCODE_CHAR_STRAIGHT) && (letter != BARCODE_CHAR_STOP) &&
+            (letter != BARCODE_CHAR_ALT_STOP) &&
+            (letter != BARCODE_CHAR_LEFT) && (letter != BARCODE_CHAR_RIGHT) &&
+            (letter != BARCODE_CHAR_UTURN))
         {
             CHECK (BARCODE_ACTION_REJECTED == barcode_action_of (code).action);
         }
@@ -155,8 +159,8 @@ static void test_reject_reasons (void)
     parser = BARCODE_PARSER_INIT;
     CHECK (BARCODE_NO_CHAR == feed_char (&parser, 1, 4, 6, &info));
     feed_gap (&parser, &info);
-    /* One wide bar where two are needed: the character ends with the wrong parity,
-     * which the parser sees at the gap after it. */
+    /* One wide bar where two are needed: the parser sees the wrong parity
+     * when the character's ninth element completes it. */
     {
         bool const is_wide[9] = { true, true, false, false, false, false, false, false, false };
         uint8_t    idx        = 0U;
@@ -165,9 +169,8 @@ static void test_reject_reasons (void)
         {
             (void) barcode_parser_input_info (&parser, (idx % 2U) == 1U,
                                               is_wide[idx] ? WIDE_UM : NARROW_UM, &info);
-            CHECK (BARCODE_REJECT_NONE == info.reject);
+            CHECK ((idx == 8U) || (BARCODE_REJECT_NONE == info.reject));
         }
-        feed_gap (&parser, &info);
     }
     CHECK (BARCODE_REJECT_PARITY == info.reject);
     CHECK (info.in_progress);
@@ -186,13 +189,16 @@ static void test_rejects_excess_wide_elements_as_parity (void)
 {
     static const struct
     {
-        uint16_t widths[5];
+        uint16_t widths[9];
         uint8_t count;
         uint8_t reason;
     } cases[] = {
-        {{WIDE_UM, NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM}, 5U, BARCODE_REJECT_PARITY},
-        {{NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM}, 4U, BARCODE_REJECT_PARITY},
-        {{NARROW_UM, 2U * NARROW_UM}, 2U, BARCODE_REJECT_ELEMENT},
+        {{WIDE_UM, NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM, WIDE_UM, NARROW_UM, NARROW_UM, NARROW_UM},
+         9U, BARCODE_REJECT_PARITY},
+        {{NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM, WIDE_UM, NARROW_UM, WIDE_UM, NARROW_UM, NARROW_UM},
+         9U, BARCODE_REJECT_PARITY},
+        {{NARROW_UM, WIDE_UM, NARROW_UM, NARROW_UM, WIDE_UM, NARROW_UM, WIDE_UM, NARROW_UM, 9000U},
+         9U, BARCODE_REJECT_PARITY},
     };
 
     for (uint8_t reverse = 0U; reverse < 2U; reverse++)

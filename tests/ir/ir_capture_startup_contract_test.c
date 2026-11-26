@@ -6,7 +6,6 @@
 
 #include "ir/barcode/action.h"
 #include "platform/alarm.h"
-#include "platform/drv_gpio_irq.h"
 #include "platform/log.h"
 #include "ir/line/track.h"
 
@@ -17,22 +16,20 @@
 #define BARCODE_PIN_BIT (1U << 26)
 #define LINE_LEFT_BIT   (1U << 27)
 #define LINE_RIGHT_BIT  (1U << 28)
-#define SAMPLE_US      5000U
+#define SAMPLE_US      1000U
+#define LINE_SAMPLES   5U
 
 static bool g_semaphores[3];
 static unsigned g_created;
 static bool g_b_fail_second_sem;
 static bool g_b_fail_gpio;
 static bool g_b_fail_timer_handler;
-static bool g_b_fail_barcode_handler;
-static bool g_b_barcode_handler;
 static bool g_b_timer_armed;
 static uint32_t g_timer_enable;
 static uint32_t g_alarm_at_us;
 static uint32_t g_now_us;
 static uint32_t g_arm_delay_us;
 static uint32_t g_gpio_in;
-static gpio_irq_handler_t g_edge_handler;
 static unsigned g_failures;
 
 FP g_shim_inthdr;
@@ -142,16 +139,6 @@ void shim_reg_write (uint32_t addr, uint32_t value)
     }
 }
 
-ER drv_gpio_irq_add_handler (UW proc, uint32_t mask, gpio_irq_handler_t handler)
-{
-    (void)proc;
-    CHECK (g_b_timer_armed);
-    CHECK (BARCODE_PIN_BIT == mask);
-    g_b_barcode_handler = !g_b_fail_barcode_handler;
-    g_edge_handler = g_b_barcode_handler ? handler : NULL;
-    return g_b_barcode_handler ? E_OK : E_LIMIT;
-}
-
 void log_write (log_sev_t severity, log_task_t task, log_mod_t module, const char * p_format, ...)
 {
     (void)severity;
@@ -160,14 +147,19 @@ void log_write (log_sev_t severity, log_task_t task, log_mod_t module, const cha
     (void)p_format;
 }
 
-static void barcode_edges (uint32_t delay_us, bool b_rise, bool b_fall)
+static void fire_samples (unsigned count)
 {
-    g_now_us += delay_us;
-    gpio_edge_snapshot_t const snapshot = {.timestamp_us = g_now_us,
-        .rise_mask = b_rise ? BARCODE_PIN_BIT : 0U,
-        .fall_mask = b_fall ? BARCODE_PIN_BIT : 0U};
+    for (unsigned i = 0U; i < count; i++)
+    {
+        g_now_us = g_alarm_at_us;
+        ((void (*)(UINT))g_shim_inthdr) (LINE_TIMER_ALARM_IRQ);
+    }
+}
 
-    g_edge_handler (&snapshot);
+static void barcode_level (bool b_high, unsigned count)
+{
+    g_gpio_in = (g_gpio_in & ~BARCODE_PIN_BIT) | (b_high ? BARCODE_PIN_BIT : 0U);
+    fire_samples (count);
 }
 
 static void test_barcode_noise (bool b_overflow)
@@ -176,61 +168,59 @@ static void test_barcode_noise (bool b_overflow)
     bool level;
 
     CHECK (!ir_barcode_recent ());
-    barcode_edges (SAMPLE_US, true, false);
+    barcode_level (true, 2U);
     CHECK (ir_barcode_recent ());
     if (b_overflow)
     {
-        /* A 64-slot ring can hold 63 edges until its decoder drains it. */
+        /* The 64-slot ring holds 63 edges. */
         for (unsigned i = 1U; i < 64U; i++)
         {
-            barcode_edges (10U, (0U == (i % 2U)), (0U != (i % 2U)));
+            barcode_level (0U == (i % 2U), 2U);
         }
     }
     else
     {
-        barcode_edges (SAMPLE_US, true, true);
+        g_alarm_at_us += SAMPLE_US;
+        fire_samples (1U);
     }
     CHECK (1U == ir_barcode_drops ());
     CHECK (!ir_barcode_recent ());
-    /* Queue the first post-loss edge behind the surviving prefix. */
     CHECK (IR_BARCODE_EDGE == ir_barcode_pop (&stamp, &level));
-    barcode_edges (SAMPLE_US, true, false);
-    for (unsigned read = 0U; read < (b_overflow ? 62U : 0U); read++)
+    barcode_level (b_overflow, 2U);
+    for (unsigned i = 0U; i < (b_overflow ? 62U : 0U); i++)
     {
         CHECK (IR_BARCODE_EDGE == ir_barcode_pop (&stamp, &level));
     }
     CHECK (IR_BARCODE_EDGE_AFTER_LOSS == ir_barcode_pop (&stamp, &level));
-    CHECK (!ir_barcode_pop (&stamp, &level));
+    CHECK (IR_BARCODE_EMPTY == ir_barcode_pop (&stamp, &level));
+    CHECK (!ir_barcode_recent ());
 
-    /* Interleaved credible edges in a burst still reach the decoder, but
-     * must not hide a line gap until the sensor has gone quiet. */
-    for (unsigned i = 0U; i < 3U; i++)
-    {
-        barcode_edges (BARCODE_SUPPRESS_US - 1U, true, true);
-        CHECK (!ir_barcode_recent ());
-        barcode_edges (SAMPLE_US, false, true);
-        CHECK (!ir_barcode_recent ());
-        CHECK (IR_BARCODE_EDGE_AFTER_LOSS == ir_barcode_pop (&stamp, &level));
-        CHECK (!level);
-    }
-    barcode_edges (BARCODE_SUPPRESS_US, true, false);
+    fire_samples (BARCODE_SUPPRESS_US / SAMPLE_US + 1U);
+    barcode_level (!b_overflow, 2U);
     CHECK (ir_barcode_recent ());
     g_now_us += BARCODE_SUPPRESS_US;
     CHECK (!ir_barcode_recent ());
 }
 
-static void fire_line_alarm (void)
+static void test_barcode_chatter (void)
 {
-    g_now_us = g_alarm_at_us;
-    ((void (*)(UINT))g_shim_inthdr) (LINE_TIMER_ALARM_IRQ);
-}
+    uint32_t stamp;
+    bool level;
 
-static void run_line_alarms_for_timer_cycle (void)
-{
-    for (uint32_t i = 0U; i <= UINT32_MAX / SAMPLE_US; i++)
+    /* Stable transitions retain their first sample's time across chatter. */
+    uint32_t const start = g_alarm_at_us;
+    barcode_level (true, 2U);
+    for (unsigned i = 0U; i < 3U; i++)
     {
-        fire_line_alarm ();
+        barcode_level (false, 1U);
+        barcode_level (true, 1U);
     }
+    fire_samples (22U);
+    barcode_level (false, 2U);
+    CHECK (IR_BARCODE_EDGE == ir_barcode_pop (&stamp, &level) && stamp == start && level);
+    CHECK (IR_BARCODE_EDGE == ir_barcode_pop (&stamp, &level) && stamp == start + 30000U && !level);
+    CHECK (IR_BARCODE_EMPTY == ir_barcode_pop (&stamp, &level));
+    CHECK (0U == ir_barcode_drops ());
 }
 
 static void test_barcode_timer_wrap (void)
@@ -238,25 +228,17 @@ static void test_barcode_timer_wrap (void)
     uint32_t stamp;
     bool level;
 
-    barcode_edges (SAMPLE_US - 2U, true, false);
-    fire_line_alarm ();
+    barcode_level (true, 1U);
     CHECK (0U == g_now_us);
-    CHECK (ir_barcode_recent ());
-    barcode_edges (2U, false, true);
-    CHECK (ir_barcode_pop (&stamp, &level) && (UINT32_MAX - 1U == stamp) && level);
-    CHECK (ir_barcode_pop (&stamp, &level) && (2U == stamp) && !level);
-    CHECK (ir_barcode_recent ());
-
-    run_line_alarms_for_timer_cycle ();
     CHECK (!ir_barcode_recent ());
-    barcode_edges (2U, true, false);
+    barcode_level (true, 1U);
     CHECK (ir_barcode_recent ());
-
-    barcode_edges (2U, true, true);
+    CHECK (IR_BARCODE_EDGE == ir_barcode_pop (&stamp, &level) && (0U == stamp) && level);
+    uint32_t const fall_us = g_alarm_at_us;
+    barcode_level (false, 2U);
+    CHECK (IR_BARCODE_EDGE == ir_barcode_pop (&stamp, &level) && (fall_us == stamp) && !level);
+    fire_samples (BARCODE_SUPPRESS_US / SAMPLE_US + 1U);
     CHECK (!ir_barcode_recent ());
-    run_line_alarms_for_timer_cycle ();
-    barcode_edges (2U, false, true);
-    CHECK (ir_barcode_recent ());
 }
 
 static void line_capture (uint32_t gpio, bool b_left, bool b_right, unsigned repeats)
@@ -264,10 +246,8 @@ static void line_capture (uint32_t gpio, bool b_left, bool b_right, unsigned rep
     g_gpio_in = gpio;
     for (unsigned i = 0U; i < repeats; i++)
     {
-        g_now_us += SAMPLE_US;
-        ((void (*)(UINT))g_shim_inthdr) (LINE_TIMER_ALARM_IRQ);
+        fire_samples (LINE_SAMPLES);
         line_sample_t const sample = ir_get_line_sample ();
-
         CHECK (g_now_us == sample.timestamp_us);
         CHECK (b_left == sample.state.left);
         CHECK (b_right == sample.state.right);
@@ -277,20 +257,14 @@ static void line_capture (uint32_t gpio, bool b_left, bool b_right, unsigned rep
 static void test_route_capture (void)
 {
     g_gpio_in = BARCODE_PIN_BIT | LINE_LEFT_BIT;
-    for (unsigned i = 0U; i < 3U; i++)
-    {
-        fire_line_alarm ();
-    }
+    fire_samples (3U * LINE_SAMPLES);
     line_sample_t const sample = ir_get_line_sample ();
     CHECK (sample.state.left && sample.state.barcode);
-    /* An IRQ after the sample changes the live barcode channel. Route
-     * observation must still see the level sampled at the line timestamp. */
-    barcode_edges (2U, false, true);
+    barcode_level (false, 2U);
     CHECK (!ir_get_state ().barcode);
     CHECK (ir_get_line_sample ().timestamp_us == sample.timestamp_us);
     CHECK (ir_get_line_sample ().state.barcode);
-    g_gpio_in = LINE_LEFT_BIT;
-    fire_line_alarm ();
+    fire_samples (LINE_SAMPLES - 2U);
     CHECK (!ir_get_line_sample ().state.barcode);
 }
 
@@ -305,7 +279,7 @@ static void test_line_capture (void)
 }
 
 #if defined(TEST_CAPTURE_PILOT)
-/* A burst of ambiguous barcode edges must leave ordinary tape steering active. */
+/* Single-sample barcode glitches leave ordinary tape steering active. */
 static void test_pilot_barcode_noise (void)
 {
     pilot_state_t pilot;
@@ -315,8 +289,8 @@ static void test_pilot_barcode_noise (void)
     for (unsigned tick = 1; tick <= 60; tick++)
     {
         m.stamp_ms = m.now_ms = tick * 10U;
-        g_now_us = m.now_ms * 1000U;
-        barcode_edges (0U, true, true);
+        barcode_level (true, 1U);
+        barcode_level (false, 9U);
         m.b_barcode = ir_barcode_recent ();
         m.ping_seq = (uint8_t)((tick / 5U) & OBSTACLE_PING_SEQ_MK);
         m.left_um += 500;
@@ -329,7 +303,7 @@ static void test_pilot_barcode_noise (void)
             CHECK (cmd.turn_deci_s > 0);
         }
     }
-    CHECK (ir_barcode_drops () != 0U);
+    CHECK (ir_barcode_drops () == 0U);
 }
 #endif
 
@@ -350,7 +324,7 @@ int main (int argc, char ** argv)
 
     if (2 != argc)
     {
-        (void)fprintf (stderr, "Usage: %s second-semaphore|pin-setup|timer-handler|barcode-handler|"
+        (void)fprintf (stderr, "Usage: %s second-semaphore|pin-setup|timer-handler|"
                        "barcode-pulse-noise|barcode-overflow-noise|barcode-timer-wrap|line-capture\n",
                        argv[0]);
         return 2;
@@ -385,6 +359,15 @@ int main (int argc, char ** argv)
         test_route_capture ();
         return (0U == g_failures) ? 0 : 1;
     }
+    if (0 == strcmp (argv[1], "barcode-chatter"))
+    {
+        if (E_OK != ir_capture_init ())
+        {
+            return 1;
+        }
+        test_barcode_chatter ();
+        return (0U == g_failures) ? 0 : 1;
+    }
     if ((0 == strcmp (argv[1], "barcode-pulse-noise")) ||
         (0 == strcmp (argv[1], "barcode-overflow-noise")) || (0 == strcmp (argv[1], "line-capture")))
     {
@@ -417,11 +400,6 @@ int main (int argc, char ** argv)
         g_b_fail_timer_handler = true;
         anticipated = E_PAR;
     }
-    else if (0 == strcmp (argv[1], "barcode-handler"))
-    {
-        g_b_fail_barcode_handler = true;
-        anticipated = E_LIMIT;
-    }
     else
     {
         return 2;
@@ -430,7 +408,6 @@ int main (int argc, char ** argv)
     CHECK (anticipated == ir_capture_init ());
     CHECK (!g_semaphores[1]);
     CHECK (!g_semaphores[2]);
-    CHECK (!g_b_barcode_handler);
     CHECK (NULL == g_shim_inthdr);
     CHECK (0 == g_shim_int_enabled);
     CHECK (0U == g_timer_enable);

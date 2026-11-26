@@ -1677,7 +1677,7 @@ static void test_junction_approach(void)
     route = (line_route_t){0};
     assert(!approach_stripe(&route, LINE_TURN_KIND_RIGHT, false, false, 40, 0));
     route = (line_route_t){0};
-    assert(!approach_stripe(&route, LINE_TURN_KIND_RIGHT, false, false, 15, 100));
+    assert(!approach_stripe(&route, LINE_TURN_KIND_RIGHT, false, false, 15, LINE_ROUTE_YAW_LIMIT_DECI + 5));
     route = (line_route_t){0};
     /* Even a candidate on the other side can be the only available exit. */
     assert(approach_stripe(&route, LINE_TURN_KIND_RIGHT, true, true, 15, 0));
@@ -1840,7 +1840,7 @@ static void test_transverse_stripe_with_overlapping_left_readers(void)
         if (line_route_observe(&route, LINE_TURN_KIND_RIGHT, mm < 29,
                                mm >= 12 && mm < 27, mm < 17, travel, travel))
         {
-            assert(mm >= 148 && mm <= 151);
+            assert(mm >= LINE_SENSOR_LEAD_MM + 18 && mm <= LINE_SENSOR_LEAD_MM + 21);
             return;
         }
     }

@@ -12,6 +12,7 @@ target_include_directories(test_barcode_width PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../app_program)
 target_compile_options(test_barcode_width PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_barcode_width PRIVATE m)
 add_test(NAME ir.barcode_width.default COMMAND test_barcode_width)
 
 add_executable(test_line_control ir/line_control_test.c
@@ -25,27 +26,44 @@ add_test(NAME ir.line_control.default COMMAND test_line_control)
 add_test(NAME ir.line_control.line_controller_unit COMMAND test_line_control unit)
 add_test(NAME ir.line_control.line_corner_wheel_demands COMMAND test_line_control corner-wheel-demands)
 
-add_executable(test_line_task_contract ir/line_slope_contract_test.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/ir/line/line_task.c
-    ${LINE_CONTROL_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/ir/line/line_filter.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/start_check.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/pilot.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/avoidance.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/contour.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/pilot_log.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/drive.c
-    ${PILOT_OBSTACLE_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/look.c
-    ${OBSTACLE_SRC}/geometry.c
-    ${OBSTACLE_SRC}/scan_algo.c
-    ${TELEMETRY_SRC}/packet.c)
-target_include_directories(test_line_task_contract PRIVATE
-    ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/platform/fakes ../app_program/motion ../app_program/ir/line)
-target_compile_options(test_line_task_contract PRIVATE
-    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/ir/fakes/line_task_ports.h"
-    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-target_link_libraries(test_line_task_contract PRIVATE m)
+function(add_line_task_contract target)
+    add_executable(${target} ir/line_slope_contract_test.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/ir/line/line_task.c
+        ${LINE_CONTROL_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/ir/line/line_filter.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/start_check.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/pilot.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/avoidance.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/contour.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/pilot_log.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/drive.c
+        ${PILOT_OBSTACLE_SOURCES}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/motion/pilot/look.c
+        ${OBSTACLE_SRC}/geometry.c
+        ${OBSTACLE_SRC}/scan_algo.c
+        ${TELEMETRY_SRC}/packet.c)
+    target_include_directories(${target} PRIVATE
+        ${APP_INCLUDE} ${OBSTACLE_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/platform/fakes
+        ../app_program/motion ../app_program/ir/line)
+    target_compile_options(${target} PRIVATE
+        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/ir/fakes/line_task_ports.h"
+        -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+    target_link_libraries(${target} PRIVATE m)
+    target_link_options(${target} PRIVATE
+        -Wl,--wrap=line_route_observe -Wl,--wrap=line_route_probe)
+endfunction()
+
+add_line_task_contract(test_line_task_contract)
+add_line_task_contract(test_extras_line_task_contract)
+target_compile_definitions(test_extras_line_task_contract PRIVATE PICO_CAR_OBSTACLE_EXTRAS)
+foreach(exit IN ITEMS left right)
+    add_test(NAME ir.extras_line_task_contract.junction_${exit}
+        COMMAND test_extras_line_task_contract route-t-${exit})
+endforeach()
+add_test(NAME ir.extras_line_task_contract.sonar_unavailable_junction
+    COMMAND test_extras_line_task_contract route-t-sonar-unavailable)
+add_test(NAME ir.extras_line_task_contract.dashboard_u_turn_junction
+    COMMAND test_extras_line_task_contract route-dashboard-u)
 add_test(NAME ir.line_task_contract.line_task_slope_left COMMAND test_line_task_contract left)
 foreach(startup_case grounded airborne no-imu late-imu no-wheel blocked clearance-lost noisy-baseline calibration calibration-blocked calibration-stuck)
     add_test(NAME ir.line_task_contract.startup_check_${startup_case} COMMAND test_line_task_contract startup-check-${startup_case})
@@ -137,6 +155,10 @@ foreach (course IN ITEMS left right straight-left straight-right t-left t-right 
 endforeach ()
 add_test(NAME ir.line_task_contract.line_route_right_nov20 COMMAND test_line_task_contract route-right -5.5 -30 nov20)
 add_test(NAME ir.line_task_contract.line_route_t_left_matched COMMAND test_line_task_contract route-t-left 5.5 -30 matched)
+foreach(route IN ITEMS dashboard-left dashboard-right dashboard-straight dashboard-u u-single)
+    string(REPLACE "-" "_" slug "${route}")
+    add_test(NAME ir.line_task_contract.line_route_${slug} COMMAND test_line_task_contract route-${route})
+endforeach()
 add_test(NAME ir.line_task_contract.line_route_t_right_matched COMMAND test_line_task_contract route-t-right 5.5 -30 matched)
 add_test(NAME ir.line_task_contract.line_route_t_straight_later_nov16 COMMAND test_line_task_contract route-t-straight-later 5.5 -30 nov16)
 add_test(NAME ir.line_task_contract.line_route_t_straight_later_nov20 COMMAND test_line_task_contract route-t-straight-later 5.5 -30 nov20)
@@ -168,10 +190,30 @@ add_executable(test_barcode_task_reject ir/barcode_task_reject_test.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/ir/barcode/action.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../app_program/ir/barcode/parser.c)
 target_include_directories(test_barcode_task_reject PRIVATE ${APP_INCLUDE} platform/fakes)
+# The recorded optical fixtures use the default command letters.
+target_compile_definitions(test_barcode_task_reject PRIVATE
+    "BARCODE_CHAR_STOP='H'" "BARCODE_CHAR_LEFT='L'" "BARCODE_CHAR_RIGHT='R'"
+    "BARCODE_CHAR_STRAIGHT='S'" "BARCODE_CHAR_UTURN='U'")
 target_compile_options(test_barcode_task_reject PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/supervisor/fakes/supervisor_kernel.h"
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+target_link_libraries(test_barcode_task_reject PRIVATE m)
 add_test(NAME ir.barcode_task_reject.default COMMAND test_barcode_task_reject)
+add_test(NAME ir.barcode_task_reject.split_narrow_bar COMMAND test_barcode_task_reject split-narrow-bar)
+add_test(NAME ir.barcode_task_reject.invalid_closing_bar COMMAND test_barcode_task_reject invalid-final-bar)
+add_test(NAME ir.barcode_task_reject.closing_capture_loss COMMAND test_barcode_task_reject capture-loss-during-close)
+add_test(NAME ir.barcode_task_reject.pending_capture_guard COMMAND test_barcode_task_reject pending-capture-guard)
+add_test(NAME ir.barcode_task_reject.element_travel COMMAND test_barcode_task_reject element-travel)
+add_test(NAME ir.barcode_task_reject.aligned_stop_bar COMMAND test_barcode_task_reject aligned-stop-bar)
+add_test(NAME ir.barcode_task_reject.aligned_block COMMAND test_barcode_task_reject aligned-block)
+add_test(NAME ir.barcode_task_reject.late_invalid_opening COMMAND test_barcode_task_reject late-invalid-opening)
+add_test(NAME ir.barcode_task_reject.submicrometre_glitch COMMAND test_barcode_task_reject submicrometre-glitch)
+add_test(NAME ir.barcode_task_reject.close_before_later_invalid_width COMMAND test_barcode_task_reject close-before-later-invalid-width)
+add_test(NAME ir.barcode_task_reject.genuine_short_bar COMMAND test_barcode_task_reject genuine-short-bar)
+add_test(NAME ir.barcode_task_reject.invalid_block_span COMMAND test_barcode_task_reject invalid-block-span)
+add_test(NAME ir.barcode_task_reject.rebased_block_span COMMAND test_barcode_task_reject rebased-block-span)
+add_test(NAME ir.barcode_task_reject.late_clean_pair COMMAND test_barcode_task_reject late-clean-pair)
+add_test(NAME ir.barcode_task_reject.late_recovered_pair COMMAND test_barcode_task_reject late-recovered-pair)
 
 # IR capture pure helpers: barcode edge decision and alarm catch-up.
 add_executable(test_ir_edge ir/ir_edge_test.c)
@@ -197,6 +239,7 @@ add_test(NAME ir.ir_capture_contract.barcode_route_capture COMMAND test_ir_captu
 add_test(NAME ir.ir_capture_contract.late_arm COMMAND test_ir_capture_contract late-arm)
 add_test(NAME ir.ir_capture_contract.ir_capture_line_pins COMMAND test_ir_capture_contract line-capture)
 add_test(NAME ir.ir_capture_contract.ir_capture_barcode_pulse_noise COMMAND test_ir_capture_contract barcode-pulse-noise)
+add_test(NAME ir.ir_capture_contract.barcode_chatter COMMAND test_ir_capture_contract barcode-chatter)
 add_test(NAME ir.ir_capture_contract.ir_capture_barcode_overflow_noise COMMAND test_ir_capture_contract barcode-overflow-noise)
 add_test(NAME ir.ir_capture_contract.ir_capture_barcode_timer_wrap COMMAND test_ir_capture_contract barcode-timer-wrap)
 add_test(NAME ir.ir_capture_contract.pilot_barcode_noise COMMAND test_ir_capture_contract pilot-barcode-noise)

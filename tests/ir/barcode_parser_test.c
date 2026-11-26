@@ -206,9 +206,13 @@ static void test_invalid_interchar_elements (void)
 {
     barcode_parser_t parser = BARCODE_PARSER_INIT;
 
-    /* Inter-character element is wide space instead of narrow space */
+    /* A separator stays narrower than a wide space. Two narrow widths end the attempt. */
     assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); /* * */
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, WIDE_UM));
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 2U * NARROW_UM - 1U));
+    assert(parser.char_index == 1U);
+    parser = BARCODE_PARSER_INIT;
+    assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); /* * */
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 2U * NARROW_UM));
     assert_parser_reset(&parser);
 
     /* Inter-character element is bar instead of space */
@@ -216,9 +220,9 @@ static void test_invalid_interchar_elements (void)
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, NARROW_UM));
     assert_parser_reset(&parser);
 
-    /* Element too narrow or too wide */
+    /* A zero-length separator or oversized first bar is invalid. */
     assert(BARCODE_NO_CHAR == put_char(&parser, 1, 4, 6)); /* * */
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 1));
+    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 0U));
     assert_parser_reset(&parser);
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, 65000));
     assert_parser_reset(&parser);
@@ -287,23 +291,24 @@ static void test_start_boundaries_and_deadbands (void)
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, NARROW_UM));
     assert_parser_reset(&parser);
 
-    /* Deadband width rejection: narrow width baseline = 4000 um */
-    /* 0.5x = 2000 um (< 0.6x narrow scale) */
-    parser = BARCODE_PARSER_INIT;
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, 4000U));
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 2000U));
-    assert_parser_reset(&parser);
-
-    /* 1.65x lies in the gap between a narrow and an unlearned wide. */
-    parser = BARCODE_PARSER_INIT;
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, 4000U));
-    assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 6600U));
-    assert_parser_reset(&parser);
-
-    /* 4.0x = 16000 um (> 3.6x wide scale) */
+    /* Bars and spaces are compared within their own colour once the
+     * character is complete, so a space is not judged against the bar. */
     parser = BARCODE_PARSER_INIT;
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, false, 4000U));
     assert(BARCODE_NO_CHAR == barcode_parser_input(&parser, true, 16000U));
+    assert(2 == parser.elem_index);
+
+    /* A wide space only 1.5 times the narrow spaces is not clearly wide. */
+    static const uint16_t ambiguous[9] = {
+        4000U, 9000U, 4000U, 6000U, 12000U, 6000U, 12000U, 6000U, 4000U
+    };
+    barcode_info_t info;
+    parser = BARCODE_PARSER_INIT;
+    for (unsigned i = 0U; i < 9U; i++)
+    {
+        assert(BARCODE_NO_CHAR == barcode_parser_input_info(&parser, (i & 1U) != 0U, ambiguous[i], &info));
+        assert(info.reject == ((i == 8U) ? BARCODE_REJECT_PARITY : BARCODE_REJECT_NONE));
+    }
     assert_parser_reset(&parser);
 }
 
@@ -550,8 +555,34 @@ static void test_adaptive_z(void)
     }
 }
 
+/* A reversed *Z* read on the car. Bars read about 2 mm narrow and spaces
+ * about 2 mm wide, so a narrow space is wider than twice a narrow bar. The
+ * Z's wide space had no valid speed; its 30 mm is the odometer travel. */
+static void test_recorded_reverse_z (void)
+{
+    static const uint16_t widths[] = {
+        1396U, 9516U, 15385U, 8457U, 15934U, 8784U, 3233U, 20302U, 9349U,
+        14086U,
+        3244U, 4617U, 3539U, 6516U, 15341U, 6604U, 15359U, 30000U, 3885U,
+        9183U,
+        3180U, 5232U, 13886U, 6547U, 16093U, 8412U, 3328U, 20768U, 8454U,
+    };
+    barcode_parser_t parser = BARCODE_PARSER_INIT;
+    barcode_info_t   info;
+
+    for (unsigned i = 0U; i < (sizeof(widths) / sizeof(widths[0])); i++)
+    {
+        uint8_t const code = barcode_parser_input_info(&parser, (i & 1U) != 0U, widths[i], &info);
+        assert(BARCODE_REJECT_NONE == info.reject);
+        assert(code == ((i == 28U) ? char_to_data('Z') : BARCODE_NO_CHAR));
+    }
+    assert(info.is_reverse);
+    assert_parser_reset(&parser);
+}
+
 int main (void)
 {
+    test_recorded_reverse_z();
     test_adaptive_z();
     test_only_letter_payloads();
     test_forward_and_reverse_valid();

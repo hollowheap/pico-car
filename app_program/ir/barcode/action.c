@@ -3,54 +3,63 @@
  */
 
 #include "ir/barcode/action.h"
+#include "ir/barcode/action_config.h"
 #include "supervisor/command.h"
 
-/* Letters, as codes 0..25 for 'A'..'Z'. */
-#define CODE_H (7U)
-#define CODE_L (11U)
-#define CODE_R (17U)
-#define CODE_S (18U)
-#define CODE_U (20U)
+#define BARCODE_CHAR_IS_LETTER(letter) (('A' <= (letter)) && ((letter) <= 'Z'))
+
+STATIC_ASSERT (BARCODE_CHAR_IS_LETTER(BARCODE_CHAR_STOP) &&
+               BARCODE_CHAR_IS_LETTER(BARCODE_CHAR_ALT_STOP) &&
+               BARCODE_CHAR_IS_LETTER(BARCODE_CHAR_LEFT) &&
+               BARCODE_CHAR_IS_LETTER(BARCODE_CHAR_RIGHT) &&
+               BARCODE_CHAR_IS_LETTER(BARCODE_CHAR_STRAIGHT) &&
+               BARCODE_CHAR_IS_LETTER(BARCODE_CHAR_UTURN),
+               "barcode bindings must use uppercase A-Z");
+
+barcode_action_t barcode_action_for_command (uint8_t opcode)
+{
+    switch (opcode)
+    {
+        case VEHICLE_CMD_STOP:
+            return (barcode_action_t){ BARCODE_ACTION_STOP, opcode };
+        case VEHICLE_CMD_LEFT:
+            return (barcode_action_t){ BARCODE_ACTION_LEFT, opcode };
+        case VEHICLE_CMD_RIGHT:
+            return (barcode_action_t){ BARCODE_ACTION_RIGHT, opcode };
+        case VEHICLE_CMD_UTURN:
+            return (barcode_action_t){ BARCODE_ACTION_UTURN, opcode };
+        case VEHICLE_CMD_STRAIGHT:
+            return (barcode_action_t){ BARCODE_ACTION_STRAIGHT, opcode };
+        default:
+            return (barcode_action_t){ BARCODE_ACTION_REJECTED, 0U };
+    }
+}
 
 barcode_action_t barcode_action_of (uint8_t code)
 {
-    barcode_action_t result = { BARCODE_ACTION_REJECTED, 0U };
-
+    /* The parser returns 0..25. Duplicate bindings fail as duplicate cases. */
     switch (code)
     {
-        /* The letters of the four junction commands. H is a fifth,
-         * a halt; delete its row to have only four. */
-        case CODE_S:
-            result.action = BARCODE_ACTION_STRAIGHT;
-            result.opcode = VEHICLE_CMD_STRAIGHT;
-        break;
+        case (BARCODE_CHAR_STRAIGHT - 'A'):
+            return barcode_action_for_command(VEHICLE_CMD_STRAIGHT);
 
-        case CODE_H:
-            result.action = BARCODE_ACTION_STOP;
-            result.opcode = VEHICLE_CMD_STOP;
-        break;
+        case (BARCODE_CHAR_STOP - 'A'):
+        case (BARCODE_CHAR_ALT_STOP - 'A'):
+            return barcode_action_for_command(VEHICLE_CMD_STOP);
 
-        case CODE_L:
-            result.action = BARCODE_ACTION_LEFT;
-            result.opcode = VEHICLE_CMD_LEFT;
-        break;
+        case (BARCODE_CHAR_LEFT - 'A'):
+            return barcode_action_for_command(VEHICLE_CMD_LEFT);
 
-        case CODE_R:
-            result.action = BARCODE_ACTION_RIGHT;
-            result.opcode = VEHICLE_CMD_RIGHT;
-        break;
+        case (BARCODE_CHAR_RIGHT - 'A'):
+            return barcode_action_for_command(VEHICLE_CMD_RIGHT);
 
-        case CODE_U:
-            result.action = BARCODE_ACTION_UTURN;
-            result.opcode = VEHICLE_CMD_UTURN;
-        break;
+        case (BARCODE_CHAR_UTURN - 'A'):
+            return barcode_action_for_command(VEHICLE_CMD_UTURN);
 
         default:
-            /* Every other letter has no action. */
-        break;
+            return (barcode_action_t){ BARCODE_ACTION_REJECTED, 0U };
     }
 
-    return result;
 }
 
 void barcode_gate_init (barcode_gate_t * p_gate)

@@ -2,6 +2,9 @@
  * @brief Parses single-character Code 39 barcodes.
  * Only supports 'A' to 'Z' characters.
  * The initial narrow bar is bounded for the supported 50–400 mm markers.
+ * Each character is classified once its nine elements are in: its two
+ * widest bars and its widest space are wide. Bars and spaces are ranked
+ * apart because the reader shrinks bars and widens spaces.
  */
 
 #ifndef BARCODE_PARSER_H
@@ -14,24 +17,22 @@
 
 #define BARCODE_NO_CHAR     0xFFU
 #define BARCODE_PARSER_INIT ((barcode_parser_t){0})
+#define BARCODE_CHARACTER_ELEMENTS (9U)
 
 typedef struct
 {
-    /** Width of a narrow element. */
+    /** Widths of the elements read so far in the current character. */
+    uint16_t elem_width_um[BARCODE_CHARACTER_ELEMENTS];
+    /** Mean narrow bar of the last character, or the first bar before it. */
     uint16_t narrow_width_um;
-    uint16_t wide_ratio_q8;
+    /** Mean narrow space of the last character. */
+    uint16_t narrow_space_um;
     /** Value of the middle data character. */
     uint8_t data_value;
-    /** Value of the character. */
-    uint8_t curr_value;
     /** Bar/space index inside current character. */
     uint8_t elem_index : 4;
     /** Index of current character. */
     uint8_t char_index : 2;
-    /** Number of wide bars observed in current character. */
-    uint8_t wide_bar_count : 2;
-    /** Number of wide spaces observed in current character. */
-    uint8_t wide_space_count : 1;
     /**
      * Whether we are reading the barcode in reverse.
      * Only valid after the start character has been read.
@@ -39,12 +40,12 @@ typedef struct
     bool is_reverse : 1;
 } barcode_parser_t;
 
-STATIC_ASSERT (sizeof(barcode_parser_t) == 8U, "barcode_parser_t size");
+STATIC_ASSERT (sizeof(barcode_parser_t) == 24U, "barcode_parser_t size");
 
 /** Why a barcode was rejected. */
 #define BARCODE_REJECT_NONE      (0U)
-#define BARCODE_REJECT_ELEMENT   (1U) /* element out of order, or the width fits no class */
-#define BARCODE_REJECT_PARITY    (2U) /* a character has the wrong number of wide elements */
+#define BARCODE_REJECT_ELEMENT   (1U) /* element out of order, zero width, or a bad gap */
+#define BARCODE_REJECT_PARITY    (2U) /* a character has no clear two wide bars and one wide space */
 #define BARCODE_REJECT_DELIMITER (3U) /* the start or stop delimiter is wrong */
 #define BARCODE_REJECT_SYMBOL    (6U) /* correctly framed symbol outside A-Z */
 
@@ -76,6 +77,9 @@ uint8_t barcode_parser_input (barcode_parser_t * state, bool is_elem_space,
  */
 uint8_t barcode_parser_input_info (barcode_parser_t * state, bool is_elem_space,
                                    uint16_t elem_width_um, barcode_info_t * p_info);
+
+/* Largest width accepted as an optical pulse. */
+uint16_t barcode_parser_glitch_limit_um (const barcode_parser_t * state);
 
 /** Whether an element is too short to be a real element of a barcode whose
  *  narrow width is held by `state`. */

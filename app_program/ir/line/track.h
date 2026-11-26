@@ -69,12 +69,16 @@ typedef enum
 
 STATIC_ASSERT(sizeof(ir_barcode_read_t) <= 4U, "ir_barcode_read_t size");
 
-/** Pop a timestamped edge (2 us resolution). After a capture loss the next
- * edge establishes a new baseline for measuring stripe widths. */
+/** Pop a timestamped edge (2 us resolution) after short-pulse qualification.
+ * After a capture loss the next edge establishes a new width baseline. */
 ir_barcode_read_t ir_barcode_pop (uint32_t * p_timestamp_us, bool * p_level);
 
 /** Barcode edges lost to an ambiguous transition or a full ISR ring. */
 uint32_t ir_barcode_drops (void);
+
+/** All edges strictly before this time have passed capture qualification.
+ * Read it before popping so a provisional bar cannot outpace the capture. */
+uint32_t ir_barcode_drain_limit_us (void);
 
 /* A queued barcode edge qualifies for line suppression for BARCODE_SUPPRESS_US
  * from its capture timestamp. After a lost edge, require a full quiet interval
