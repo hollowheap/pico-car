@@ -1,5 +1,6 @@
 build/
 /main.uf2
+/build_make/*.uf2
 
 # hollowheap's direnv things
 .direnv/

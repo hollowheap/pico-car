@@ -99,7 +99,7 @@ void platform_startup_ready (void)
  * either core, run on core 0 only when every control task waits, and reach
  * the pinned tasks through SMP-safe queues (app_program/comms/telemetry/queue.c).
  * The kernel tick is 10 ms (CNF_TIMER_PERIOD in
- * lib/mtk3smp-rp2040/config/config.h): every timeout and delay can wait up
+ * config/config.h): every timeout and delay can wait up
  * to one tick longer than asked. Each subsystem keeps its own task table
  * entry in its start function, with literal attributes. */
 

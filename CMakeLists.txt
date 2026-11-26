@@ -10,8 +10,8 @@ project(pico-car C CXX ASM)
 # configure line; the defaults target a LAN Mosquitto instance.
 set(PICO_CAR_MQTT_HOST "$ENV{PICO_CAR_MQTT_HOST}" CACHE STRING "MQTT broker host or IP")
 set(PICO_CAR_MQTT_PORT "1883" CACHE STRING "MQTT broker TCP port")
-set(PICO_CAR_MQTT_USERNAME "" CACHE STRING "MQTT username (empty for anonymous)")
-set(PICO_CAR_MQTT_PASSWORD "" CACHE STRING "MQTT password (empty for anonymous)")
+set(PICO_CAR_MQTT_USERNAME "$ENV{PICO_CAR_MQTT_USERNAME}" CACHE STRING "MQTT username (empty for anonymous)")
+set(PICO_CAR_MQTT_PASSWORD "$ENV{PICO_CAR_MQTT_PASSWORD}" CACHE STRING "MQTT password (empty for anonymous)")
 set(PICO_CAR_TOPIC_PREFIX "car/PICO-CAR" CACHE STRING "MQTT topic prefix")
 set(PICO_CAR_CLIENT_ID "pico-car" CACHE STRING "MQTT client identifier")
 
@@ -24,7 +24,7 @@ if (NOT PICO_CAR_MQTT_HOST)
 endif()
 
 configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/telemetry_config.h.in
+    ${CMAKE_CURRENT_SOURCE_DIR}/config/telemetry_config.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/generated/telemetry_config.h
     @ONLY
 )
@@ -52,7 +52,7 @@ if (PICO_CAR_WIFI_SSID AND
     string(REPLACE "\\" "\\\\" PICO_CAR_WIFI_PASSWORD_ESC "${PICO_CAR_WIFI_PASSWORD}")
     string(REPLACE "\"" "\\\"" PICO_CAR_WIFI_PASSWORD_ESC "${PICO_CAR_WIFI_PASSWORD_ESC}")
     configure_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/wifi_credentials.h.in
+        ${CMAKE_CURRENT_SOURCE_DIR}/config/wifi_credentials.h.in
         ${CMAKE_CURRENT_BINARY_DIR}/generated/wifi_credentials.h
         @ONLY
     )
@@ -67,8 +67,10 @@ if (NOT EXISTS "${MTK3SMP_PATH}/include/tk/tkernel.h")
     message(FATAL_ERROR "mtk3smp-rp2040 missing. Run 'git submodule update --init --recursive'.")
 endif()
 
+# Kernel limits live in config/config.h, as in the course template. The
+# generated copy is searched before the kernel's own config directory.
 configure_file(
-    ${MTK3SMP_PATH}/config/config.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/config/config.h
     ${CMAKE_CURRENT_BINARY_DIR}/generated/config.h
     COPYONLY
 )
@@ -165,7 +167,8 @@ set(PICO_SDK_INCLUDES
 )
 
 set(PICO_CAR_BOARD_INCLUDES
-    # The pinned kernel configuration is shared by the port and its callers.
+    # config/config.h (copied to generated/) sets the kernel limits for the
+    # port and its callers, ahead of the kernel's own config directory.
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${MTK3SMP_PATH}/include
     ${MTK3SMP_PATH}/config
@@ -316,7 +319,7 @@ target_compile_options(pico_car_sdk PRIVATE -ffunction-sections -fdata-sections)
 
 # The driver calls this macro from the radio owner task once the station
 # netif exists; the link timer registers its first lwIP timeout there. The
-# hook is weak, so images without the telemetry library still link.
+# hook is weak, so images without the comms library still link.
 set_source_files_properties(${PICO_SDK_PATH}/lib/cyw43-driver/src/cyw43_lwip.c
     PROPERTIES COMPILE_OPTIONS
     "-include;${CMAKE_CURRENT_SOURCE_DIR}/app_program/comms/telemetry/drv_wifi_link.h;-DCYW43_CB_TCPIP_INIT_EXTRA(self,itf)=((void)(wifi_link_netif_init!=0&&(wifi_link_netif_init(self,itf),1)))")
@@ -347,9 +350,8 @@ add_executable(main
     app_program/platform/platform.c
     app_program/platform/stack.c
     app_program/motion/motion_start.c
-    app_program/motion/obstacle_extras/navigation.c
-    app_program/motion/obstacle_extras/setup.c
-    app_program/ir/line/extras_line_start.c
+    app_program/imu/physics_start.c
+    app_program/supervisor/supervisor_start.c
 )
 target_include_directories(main PRIVATE ${PROJECT_SOURCE_DIR}/app_program)
 
@@ -357,8 +359,11 @@ foreach(app_target IN ITEMS main)
     # Link the uT-Kernel. The USB CDC console is provided by libtm, not pico_stdio.
     target_link_libraries(${app_target} PRIVATE
         motion_service
-        track
+        ir
         platform
+        imu
+        supervisor
+        comms
         obstacle_extras_runtime
         mtk3smp
     )
@@ -384,6 +389,6 @@ foreach(app_target IN ITEMS main)
     target_compile_options(${app_target} PRIVATE ${FIRMWARE_WARNINGS})
 endforeach()
 
-target_link_libraries(track PUBLIC pilot)
+target_link_libraries(ir PUBLIC motion_pilot)
 
 include(cmake/bench.cmake)

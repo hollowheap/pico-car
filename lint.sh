@@ -6,7 +6,7 @@
 #
 #   No argument   Lint application entries of build/compile_commands.json,
 #                 excluding standalone bench images.
-#   PREFIX        Select an app_program/ source file or directory. A header
+#   PREFIX        Select an app_program/ or bench/ source file or directory. A header
 #                 argument filters reported findings to that file, and reads
 #                 the selected sources or all production sources by default.
 #
@@ -23,9 +23,9 @@
 set -euo pipefail
 
 readonly EXCLUDED_FILES=(
-    "app_program/bench/physics_check.c"
-    "app_program/bench/car_bench.c"
-    "app_program/bench/wdt_check.c"
+    "bench/physics_check.c"
+    "bench/car_bench.c"
+    "bench/wdt_check.c"
 )
 
 die() {
@@ -64,16 +64,17 @@ for arg in "$@"; do
     [[ -e "${arg}" ]] || die "no such path: ${arg}"
     arg="$(realpath -m --relative-to="${ROOT}" -- "${arg}")"
     case "${arg}" in
-        app_program/*.h) inc_args+=("${arg}") ;;
-        app_program | app_program/*) src_args+=("${arg}") ;;
-        *) die "prefix must be under app_program/: ${arg}" ;;
+        app_program/*.h | bench/*.h) inc_args+=("${arg}") ;;
+        app_program | app_program/* | bench | bench/*) src_args+=("${arg}") ;;
+        *) die "prefix must be under app_program/ or bench/: ${arg}" ;;
     esac
 done
 
-# Files to lint: compile-database entries under ROOT/app_program, minus exclusions.
+# Files to lint: compile-database entries under ROOT/app_program and ROOT/bench,
+# minus exclusions.
 mapfile -t db_files < <(
     sed -n 's/^ *"file": "\([^"]*\)".*/\1/p' "${DB}" |
-        grep -E "^$(regex_escape "${ROOT}")/app_program/" | sort -u
+        grep -E "^$(regex_escape "${ROOT}")/(app_program|bench)/" | sort -u
 )
 files=()
 for file in "${db_files[@]}"; do
@@ -104,7 +105,7 @@ if ((${#inc_args[@]} > 0)); then
         alts+=("$(regex_escape "${prefix}")")
     done
 else
-    alts=("app_program")
+    alts=("app_program" "bench")
 fi
 path_re="^${root_re}/($(join_alt "${alts[@]}"))"
 header_re="${path_re}(/|\$)"
