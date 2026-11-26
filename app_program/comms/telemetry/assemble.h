@@ -47,6 +47,13 @@ void telemetry_assemble_motion (telemetry_motion_t * p_out,
 void telemetry_assemble_physics (telemetry_physics_t * p_out,
                                  const physics_status_t * p_physics);
 
+/* Add time, signed travel, validity and forward sonar to a bundle. p_out
+   must be non-null. A null snapshot leaves its data unavailable. */
+void telemetry_assemble_bundle_details (
+    telemetry_status_bundle_t * p_out, uint32_t sample_us,
+    const motion_feedback_t * p_feedback, const physics_status_t * p_physics,
+    const obstacle_forward_sample_t * p_forward);
+
 /* 2 Hz obstacle frame. ping is one obstacle_ping_read() sample, or zero
    before the first sample. p_obstacle provides state, cause and faults.
    A NULL plan leaves plan fields zero. A NULL or never-published p_hug

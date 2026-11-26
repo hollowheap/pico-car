@@ -360,24 +360,68 @@ static void test_cmd_ack_overflow_visibility (void)
     CHECK(telemetry_cmd_ack_overflow_count() == 2U);
 }
 
-int main (void)
+static void test_barcode_handoff (void)
 {
+    const telemetry_barcode_sample_t sample = {.edge_us = 100U};
+    const uint8_t event[TELEMETRY_EVENT_QUEUED_SIZE] = {TELEMETRY_TOPIC_EVENT};
+    unsigned stored = 0U;
+
     setup();
-    telemetry_barcode_sample_t sample = {
-        .edge_us = 1234567U, .interval_us = 20000U, .odometer_mm = 522U,
-        .width_um = 3000U, .seq = 255U, .level_high = 1U, .width_valid = 1U
-    };
-    uint8_t frame[TELEMETRY_FRAME_MAX];
+    while ((stored < 100U) &&
+           (telemetry_queue_try_push_no_drop(event, sizeof(event)) == E_OK))
+    {
+        stored++;
+    }
+    CHECK(stored > 0U && stored < 100U);
+    UW const drops = telemetry_queue_drop_count();
     CHECK(telemetry_try_emit_barcode_sample(&sample) == E_OK);
-    CHECK(telemetry_queue_pop(frame, TMO_POL) == (INT)(1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE));
-    CHECK(frame[0] == 'b' && be32(&frame[1]) == 1234567U && be32(&frame[5]) == 20000U);
-    CHECK(be32(&frame[9]) == 522U && be16(&frame[13]) == 3000U && frame[15] == 255U);
-    CHECK(frame[16] == 1U && frame[17] == 1U && frame[18] == 0U);
-    unsigned accepted = 0U;
-    while (accepted < 100U && telemetry_try_emit_barcode_sample(&sample) == E_OK) ++accepted;
-    CHECK(accepted > 0U && accepted < 100U);
+    CHECK(telemetry_queue_drop_count() == drops);
+}
+
+static void test_barcode_ring (void)
+{
+    const telemetry_barcode_sample_t sample = {
+        .edge_us = 1234567U, .interval_us = 20000U, .odometer_mm = 522U,
+        .width_um = 3000U, .seq = 255U, .level_high = 1U, .width_valid = 1U,
+    };
+    uint8_t payload[TELEMETRY_BARCODE_BATCH_WIRE_SIZE];
+    telemetry_barcode_batch_t batch = {0};
+    uint8_t * const record = &payload[TELEMETRY_BARCODE_BATCH_OFF_SAMPLES];
+    uint8_t * const edge = &record[TELEMETRY_BARCODE_RECORD_ID_BYTES];
+
+    setup();
+    UW const drops = telemetry_queue_drop_count();
+    for (unsigned i = 0U; i < TELEMETRY_BARCODE_RING_CAPACITY; i++)
+    {
+        CHECK(telemetry_try_emit_barcode_sample(&sample) == E_OK);
+    }
+    CHECK(telemetry_try_emit_barcode_sample(&sample) == E_TMOUT);
+    CHECK(telemetry_queue_drop_count() == drops + 1U);
+    telemetry_peek_barcode_batch(&batch);
+    CHECK(batch.count == 3U && batch.overflow == 1U);
+    CHECK(telemetry_pack_barcode_batch(payload, &batch) == sizeof(payload));
+    CHECK(be32(record) == 1U && be32(edge) == 1234567U && be32(&edge[4]) == 20000U);
+    CHECK(be32(&edge[8]) == 522U && be16(&edge[12]) == 3000U && edge[14] == 255U);
+    CHECK(edge[15] == 1U && edge[16] == 1U && edge[17] == 0U);
+    CHECK(!telemetry_accept_barcode_batch(batch.count, 4U));
+    CHECK(telemetry_accept_barcode_batch(batch.count, 3U));
+    CHECK(!telemetry_accept_barcode_batch(batch.count, 3U));
+    CHECK(telemetry_try_emit_barcode_sample(&sample) == E_OK);
+    telemetry_peek_barcode_batch(&batch);
+    CHECK(batch.records[0].record_id == 4U && batch.overflow == 1U);
     CHECK(telemetry_emit_event(TELEMETRY_EVENT_SOURCE_BARCODE, TELEMETRY_EVT_BARCODE,
                                'Z', 0, 522U) == E_OK);
+}
+
+int main (int argc, char ** argv)
+{
+    if ((argc == 2) && (strcmp(argv[1], "barcode-handoff") == 0))
+    {
+        test_barcode_handoff();
+        return (g_fail == 0U) ? 0 : 1;
+    }
+    CHECK(argc == 1);
+    test_barcode_ring();
     test_event_fields_and_ids();
     test_event_is_qos1();
     test_try_event_on_contended_queue();

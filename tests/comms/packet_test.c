@@ -164,6 +164,68 @@ test_physics (void)
 }
 
 static void
+test_status_bundle (void)
+{
+#define BUNDLE_VALUE(name) TELEMETRY_VEC_STATUS_BUNDLE_##name
+    telemetry_status_bundle_t const src = {
+        .status = {
+            .odometer_mm = BUNDLE_VALUE(ODOMETER_MM),
+            .speed_mms = BUNDLE_VALUE(SPEED_MMS),
+            .heading_ddeg = BUNDLE_VALUE(HEADING_DDEG),
+            .faults = BUNDLE_VALUE(FAULTS),
+            .seq = BUNDLE_VALUE(SEQ),
+            .state = BUNDLE_VALUE(STATE),
+            .mode = BUNDLE_VALUE(MODE),
+            .line_bits = BUNDLE_VALUE(LINE_BITS),
+            .hold_mask = BUNDLE_VALUE(HOLD_MASK),
+            .pivot_scale_pct = BUNDLE_VALUE(PIVOT_SCALE_PCT),
+        },
+        .motion = {
+            .left_mms = BUNDLE_VALUE(LEFT_MMS),
+            .right_mms = BUNDLE_VALUE(RIGHT_MMS),
+            .left_target_mms = BUNDLE_VALUE(LEFT_TARGET_MMS),
+            .right_target_mms = BUNDLE_VALUE(RIGHT_TARGET_MMS),
+            .left_duty_pm = BUNDLE_VALUE(LEFT_DUTY_PM),
+            .right_duty_pm = BUNDLE_VALUE(RIGHT_DUTY_PM),
+            .overruns = BUNDLE_VALUE(OVERRUNS),
+            .motion_state = BUNDLE_VALUE(MOTION_STATE),
+            .motion_fault = BUNDLE_VALUE(MOTION_FAULT),
+            .seq = 0xffU,
+        },
+        .physics = {
+            .pitch_cdeg = BUNDLE_VALUE(PITCH_CDEG),
+            .roll_cdeg = BUNDLE_VALUE(ROLL_CDEG),
+            .az_mg = BUNDLE_VALUE(AZ_MG),
+            .a_fwd_mg = BUNDLE_VALUE(A_FWD_MG),
+            .yaw_rate_cdps = BUNDLE_VALUE(YAW_RATE_CDPS),
+            .amag_mg = BUNDLE_VALUE(AMAG_MG),
+            .heading_ddeg = BUNDLE_VALUE(PHYSICS_HEADING_DDEG),
+            .hump_peak_mm = BUNDLE_VALUE(HUMP_PEAK_MM),
+            .run_peak_mm = BUNDLE_VALUE(RUN_PEAK_MM),
+            .hump_state = BUNDLE_VALUE(HUMP_STATE),
+            .motion_class = BUNDLE_VALUE(MOTION_CLASS),
+            .physics_faults = BUNDLE_VALUE(PHYSICS_FAULTS),
+            .flags = BUNDLE_VALUE(FLAGS),
+            .attitude_state = BUNDLE_VALUE(ATTITUDE_STATE),
+            .seq = 0x7fU,
+        },
+        .device_sample_us = BUNDLE_VALUE(DEVICE_SAMPLE_US),
+        .left_travel_mm = BUNDLE_VALUE(LEFT_TRAVEL_MM),
+        .right_travel_mm = BUNDLE_VALUE(RIGHT_TRAVEL_MM),
+        .wheel_age_us = BUNDLE_VALUE(WHEEL_AGE_US),
+        .sample_flags = BUNDLE_VALUE(SAMPLE_FLAGS),
+        .forward_dist_mm = BUNDLE_VALUE(FORWARD_DIST_MM),
+        .forward_echo_class = BUNDLE_VALUE(FORWARD_ECHO_CLASS),
+        .forward_age_ms = BUNDLE_VALUE(FORWARD_AGE_MS),
+    };
+#undef BUNDLE_VALUE
+
+    CHECK_PACK (STATUS_BUNDLE, status_bundle, src, 0u);
+    CHECK_PACK (STATUS_BUNDLE, status_bundle, src, ODD_OFFSET);
+    CHECK_NULLS (status_bundle, src);
+}
+
+static void
 test_obstacle (void)
 {
     telemetry_obstacle_t src = {
@@ -241,6 +303,7 @@ test_heartbeat (void)
         .reset_reason = TELEMETRY_VEC_HEARTBEAT_RESET_REASON,
         .link_state   = TELEMETRY_VEC_HEARTBEAT_LINK_STATE,
         .run_id       = TELEMETRY_VEC_HEARTBEAT_RUN_ID,
+        .car_id       = TELEMETRY_VEC_HEARTBEAT_CAR_ID,
     };
 
     CHECK_PACK (HEARTBEAT, heartbeat, src, 0u);
@@ -297,7 +360,7 @@ test_sizes_and_topics (void)
     CHECK (TELEMETRY_EVENT_WIRE_SIZE == 12u);
     CHECK (TELEMETRY_DIAG_WIRE_SIZE == 45u);
     CHECK (TELEMETRY_DIAG_COUNTS_WIRE_SIZE == 73u);
-    CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 10u);
+    CHECK (TELEMETRY_HEARTBEAT_WIRE_SIZE == 14u);
     CHECK (TELEMETRY_PROFILE_WIRE_SIZE == 82u);
     CHECK (TELEMETRY_WIRE_MAX == 82u);
     CHECK (TELEMETRY_FRAME_MAX == 83u);
@@ -315,6 +378,7 @@ main (void)
     test_status ();
     test_motion ();
     test_physics ();
+    test_status_bundle ();
     test_obstacle ();
     test_diag ();
     test_heartbeat ();

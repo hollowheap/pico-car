@@ -450,6 +450,20 @@ test_receive_counts_each_cause (void)
            == TELEMETRY_CMD_BAD_ARG); /* must not crash */
 }
 
+static void test_barcode_map_frame (void)
+{
+    uint8_t frame[TELEMETRY_BARCODE_MAP_WIRE_SIZE] = {0};
+    telemetry_cmd_t command;
+    frame[TELEMETRY_BARCODE_MAP_OFF_OPCODE] = TELEMETRY_COMMAND_CONFIG_BARCODE_MAP;
+    (void)memset(&frame[TELEMETRY_BARCODE_MAP_OFF_BINDINGS], TELEMETRY_COMMAND_CONFIG_UNMAPPED,
+                 TELEMETRY_BARCODE_MAP_COUNT_BINDINGS);
+    frame[TELEMETRY_BARCODE_MAP_OFF_BINDINGS + 'Z' - 'A'] = TELEMETRY_CMD_STOP;
+    CHECK (telemetry_cmd_parse(frame, sizeof(frame), &command) == TELEMETRY_CMD_OK);
+    CHECK (telemetry_cmd_parse(frame, TELEMETRY_CMD_WIRE_SIZE, &command) == TELEMETRY_CMD_BAD_OPCODE);
+    frame[TELEMETRY_BARCODE_MAP_OFF_BINDINGS + 'Z' - 'A'] = TELEMETRY_CMD_START;
+    CHECK (telemetry_cmd_parse(frame, sizeof(frame), &command) == TELEMETRY_CMD_BAD_OPCODE);
+}
+
 int
 main (int argc, char * argv[])
 {
@@ -468,6 +482,7 @@ main (int argc, char * argv[])
     test_state_init ();
     test_parse_layout ();
     test_parse_rejects ();
+    test_barcode_map_frame ();
     test_accept_bad_args ();
     test_accept_run_id ();
     test_window_first_command ();

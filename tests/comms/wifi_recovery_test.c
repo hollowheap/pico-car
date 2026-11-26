@@ -1,5 +1,5 @@
 /* Run the radio owner task with the link timer through startup, join failures,
- * a later link loss and a renumbered lease. */
+ * RSSI changes, a later link loss and a renumbered lease. */
 #include <assert.h>
 #include <setjmp.h>
 #include <string.h>
@@ -19,7 +19,8 @@ cyw43_t cyw43_state;
 volatile uint32_t cyw43_utk_poll_requested;
 struct netif *netif_default = &cyw43_state.netif[CYW43_ITF_STA];
 static ip_addr_t dns;
-static uint64_t now_us, attempt_us, failure_us, lost_us;
+static uint64_t now_us, attempt_us, failure_us, recovered_us, lost_us;
+static uint32_t clock_offset_ms;
 static unsigned attempts, adoptions, adoptions_at_recovery, attempts_before_loss, mqtt_polls;
 static bool supplied, recovered, dropped, saw_timeout, in_driver, renumbered;
 static sys_timeout_handler timer_handler;
@@ -40,7 +41,7 @@ int32_t tk_get_prc(void) { return 1; }
 void cyw43_thread_enter(void) { assert(!in_driver); in_driver = true; }
 void cyw43_thread_exit(void) { assert(in_driver); in_driver = false; }
 void lwip_init(void) {}
-u32_t sys_now(void) { return (u32_t)(now_us / 1000U); }
+u32_t sys_now(void) { return clock_offset_ms + (u32_t)(now_us / 1000U); }
 
 void sys_timeout(u32_t msecs, sys_timeout_handler handler, void *arg)
 {
@@ -69,11 +70,37 @@ void mqtt_session_poll(void)
 void cyw43_init(cyw43_t *self) { (void)self; }
 int cyw43_wifi_get_mac(cyw43_t *s, int i, uint8_t mac[6]) { (void)s; (void)i; (void)mac; return 0; }
 int cyw43_wifi_get_bssid(cyw43_t *s, uint8_t b[6]) { (void)s; (void)b; return 0; }
+
+static void clear_link(void)
+{
+    netif_default->flags &= (u8_t)~NETIF_FLAG_LINK_UP;
+    link = CYW43_LINK_DOWN;
+}
+
 int cyw43_wifi_get_rssi(cyw43_t *s, int32_t *r)
 {
     (void)s;
     assert(in_driver && netif_is_link_up(netif_default));
     *r = dropped ? -64 : -50;
+    if (is_case("rssi-refresh") && recovered && !dropped) {
+        uint64_t elapsed_us = now_us - recovered_us;
+
+        if (elapsed_us < 1500000U) {
+            *r = -70;
+        } else if (elapsed_us < 2500000U) {
+            *r = -72;
+            now_us += 500000U;
+            return -CYW43_ETIMEDOUT;
+        } else {
+            *r = -58;
+            if (elapsed_us >= 6000000U) {
+                /* The ioctl can finish after dispatching a link-down event. */
+                dropped = true;
+                lost_us = now_us;
+                clear_link();
+            }
+        }
+    }
     return 0;
 }
 int cyw43_wifi_link_status(cyw43_t *s, int i) { (void)s; (void)i; return link; }
@@ -134,7 +161,7 @@ static void poll_driver(void)
     if (now_us >= 100000U) cyw43_state.wifi_scan_state = 0;
     if (!attempts) return;
 
-    if (!dropped && attempts <= 2 && !recovered) {
+    if (!dropped && attempts <= 2 && !recovered && !is_case("rssi-refresh")) {
         if (is_case("late-link") && failure_us && now_us >= failure_us + 500000U) {
             netif_default->flags |= NETIF_FLAG_LINK_UP;
             supplied = true;
@@ -147,8 +174,7 @@ static void poll_driver(void)
             failure_us = now_us;
         }
     } else if (dropped && attempts == attempts_before_loss) {
-        netif_default->flags &= (u8_t)~NETIF_FLAG_LINK_UP;
-        link = CYW43_LINK_DOWN;
+        clear_link();
         /* lwIP can retain the old lease while the physical link is down. */
     } else if (now_us - attempt_us >= 100000U) {
         netif_default->flags |= NETIF_FLAG_LINK_UP;
@@ -157,21 +183,72 @@ static void poll_driver(void)
 }
 void (*cyw43_poll)(void) = poll_driver;
 
+static void check_rssi_refresh(void)
+{
+    uint64_t elapsed_us = now_us - recovered_us;
+
+    assert(attempts == attempts_before_loss && adoptions == adoptions_at_recovery);
+    if (elapsed_us < 900000U) {
+        assert(wifi_link_rssi() == -50 && "RSSI refreshed too soon");
+    } else if (elapsed_us >= 1100000U && elapsed_us < 1900000U) {
+        assert(wifi_link_rssi() == -70 && "RSSI stayed stale during the association");
+    } else if (elapsed_us >= 2600000U && elapsed_us < 4400000U) {
+        assert(wifi_link_rssi() == INT32_MIN && "failed RSSI read must clear the sample during cooldown");
+    } else if (elapsed_us >= 4600000U) {
+        assert(wifi_link_rssi() == -58 && "RSSI did not recover during the association");
+    }
+}
+
+static void check_lease_without_dns(wifi_lease_t lease)
+{
+    if (!supplied) {
+        assert(lease == WIFI_LEASE_PENDING);
+        return;
+    }
+    assert(netif_is_link_up(netif_default));
+    if (ip4_addr_isany_val(netif_default->ip_addr)) {
+        assert(lease == WIFI_LEASE_PENDING && "DHCP requires an address");
+        IP4_ADDR(&netif_default->ip_addr, 192, 0, 2, 8);
+        ip4_addr_set_zero(&netif_default->netmask);
+    } else if (ip4_addr_isany_val(netif_default->netmask)) {
+        assert(lease == WIFI_LEASE_PENDING && "DHCP requires a netmask");
+        IP4_ADDR(&netif_default->netmask, 255, 255, 255, 0);
+        ip4_addr_set_zero(&netif_default->gw);
+    } else if (ip4_addr_isany_val(netif_default->gw)) {
+        assert(lease == WIFI_LEASE_PENDING && "DHCP requires a gateway");
+        IP4_ADDR(&netif_default->gw, 192, 0, 2, 1);
+    } else {
+        assert(lease == WIFI_LEASE_READY && "complete IPv4 lease waited for DNS");
+        assert(adoptions == 1U);
+        longjmp(done, 1);
+    }
+}
+
 int32_t tk_dly_tsk(uint32_t delay)
 {
     T_CYW43_UTK_STATUS st;
-    bool leased = wifi_link_lease() == WIFI_LEASE_READY;
+    wifi_lease_t lease = wifi_link_lease();
+    bool leased = lease == WIFI_LEASE_READY;
 
     assert(!in_driver);
     cyw43_utk_get_status(&st);
     assert(st.status_retries == 0U);
     assert(st.poll_count == mqtt_polls + 1U);
+    if (is_case("lease-without-dns")) {
+        check_lease_without_dns(lease);
+    }
     if (leased) {
         assert(supplied && netif_is_link_up(netif_default) && st.link_up);
-        assert(wifi_link_rssi() == (dropped ? -64 : -50));
+        if (is_case("rssi-refresh") && recovered && !dropped) {
+            check_rssi_refresh();
+        } else {
+            assert(wifi_link_rssi() == (dropped ? -64 : -50));
+        }
         if (!recovered) {
-            assert(attempts == (is_case("late-link") ? 1U : 3U));
+            assert(attempts == ((is_case("late-link") || is_case("rssi-refresh")) ? 1U : 3U));
+            if (is_case("rssi-refresh")) assert(sys_now() > UINT32_MAX - 500U);
             recovered = true;
+            recovered_us = now_us;
             adoptions_at_recovery = adoptions;
             assert(adoptions_at_recovery >= 1U);
             attempts_before_loss = attempts;
@@ -185,7 +262,7 @@ int32_t tk_dly_tsk(uint32_t delay)
             longjmp(done, 1);
         }
     }
-    if (recovered && !dropped && !renumbered && now_us >= lost_us) {
+    if (recovered && !dropped && !renumbered && now_us >= lost_us && !is_case("rssi-refresh")) {
         if (is_case("renumber")) {
             IP4_ADDR(&netif_default->ip_addr, 192, 0, 2, 9);
             renumbered = true;
@@ -197,6 +274,8 @@ int32_t tk_dly_tsk(uint32_t delay)
         assert(!leased && "old lease survived link loss");
         assert(wifi_link_rssi() == INT32_MIN);
         assert(now_us - lost_us < 15000000U);
+    } else if (dropped && is_case("rssi-refresh")) {
+        assert(wifi_link_rssi() == -64 && "reassociation must sample RSSI before DHCP");
     }
     if (dropped && wifi_link_lease() == WIFI_LEASE_TIMEOUT) saw_timeout = true;
     assert(now_us < 180000000U && "radio never recovered");
@@ -208,10 +287,18 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     scenario = argv[1];
+    if (is_case("rssi-refresh")) {
+        /* Wrap lwIP's millisecond clock between association and the first refresh. */
+        clock_offset_ms = UINT32_MAX - 500U;
+    }
     IP4_ADDR(&netif_default->ip_addr, 192, 0, 2, 8);
     IP4_ADDR(&netif_default->netmask, 255, 255, 255, 0);
     IP4_ADDR(&netif_default->gw, 192, 0, 2, 1);
-    dns = netif_default->gw;
+    if (is_case("lease-without-dns")) {
+        ip4_addr_set_zero(&netif_default->ip_addr);
+    } else {
+        dns = netif_default->gw;
+    }
     if (setjmp(done) == 0) cyw43_utk_task(0, NULL);
     return 0;
 }

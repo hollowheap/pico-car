@@ -32,6 +32,7 @@ static unsigned g_pass;
 static bool g_b_started;
 static unsigned g_commands;
 static unsigned g_heartbeats;
+static unsigned g_car_ids;
 static unsigned g_events;
 static uint8_t  g_types[3];
 static unsigned g_event_passes[3];
@@ -39,6 +40,7 @@ static bool     g_heartbeat_busy;
 static bool     g_join_failure;
 
 #define RECOVERED_RSSI (-71)
+#define CAR_ID (0xC10ABCF0U)
 
 uint32_t shim_reg_read (uint32_t addr)
 {
@@ -63,6 +65,7 @@ ER ISpinUnlock (T_SPLOCK * p_lock, UINT saved)
 }
 
 int32_t mqtt_session_init (void) { return E_OK; }
+void mqtt_session_set_boot_id (uint32_t boot_id) { assert(boot_id != 0U); }
 
 void mqtt_session_start (int32_t task)
 {
@@ -83,6 +86,12 @@ bool mqtt_session_connected (void)
 
 uint32_t mqtt_session_drops (void) { return 0U; }
 
+void mqtt_session_set_car_id (uint32_t car_id)
+{
+    assert(car_id == CAR_ID);
+    g_car_ids++;
+}
+
 bool mqtt_session_heartbeat (const uint8_t payload[TELEMETRY_HEARTBEAT_WIRE_SIZE])
 {
     assert(mqtt_session_connected());
@@ -90,6 +99,10 @@ bool mqtt_session_heartbeat (const uint8_t payload[TELEMETRY_HEARTBEAT_WIRE_SIZE
     {
         assert(payload[TELEMETRY_HEARTBEAT_OFF_WIFI_RSSI] == (uint8_t)RECOVERED_RSSI);
     }
+    assert(payload[TELEMETRY_HEARTBEAT_OFF_CAR_ID] == 0xC1U);
+    assert(payload[TELEMETRY_HEARTBEAT_OFF_CAR_ID + 1U] == 0x0AU);
+    assert(payload[TELEMETRY_HEARTBEAT_OFF_CAR_ID + 2U] == 0xBCU);
+    assert(payload[TELEMETRY_HEARTBEAT_OFF_CAR_ID + 3U] == 0xF0U);
     if (g_heartbeat_busy && g_pass == 2U)
     {
         return false;
@@ -98,7 +111,7 @@ bool mqtt_session_heartbeat (const uint8_t payload[TELEMETRY_HEARTBEAT_WIRE_SIZE
     return true;
 }
 
-bool mqtt_session_command (uint8_t payload[TELEMETRY_CMD_WIRE_SIZE], uint16_t * p_len)
+bool mqtt_session_command (uint8_t payload[TELEMETRY_BARCODE_MAP_WIRE_SIZE], uint16_t * p_len)
 {
     static const uint8_t commands[][TELEMETRY_CMD_WIRE_SIZE] = {
         {0U, COMMAND_ID, 0xFFU, 0xFFU, TELEMETRY_CMD_START, 0U, 0U, 0U, 0U},
@@ -122,7 +135,11 @@ bool mqtt_session_command (uint8_t payload[TELEMETRY_CMD_WIRE_SIZE], uint16_t * 
 
 void cyw43_utk_get_status (T_CYW43_UTK_STATUS * p_status)
 {
-    *p_status = (T_CYW43_UTK_STATUS){.link_up = true, .dhcp_complete = true};
+    *p_status = (T_CYW43_UTK_STATUS){
+        .link_up = true,
+        .dhcp_complete = true,
+        .netif_mac = {0x28U, 0xCDU, 0xC1U, 0x0AU, 0xBCU, 0xF0U},
+    };
     if (g_join_failure)
     {
         p_status->join_started = 1U;
@@ -283,6 +300,7 @@ int main (int argc, char ** argv)
     assert(BOOT_ID == observed.expected_run_id && !observed.has_last);
     run_connection();
     assert(connection_mqtt_seen());
+    assert(g_car_ids == 1U);
     if (g_join_failure)
     {
         assert(g_events == 1U);

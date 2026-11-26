@@ -1,5 +1,5 @@
 # Telemetry packet and command validation.
-foreach(tname packet cmd)
+foreach(tname packet cmd car_id)
     add_executable(test_${tname} comms/${tname}_test.c
         ${TELEMETRY_SRC}/${tname}.c)
     target_include_directories(test_${tname} PRIVATE
@@ -25,9 +25,12 @@ foreach(name IN ITEMS queue net_queue worker)
     target_compile_options(test_telemetry_${name} PRIVATE ${TELEMETRY_TEST_FLAGS})
     add_test(NAME comms.${name}.default COMMAND test_telemetry_${name})
 endforeach()
+target_compile_options(test_telemetry_net_queue PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/comms/fakes/emit_kernel.h")
+add_test(NAME comms.net_queue.latest_status COMMAND test_telemetry_net_queue latest-status)
 
 add_executable(test_telemetry_connection_cmd comms/telemetry_connection_cmd_test.c
-    ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c
+    ${TELEMETRY_SRC}/cmd.c ${TELEMETRY_SRC}/connection_task.c ${TELEMETRY_SRC}/car_id.c
     ${TELEMETRY_SRC}/drv_wifi.c
     ${TELEMETRY_SRC}/packet.c)
 target_include_directories(test_telemetry_connection_cmd PRIVATE
@@ -57,6 +60,7 @@ target_compile_options(test_telemetry_emit PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/comms/fakes/emit_kernel.h"
     ${TELEMETRY_TEST_FLAGS})
 add_test(NAME comms.telemetry_emit.default COMMAND test_telemetry_emit)
+add_test(NAME comms.telemetry_emit.barcode_handoff COMMAND test_telemetry_emit barcode-handoff)
 
 # Build the pinned SDK MQTT source against the host's simulated TCP connection.
 set(LWIP_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../lib/pico-sdk/lib/lwip/src)
@@ -64,7 +68,9 @@ set(LWIP_SRC ${LWIP_ROOT}/include)
 set(SDK_MQTT ${LWIP_ROOT}/apps/mqtt/mqtt.c)
 set_source_files_properties(${SDK_MQTT} PROPERTIES COMPILE_OPTIONS "-w")
 add_executable(test_mqtt_session comms/mqtt_session_test.c ${SDK_MQTT}
-    ${TELEMETRY_SRC}/mqtt_session.c ${TELEMETRY_SRC}/worker.c)
+    ${TELEMETRY_SRC}/mqtt_session.c ${TELEMETRY_SRC}/car_id.c ${TELEMETRY_SRC}/cmd.c
+    ${TELEMETRY_SRC}/worker.c ${TELEMETRY_SRC}/net_queue.c
+    ${TELEMETRY_SRC}/emit.c ${TELEMETRY_SRC}/packet.c ${TELEMETRY_SRC}/queue.c)
 target_include_directories(test_mqtt_session BEFORE PRIVATE comms/fakes/lwip comms/fakes/connection)
 target_include_directories(test_mqtt_session PRIVATE ${TELEMETRY_TEST_INCLUDES} ${TELEMETRY_SRC})
 target_include_directories(test_mqtt_session SYSTEM PRIVATE ${LWIP_SRC})
@@ -72,7 +78,11 @@ target_compile_options(test_mqtt_session PRIVATE
     "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/comms/fakes/connection/kernel.h"
     ${TELEMETRY_TEST_FLAGS})
 target_link_options(test_mqtt_session PRIVATE -Wl,--wrap=tk_snd_mbf)
-foreach(scenario wire backpressure puback-space keepalive retry dns timeout)
+foreach(scenario wire command-before-suback command-subscription-recovery
+                 backpressure puback-space output-headroom
+                 retained-events latest-status latest-status-timeout barcode-receipt
+                 delivery-ownership-after-reset barcode-subscription-retry keepalive retry dns dns-unavailable
+                 timeout connect-write-retry no-car-id)
     add_test(NAME comms.mqtt_session.telemetry_mqtt_${scenario} COMMAND test_mqtt_session ${scenario})
 endforeach()
 
@@ -95,5 +105,7 @@ target_compile_options(test_wifi_recovery PRIVATE -Wall -Wextra -Werror)
 foreach(reason async request timeout late-link renumber)
     add_test(NAME comms.wifi_recovery.wifi_join_${reason} COMMAND test_wifi_recovery ${reason})
 endforeach()
+add_test(NAME comms.wifi_recovery.wifi_rssi_refresh COMMAND test_wifi_recovery rssi-refresh)
+add_test(NAME comms.wifi_recovery.wifi_lease_without_dns COMMAND test_wifi_recovery lease-without-dns)
 
 add_test(NAME comms.cmd.telemetry_reserved_stationary_opcode COMMAND test_cmd reserved-stationary-opcode)

@@ -8,10 +8,10 @@
 
 #define QUEUE_BUFFER_ALIGN 4
 
-/* Smallest message cost in the buffer: 4 B header + the 9 B heartbeat frame
-   rounded up to 12 B. It bounds the eviction loop by the number of messages
+/* Smallest message cost in the buffer: 4 B header + the 13 B event frame
+   rounded up to 16 B. It bounds the eviction loop by the number of messages
    the buffer can hold. */
-#define QUEUE_MIN_COST      16U
+#define QUEUE_MIN_COST      20U
 #define QUEUE_EVICT_LIMIT   (TELEMETRY_QUEUE_BYTES / QUEUE_MIN_COST)
 
 /* The first byte of a stored frame is its topic. Eviction recognises an
@@ -28,6 +28,10 @@
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_BARCODE_SAMPLE, "barcode samples are evictable");
 
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_STATUS, "event length unique");
+STATIC_ASSERT(TELEMETRY_EVENT_QUEUED_SIZE != TELEMETRY_STATUS_BUNDLE_FRAME_SIZE,
+              "status bundles are evictable");
+STATIC_ASSERT(TELEMETRY_STATUS_BUNDLE_FRAME_SIZE <= TELEMETRY_QUEUE_MAX_MSG,
+              "status bundles fit the queue");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_MOTION, "event length unique");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_PHYSICS, "event length unique");
 STATIC_ASSERT (TELEMETRY_EVENT_QUEUED_SIZE != FRAME_OBSTACLE, "event length unique");
@@ -95,8 +99,8 @@ frame_is_valid (const uint8_t * frame, uint16_t len)
     switch (frame[0])
     {
         case (uint8_t) TELEMETRY_TOPIC_STATUS:
-            want = FRAME_STATUS;
-            break;
+            return (len == FRAME_STATUS) ||
+                   (len == TELEMETRY_STATUS_BUNDLE_FRAME_SIZE);
         case (uint8_t) TELEMETRY_TOPIC_MOTION:
             want = FRAME_MOTION;
             break;

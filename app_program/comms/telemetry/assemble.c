@@ -15,6 +15,8 @@
 
 #define WHEEL_COUNT        2
 #define HOLD_MASK_BYTE     0xFFu
+#define US_PER_MS          (1000U)
+#define SAMPLE_BIT(name)   TELEMETRY_STATUS_SAMPLE_FLAGS_BIT_##name
 
 /* physics_flags bit positions (protocol/telemetry.yaml). */
 #define PHYSICS_FLAG_ACTIVE      (1u << TELEMETRY_PHYSICS_FLAGS_BIT_HUMP_ACTIVE)
@@ -49,6 +51,15 @@ static int16_t
 um_to_mm_i16 (int64_t um)
 {
     return clamp_i16 (um / UM_PER_MM);
+}
+
+static int32_t travel_mm (int64_t displacement_um)
+{
+    int64_t const mm = displacement_um / UM_PER_MM;
+
+    return (mm > INT32_MAX)   ? INT32_MAX
+           : (mm < INT32_MIN) ? INT32_MIN
+                              : (int32_t)mm;
 }
 
 uint32_t
@@ -301,6 +312,64 @@ telemetry_assemble_physics (telemetry_physics_t * p_out,
     if (p_physics->attitude_sample_valid)
     {
         p_out->flags |= PHYSICS_FLAG_CALIBRATED;
+    }
+}
+
+void telemetry_assemble_bundle_details (
+    telemetry_status_bundle_t * p_out, uint32_t sample_us,
+    const motion_feedback_t * p_feedback, const physics_status_t * p_physics,
+    const obstacle_forward_sample_t * p_forward)
+{
+    p_out->device_sample_us   = sample_us;
+    p_out->left_travel_mm     = 0;
+    p_out->right_travel_mm    = 0;
+    p_out->wheel_age_us       = UINT16_MAX;
+    p_out->sample_flags       = 0U;
+    p_out->forward_dist_mm    = UINT16_MAX;
+    p_out->forward_echo_class = UINT8_MAX;
+    p_out->forward_age_ms     = UINT8_MAX;
+
+    if (p_feedback != NULL)
+    {
+        uint32_t const age_us = sample_us - p_feedback->timestamp_us;
+        uint32_t const flags  = ((uint32_t)p_feedback->speed_valid[0]
+                                << SAMPLE_BIT(LEFT_SPEED_VALID)) |
+                               ((uint32_t)p_feedback->speed_valid[1]
+                                << SAMPLE_BIT(RIGHT_SPEED_VALID)) |
+                               ((uint32_t)p_feedback->odometry_valid[0]
+                                << SAMPLE_BIT(LEFT_TRAVEL_VALID)) |
+                               ((uint32_t)p_feedback->odometry_valid[1]
+                                << SAMPLE_BIT(RIGHT_TRAVEL_VALID));
+        bool const b_fresh =
+            p_feedback->fresh && (age_us <= MOTION_FEEDBACK_MAX_AGE_US);
+
+        p_out->left_travel_mm  = travel_mm(p_feedback->left_displacement_um);
+        p_out->right_travel_mm = travel_mm(p_feedback->right_displacement_um);
+        p_out->sample_flags =
+            (uint8_t)(flags | ((uint32_t)b_fresh << SAMPLE_BIT(WHEEL_FRESH)));
+        if ((p_feedback->fresh || (flags != 0U)) && (age_us < UINT16_MAX))
+        {
+            p_out->wheel_age_us = (uint16_t)age_us;
+        }
+    }
+    if ((p_physics != NULL) && p_physics->attitude_sample_valid)
+    {
+        p_out->sample_flags |= (1U << SAMPLE_BIT(ATTITUDE_VALID));
+    }
+    if (p_forward != NULL)
+    {
+        uint32_t const age_us = sample_us - p_forward->trigger_us;
+
+        if (age_us < OBSTACLE_FORWARD_MAX_AGE_US)
+        {
+            p_out->forward_age_ms     = (uint8_t)(age_us / US_PER_MS);
+            p_out->forward_echo_class = p_forward->echo_class;
+            if ((p_forward->echo_class == OBSTACLE_CLASS_VALID) ||
+                (p_forward->echo_class == OBSTACLE_CLASS_TOO_CLOSE))
+            {
+                p_out->forward_dist_mm = p_forward->distance_mm;
+            }
+        }
     }
 }
 

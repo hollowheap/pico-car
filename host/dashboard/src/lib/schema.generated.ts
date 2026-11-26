@@ -12,6 +12,7 @@ export const TOPICS = {
   heartbeat: 'h',
   event: 'e',
   barcode_sample: 'b',
+  barcode_receipt: 'a',
   profile: 'f',
   command: 'c',
 } as const;
@@ -124,7 +125,7 @@ export const PACKETS = {
     ],
   },
   heartbeat: {
-    wireSize: 10,
+    wireSize: 14,
     fields: [
         { name: 'uptime_s', offset: 0, type: 'uint32' },
         { name: 'drops', offset: 4, type: 'uint8' },
@@ -132,6 +133,7 @@ export const PACKETS = {
         { name: 'reset_reason', offset: 6, type: 'uint8' },
         { name: 'link_state', offset: 7, type: 'uint8' },
         { name: 'run_id', offset: 8, type: 'uint16' },
+        { name: 'car_id', offset: 10, type: 'uint32' },
     ],
   },
   event: {
@@ -217,6 +219,89 @@ export const PACKETS = {
         { name: 'pivot_scale_pct', offset: 16, type: 'uint8' },
     ],
   },
+  status_bundle: {
+    wireSize: 75,
+    fields: [
+        { name: 'speed_mms', offset: 0, type: 'int16' },
+        { name: 'odometer_mm', offset: 2, type: 'uint32' },
+        { name: 'heading_ddeg', offset: 6, type: 'uint16' },
+        { name: 'state', offset: 8, type: 'uint8' },
+        { name: 'mode', offset: 9, type: 'uint8' },
+        { name: 'faults', offset: 10, type: 'uint16' },
+        { name: 'seq', offset: 12, type: 'uint16' },
+        { name: 'line_bits', offset: 14, type: 'uint8' },
+        { name: 'hold_mask', offset: 15, type: 'uint8' },
+        { name: 'pivot_scale_pct', offset: 16, type: 'uint8' },
+        { name: 'left_mms', offset: 17, type: 'int16' },
+        { name: 'right_mms', offset: 19, type: 'int16' },
+        { name: 'left_target_mms', offset: 21, type: 'int16' },
+        { name: 'right_target_mms', offset: 23, type: 'int16' },
+        { name: 'left_duty_pm', offset: 25, type: 'int16' },
+        { name: 'right_duty_pm', offset: 27, type: 'int16' },
+        { name: 'motion_state', offset: 29, type: 'uint8' },
+        { name: 'motion_fault', offset: 30, type: 'uint8' },
+        { name: 'overruns', offset: 31, type: 'uint16' },
+        { name: 'pitch_cdeg', offset: 33, type: 'int16' },
+        { name: 'roll_cdeg', offset: 35, type: 'int16' },
+        { name: 'az_mg', offset: 37, type: 'int16' },
+        { name: 'amag_mg', offset: 39, type: 'uint16' },
+        { name: 'a_fwd_mg', offset: 41, type: 'int16' },
+        { name: 'yaw_rate_cdps', offset: 43, type: 'int16' },
+        { name: 'physics_heading_ddeg', offset: 45, type: 'uint16' },
+        { name: 'hump_peak_mm', offset: 47, type: 'uint16' },
+        { name: 'run_peak_mm', offset: 49, type: 'uint16' },
+        { name: 'hump_state', offset: 51, type: 'uint8' },
+        { name: 'motion_class', offset: 52, type: 'uint8' },
+        { name: 'physics_faults', offset: 53, type: 'uint8' },
+        { name: 'flags', offset: 54, type: 'uint8' },
+        { name: 'attitude_state', offset: 55, type: 'uint8' },
+        { name: 'device_sample_us', offset: 56, type: 'uint32' },
+        { name: 'left_travel_mm', offset: 60, type: 'int32' },
+        { name: 'right_travel_mm', offset: 64, type: 'int32' },
+        { name: 'wheel_age_us', offset: 68, type: 'uint16' },
+        { name: 'sample_flags', offset: 70, type: 'uint8' },
+        { name: 'forward_dist_mm', offset: 71, type: 'uint16' },
+        { name: 'forward_echo_class', offset: 73, type: 'uint8' },
+        { name: 'forward_age_ms', offset: 74, type: 'uint8' },
+    ],
+  },
+  barcode_batch: {
+    wireSize: 79,
+    fields: [
+        { name: 'car_id', offset: 0, type: 'uint32' },
+        { name: 'boot_id', offset: 4, type: 'uint32' },
+        { name: 'overflow', offset: 8, type: 'uint32' },
+        { name: 'sample_count', offset: 12, type: 'uint8' },
+        { name: 'samples', offset: 13, type: 'uint8', count: 66 },
+    ],
+  },
+  barcode_receipt: {
+    wireSize: 12,
+    fields: [
+        { name: 'car_id', offset: 0, type: 'uint32' },
+        { name: 'boot_id', offset: 4, type: 'uint32' },
+        { name: 'last_record_id', offset: 8, type: 'uint32' },
+    ],
+  },
+  command: {
+    wireSize: 9,
+    fields: [
+        { name: 'cmd_id', offset: 0, type: 'uint16' },
+        { name: 'run_id', offset: 2, type: 'uint16' },
+        { name: 'opcode', offset: 4, type: 'uint8' },
+        { name: 'uptime_s', offset: 5, type: 'uint32' },
+    ],
+  },
+  barcode_map: {
+    wireSize: 35,
+    fields: [
+        { name: 'cmd_id', offset: 0, type: 'uint16' },
+        { name: 'run_id', offset: 2, type: 'uint16' },
+        { name: 'opcode', offset: 4, type: 'uint8' },
+        { name: 'uptime_s', offset: 5, type: 'uint32' },
+        { name: 'bindings', offset: 9, type: 'uint8', count: 26 },
+    ],
+  },
 } as const;
 
 export const COMMANDS = {
@@ -296,6 +381,10 @@ export const FAULT_BITS = {
 } as const;
 
 export const ENUMS = {
+  commandConfig: {
+    barcodeMap: 11,
+    unmapped: 255,
+  },
   runState: {
     init: 0,
     ready: 1,
@@ -548,6 +637,14 @@ export const BIT_FIELDS = {
     lifted: 3,
     overturned: 4,
     magBad: 5,
+  },
+  statusSampleFlags: {
+    wheelFresh: 0,
+    leftSpeedValid: 1,
+    rightSpeedValid: 2,
+    leftTravelValid: 3,
+    rightTravelValid: 4,
+    attitudeValid: 5,
   },
   physicsFlags: {
     humpActive: 0,

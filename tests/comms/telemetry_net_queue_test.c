@@ -20,6 +20,7 @@
 
 #include <tk/mbf_fake.h>
 #include "comms/telemetry/net_queue.h"
+#include "comms/telemetry/queue.h"
 
 #define BUFFER_BYTES TELEMETRY_NET_QUEUE_BYTES
 #define MSG_MAX      83U
@@ -332,17 +333,68 @@ static void test_barcode_burst_preserves_events (void)
     CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
 }
 
-int main (void)
+static void test_latest_status (void)
 {
-    test_create_failure_paths();
-    test_create_parameters();
-    test_arguments();
-    test_fifo_and_lengths();
-    test_full_rejects_new_and_counts();
-    test_capacity_by_size();
-    test_other_errors_not_counted();
-    test_wraparound_fuzz();
-    test_barcode_burst_preserves_events();
+    uint8_t bundle[TELEMETRY_STATUS_BUNDLE_FRAME_SIZE] = {TELEMETRY_TOPIC_STATUS};
+    uint8_t event[TELEMETRY_EVENT_QUEUED_SIZE] = {TELEMETRY_TOPIC_EVENT};
+    uint8_t received[MSG_MAX];
+    unsigned const slots = BUFFER_BYTES / MBF_FAKE_COST(sizeof(event));
+
+    setup();
+    unsigned const drops = telemetry_net_queue_drop_count();
+    bundle[1] = 1U;
+    CHECK(telemetry_net_queue_push(bundle, sizeof(bundle)) == E_OK);
+    CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
+    bundle[1] = 2U;
+    CHECK(telemetry_net_queue_push(bundle, sizeof(bundle)) == E_OK);
+    CHECK(telemetry_net_queue_pop(received, TMO_POL) == (INT)sizeof(event));
+    CHECK(memcmp(received, event, sizeof(event)) == 0);
+    CHECK(telemetry_net_queue_pop(received, TMO_POL) == (INT)sizeof(bundle));
+    CHECK(memcmp(received, bundle, sizeof(bundle)) == 0);
+    CHECK(pop_empty());
+    CHECK(telemetry_net_queue_drop_count() == drops);
+
+    setup();
+    unsigned const full_drops = telemetry_net_queue_drop_count();
+    CHECK(telemetry_net_queue_push(bundle, sizeof(bundle)) == E_OK);
+    for (unsigned i = 0U; i < slots; i++)
+    {
+        event[1] = (uint8_t)i;
+        CHECK(telemetry_net_queue_push(event, sizeof(event)) == E_OK);
+    }
+    bundle[1] = 3U;
+    CHECK(telemetry_net_queue_push(bundle, sizeof(bundle)) == E_OK);
+    for (unsigned i = 0U; i < slots; i++)
+    {
+        event[1] = (uint8_t)i;
+        CHECK(telemetry_net_queue_pop(received, TMO_POL) == (INT)sizeof(event));
+        CHECK(memcmp(received, event, sizeof(event)) == 0);
+    }
+    CHECK(telemetry_net_queue_pop(received, TMO_POL) == (INT)sizeof(bundle));
+    CHECK(memcmp(received, bundle, sizeof(bundle)) == 0);
+    CHECK(pop_empty());
+    CHECK(telemetry_net_queue_drop_count() == full_drops);
+}
+
+int main (int argc, char ** argv)
+{
+    if ((argc == 2) && (strcmp(argv[1], "latest-status") == 0))
+    {
+        test_latest_status();
+    }
+    else
+    {
+        CHECK(argc == 1);
+        test_create_failure_paths();
+        test_create_parameters();
+        test_arguments();
+        test_fifo_and_lengths();
+        test_full_rejects_new_and_counts();
+        test_capacity_by_size();
+        test_other_errors_not_counted();
+        test_wraparound_fuzz();
+        test_barcode_burst_preserves_events();
+    }
 
     (void)printf("%u checks, %u failed\n", g_checks, g_fail);
     return (g_fail == 0U) ? 0 : 1;

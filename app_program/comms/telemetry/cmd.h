@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "comms/telemetry/wire_schema.h"
 
 #include "platform/static_assert.h"
 

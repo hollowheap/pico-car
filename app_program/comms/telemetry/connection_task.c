@@ -12,7 +12,9 @@
 #include "platform/liveness.h"
 #include "platform/drv_watchdog.h"
 #include "supervisor/health_ids.h"
+#include "supervisor/command.h"
 #include "platform/log.h"
+#include "comms/telemetry/car_id.h"
 #include "comms/telemetry/cmd.h"
 #include "comms/telemetry/connection.h"
 #include "comms/telemetry/emit.h"
@@ -22,6 +24,7 @@
 #include "comms/telemetry/drv_wifi_link.h"
 
 #define CONNECTION_POLL_MS      100U
+#define CONNECTION_RUN_ID_BITS  16U
 #define CONNECTION_LOOP_MS      10U
 #define CONNECTION_HEARTBEAT_MS 1000U
 #define CONNECTION_STATUS_MS    1000U
@@ -30,6 +33,7 @@
 #define CONNECTION_RSSI_MIN     (-128)
 #define CONNECTION_DROPS_MAX    255U
 #define CONNECTION_COMMANDS_PER_PASS 16U
+#define CONNECTION_CMD_SOURCE_SHIFT 8U
 /* No MQTT session for this long sets the wifi_disconn fault bit. */
 #define CONNECTION_LINK_DOWN_MS 3000U
 
@@ -37,11 +41,14 @@ static volatile connection_state_t g_state = CONNECTION_DISCONNECTED;
 static volatile bool               g_b_mqtt_seen;
 static T_SPLOCK                    g_cmd_lock;
 static telemetry_cmd_state_t       g_cmd_state;
+static uint8_t                     g_barcode_map[TELEMETRY_BARCODE_MAP_COUNT_BINDINGS];
+static bool                        g_b_barcode_map;
 static connection_cmd_dispatch_t   gp_dispatch;
 static void *                      gp_dispatch_context;
 static bool                        g_mqtt_ready;
 static uint32_t                    g_heartbeat_ms;
 static drv_wifi_status_t           g_status;
+static uint32_t                    g_car_id;
 
 static void
 publish_cmd_state (const telemetry_cmd_state_t * p_state)
@@ -79,6 +86,32 @@ on_mqtt_command (const uint8_t * payload, uint16_t len, uint32_t now_ms)
     /* Only the connection task updates the state after startup. */
     telemetry_cmd_state_t next = g_cmd_state;
 
+    if (len == TELEMETRY_BARCODE_MAP_WIRE_SIZE)
+    {
+        if (TELEMETRY_CMD_OK == telemetry_cmd_receive(&next, payload, len,
+                                 now_ms / CONNECTION_MS_PER_S, NULL, NULL))
+        {
+            UINT saved = 0U;
+            (void)ISpinLock(&g_cmd_lock, &saved);
+            for (uint8_t i = 0U; i < TELEMETRY_BARCODE_MAP_COUNT_BINDINGS; i++)
+            {
+                g_barcode_map[i] = payload[TELEMETRY_BARCODE_MAP_OFF_BINDINGS + i];
+            }
+            g_b_barcode_map = true;
+            g_cmd_state = next;
+            (void)ISpinUnlock(&g_cmd_lock, saved);
+            int16_t const what = (int16_t)((VEHICLE_SRC_TELEMETRY << CONNECTION_CMD_SOURCE_SHIFT) |
+                                            TELEMETRY_COMMAND_CONFIG_BARCODE_MAP);
+            (void)telemetry_try_emit_event(TELEMETRY_EVENT_SOURCE_CONNECTION, TELEMETRY_EVT_CMD_ACCEPT,
+                                           what, next.last_cmd_id, 0U);
+        }
+        else
+        {
+            publish_cmd_state(&next);
+        }
+        return;
+    }
+
     /* Use the clock and units of the heartbeat uptime_s the command echoes.
        The dispatch callback publishes accepted commands. */
     if (TELEMETRY_CMD_OK !=
@@ -88,6 +121,23 @@ on_mqtt_command (const uint8_t * payload, uint16_t len, uint32_t now_ms)
     {
         publish_cmd_state(&next);
     }
+}
+
+bool telemetry_barcode_binding (uint8_t letter, uint8_t * p_opcode)
+{
+    if (letter >= TELEMETRY_BARCODE_MAP_COUNT_BINDINGS || p_opcode == NULL)
+    {
+        return false;
+    }
+    UINT saved = 0U;
+    (void)ISpinLock(&g_cmd_lock, &saved);
+    bool const b_configured = g_b_barcode_map;
+    if (b_configured)
+    {
+        *p_opcode = g_barcode_map[letter];
+    }
+    (void)ISpinUnlock(&g_cmd_lock, saved);
+    return b_configured;
 }
 
 static uint32_t
@@ -131,6 +181,7 @@ publish_heartbeat (uint32_t now_ms)
     heartbeat.reset_reason = platform_reset_reason ();
     heartbeat.link_state   = (uint8_t) TELEMETRY_LINK_STATE_MQTT;
     heartbeat.run_id       = g_cmd_state.expected_run_id;
+    heartbeat.car_id       = g_car_id;
     if (telemetry_pack_heartbeat(payload, &heartbeat) == 0u)
     {
         return;
@@ -197,7 +248,9 @@ connection_init (connection_cmd_dispatch_t dispatch, void * context)
     /* A new run ID at each boot: a host must read it from the heartbeat,
        so a command for an earlier boot is refused. */
     (void)InitSpinLock(&g_cmd_lock);
-    telemetry_cmd_state_init(&g_cmd_state, drv_wifi_boot_run_id());
+    uint16_t const run_id = drv_wifi_boot_run_id();
+    telemetry_cmd_state_init(&g_cmd_state, run_id);
+    mqtt_session_set_boot_id(((uint32_t)drv_wifi_boot_run_id() << CONNECTION_RUN_ID_BITS) | run_id);
     gp_dispatch         = dispatch;
     gp_dispatch_context = context;
     g_mqtt_ready        = true;
@@ -216,7 +269,7 @@ note_mqtt_session (bool b_connected)
 static bool
 service_mqtt (uint32_t now_ms, bool b_mqtt_up)
 {
-    uint8_t command[TELEMETRY_CMD_WIRE_SIZE];
+    uint8_t command[TELEMETRY_BARCODE_MAP_WIRE_SIZE];
     uint16_t len = 0U;
     bool const b_connected = mqtt_session_connected();
 
@@ -269,6 +322,11 @@ connection_run (void)
 
             last_poll_ms = now_ms;
             drv_wifi_read_status(&g_status);
+            if (g_car_id == 0U)
+            {
+                g_car_id = car_id_from_mac(g_status.netif_mac);
+                mqtt_session_set_car_id(g_car_id);
+            }
             wifi_join_t const join = wifi_link_join();
             wifi_lease_t const lease = wifi_link_lease();
             next = classify(&g_status, join, lease);

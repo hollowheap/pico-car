@@ -49,7 +49,8 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
     {
         return TELEMETRY_CMD_BAD_ARG;
     }
-    if (len != TELEMETRY_CMD_WIRE_SIZE)
+    bool const b_map = len == TELEMETRY_BARCODE_MAP_WIRE_SIZE;
+    if (len != TELEMETRY_CMD_WIRE_SIZE && !b_map)
     {
         return TELEMETRY_CMD_BAD_LENGTH;
     }
@@ -58,7 +59,29 @@ telemetry_cmd_parse (const uint8_t * src, uint16_t len, telemetry_cmd_t * cmd)
     cmd->opcode   = src[CMD_OFFSET_OPCODE];
     cmd->uptime_s = read_u32(&src[CMD_OFFSET_UPTIME]);
 
-    if (cmd->opcode > (uint8_t) TELEMETRY_CMD_START_CONTINUOUS_FLOOR)
+    if (b_map)
+    {
+        if (cmd->opcode != TELEMETRY_COMMAND_CONFIG_BARCODE_MAP)
+        {
+            return TELEMETRY_CMD_BAD_OPCODE;
+        }
+        for (uint16_t i = TELEMETRY_BARCODE_MAP_OFF_BINDINGS; i < len; i++)
+        {
+            switch (src[i])
+            {
+                case TELEMETRY_CMD_STOP:
+                case TELEMETRY_CMD_LEFT:
+                case TELEMETRY_CMD_RIGHT:
+                case TELEMETRY_CMD_UTURN:
+                case TELEMETRY_CMD_STRAIGHT:
+                case TELEMETRY_COMMAND_CONFIG_UNMAPPED:
+                    break;
+                default:
+                    return TELEMETRY_CMD_BAD_OPCODE;
+            }
+        }
+    }
+    else if (cmd->opcode > (uint8_t) TELEMETRY_CMD_START_CONTINUOUS_FLOOR)
     {
         return TELEMETRY_CMD_BAD_OPCODE;
     }

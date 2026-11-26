@@ -6,7 +6,7 @@
 
 /*
  *	packet.h
- *	Big-endian wire serializers for the telemetry packets (schema 2).
+ *	Big-endian wire serializers for the telemetry packets.
  *
  *	The layout lives in protocol/telemetry.yaml. The generated header
  *	telemetry/wire_schema.h holds every offset, size, topic and code, and
@@ -30,6 +30,8 @@
 /* Largest wire packet, and the largest queued frame (topic byte + packet). */
 #define TELEMETRY_WIRE_MAX  TELEMETRY_PROFILE_WIRE_SIZE
 #define TELEMETRY_FRAME_MAX (TELEMETRY_WIRE_MAX + 1u)
+#define TELEMETRY_STATUS_BUNDLE_FRAME_SIZE                                     \
+    (TELEMETRY_STATUS_BUNDLE_WIRE_SIZE + 1u)
 
 /* 5 Hz. The vehicle in one frame. */
 typedef struct
@@ -86,6 +88,25 @@ typedef struct
 } telemetry_physics_t;
 
 STATIC_ASSERT (sizeof(telemetry_physics_t) == 24U, "telemetry_physics_t size");
+
+/* 5 Hz /s. Only status.seq is written to the bundle. */
+typedef struct
+{
+    uint32_t            device_sample_us;
+    int32_t             left_travel_mm;
+    int32_t             right_travel_mm;
+    telemetry_status_t  status;
+    telemetry_motion_t  motion;
+    telemetry_physics_t physics;
+    uint16_t            wheel_age_us;
+    uint16_t            forward_dist_mm;
+    uint8_t             sample_flags;
+    uint8_t             forward_echo_class;
+    uint8_t             forward_age_ms;
+} telemetry_status_bundle_t;
+
+STATIC_ASSERT(sizeof(telemetry_status_bundle_t) == 84U,
+              "telemetry_status_bundle_t size");
 
 /* 2 Hz and on change. Sonar and hug. hug_seq is a 2-bit count that steps on
  * every change of the hug snapshot, including the heading while the hug
@@ -155,9 +176,10 @@ typedef struct
     uint8_t  reset_reason;
     uint8_t  link_state;
     uint16_t run_id;       /* commands must carry it */
+    uint32_t car_id;       /* fingerprint of the board, see car_id.h */
 } telemetry_heartbeat_t;
 
-STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 12U, "telemetry_heartbeat_t size");
+STATIC_ASSERT (sizeof(telemetry_heartbeat_t) == 16U, "telemetry_heartbeat_t size");
 
 /* One captured transition of the barcode IR input. UINT32_MAX means the
  * odometer was unavailable at the edge. A zero interval starts a new span. */
@@ -173,6 +195,31 @@ typedef struct
     uint8_t  capture_loss;
 } telemetry_barcode_sample_t;
 STATIC_ASSERT (sizeof(telemetry_barcode_sample_t) == 20U, "barcode sample size");
+
+#define TELEMETRY_BARCODE_RECORD_ID_BYTES (4U)
+#define TELEMETRY_BARCODE_RECORD_WIRE_SIZE \
+    (TELEMETRY_BARCODE_RECORD_ID_BYTES + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE)
+#define TELEMETRY_BARCODE_BATCH_MAX \
+    (TELEMETRY_BARCODE_BATCH_COUNT_SAMPLES / TELEMETRY_BARCODE_RECORD_WIRE_SIZE)
+
+typedef struct
+{
+    uint32_t                   record_id;
+    telemetry_barcode_sample_t sample;
+} telemetry_barcode_record_t;
+
+STATIC_ASSERT(sizeof(telemetry_barcode_record_t) == 24U, "barcode record size");
+
+typedef struct
+{
+    telemetry_barcode_record_t records[TELEMETRY_BARCODE_BATCH_MAX];
+    uint32_t                   car_id;
+    uint32_t                   boot_id;
+    uint32_t                   overflow;
+    uint8_t                    count;
+} telemetry_barcode_batch_t;
+
+STATIC_ASSERT(sizeof(telemetry_barcode_batch_t) == 88U, "barcode batch size");
 
 /* On event. */
 typedef struct
@@ -202,7 +249,10 @@ typedef struct
 STATIC_ASSERT (sizeof(telemetry_profile_t) == 82U, "telemetry_profile_t size");
 
 uint16_t telemetry_pack_status (uint8_t * dst, const telemetry_status_t * p_src);
+uint16_t telemetry_pack_status_bundle (uint8_t *                         dst,
+                                       const telemetry_status_bundle_t * p_src);
 uint16_t telemetry_pack_barcode_sample (uint8_t * dst, const telemetry_barcode_sample_t * p_src);
+uint16_t telemetry_pack_barcode_batch (uint8_t * dst, const telemetry_barcode_batch_t * p_src);
 uint16_t telemetry_pack_motion (uint8_t * dst, const telemetry_motion_t * p_src);
 uint16_t telemetry_pack_physics (uint8_t * dst,
                                  const telemetry_physics_t * p_src);

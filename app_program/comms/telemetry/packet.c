@@ -13,6 +13,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "comms/telemetry/packet.h"
 
@@ -20,6 +21,23 @@
 #define WIRE_BYTE_MASK 0xFFu
 #define WIRE_U16_BYTES 2u
 #define WIRE_U32_BYTES 4u
+
+STATIC_ASSERT(TELEMETRY_STATUS_BUNDLE_OFF_LEFT_MMS ==
+                  TELEMETRY_STATUS_PIVOT_WIRE_SIZE,
+              "the bundle motion body follows the status prefix");
+STATIC_ASSERT(TELEMETRY_STATUS_BUNDLE_OFF_PITCH_CDEG ==
+                  TELEMETRY_STATUS_BUNDLE_OFF_LEFT_MMS +
+                      TELEMETRY_MOTION_OFF_SEQ,
+              "the bundle physics body follows the motion body");
+STATIC_ASSERT(TELEMETRY_STATUS_BUNDLE_OFF_DEVICE_SAMPLE_US ==
+                  TELEMETRY_STATUS_BUNDLE_OFF_PITCH_CDEG +
+                      TELEMETRY_PHYSICS_OFF_SEQ,
+              "the bundle pass data follows the physics body");
+STATIC_ASSERT(TELEMETRY_BARCODE_BATCH_WIRE_SIZE <= TELEMETRY_WIRE_MAX,
+              "barcode batches fit the largest telemetry packet");
+STATIC_ASSERT(TELEMETRY_BARCODE_BATCH_MAX * TELEMETRY_BARCODE_RECORD_WIRE_SIZE ==
+                  TELEMETRY_BARCODE_BATCH_COUNT_SAMPLES,
+              "barcode slots fill the batch payload");
 
 /* Write `value` big-endian, `width` bytes wide, at dst[off]. */
 static void
@@ -76,6 +94,31 @@ telemetry_pack_barcode_sample (uint8_t * dst, const telemetry_barcode_sample_t *
 }
 
 uint16_t
+telemetry_pack_barcode_batch (uint8_t * dst, const telemetry_barcode_batch_t * p_src)
+{
+    if ((dst == NULL) || (p_src == NULL) || (p_src->count == 0U) ||
+        (p_src->count > TELEMETRY_BARCODE_BATCH_MAX))
+    {
+        return 0U;
+    }
+
+    (void)memset(dst, 0, TELEMETRY_BARCODE_BATCH_WIRE_SIZE);
+    put_u32(dst, TELEMETRY_BARCODE_BATCH_OFF_CAR_ID, p_src->car_id);
+    put_u32(dst, TELEMETRY_BARCODE_BATCH_OFF_BOOT_ID, p_src->boot_id);
+    put_u32(dst, TELEMETRY_BARCODE_BATCH_OFF_OVERFLOW, p_src->overflow);
+    put_u8(dst, TELEMETRY_BARCODE_BATCH_OFF_SAMPLE_COUNT, p_src->count);
+    for (uint8_t i = 0U; i < p_src->count; i++)
+    {
+        uint8_t * const slot = &dst[TELEMETRY_BARCODE_BATCH_OFF_SAMPLES +
+                                    (i * TELEMETRY_BARCODE_RECORD_WIRE_SIZE)];
+        put_u32(slot, 0U, p_src->records[i].record_id);
+        (void)telemetry_pack_barcode_sample(&slot[TELEMETRY_BARCODE_RECORD_ID_BYTES],
+                                            &p_src->records[i].sample);
+    }
+    return TELEMETRY_BARCODE_BATCH_WIRE_SIZE;
+}
+
+uint16_t
 telemetry_pack_status (uint8_t * dst, const telemetry_status_t * p_src)
 {
     if ((dst == NULL) || (p_src == NULL))
@@ -96,35 +139,34 @@ telemetry_pack_status (uint8_t * dst, const telemetry_status_t * p_src)
     return TELEMETRY_STATUS_PIVOT_WIRE_SIZE;
 }
 
-uint16_t
-telemetry_pack_motion (uint8_t * dst, const telemetry_motion_t * p_src)
+static void pack_motion_body (uint8_t * dst, const telemetry_motion_t * p_src)
+{
+    put_i16(dst, TELEMETRY_MOTION_OFF_LEFT_MMS, p_src->left_mms);
+    put_i16(dst, TELEMETRY_MOTION_OFF_RIGHT_MMS, p_src->right_mms);
+    put_i16(dst, TELEMETRY_MOTION_OFF_LEFT_TARGET_MMS, p_src->left_target_mms);
+    put_i16(dst, TELEMETRY_MOTION_OFF_RIGHT_TARGET_MMS,
+            p_src->right_target_mms);
+    put_i16(dst, TELEMETRY_MOTION_OFF_LEFT_DUTY_PM, p_src->left_duty_pm);
+    put_i16(dst, TELEMETRY_MOTION_OFF_RIGHT_DUTY_PM, p_src->right_duty_pm);
+    put_u8(dst, TELEMETRY_MOTION_OFF_MOTION_STATE, p_src->motion_state);
+    put_u8(dst, TELEMETRY_MOTION_OFF_MOTION_FAULT, p_src->motion_fault);
+    put_u16(dst, TELEMETRY_MOTION_OFF_OVERRUNS, p_src->overruns);
+}
+
+uint16_t telemetry_pack_motion (uint8_t * dst, const telemetry_motion_t * p_src)
 {
     if ((dst == NULL) || (p_src == NULL))
     {
         return 0u;
     }
-    put_i16 (dst, TELEMETRY_MOTION_OFF_LEFT_MMS, p_src->left_mms);
-    put_i16 (dst, TELEMETRY_MOTION_OFF_RIGHT_MMS, p_src->right_mms);
-    put_i16 (dst, TELEMETRY_MOTION_OFF_LEFT_TARGET_MMS, p_src->left_target_mms);
-    put_i16 (dst, TELEMETRY_MOTION_OFF_RIGHT_TARGET_MMS,
-             p_src->right_target_mms);
-    put_i16 (dst, TELEMETRY_MOTION_OFF_LEFT_DUTY_PM, p_src->left_duty_pm);
-    put_i16 (dst, TELEMETRY_MOTION_OFF_RIGHT_DUTY_PM, p_src->right_duty_pm);
-    put_u8 (dst, TELEMETRY_MOTION_OFF_MOTION_STATE, p_src->motion_state);
-    put_u8 (dst, TELEMETRY_MOTION_OFF_MOTION_FAULT, p_src->motion_fault);
-    put_u16 (dst, TELEMETRY_MOTION_OFF_OVERRUNS, p_src->overruns);
-    put_u8 (dst, TELEMETRY_MOTION_OFF_SEQ, p_src->seq);
+    pack_motion_body(dst, p_src);
+    put_u8(dst, TELEMETRY_MOTION_OFF_SEQ, p_src->seq);
 
     return TELEMETRY_MOTION_WIRE_SIZE;
 }
 
-uint16_t
-telemetry_pack_physics (uint8_t * dst, const telemetry_physics_t * p_src)
+static void pack_physics_body (uint8_t * dst, const telemetry_physics_t * p_src)
 {
-    if ((dst == NULL) || (p_src == NULL))
-    {
-        return 0u;
-    }
     put_i16 (dst, TELEMETRY_PHYSICS_OFF_PITCH_CDEG, p_src->pitch_cdeg);
     put_i16 (dst, TELEMETRY_PHYSICS_OFF_ROLL_CDEG, p_src->roll_cdeg);
     put_i16 (dst, TELEMETRY_PHYSICS_OFF_AZ_MG, p_src->az_mg);
@@ -139,9 +181,49 @@ telemetry_pack_physics (uint8_t * dst, const telemetry_physics_t * p_src)
     put_u8 (dst, TELEMETRY_PHYSICS_OFF_PHYSICS_FAULTS, p_src->physics_faults);
     put_u8 (dst, TELEMETRY_PHYSICS_OFF_FLAGS, p_src->flags);
     put_u8 (dst, TELEMETRY_PHYSICS_OFF_ATTITUDE_STATE, p_src->attitude_state);
-    put_u8 (dst, TELEMETRY_PHYSICS_OFF_SEQ, p_src->seq);
+}
+
+uint16_t telemetry_pack_physics (uint8_t *                   dst,
+                                 const telemetry_physics_t * p_src)
+{
+    if ((dst == NULL) || (p_src == NULL))
+    {
+        return 0u;
+    }
+    pack_physics_body(dst, p_src);
+    put_u8(dst, TELEMETRY_PHYSICS_OFF_SEQ, p_src->seq);
 
     return TELEMETRY_PHYSICS_WIRE_SIZE;
+}
+
+uint16_t telemetry_pack_status_bundle (uint8_t *                         dst,
+                                       const telemetry_status_bundle_t * p_src)
+{
+    if ((dst == NULL) || (p_src == NULL))
+    {
+        return 0U;
+    }
+    (void)telemetry_pack_status(dst, &p_src->status);
+    pack_motion_body(&dst[TELEMETRY_STATUS_BUNDLE_OFF_LEFT_MMS],
+                     &p_src->motion);
+    pack_physics_body(&dst[TELEMETRY_STATUS_BUNDLE_OFF_PITCH_CDEG],
+                      &p_src->physics);
+    put_u32(dst, TELEMETRY_STATUS_BUNDLE_OFF_DEVICE_SAMPLE_US,
+            p_src->device_sample_us);
+    /* The signed totals use their two's complement wire representation. */
+    put_u32(dst, TELEMETRY_STATUS_BUNDLE_OFF_LEFT_TRAVEL_MM,
+            (uint32_t)p_src->left_travel_mm);
+    put_u32(dst, TELEMETRY_STATUS_BUNDLE_OFF_RIGHT_TRAVEL_MM,
+            (uint32_t)p_src->right_travel_mm);
+    put_u16(dst, TELEMETRY_STATUS_BUNDLE_OFF_WHEEL_AGE_US, p_src->wheel_age_us);
+    put_u8(dst, TELEMETRY_STATUS_BUNDLE_OFF_SAMPLE_FLAGS, p_src->sample_flags);
+    put_u16(dst, TELEMETRY_STATUS_BUNDLE_OFF_FORWARD_DIST_MM,
+            p_src->forward_dist_mm);
+    put_u8(dst, TELEMETRY_STATUS_BUNDLE_OFF_FORWARD_ECHO_CLASS,
+           p_src->forward_echo_class);
+    put_u8(dst, TELEMETRY_STATUS_BUNDLE_OFF_FORWARD_AGE_MS,
+           p_src->forward_age_ms);
+    return TELEMETRY_STATUS_BUNDLE_WIRE_SIZE;
 }
 
 uint16_t
@@ -230,6 +312,7 @@ telemetry_pack_heartbeat (uint8_t * dst, const telemetry_heartbeat_t * p_src)
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_RESET_REASON, p_src->reset_reason);
     put_u8 (dst, TELEMETRY_HEARTBEAT_OFF_LINK_STATE, p_src->link_state);
     put_u16 (dst, TELEMETRY_HEARTBEAT_OFF_RUN_ID, p_src->run_id);
+    put_u32 (dst, TELEMETRY_HEARTBEAT_OFF_CAR_ID, p_src->car_id);
 
     return TELEMETRY_HEARTBEAT_WIRE_SIZE;
 }

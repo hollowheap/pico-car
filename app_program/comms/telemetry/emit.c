@@ -18,11 +18,14 @@
 #define TELEMETRY_ACK_RING_META_SZ  (12U)
 #define TELEMETRY_ACK_FLAG_DRAINING (0x01U)
 #define TELEMETRY_ACK_FLAG_ID_HELD  (0x02U)
+#define TELEMETRY_BARCODE_RING_MASK (TELEMETRY_BARCODE_RING_CAPACITY - 1U)
 
 STATIC_ASSERT((TELEMETRY_ACK_RING_CAPACITY & TELEMETRY_ACK_RING_MASK) == 0U,
               "ack ring capacity must be a power of two");
 STATIC_ASSERT(TELEMETRY_ACK_RING_CAPACITY <= TELEMETRY_ACK_MASK_BITS,
               "accept_mask must cover ack ring capacity");
+STATIC_ASSERT((TELEMETRY_BARCODE_RING_CAPACITY & TELEMETRY_BARCODE_RING_MASK) == 0U,
+              "barcode ring capacity must be a power of two");
 
 typedef struct
 {
@@ -58,6 +61,12 @@ STATIC_ASSERT(sizeof(telemetry_ack_ring_t) ==
 static UW                   g_next_event_id;
 static T_SPLOCK             g_ack_lock;
 static telemetry_ack_ring_t g_ack_ring;
+static T_SPLOCK                   g_barcode_lock;
+static telemetry_barcode_record_t g_barcode_ring[TELEMETRY_BARCODE_RING_CAPACITY];
+static uint32_t                   g_barcode_seq;
+static uint32_t                   g_barcode_overflow;
+static uint16_t                   g_barcode_head;
+static uint16_t                   g_barcode_count;
 
 static ER
 emit_event (uint8_t source, uint8_t type, int16_t p1, uint16_t p2,
@@ -256,15 +265,72 @@ telemetry_emit_test_reset (void)
     (void) ISpinLock(&g_ack_lock, &saved);
     g_ack_ring = (telemetry_ack_ring_t) {0};
     (void) ISpinUnlock(&g_ack_lock, saved);
+    (void) InitSpinLock(&g_barcode_lock);
+    g_barcode_seq = 0U;
+    g_barcode_overflow = 0U;
+    g_barcode_head = 0U;
+    g_barcode_count = 0U;
 }
 
 ER telemetry_try_emit_barcode_sample (telemetry_barcode_sample_t const * p_sample)
 {
-    uint8_t frame[1U + TELEMETRY_BARCODE_SAMPLE_WIRE_SIZE];
-    frame[0] = (uint8_t)TELEMETRY_TOPIC_BARCODE_SAMPLE;
-    if (telemetry_pack_barcode_sample(&frame[1], p_sample) == 0U)
+    UINT saved = 0U;
+
+    if (p_sample == 0)
     {
         return E_PAR;
     }
-    return telemetry_queue_try_push(frame, sizeof(frame));
+    (void)ISpinLock(&g_barcode_lock, &saved);
+    g_barcode_seq++;
+    if (g_barcode_count == TELEMETRY_BARCODE_RING_CAPACITY)
+    {
+        g_barcode_overflow++;
+        (void)ISpinUnlock(&g_barcode_lock, saved);
+        telemetry_queue_note_drop();
+        return E_TMOUT;
+    }
+    uint32_t const tail = ((uint32_t)g_barcode_head + g_barcode_count) &
+                          TELEMETRY_BARCODE_RING_MASK;
+    g_barcode_ring[tail].record_id = g_barcode_seq;
+    g_barcode_ring[tail].sample = *p_sample;
+    g_barcode_count++;
+    (void)ISpinUnlock(&g_barcode_lock, saved);
+    return E_OK;
+}
+
+void telemetry_peek_barcode_batch (telemetry_barcode_batch_t * p_batch)
+{
+    UINT saved = 0U;
+
+    (void)ISpinLock(&g_barcode_lock, &saved);
+    p_batch->count = (uint8_t)((g_barcode_count < TELEMETRY_BARCODE_BATCH_MAX) ?
+                                  g_barcode_count : TELEMETRY_BARCODE_BATCH_MAX);
+    p_batch->overflow = g_barcode_overflow;
+    for (uint8_t i = 0U; i < p_batch->count; i++)
+    {
+        p_batch->records[i] = g_barcode_ring[((uint32_t)g_barcode_head + i) &
+                                             TELEMETRY_BARCODE_RING_MASK];
+    }
+    (void)ISpinUnlock(&g_barcode_lock, saved);
+}
+
+bool telemetry_accept_barcode_batch (uint8_t count, uint32_t last_record_id)
+{
+    UINT saved = 0U;
+    bool b_accepted = false;
+
+    (void)ISpinLock(&g_barcode_lock, &saved);
+    if ((count != 0U) && (count <= g_barcode_count))
+    {
+        uint32_t const last = ((uint32_t)g_barcode_head + count - 1U) &
+                              TELEMETRY_BARCODE_RING_MASK;
+        if (g_barcode_ring[last].record_id == last_record_id)
+        {
+            g_barcode_head = (uint16_t)((last + 1U) & TELEMETRY_BARCODE_RING_MASK);
+            g_barcode_count = (uint16_t)(g_barcode_count - count);
+            b_accepted = true;
+        }
+    }
+    (void)ISpinUnlock(&g_barcode_lock, saved);
+    return b_accepted;
 }

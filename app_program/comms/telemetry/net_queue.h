@@ -1,6 +1,7 @@
 #ifndef TELEMETRY_NET_QUEUE_H
 #define TELEMETRY_NET_QUEUE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <tk/tkernel.h>
 
@@ -13,7 +14,15 @@
 
 ER telemetry_net_queue_create (void);
 ER telemetry_net_queue_push (const uint8_t * payload, uint16_t len);
+/* Retains the caller's ownership on failure and leaves the drop count alone. */
+ER telemetry_net_queue_push_retained_event (const uint8_t * frame);
 INT telemetry_net_queue_pop (uint8_t * payload, TMO tmout);
+INT telemetry_net_queue_pop_fifo (uint8_t * payload, TMO tmout);
+/* The radio can keep a bundle pending across a failed MQTT publish. Accept
+ * only the version that was handed to the client. */
+bool telemetry_net_queue_peek_status (uint8_t * payload, uint32_t * p_version);
+void telemetry_net_queue_accept_status (uint32_t version);
+UW telemetry_net_queue_status_replacements (void);
 UW telemetry_net_queue_drop_count (void);
 
 /* Host tests only: forget the queue so that the next telemetry_net_queue_create

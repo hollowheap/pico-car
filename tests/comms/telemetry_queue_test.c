@@ -9,7 +9,7 @@
  *   physics   (25 B frame): 32 bytes each, 32 messages
  *   status    (18 B frame): 24 bytes each, 42 messages
  *   event     (13 B frame): 20 bytes each, 51 messages
- *   heartbeat ( 9 B frame): 16 bytes each, 64 messages
+ *   heartbeat (15 B frame): 20 bytes each, 51 messages
  *   profile   (83 B frame): 88 bytes each, 11 messages
  * pop returns the frame as it was pushed.
  */
@@ -23,13 +23,13 @@
 #define BUFFER_BYTES   TELEMETRY_QUEUE_BYTES
 #define MSG_MAX        83U
 #define FRAME_MAX      83U
-#define FRAME_HEARTBEAT 11U
+#define FRAME_HEARTBEAT 15U
 #define FRAME_EVENT    13U
 #define FRAME_STATUS   18U
 #define FRAME_MOTION   18U /* same cost as status: both round to 20 B */
 #define FRAME_PHYSICS  25U
 #define FRAME_PROFILE  83U
-#define COST_HEARTBEAT 16U
+#define COST_HEARTBEAT 20U
 #define COST_EVENT     20U
 #define COST_STATUS    24U
 #define COST_PHYSICS   32U
@@ -463,7 +463,9 @@ static void test_topic_length_validation (void)
             fill_frame(frame, len, 0x11U);
             frame[0] = g_topics[t];
             r        = telemetry_queue_push(frame, len, 0U);
-            if (len == frame_len(g_topics[t]))
+            if ((len == frame_len(g_topics[t])) ||
+                ((frame[0] == (uint8_t)TELEMETRY_TOPIC_STATUS) &&
+                 (len == TELEMETRY_STATUS_BUNDLE_FRAME_SIZE)))
             {
                 CHECK(r == E_OK);
                 CHECK(g_mbf_fake.send_calls == (sent + 1U));
@@ -640,7 +642,7 @@ static void test_capacity_of_1024_bytes (void)
     CHECK(fill_with((uint8_t)'e', CAP_EVENT + 4U) == CAP_EVENT);
     setup();
     CHECK(fill_with((uint8_t)'h', CAP_HEARTBEAT + 4U) == CAP_HEARTBEAT);
-    CHECK(mbf_fake_free(QUEUE_ID) == 0);
+    CHECK(mbf_fake_free(QUEUE_ID) == (int32_t)(BUFFER_BYTES - (CAP_HEARTBEAT * COST_HEARTBEAT)));
     setup();
     CHECK(fill_with((uint8_t)'f', 20U) == (BUFFER_BYTES / COST_PROFILE));
     CHECK((CAP_STATUS * COST_STATUS) <= BUFFER_BYTES);
@@ -823,7 +825,7 @@ static void test_event_at_head_stops_eviction (void)
     CHECK(telemetry_queue_drop_count() == drops + 2U); /* evicted + new */
     CHECK(g_mbf_fake.recv_calls == 1U);
 
-    /* A 16-byte heartbeat fits in the 44 bytes that are free now. */
+    /* A 20-byte heartbeat fits in the 44 bytes that are free now. */
     CHECK(push_t((uint8_t)'h', 0U, 0x71U) == E_OK);
     CHECK(telemetry_queue_drop_count() == drops + 2U);
 
@@ -863,12 +865,12 @@ static void test_qos0_evicts_several_to_fit (void)
     CHECK(pop_t((uint8_t)'f', 0x77U));
     CHECK(queue_empty());
 
-    /* Heartbeats (16 B each) evicted for a profile frame (88 B): six go. */
+    /* Heartbeats (20 B each) evicted for a profile frame (88 B): four go. */
     setup();
     CHECK(fill_with((uint8_t)'h', CAP_HEARTBEAT) == CAP_HEARTBEAT);
     drops = telemetry_queue_drop_count();
     CHECK(push_t((uint8_t)'f', 0U, 0x78U) == E_OK);
-    CHECK(telemetry_queue_drop_count() == drops + 6U);
+    CHECK(telemetry_queue_drop_count() == drops + 4U);
     pass("qos0_evicts_several_to_fit", before);
 }
 
