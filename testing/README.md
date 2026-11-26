@@ -10,14 +10,16 @@ This folder records how each subsystem was tested and what happened. Each test i
 
 ## Subsystems
 
-| Subsystem | Covers |
-|---|---|
-| comms | Wi-Fi, MQTT telemetry and commands |
-| motion | Motors, encoders, wheel control and the pilot |
-| ir | Line sensors and barcode reading |
-| imu | Attitude, humps and lift detection |
-| obstacle | Sonar, servo scan and obstacle bypass |
-| shared | Platform, supervisor, watchdog and start-up |
+| Subsystem | Covers | Records |
+|---|---|---|
+| comms | Wi-Fi, MQTT telemetry and commands | [comms.md](comms.md) |
+| motion | Motors, encoders, wheel control and the pilot | [motion.md](motion.md) |
+| ir | Line sensors and barcode reading | [ir.md](ir.md) |
+| imu | Attitude, humps and lift detection | [imu.md](imu.md) |
+| obstacle | Sonar, servo scan and obstacle bypass | [obstacle.md](obstacle.md) |
+| shared | Platform, supervisor, watchdog and start-up | [shared.md](shared.md) |
+
+The CTest labels for shared code are `platform` and `supervisor`.
 
 ## Host tests
 
@@ -33,6 +35,9 @@ Tests are named `<subsystem>.<unit>.<case>`. Run a subsystem with
 `ctest --test-dir build-tests -L '^motion$' --output-on-failure` or one case with
 `ctest --test-dir build-tests -R '^motion[.]quadrature[.]default$' --output-on-failure`.
 
+Run the firmware lint gate (clang-tidy and clang-format) with `bash lint.sh`.
+It must report `0 finding(s)`.
+
 Run the ground-station tests with:
 
 ```
@@ -43,7 +48,7 @@ npm --prefix host/dashboard test
 
 ## Bench checks
 
-Build the images with `./build.sh`. Build the optional physics image with `cmake --build build --target physics_check`. To flash, hold BOOTSEL, plug in the USB cable and copy the `.uf2` file to the drive. Save the whole USB console under `testing/logs/`.
+Build the images with `./build.sh`; the bench sources live in `bench/`. Build the optional physics image with `cmake --build build --target physics_check`. To flash, hold BOOTSEL, plug in the USB cable and copy the `.uf2` file to the drive. Save the whole USB console under `testing/logs/`.
 
 | Image | Subsystem | Checks | Summary |
 |---|---|---|---|
@@ -57,6 +62,9 @@ On `car_bench`, a short press on GP20 selects the next item. Hold GP20 for 1 s t
 
 The standard build's `main.uf2` runs the obstacle-extras controller.
 It uses the original 200 mm/s wheel target limit and 25% duty cap.
+Bypass spins run at 140 mm/s and slow to 46.7 mm/s for the last 20 degrees.
+Spin headings use the 80.25 mm pivot track from `app_program/platform/chassis.h`.
+Neither value has been measured on the car yet.
 Verify that the mount clears the physical sweep from −48° to +48° around
 the 1450 μs center pulse. The dev-stack mount was qualified from −20° to +20°.
 
@@ -86,6 +94,11 @@ Keep captures for a run together in `testing/logs/<date>-<subsystem>-<run>/`.
 Save the USB console log and any exported bridge recording there. Put the
 capture path and the run's wall-clock time in the test record. Git ignores
 the capture files.
+
+The bridge records every live session to `testing/logs/bridge/history.jsonl`.
+Its 5 Hz status packets carry wheel travel, wheel speed and target, mode and
+state. They are enough to rebuild the axle path, stretch lengths, bend radius
+and spin angles after a run.
 
 ## Record template
 

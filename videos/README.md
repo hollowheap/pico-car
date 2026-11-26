@@ -16,9 +16,9 @@ Links to test and demo videos. Upload each video as unlisted and add a row here.
 
 | Date | Demo | Build | Link |
 |---|---|---|---|
-| | Line following on the course | | |
+| 28 Oct | Line following on the course | | https://youtu.be/ppfEqPfLgjg |
 | | Barcode commands at junctions | | |
-| | Obstacle bypass and rejoin | | |
+| 3 Nov | Obstacle bypass and rejoin | | https://youtu.be/Sh07WxUNJ-0 |
 | | Hump and lift handling | | |
 | | Dashboard and remote stop | | |
 
