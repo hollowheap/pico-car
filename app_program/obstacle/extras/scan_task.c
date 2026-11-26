@@ -11,7 +11,7 @@
  *        same way, so a new angle is picked up at once, and every move
  *        after the first skips EXTRAS_SERVO_PREDELAY_MS (the car stands
  *        still). Every ping is tagged with its servo angle
- *        (extras_comms_set_ping_tag()).
+ *        (extras_comms_publish_ping()).
  *
  * NOTE: The kernel API types INT, UINT, ER, TMO and SYSTIM are used where
  * the kernel functions require them (deviation from BARR-C 5.2.a, see
@@ -31,6 +31,8 @@
 #include "scan.h"
 #include "drv_sonar.h"
 #include "scan_task.h"
+#include "platform/liveness.h"
+#include "supervisor/health_ids.h"
 
 /* Microseconds per millisecond. */
 #define USEC_PER_MSEC (1000U)
@@ -103,6 +105,7 @@ void extras_scan_task_run (INT stacd, void * exinf)
     {
         uint32_t since_us = 0U;
 
+        liveness_kick(LIVE_OBSTACLE);
         poll_commands();
         tick();
         since_us = extras_sonar_now_us() - g_last_trig_us;
@@ -210,10 +213,12 @@ static void wait_ms (uint32_t delay_ms)
     {
         UINT ptn = 0U;
 
-        /* Cast is safe: the remaining time is below 1000 ms. */
+        uint32_t const remaining = delay_ms - spent_ms;
+        uint32_t const slice = (remaining < LIVENESS_WAIT_MS) ? remaining : LIVENESS_WAIT_MS;
+        liveness_kick(LIVE_OBSTACLE);
         ER const result =
             tk_wai_flg(extras_comms_flag(), CMD_BITS, TWF_ORW | TWF_BITCLR, &ptn,
-                       (TMO)(delay_ms - spent_ms));
+                       (TMO)slice);
 
         if (E_OK == result)
         {
@@ -326,6 +331,7 @@ static bool move_servo (void)
         if ((!g_servo.b_known) || (target != g_servo.deci))
         {
             extras_sonar_servo_set(target);
+            extras_comms_aim(target);
             g_servo.deci    = target;
             g_servo.b_known = true;
         }
@@ -347,6 +353,7 @@ static bool move_servo (void)
         uint32_t const delay_ms = settle_ms(target);
 
         extras_sonar_servo_set(target);
+        extras_comms_aim(target);
         g_servo.deci    = target;
         g_servo.b_known = true;
         wait_ms(delay_ms);
@@ -415,7 +422,7 @@ static void ping_and_step (void)
     extras_fsm_out_clear(&out);
     extras_fsm_set_guard_off(&g_fsm, extras_comms_sweep());
     extras_fsm_ping(&g_fsm, cls, dist_mm, now_ms(), &out);
-    extras_comms_set_ping_tag(g_fsm.seq, g_servo.deci);
+    extras_comms_publish_ping(g_fsm.seq, g_servo.deci, cls, dist_mm, g_last_trig_us);
     extras_comms_publish(&out, &g_fsm);
 }
 

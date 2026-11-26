@@ -86,10 +86,10 @@ ER vehicle_command_post_ids (uint8_t opcode, uint8_t source, uint16_t cmd_id,
 /* Commands the inbox dropped since boot. The count wraps. */
 uint16_t supervisor_cmd_drops (void);
 
-/* Poll an admitted maneuver and its VEHICLE_SRC_*. Barcode L/R/S remain
-   pending until selected or canceled. A one-shot maneuver is claimed here. */
+/* Poll the admitted junction maneuver and its VEHICLE_SRC_*. The choice
+   remains pending until selected or canceled. */
 uint8_t supervisor_poll_turn (uint8_t * p_source);
-/* A consuming check removes only the matching barcode junction choice. */
+/* A consuming check removes only the matching junction choice. */
 bool supervisor_route_pending (uint8_t expected_opcode, bool b_consume);
 
 /* Accepted RESET commands since boot, wrapping at 8 bits. The line task

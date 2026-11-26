@@ -34,6 +34,8 @@
 #include "statechart.h"
 #include "packed.h"
 #include "service.h"
+#include "obstacle/obstacle_pack.h"
+#include "platform/faults.h"
 
 /* A reader of the profile tries this many times before giving up. */
 #define PROFILE_TRIES (2U)
@@ -68,6 +70,7 @@ typedef struct
 {
     bool volatile b_track;
     bool volatile b_sweep;
+    bool volatile b_forward; /* Latest packed ping was free-running and centered. */
 } comms_flags_t;
 
 /* ------------------------------------------------------------------ *
@@ -79,15 +82,21 @@ static comms_links_t g_links = {0, 0, NULL, NULL};
 
 static uint32_t volatile g_status   = 0U;
 static uint32_t volatile g_ping_tag = 0U;
+static uint32_t volatile g_ping = 0U;
+static uint32_t volatile g_ping_us = 0U;
+static uint32_t volatile g_echo_count[OBSTACLE_ECHO_CLASSES];
+static obstacle_sonar_aim_fn_t gp_observe_aim;
 static uint32_t volatile g_steer    = 0U;
 static int16_t volatile g_look      = 0;
-static comms_flags_t g_flags        = {false, false};
+static comms_flags_t g_flags        = {0};
 static uint8_t volatile g_faults    = 0U;
 static uint8_t volatile g_drops     = 0U;
 
 /* The sequence number is odd while the profile is being written. */
 static uint16_t volatile g_profile[EXTRAS_SLOT_COUNT];
 static uint8_t volatile g_profile_seq = 0U;
+static obstacle_plan_summary_t volatile g_plan;
+static bool volatile g_plan_valid;
 
 static uint8_t volatile g_cmd_ring[EXTRAS_CMD_RING_LEN];
 static uint8_t volatile g_cmd_head  = 0U;
@@ -98,6 +107,7 @@ static uint8_t volatile g_evt_count = 0U;
 
 static comms_lock_t g_cmd_lock = 0U;
 static comms_lock_t g_evt_lock = 0U;
+static comms_lock_t g_ping_lock = 0U;
 
 /* ------------------------------------------------------------------ *
  * Private function prototypes.
@@ -143,6 +153,7 @@ ER extras_comms_init (obstacle_extras_links_t const * p_links)
 #if TK_SUPPORT_SMP
     (void)InitSpinLock(&g_cmd_lock);
     (void)InitSpinLock(&g_evt_lock);
+    (void)InitSpinLock(&g_ping_lock);
 #endif
 
     h_new = tk_cre_flg(&cflg);
@@ -196,6 +207,11 @@ ER extras_comms_post_cmd (uint8_t cmd)
 
     if (EXTRAS_CMD_STOP == type)
     {
+        UINT const intsts = lock_take(&g_cmd_lock);
+
+        /* A queued RESET/START must not rearm the scanner after this STOP. */
+        g_cmd_count = 0U;
+        lock_give(&g_cmd_lock, intsts);
         result = tk_set_flg(g_links.h_flag, EXTRAS_FLG_STOP);
     }
     else
@@ -270,12 +286,38 @@ void extras_comms_publish (extras_fsm_out_t const * p_out, extras_fsm_t const * 
         (void)g_links.p_stop();
     }
 
-    g_status = extras_fsm_status(p_fsm);
-    g_faults = p_fsm->faults;
-
+    /* A reader that sees PLAN can immediately copy its completed result. */
     if (p_out->b_profile_changed)
     {
         publish_profile(p_fsm);
+    }
+    if ((EXTRAS_STATE_SCANNING == p_fsm->state) || (EXTRAS_STATE_REACQUIRE == p_fsm->state))
+    {
+        UINT const intsts = lock_take(&g_ping_lock);
+        g_flags.b_forward = false;
+        lock_give(&g_ping_lock, intsts);
+    }
+    g_status = extras_fsm_status(p_fsm);
+    if (g_faults != p_fsm->faults)
+    {
+        uint32_t active = 0U;
+
+        g_faults = p_fsm->faults;
+        if (0U != (g_faults & EXTRAS_FAULT_NO_ECHO))
+        {
+            active |= FAULT_SONAR_NO_ECHO_BIT;
+        }
+        if (0U != (g_faults & EXTRAS_FAULT_ECHO_STUCK))
+        {
+            active |= FAULT_ECHO_LINE_BIT;
+        }
+        if (0U != (g_faults & OBSTACLE_FAULTS_STOPPING))
+        {
+            active |= FAULT_OBSTACLE_STOPPED_BIT;
+        }
+        system_fault_assign(FAULT_OWNER_OBSTACLE,
+                            FAULT_SONAR_NO_ECHO_BIT | FAULT_ECHO_LINE_BIT | FAULT_OBSTACLE_STOPPED_BIT,
+                            active);
     }
 
     for (idx = 0U; idx < p_out->evt_count; idx++)
@@ -434,22 +476,42 @@ bool extras_comms_sweep (void)
 }
 
 /*!
- * @brief Record which servo angle the newest ping was taken at. Called by
- *        the Buddy 5 task after each ping, before the status word with the
- *        same seq is published.
+ * @brief Publish the complete ping for telemetry and the tag for Navigation.
+ *        Called by the scanner before publishing a status with this sequence.
  *
  * @param[in] seq  Ping sequence number (6 bits, as in the status word).
- * @param[in] deci Servo angle of the ping (deci-degrees, within +-600).
+ * @param[in] deci Servo angle of the ping, in deci-degrees.
+ * @param[in] cls  Extras echo class.
+ * @param[in] dist_mm Measured range, zero for a missing range.
+ * @param[in] trigger_us Hardware timer at the start of this observation.
  */
-void extras_comms_set_ping_tag (uint8_t seq, int16_t deci)
+void extras_comms_publish_ping (uint8_t seq, int16_t deci, uint8_t cls, uint16_t dist_mm,
+                               uint32_t trigger_us)
 {
+    static const uint8_t echo_class[] = {
+        [EXTRAS_CLASS_VALID] = OBSTACLE_CLASS_VALID,
+        [EXTRAS_CLASS_OPEN] = OBSTACLE_CLASS_OPEN,
+        [EXTRAS_CLASS_UNKNOWN] = OBSTACLE_CLASS_NO_ECHO,
+        [EXTRAS_CLASS_STUCK] = OBSTACLE_CLASS_STUCK,
+    };
     uint32_t word = 0U;
+    uint8_t const echo = echo_class[cls];
 
     /* Cast is safe: deci + EXTRAS_TAG_LOOK_BIAS is 424..1624, within 11 bits. */
     word       = extras_pack_put(word, EXTRAS_TAG_SEQ_SH, EXTRAS_TAG_SEQ_MK, seq);
     word       = extras_pack_put(word, EXTRAS_TAG_LOOK_SH, EXTRAS_TAG_LOOK_MK,
                              (uint32_t)((int32_t)deci + EXTRAS_TAG_LOOK_BIAS));
+    UINT const intsts = lock_take(&g_ping_lock);
     g_ping_tag = word;
+    g_ping = obstacle_pack_ping(seq, echo, dist_mm, deci);
+    g_ping_us = trigger_us;
+    /* The previous published state is the state during this shot. A scan
+       can measure its center slot and transition to PLAN on the same ping. */
+    uint32_t const state = extras_pack_get(g_status, EXTRAS_ST_STATE_SH, EXTRAS_ST_STATE_MK);
+    g_flags.b_forward = (0 == deci) && (EXTRAS_STATE_SCANNING != state) &&
+                        (EXTRAS_STATE_REACQUIRE != state);
+    lock_give(&g_ping_lock, intsts);
+    g_echo_count[echo]++;
 }
 
 /*!
@@ -460,6 +522,60 @@ void extras_comms_set_ping_tag (uint8_t seq, int16_t deci)
 uint32_t extras_comms_ping_tag (void)
 {
     return (g_ping_tag);
+}
+
+uint32_t extras_comms_ping (void)
+{
+    return g_ping;
+}
+
+uint32_t extras_comms_ping_recent (uint32_t now_us)
+{
+    UINT const intsts = lock_take(&g_ping_lock);
+    uint32_t const word = ((now_us - g_ping_us) < OBSTACLE_FORWARD_MAX_AGE_US) ? g_ping : 0U;
+    lock_give(&g_ping_lock, intsts);
+    return word;
+}
+
+ER extras_comms_forward_snapshot (obstacle_forward_sample_t * p_sample)
+{
+    ER result = E_OBJ;
+    UINT const intsts = lock_take(&g_ping_lock);
+
+    if (g_flags.b_forward)
+    {
+        uint32_t const word = g_ping;
+        *p_sample = (obstacle_forward_sample_t){
+            .trigger_us = g_ping_us,
+            .distance_mm = obstacle_pack_ping_mm(word),
+            .echo_class = (uint8_t)obstacle_pack_get(word, OBSTACLE_PING_CLASS_SH, OBSTACLE_PING_CLASS_MK),
+            .seq = obstacle_pack_ping_seq(word),
+        };
+        result = E_OK;
+    }
+    lock_give(&g_ping_lock, intsts);
+    return result;
+}
+
+void extras_comms_echo_counts (uint32_t * p_counts)
+{
+    for (uint8_t idx = 0U; idx < OBSTACLE_ECHO_CLASSES; idx++)
+    {
+        p_counts[idx] = g_echo_count[idx];
+    }
+}
+
+void extras_comms_bind_aim (obstacle_sonar_aim_fn_t p_observe)
+{
+    gp_observe_aim = p_observe;
+}
+
+void extras_comms_aim (int16_t deci)
+{
+    if (NULL != gp_observe_aim)
+    {
+        gp_observe_aim(deci);
+    }
 }
 
 /*!
@@ -526,6 +642,32 @@ ER extras_comms_copy_profile (uint16_t * p_profile)
     }
 
     return (result);
+}
+
+ER extras_comms_copy_plan (obstacle_plan_summary_t * p_plan)
+{
+    for (uint8_t tries = 0U; tries < PROFILE_TRIES; tries++)
+    {
+        uint8_t const before = g_profile_seq;
+
+        if (0U == (before & 1U))
+        {
+            memory_barrier();
+            bool const b_valid = g_plan_valid;
+            obstacle_plan_summary_t const plan = g_plan;
+            memory_barrier();
+            if (before == g_profile_seq)
+            {
+                if (b_valid)
+                {
+                    *p_plan = plan;
+                    return E_OK;
+                }
+                return E_OBJ;
+            }
+        }
+    }
+    return E_BUSY;
 }
 
 /* ------------------------------------------------------------------ *
@@ -700,6 +842,22 @@ static void publish_profile (extras_fsm_t const * p_fsm)
     for (idx = 0U; idx < EXTRAS_SLOT_COUNT; idx++)
     {
         g_profile[idx] = p_fsm->scan.profile[idx];
+    }
+
+    if (EXTRAS_STATE_PLAN == p_fsm->state)
+    {
+        extras_plan_result_t const * p_plan = &p_fsm->plan;
+
+        g_plan = (obstacle_plan_summary_t){
+            .closest_mm = p_plan->closest_mm,
+            .width_mm = p_plan->width_mm,
+            .need_mm = p_plan->need_mm[p_plan->side],
+            .status = p_plan->status,
+            .side = p_plan->side,
+            .start_deg = p_plan->start_deg,
+            .req_id = p_fsm->req_id,
+        };
+        g_plan_valid = true;
     }
 
     memory_barrier();

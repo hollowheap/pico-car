@@ -95,6 +95,17 @@ typedef struct
 
 STATIC_ASSERT (sizeof(obstacle_status_t) == 18U, "obstacle_status_t size");
 
+/* Latest settled, centered, free-running sonar shot. */
+typedef struct
+{
+    uint32_t trigger_us;  /* Low 32 bits of the boot-relative hardware timer. */
+    uint16_t distance_mm; /* Range for VALID, 20 for TOO_CLOSE, 0 otherwise. */
+    uint8_t  echo_class;  /* Raw OBSTACLE_CLASS_* value. */
+    uint8_t  seq;         /* Sequence carried by this capture's packed ping. */
+} obstacle_forward_sample_t;
+
+STATIC_ASSERT(sizeof(obstacle_forward_sample_t) == 8U, "forward sample size");
+
 /* The plan from the last finished scan. It is valid after the first scan. */
 typedef struct
 {
@@ -185,9 +196,17 @@ void obstacle_echo_counts (uint32_t * p_counts);
  * not started. Returns E_OBJ before init. */
 ER obstacle_ping_request (int16_t servo_deci, uint8_t seq);
 
-/* Non-consuming latest ping, shared by readers. Bit 27 identifies a reply.
+/* Non-consuming latest ping, shared by readers. The reply bit identifies a reply.
  * The servo field records the commanded bearing. There is no capture timestamp. */
 uint32_t obstacle_ping_read (void);
+
+/* Return the latest ping only while its trigger time is recent. Zero means
+ * there is no current observation. The raw ping remains available above. */
+#define OBSTACLE_FORWARD_MAX_AGE_US (250000U)
+uint32_t obstacle_ping_recent (void);
+
+/* Copy the range, class, sequence and original trigger time together. */
+ER obstacle_forward_snapshot (obstacle_forward_sample_t * p_sample);
 
 /* Event flag for NAV_EVT and NAV_STEER waits. E_OBJ before init. */
 ID obstacle_flag_id (void);

@@ -14,6 +14,7 @@
 
 #include "statechart.h"
 #include "service.h"
+#include "obstacle/obstacle.h"
 
 ER   extras_comms_init (obstacle_extras_links_t const * p_links);
 void extras_comms_set_init_failed (void);
@@ -34,11 +35,19 @@ bool     extras_comms_track (void);
 void     extras_comms_set_sweep (bool b_on);
 bool     extras_comms_sweep (void);
 uint32_t extras_comms_status (void);
-void     extras_comms_set_ping_tag (uint8_t seq, int16_t deci);
+void     extras_comms_publish_ping (uint8_t seq, int16_t deci, uint8_t cls, uint16_t dist_mm,
+                                   uint32_t trigger_us);
 uint32_t extras_comms_ping_tag (void);
+uint32_t extras_comms_ping (void);
+uint32_t extras_comms_ping_recent (uint32_t now_us);
+ER       extras_comms_forward_snapshot (obstacle_forward_sample_t * p_sample);
+void     extras_comms_echo_counts (uint32_t * p_counts);
 uint8_t  extras_comms_faults (void);
 uint8_t  extras_comms_drops (void);
 ER       extras_comms_copy_profile (uint16_t * p_profile);
+ER       extras_comms_copy_plan (obstacle_plan_summary_t * p_plan);
+void     extras_comms_bind_aim (obstacle_sonar_aim_fn_t p_observe);
+void     extras_comms_aim (int16_t deci);
 
 #endif /* EXTRAS_COMMS_H */
 

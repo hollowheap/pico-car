@@ -331,6 +331,7 @@ void run_state_tick (run_ctx_t * p_ctx, const run_inputs_t * p_in, run_result_t 
     if (p_in->b_estop)
     {
         p_out->b_cancel_turn = !p_ctx->b_estop;
+        p_out->b_obstacle_stop = !p_ctx->b_estop;
         p_ctx->b_estop = true;
     }
     /* A righted, acknowledged attitude can still read OVERTURNED while physics

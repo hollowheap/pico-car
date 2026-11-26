@@ -60,9 +60,21 @@ target_compile_options(test_obstacle_start PRIVATE
 add_test(NAME obstacle.obstacle_start.default COMMAND test_obstacle_start)
 
 set(OBSTACLE_EXTRAS_SRC ${OBSTACLE_SRC}/extras)
+add_executable(test_obstacle_extras_adapter obstacle/extras_adapter_test.c
+    obstacle/fakes/extras_adapter_kernel.c
+    ${OBSTACLE_EXTRAS_SRC}/adapter.c ${OBSTACLE_EXTRAS_SRC}/comms.c
+    ${OBSTACLE_EXTRAS_SRC}/service.c ${OBSTACLE_EXTRAS_SRC}/statechart.c
+    ${OBSTACLE_EXTRAS_SRC}/planner.c ${OBSTACLE_EXTRAS_SRC}/scan.c)
+target_include_directories(test_obstacle_extras_adapter PRIVATE ${APP_INCLUDE} platform/fakes)
+target_compile_definitions(test_obstacle_extras_adapter PRIVATE E_NOSPT=-9)
+target_compile_options(test_obstacle_extras_adapter PRIVATE
+    "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/platform/fakes/tk/flg_fake.h"
+    -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
+add_test(NAME obstacle.extras_adapter.stop_and_observations COMMAND test_obstacle_extras_adapter)
+
 add_executable(test_obstacle_extras_scan obstacle/extras_scan_test.c
     ${OBSTACLE_EXTRAS_SRC}/scan.c ${OBSTACLE_EXTRAS_SRC}/planner.c)
-target_include_directories(test_obstacle_extras_scan PRIVATE ${OBSTACLE_EXTRAS_SRC})
+target_include_directories(test_obstacle_extras_scan PRIVATE ${OBSTACLE_EXTRAS_SRC} ${APP_INCLUDE})
 target_compile_options(test_obstacle_extras_scan PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
 add_test(NAME obstacle.extras_scan.original_replays COMMAND test_obstacle_extras_scan)
@@ -74,7 +86,8 @@ target_include_directories(test_obstacle_extras_navigation PRIVATE
     ${OBSTACLE_EXTRAS_SRC} ${APP_INCLUDE})
 target_compile_options(test_obstacle_extras_navigation PRIVATE
     -Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow)
-foreach(scenario IN ITEMS no_path_twice matching_ping rejoin_speed reversal_pause close_echoes)
+foreach(scenario IN ITEMS no_path_twice supervisor_handoff advisory_echo_health stale_close_is_advisory
+                         half_speed_bumper matching_ping rejoin_speed reversal_pause close_echoes)
     add_test(NAME obstacle.extras_navigation.${scenario}
         COMMAND test_obstacle_extras_navigation ${scenario})
 endforeach()

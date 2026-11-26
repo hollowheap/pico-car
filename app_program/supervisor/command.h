@@ -35,7 +35,7 @@ static inline bool vehicle_is_start (uint8_t opcode)
 static inline bool vehicle_is_junction_choice (uint8_t opcode)
 {
     return (VEHICLE_CMD_LEFT == opcode) || (VEHICLE_CMD_RIGHT == opcode) ||
-           (VEHICLE_CMD_STRAIGHT == opcode);
+           (VEHICLE_CMD_STRAIGHT == opcode) || (VEHICLE_CMD_UTURN == opcode);
 }
 
 /* Who asked. */

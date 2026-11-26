@@ -700,24 +700,23 @@ static bool check_health (extras_fsm_t * p_fsm, uint8_t cls, uint32_t now_ms,
         cause = EXTRAS_CAUSE_NONE;
     }
 
-    if (EXTRAS_CAUSE_NONE == cause)
+    if ((EXTRAS_STATE_MONITOR == p_fsm->state) ||
+        (EXTRAS_STATE_STOPPED == p_fsm->state))
     {
-        /* The sensor is healthy. */
+        /* Echo faults are diagnostic until a measured obstacle owns the
+         * wheels. Keep reporting them while parked or following tape. A
+         * fault after RESET therefore no longer blocks START. */
+        uint32_t const echo_faults = (uint32_t)EXTRAS_FAULT_NO_ECHO | (uint32_t)EXTRAS_FAULT_ECHO_STUCK;
+        p_fsm->faults = (uint8_t)(((uint32_t)p_fsm->faults & ~echo_faults) | (uint32_t)fault_bit(cause));
     }
-    else if (EXTRAS_STATE_STOPPED != p_fsm->state)
+    else if (EXTRAS_CAUSE_NONE != cause)
     {
         enter_stopped(p_fsm, cause, now_ms, p_out);
         b_stopped = true;
     }
-    else if (p_fsm->b_reset_ok)
-    {
-        /* The sensor failed again after RESET but before START. */
-        p_fsm->b_reset_ok = false;
-        p_fsm->cause      = cause;
-    }
     else
     {
-        /* Already stopped and not reset: nothing more to do. */
+        /* Continue the measured-obstacle sequence. */
     }
 
     return (b_stopped);

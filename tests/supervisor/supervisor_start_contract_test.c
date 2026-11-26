@@ -29,6 +29,7 @@ static unsigned g_fails;
 static unsigned g_obstacle_resets;
 static unsigned g_obstacle_starts;
 static unsigned g_obstacle_stops;
+static bool g_obstacle_missing;
 static unsigned g_calibration_requests;
 static unsigned g_permit_renewals;
 static unsigned g_watchdog_feeds;
@@ -170,6 +171,10 @@ void physics_set_wheels_free (bool free)
 
 ER obstacle_snapshot (obstacle_status_t * p_status)
 {
+    if (g_obstacle_missing)
+    {
+        return E_OBJ;
+    }
     *p_status = g_obstacle;
     return E_OK;
 }
@@ -547,9 +552,9 @@ static void check_calibrating_start (const char * scenario)
     }
     else if (strcmp (scenario, "calibrating-fault") == 0)
     {
-        set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
+        system_fault_assign (FAULT_OWNER_PHYSICS, FAULT_IMU_NACK_BIT, FAULT_IMU_NACK_BIT);
         one_pass ();
-        set_sonar_connection_fault (0U);
+        system_fault_assign (FAULT_OWNER_PHYSICS, FAULT_IMU_NACK_BIT, 0U);
     }
     else if (strcmp (scenario, "calibrating-start") == 0)
     {
@@ -633,8 +638,8 @@ static void test_start_after_sonar_recovers (void)
     CHECK (0U == g_obstacle_resets && 0U == g_obstacle_starts);
     g_mqtt_seen = true;
     set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
-    check_connection_refuses_start ();
-    CHECK (0U == g_obstacle_resets);
+    one_pass ();
+    CHECK (0U == g_obstacle_resets && 0U == g_obstacle_starts);
     set_sonar_connection_fault (0U);
     g_now_ms = 10000U;
     one_pass ();
@@ -735,11 +740,12 @@ static void test_pending_barcode_route (void)
         g_probe_at_u_reply = choice;
         expect_turn_reply (VEHICLE_CMD_UTURN, VEHICLE_SRC_BARCODE, true);
         g_probe_at_u_reply = SUPERVISOR_NO_TURN;
-        CHECK (!supervisor_route_pending (VEHICLE_CMD_UTURN, true));
-        supervisor_set_turning (false); /* The displaced probe has unwound. */
+        CHECK (supervisor_route_pending (VEHICLE_CMD_UTURN, false));
         CHECK (VEHICLE_CMD_UTURN == supervisor_poll_turn (&source));
-        CHECK (SUPERVISOR_NO_TURN == supervisor_poll_turn (&source));
+        CHECK (VEHICLE_CMD_UTURN == supervisor_poll_turn (&source));
         expect_turn_reply (VEHICLE_CMD_UTURN, VEHICLE_SRC_BARCODE, false);
+        CHECK (supervisor_route_pending (VEHICLE_CMD_UTURN, true));
+        CHECK (SUPERVISOR_NO_TURN == supervisor_poll_turn (&source));
         supervisor_set_turning (false);
     }
 
@@ -749,12 +755,19 @@ static void test_pending_barcode_route (void)
     expect_turn_reply (VEHICLE_CMD_UTURN, VEHICLE_SRC_BARCODE, false);
     supervisor_set_turning (false);
 
-    expect_turn_reply (VEHICLE_CMD_RIGHT, VEHICLE_SRC_TELEMETRY, true);
-    expect_turn_reply (VEHICLE_CMD_UTURN, VEHICLE_SRC_BARCODE, false);
-    CHECK (VEHICLE_CMD_RIGHT == supervisor_poll_turn (&source));
-    CHECK (VEHICLE_SRC_TELEMETRY == source);
-    expect_turn_reply (VEHICLE_CMD_UTURN, VEHICLE_SRC_BARCODE, false);
-    supervisor_turn_refused (VEHICLE_CMD_RIGHT);
+    static uint8_t const dashboard_choices[] = {
+        VEHICLE_CMD_LEFT, VEHICLE_CMD_RIGHT, VEHICLE_CMD_STRAIGHT, VEHICLE_CMD_UTURN
+    };
+    for (size_t index = 0U; index < sizeof(dashboard_choices); index++)
+    {
+        uint8_t const choice = dashboard_choices[index];
+        expect_turn_reply (choice, VEHICLE_SRC_TELEMETRY, true);
+        expect_turn_reply (VEHICLE_CMD_UTURN, VEHICLE_SRC_BARCODE, false);
+        CHECK (choice == supervisor_poll_turn (&source) && VEHICLE_SRC_TELEMETRY == source);
+        CHECK (choice == supervisor_poll_turn (&source));
+        CHECK (supervisor_route_pending (choice, true));
+        CHECK (SUPERVISOR_NO_TURN == supervisor_poll_turn (&source));
+    }
 
     CHECK (E_OK == vehicle_command_post (VEHICLE_CMD_LEFT, VEHICLE_SRC_BARCODE));
     one_pass ();
@@ -809,7 +822,25 @@ static void test_pickup_during_run (void)
     CHECK (0U != (system_fault_get () & FAULT_LIFTED_BIT));
     CHECK (0U != (system_fault_sticky_get () & FAULT_LIFTED_BIT));
 
+    /* The IMU pose alone cannot release a pickup hold with stale wheels. */
+    g_feedback.fresh = false;
     remote_start (4U);
+    CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type);
+    CHECK (pickup_holds == g_holds);
+    g_feedback.fresh = true;
+    g_feedback.odometry_valid[0] = true;
+    g_feedback.odometry_valid[1] = true;
+    g_physics.settled_motion_us = g_now_ms * 1000U;
+    g_feedback.timestamp_us = g_physics.settled_motion_us + SUPERVISOR_PASS_MS * 1000U;
+
+    /* The latest sample is still, but does not cover the whole interval. */
+    g_feedback.stationary_span_us = 10000U;
+    remote_start (5U);
+    CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type);
+    CHECK (pickup_holds == g_holds);
+
+    g_feedback.stationary_span_us = SUPERVISOR_PASS_MS * 1000U;
+    remote_start (6U);
     CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
     CHECK (MOTION_HOLD_CALIBRATE == g_holds);
     g_physics.calibrated = true;
@@ -1677,6 +1708,9 @@ static void check_start_calibration_hold_handoff (void)
     remote_start (2U);
     CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type);
     g_physics.level_still = true;
+    g_feedback.odometry_valid[0] = true;
+    g_feedback.odometry_valid[1] = true;
+    g_feedback.stationary_span_us = SUPERVISOR_PASS_MS * 1000U;
     g_delay_calibration = true;
     remote_start (3U);
     CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
@@ -1801,7 +1835,7 @@ static void check_start_button_debounce (void)
 static void check_start_button_gates (void)
 {
     button_passes (false, 3U);
-    set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
+    system_fault_assign (FAULT_OWNER_PHYSICS, FAULT_IMU_NACK_BIT, FAULT_IMU_NACK_BIT);
     button_passes (true, 3U);
     CHECK (1U == g_start_button_replies);
     CHECK (TELEMETRY_EVT_CMD_REJECT == g_reply_type);
@@ -1809,7 +1843,7 @@ static void check_start_button_gates (void)
     CHECK (0U == supervisor_start_count ());
     CHECK (0U != (g_holds & MOTION_HOLD_OPERATOR));
 
-    set_sonar_connection_fault (0U);
+    system_fault_assign (FAULT_OWNER_PHYSICS, FAULT_IMU_NACK_BIT, 0U);
     button_passes (true, 6U);
     CHECK (1U == g_start_button_replies);
     CHECK (0U == supervisor_start_count ());
@@ -1918,10 +1952,9 @@ int main (int argc, char ** argv)
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_BARCODE, false);
         CHECK (RUN_REJECT_SOURCE == (g_reply_detail >> 12));
         set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
-        expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_TELEMETRY, false);
-        set_sonar_connection_fault (0U);
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_TELEMETRY, true);
         CHECK (1U == supervisor_start_snapshot (&floor) && floor);
+        set_sonar_connection_fault (0U);
         expect_turn_reply (VEHICLE_CMD_START_CONTINUOUS_FLOOR, VEHICLE_SRC_TELEMETRY, false);
         CHECK (RUN_REJECT_BUSY == (g_reply_detail >> 12));
         expect_turn_reply (VEHICLE_CMD_STOP, VEHICLE_SRC_TELEMETRY, true);
@@ -1952,15 +1985,23 @@ int main (int argc, char ** argv)
     {
         test_pending_barcode_route ();
     }
-    else if (0 == strcmp (argv[1], "faulty-sonar"))
+    else if ((0 == strcmp (argv[1], "faulty-sonar")) || (0 == strcmp (argv[1], "echo-line")))
     {
-        set_sonar_connection_fault (OBSTACLE_FAULT_NO_ECHO);
-        check_connection_refuses_start ();
+        set_sonar_connection_fault ((0 == strcmp (argv[1], "faulty-sonar")) ?
+                                     OBSTACLE_FAULT_NO_ECHO : OBSTACLE_FAULT_ECHO_STUCK);
+        remote_start (1U);
+        CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+        CHECK (1U == g_obstacle_starts);
     }
-    else if (0 == strcmp (argv[1], "echo-line"))
+    else if (0 == strcmp (argv[1], "route-no-sonar"))
     {
-        set_sonar_connection_fault (OBSTACLE_FAULT_ECHO_STUCK);
-        check_connection_refuses_start ();
+        g_obstacle_missing = true;
+        remote_start (1U);
+        CHECK (TELEMETRY_EVT_CMD_ACCEPT == g_reply_type);
+        g_physics.calibrated = true;
+        g_physics.attitude_unknown = false;
+        one_pass ();
+        expect_turn_reply (VEHICLE_CMD_LEFT, VEHICLE_SRC_TELEMETRY, true);
     }
     else if (0 == strcmp (argv[1], "faulty-imu"))
     {

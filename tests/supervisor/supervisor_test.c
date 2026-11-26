@@ -735,9 +735,11 @@ static void test_single_estop_sample_survives_release (void)
     in.b_estop = true;
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    CHECK (out.b_obstacle_stop && out.b_cancel_turn);
     in.b_estop = false;
     run_state_tick (&ctx, &in, &out);
     CHECK (RUN_STATE_LATCHED == run_state_of (&ctx));
+    CHECK (!out.b_obstacle_stop);
 
     run_state_init (&ctx);
     run_state_tick (&ctx, &in, &out);

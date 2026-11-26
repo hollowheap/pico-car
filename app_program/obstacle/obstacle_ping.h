@@ -37,7 +37,7 @@
 #define OBSTACLE_CONSIST_TOL_MM    (40U)
 
 /* Ping (u32, one store by the scan task): seq 6 | class 3 | dist 12 |
- * servo 6. The servo field is the servo angle in whole degrees plus 30. */
+ * servo 7. The servo field is the servo angle in whole degrees plus 64. */
 #define OBSTACLE_PING_SEQ_SH   (0U)
 #define OBSTACLE_PING_SEQ_MK   (0x3FU)
 #define OBSTACLE_PING_CLASS_SH (6U)
@@ -45,15 +45,14 @@
 #define OBSTACLE_PING_DIST_SH  (9U)
 #define OBSTACLE_PING_DIST_MK  (0xFFFU)
 #define OBSTACLE_PING_SERVO_SH (21U)
-#define OBSTACLE_PING_SERVO_MK (0x3FU)
+#define OBSTACLE_PING_SERVO_MK (0x7FU)
 
-/* Bit 27 marks a ping taken for a request; a free-running ping leaves it 0.
- * Bits 28 to 31 stay free. Every reader masks its own field. */
-#define OBSTACLE_PING_REPLY_SH (27U)
+/* Bit 28 marks a ping taken for a request; a free-running ping leaves it 0. */
+#define OBSTACLE_PING_REPLY_SH (28U)
 #define OBSTACLE_PING_REPLY_MK (0x1U)
 
-/* Servo field encoding adds 30 to the angle in whole degrees. */
-#define OBSTACLE_PING_SERVO_OFFSET (30)
+/* This is an internal word. The wire frame carries signed deci-degrees. */
+#define OBSTACLE_PING_SERVO_OFFSET (64)
 
 /* Deci-degrees per degree, and the range a TOO_CLOSE echo reads as. The
  * private obstacle config holds the same values and checks them at build

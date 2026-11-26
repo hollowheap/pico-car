@@ -54,7 +54,7 @@ typedef struct
 
 void     extras_log_add (extras_log_rec_t const * p_rec);
 uint32_t extras_log_profile (uint8_t req_id, uint16_t const * p_profile);
-void     extras_log_service (void);
+void     extras_log_service (bool b_armed);
 
 #endif /* EXTRAS_LOG_H */
 

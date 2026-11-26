@@ -20,6 +20,8 @@
 
 #include <stdint.h>
 
+#include "platform/chassis.h"
+
 /* C99 has no _Static_assert, so a negative array size stops the build when
  * a condition is false. NOTE: This macro cannot be a function because it
  * must act at compile time (BARR-C 6.3.a). */
@@ -102,7 +104,7 @@
 #define EXTRAS_SLOT_COUNT      (25U)
 #define EXTRAS_SLOT_CENTRE     (12U)
 #define EXTRAS_SLOT_STEP_DECI  (40)
-#define EXTRAS_SLOT_FIRST_DECI (-530)
+#define EXTRAS_SLOT_FIRST_DECI (-480)
 
 /* The coarse scan measures every third slot. */
 #define EXTRAS_COARSE_STRIDE (3U)
@@ -244,22 +246,19 @@
  * uses 204 204 um per wheel turn (pi x 65 mm, main.c), so the odometer
  * needs no change. */
 
-/* [Measured] Wheel centre to wheel centre: 107 mm. Used to measure how
- * far the car has turned (extras_nav.c); a value that is too small makes the
- * car stop turning a little early. */
-#define EXTRAS_WHEEL_TRACK_MM (107U)
+#define EXTRAS_WHEEL_TRACK_MM ((uint32_t)CHASSIS_WHEEL_TRACK_MM)
 
-/* FILL: servo shaft to the tail of the car (used by the planner's
- * corridor check). */
-#define EXTRAS_SERVO_TO_REAR_MM (170U)
+#define EXTRAS_NAV_TRACK_UM ((uint32_t)CHASSIS_PIVOT_TRACK_UM)
 
-/* [Measured] Distances forward from the wheel axle (the line through the
- * centres of the two drive wheels), along the car: to the servo shaft
- * (68.5 mm), to the IR line sensors (123.5 mm) and to the front-most point
- * of the car (133 mm). The half millimetres are rounded up. */
-#define EXTRAS_AXLE_TO_SONAR_MM (69U)
-#define EXTRAS_AXLE_TO_IR_MM    (124U)
-#define EXTRAS_AXLE_TO_FRONT_MM (133U)
+/* Servo shaft to the tail of the car (used by the planner's corridor
+ * check). */
+#define EXTRAS_SERVO_TO_REAR_MM ((uint32_t)(CHASSIS_TAIL_MM + CHASSIS_SONAR_FORWARD_MM))
+
+/* Distances forward from the wheel axle along the car: to the servo shaft,
+ * to the IR line sensors and to the front-most point of the car. */
+#define EXTRAS_AXLE_TO_SONAR_MM ((uint32_t)CHASSIS_SONAR_FORWARD_MM)
+#define EXTRAS_AXLE_TO_IR_MM    ((uint32_t)CHASSIS_LINE_SENSOR_LEAD_MM)
+#define EXTRAS_AXLE_TO_FRONT_MM ((uint32_t)CHASSIS_FRONT_TIP_MM)
 
 /* How far the car reaches from the middle of its axle when it rotates on
  * the spot: the left protrusion taken at the front of the car,
@@ -323,7 +322,10 @@
  * targets are absolute headings from the original line (90 away, 0, 90
  * towards = facing the line, 0), so errors do not add up from rotation to
  * rotation. 573 is deci-degrees per radian. */
-#define EXTRAS_NAV_TURN_SLOW_DECI (100)
+/* [Default] At the 140 mm/s spin (about 200 degrees/s) the wheels need
+ * roughly 10 degrees to slow down, so the slow zone is twice that.
+ * Not measured on the car. */
+#define EXTRAS_NAV_TURN_SLOW_DECI (200)
 #define EXTRAS_NAV_DECI_PER_RAD   (573)
 
 /* [Chat] Straight legs hold their heading: more than EXTRAS_NAV_HOLD_DEAD_DECI
@@ -368,8 +370,8 @@
     ((EXTRAS_OUT_SWING_MM > EXTRAS_OUT_SENSOR_MM) ? EXTRAS_OUT_SWING_MM : EXTRAS_OUT_SENSOR_MM)
 #define EXTRAS_LEVEL_BUFFER_MM (10U)
 
-/* [Chat] Every side scan sweeps -EXTRAS_SIDE_PAN_DECI..+EXTRAS_SIDE_PAN_DECI in 5
- * degree steps, the same -60..+60 degree range and EXTRAS_SLOT_* angles as the
+/* [Chat] Every side scan sweeps -EXTRAS_SIDE_PAN_DECI..+EXTRAS_SIDE_PAN_DECI in 4
+ * degree steps, the same -48..+48 degree range and EXTRAS_SLOT_* angles as the
  * first scan, EXTRAS_SWEEP_PINGS ping at each angle (the nearest VALID reading
  * counts; the beam is about 19 degrees wide, so every spot is seen at
  * about four neighbouring angles). Only pings the Buddy 5 task took at the
@@ -406,8 +408,11 @@
  * same speed in opposite directions, EXTRAS_NAV_SPIN_UM_S, slowing to
  * EXTRAS_NAV_SPIN_SLOW_UM_S for the last EXTRAS_NAV_TURN_SLOW_DECI, ending within
  * EXTRAS_NAV_SPIN_TOL_DECI. A spin that overshoots is corrected the other way after
- * the reverse pause. */
-#define EXTRAS_NAV_SPIN_UM_S      (EXTRAS_NAV_SPEED_UM_S / 2U)
+ * the reverse pause.
+ * [Default] Spins use the fastest held wheel speed. The slow phase keeps the
+ * earlier third of it, so the stopping accuracy stays as before. Neither
+ * speed nor the resulting overshoot was measured on the car. */
+#define EXTRAS_NAV_SPIN_UM_S      (EXTRAS_NAV_SPEED_UM_S)
 #define EXTRAS_NAV_SPIN_SLOW_UM_S (EXTRAS_NAV_SPEED_UM_S / 3U)
 #define EXTRAS_NAV_SPIN_TOL_DECI  (15)
 
@@ -434,7 +439,7 @@
 #define EXTRAS_TRACK_PAN_DECI      (480)
 #define EXTRAS_TRACK_TILT_DECI     (100)
 #define EXTRAS_TRACK_MIN_STEP_DECI (10)
-#define EXTRAS_TRACK_SPIN_UM_S     (EXTRAS_NAV_SPIN_UM_S)
+#define EXTRAS_TRACK_SPIN_UM_S     (EXTRAS_NAV_SPEED_UM_S / 2U)
 #define EXTRAS_TRACK_MAX_UNKNOWN   (3U)
 #define EXTRAS_TRACK_RETRIES       (1U)
 #define EXTRAS_TRACK_MIN_MOVE_MM   (30U)
@@ -596,6 +601,8 @@ EXTRAS_CT_ASSERT(causes_fit, EXTRAS_CAUSE_COUNT <= (1U << EXTRAS_CAUSE_BITS));
 EXTRAS_CT_ASSERT(angle_fits, EXTRAS_ANGLE_MAX < (1U << EXTRAS_ANGLE_BITS));
 EXTRAS_CT_ASSERT(profile_is_50_bytes,
              EXTRAS_PROFILE_BYTES == (sizeof(uint16_t) * EXTRAS_SLOT_COUNT));
+EXTRAS_CT_ASSERT(scan_points_ahead,
+             0 == (EXTRAS_SLOT_FIRST_DECI + (int32_t)EXTRAS_SLOT_CENTRE * EXTRAS_SLOT_STEP_DECI));
 EXTRAS_CT_ASSERT(coarse_ends_on_edge,
              0U == ((EXTRAS_SLOT_COUNT - 1U) % EXTRAS_COARSE_STRIDE));
 EXTRAS_CT_ASSERT(floor_fits, EXTRAS_FREE_FLOOR_MM <= EXTRAS_WIDTH_MAX);

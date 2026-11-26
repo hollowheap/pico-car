@@ -110,6 +110,20 @@ static void test_reply_flag(void)
     CHECK(obstacle_pack_ping_servo(reply) == 100);
 }
 
+static void test_extras_bearings(void)
+{
+    int16_t const angles[] = {-480, 0, 480};
+
+    for (uint8_t idx = 0U; idx < sizeof(angles) / sizeof(angles[0]); idx++)
+    {
+        uint32_t const ping = obstacle_pack_ping(9U, OBSTACLE_CLASS_VALID, 400U, angles[idx]);
+
+        CHECK(obstacle_pack_ping_servo(ping) == angles[idx]);
+        CHECK(!obstacle_pack_ping_is_reply(ping));
+        CHECK(obstacle_pack_ping_mm(ping) == 400U);
+    }
+}
+
 static void test_sequence_match(void)
 {
     uint32_t const reply    = obstacle_pack_ping_reply(20U, OBSTACLE_CLASS_OPEN, 0U, 0);
@@ -242,6 +256,7 @@ int main(int argc, char **argv)
     test_clamp();
     test_clamped_request_reply_carries_used_angle();
     test_reply_flag();
+    test_extras_bearings();
     test_sequence_match();
     test_requested_bearing();
     test_failure_classes_are_carried();

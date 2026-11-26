@@ -228,16 +228,15 @@
  * Car geometry. All distances are from the middle of the wheel axle.
  * ------------------------------------------------------------------ */
 
-/* FILL: servo shaft to the front bumper, and to the tail of the car. */
+/* FILL: servo shaft to the front bumper. */
 #define OBSTACLE_SERVO_TO_FRONT_MM (30U)
-#define OBSTACLE_SERVO_TO_REAR_MM  (170U)
 
 /* [Default] Sonar offset ahead of the wheel axle. */
 #define OBSTACLE_SONAR_FWD_MM ((uint32_t)CHASSIS_SONAR_FORWARD_MM)
 
 /* Front bumper and tail, from the axle. */
 #define OBSTACLE_CAR_FRONT_MM (OBSTACLE_SONAR_FWD_MM + OBSTACLE_SERVO_TO_FRONT_MM)
-#define OBSTACLE_CAR_REAR_MM  (OBSTACLE_SERVO_TO_REAR_MM - OBSTACLE_SONAR_FWD_MM)
+#define OBSTACLE_CAR_REAR_MM  ((uint32_t)CHASSIS_TAIL_MM)
 
 /* Radius of the circle the car sweeps when it spins on the spot: the
  * farthest corner from the axle middle, sqrt(100^2 + 63^2) = 118.2,

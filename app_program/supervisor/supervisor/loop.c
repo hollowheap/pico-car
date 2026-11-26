@@ -48,8 +48,7 @@ STATIC_ASSERT (WATCHDOG_TIMEOUT_MS > (PERMIT_LEASE_MS + MOTION_GAP_MS + HEALTH_C
 /* run_state.c counts its passes in supervisor passes. */
 STATIC_ASSERT (RUN_PASS_MS == SUPERVISOR_PASS_MS, "run_state counts supervisor passes");
 
-#define START_CONNECTION_FAULTS \
-    (FAULT_IMU_NACK_BIT | FAULT_SONAR_NO_ECHO_BIT | FAULT_ECHO_LINE_BIT)
+#define START_CONNECTION_FAULTS (FAULT_IMU_NACK_BIT)
 
 /* The task sleeps at most this long when the cyclic handler does not wake it. */
 #define SLEEP_TIMEOUT_MS (SUPERVISOR_PASS_MS + SUPERVISOR_PASS_MS)
@@ -197,12 +196,6 @@ uint8_t supervisor_poll_turn (uint8_t * p_source)
     {
         *p_source = g_turn_source;
     }
-    if ((SUPERVISOR_NO_TURN != turn) &&
-        (!vehicle_is_junction_choice (turn) || (g_turn_source != VEHICLE_SRC_BARCODE)))
-    {
-        g_turn_pending = SUPERVISOR_NO_TURN;
-        g_turning = true;
-    }
     (void) ISpinUnlock (&g_lock, saved);
 
     return turn;
@@ -214,7 +207,7 @@ bool supervisor_route_pending (uint8_t expected_opcode, bool b_consume)
     bool b_pending = false;
     (void) ISpinLock (&g_lock, &saved);
     b_pending = vehicle_is_junction_choice (expected_opcode) &&
-                (expected_opcode == g_turn_pending) && (VEHICLE_SRC_BARCODE == g_turn_source);
+                (expected_opcode == g_turn_pending);
     if (b_pending && b_consume)
     {
         g_turn_pending = SUPERVISOR_NO_TURN;
@@ -362,11 +355,38 @@ static run_inputs_t read_inputs (bool b_lapsed)
         in.b_follow = motion.ready && (0U == motion.hold_mask) && !in.b_estop;
     }
     in.b_permit_lapsed = b_lapsed || g_b_motion_timing_fault;
-    in.b_follow = in.b_follow && !in.b_lifted && !in.b_overturned && !in.b_permit_lapsed &&
-                  (E_OK == obstacle_snapshot (&obstacle)) &&
-                  (TELEMETRY_OBSTACLE_STATE_MONITOR == obstacle.state);
+    /* Advisory sonar can be absent or stopped. A measured detour owns turns
+       while its scanner is active or its motion hold is asserted. */
+    bool const b_detour = (E_OK == obstacle_snapshot (&obstacle)) &&
+                         (TELEMETRY_OBSTACLE_STATE_MONITOR != obstacle.state) &&
+                         (TELEMETRY_OBSTACLE_STATE_STOPPED != obstacle.state);
+    in.b_follow = in.b_follow && !in.b_lifted && !in.b_overturned && !in.b_permit_lapsed && !b_detour;
 
     return in;
+}
+
+/* Extend the settled pose only while both wheels had uninterrupted rest evidence. */
+static void qualify_set_down (run_inputs_t * p_in)
+{
+    physics_status_t physics;
+    motion_status_t motion;
+    motion_feedback_t feedback;
+
+    if ((E_OK != physics_snapshot (&physics)) || !physics.level_still ||
+        (E_OK != motion_snapshot (&motion, &feedback, NULL)))
+    {
+        p_in->b_upright = false;
+        return;
+    }
+    /* Both timestamps use the same timer. The span is bounded to half its
+       range, so an older wheel sample also fails the continuity check. */
+    uint32_t const elapsed_us = feedback.timestamp_us - physics.settled_motion_us;
+    p_in->b_estop = p_in->b_estop || motion.stop_requested;
+    p_in->b_upright = motion.ready && (0U == motion.fault) && feedback.fresh &&
+                     feedback.speed_valid[0] && feedback.speed_valid[1] &&
+                     feedback.odometry_valid[0] && feedback.odometry_valid[1] &&
+                     (0 == feedback.left_speed_um_s) && (0 == feedback.right_speed_um_s) &&
+                     (0U != feedback.stationary_span_us) && (elapsed_us <= feedback.stationary_span_us);
 }
 
 /* A probe owns the wheels before it commits to a branch. Its pending choice
@@ -374,9 +394,15 @@ static run_inputs_t read_inputs (bool b_lapsed)
 void supervisor_admit_command (vehicle_cmd_t cmd, run_inputs_t in, run_result_t * p_res)
 {
     UINT saved = 0U;
+    if (vehicle_is_start (cmd.opcode) && in.b_upright &&
+        (g_ctx.b_lift || g_ctx.b_overturn || in.b_overturned))
+    {
+        qualify_set_down (&in);
+    }
     (void) ISpinLock (&g_lock, &saved);
     bool const b_replace = (VEHICLE_CMD_UTURN == cmd.opcode) && (VEHICLE_SRC_BARCODE == cmd.source) &&
-                           (VEHICLE_SRC_BARCODE == g_turn_source) && vehicle_is_junction_choice (g_turn_pending);
+                           (VEHICLE_SRC_BARCODE == g_turn_source) &&
+                           (VEHICLE_CMD_UTURN != g_turn_pending) && vehicle_is_junction_choice (g_turn_pending);
     in.b_follow = in.b_follow && (b_replace || (!g_turning && (SUPERVISOR_NO_TURN == g_turn_pending)));
     run_state_command (&g_ctx, cmd, &in, p_res);
     if (RUN_TURN_NONE != p_res->turn)

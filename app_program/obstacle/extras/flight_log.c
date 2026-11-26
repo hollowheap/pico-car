@@ -243,11 +243,16 @@ uint32_t extras_log_profile (uint8_t req_id, uint16_t const * p_profile)
 }
 
 /*!
- * @brief Call every line-task pass: start a dump when the serial port has
- *        just been opened, and print the next few lines of a dump.
+ * @brief Print a few historical records when the console opens while parked.
  */
-void extras_log_service (void)
+void extras_log_service (bool b_armed)
 {
+    if (b_armed)
+    {
+        /* Cancel the dump so the recorder keeps new samples during motion. */
+        g_log.b_dumping = false;
+        return;
+    }
     bool const b_open = (tm_usb_state() >= USB_OPEN);
 
     if (b_open && (!g_log.b_was_open))

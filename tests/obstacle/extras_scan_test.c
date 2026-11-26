@@ -93,8 +93,7 @@ static void set_coarse (scene_t * p_scene, uint16_t const coarse[9])
     fill_fine(p_scene);
 }
 
-static void check_log (uint16_t const coarse[9], bool flat,
-                       int16_t right, int16_t left, uint8_t status,
+static void check_log (uint16_t const coarse[9], int16_t right, int16_t left,
                        const char * p_name)
 {
     scene_t          scene = {{0U}};
@@ -107,15 +106,12 @@ static void check_log (uint16_t const coarse[9], bool flat,
     extras_plan_cfg_default(&cfg);
     extras_plan_build(&ctx, &cfg, &res);
 
-    check(flat == ctx.b_flat, p_name);
-    if (flat)
-    {
-        check(EXTRAS_SCAN_EDGE_BOUNDED == ctx.edge_state[EXTRAS_SCAN_LEFT], p_name);
-        check(EXTRAS_SCAN_EDGE_BOUNDED == ctx.edge_state[EXTRAS_SCAN_RIGHT], p_name);
-        check(right == extras_scan_slot_deci(ctx.edge_hit[EXTRAS_SCAN_RIGHT]), p_name);
-        check(left == extras_scan_slot_deci(ctx.edge_hit[EXTRAS_SCAN_LEFT]), p_name);
-    }
-    check(status == res.status, p_name);
+    check(ctx.b_flat, p_name);
+    check(EXTRAS_SCAN_EDGE_BOUNDED == ctx.edge_state[EXTRAS_SCAN_LEFT], p_name);
+    check(EXTRAS_SCAN_EDGE_BOUNDED == ctx.edge_state[EXTRAS_SCAN_RIGHT], p_name);
+    check(right == extras_scan_slot_deci(ctx.edge_hit[EXTRAS_SCAN_RIGHT]), p_name);
+    check(left == extras_scan_slot_deci(ctx.edge_hit[EXTRAS_SCAN_LEFT]), p_name);
+    check(EXTRAS_RESULT_OK == res.status, p_name);
 }
 
 int main (void)
@@ -148,13 +144,12 @@ int main (void)
     scene_t         scene = {{0U}};
     extras_scan_ctx_t ctx;
 
-    /* The merged narrower sweep classifies only the first two of these
-       recordings as flat. The other three produce no safe path. */
-    check_log(log1, true, -170, 310, EXTRAS_RESULT_OK, "log scan 1");
-    check_log(log2, true, -170, 270, EXTRAS_RESULT_OK, "log scan 2");
-    check_log(log3, false, 0, 0, EXTRAS_RESULT_NO_SAFE_PATH, "log scan 3");
-    check_log(today1, false, 0, 0, EXTRAS_RESULT_NO_SAFE_PATH, "later scan 1");
-    check_log(today2, false, 0, 0, EXTRAS_RESULT_NO_SAFE_PATH, "later scan 2");
+    /* Replay the recorded per-slot ranges on the centered -48 to +48 degree grid. */
+    check_log(log1, -120, 280, "log scan 1");
+    check_log(log2, -240, 200, "log scan 2");
+    check_log(log3, -120, 320, "log scan 3");
+    check_log(today1, -240, 440, "later scan 1");
+    check_log(today2, -240, 440, "later scan 2");
 
     set_coarse(&scene, one_real);
     run_scan(&scene, &ctx);
